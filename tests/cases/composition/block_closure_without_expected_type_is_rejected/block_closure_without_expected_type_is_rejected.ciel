@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: block-bodied closure requires an expected callable return type
+
+i64 main() {
+    i64 |()| f = (|| {
+        return 1;
+    }) as i64 |()|;
+    (|| {
+        return 2;
+    });
+    return f();
+}

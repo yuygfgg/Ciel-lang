@@ -1,0 +1,30 @@
+// ciel-test: error
+// expect-error: immutable
+
+struct Box {
+    i64 value;
+}
+
+enum Wrapped {
+    Has(Box),
+    Missing,
+}
+
+i64 read(Wrapped wrapped) {
+    switch (wrapped) {
+        case Has(box):
+            i64 |()| mutate = || {
+                box.value = 2;
+                return box.value;
+            };
+            return mutate();
+        case Missing:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 1 };
+    Wrapped wrapped = Has(box);
+    return read(wrapped);
+}

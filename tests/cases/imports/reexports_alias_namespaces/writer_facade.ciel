@@ -1,0 +1,3 @@
+// ciel-test: dependency
+
+export import ./writer_leaf as writer;

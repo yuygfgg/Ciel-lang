@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: /std/result
+
+enum Error {
+    Bad,
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+Result<i64, Error> value() {
+    return Ok(1);
+}
+
+Result<i64, Error> main_result() {
+    i64 value = value()?;
+    return Ok(value);
+}
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 11
+
+struct Box<T> {
+    T value;
+}
+
+T id<T>(T value) {
+    return value;
+}
+
+i64 main() {
+    Box<i64> box = { value: 11 };
+    Box<i64> out = id(box);
+    return out.value;
+}

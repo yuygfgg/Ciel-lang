@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: infinite generic instantiation cycle
+
+struct Box<T> {
+    T value;
+}
+
+void grow<T>(T value) {
+    Box<T> boxed = { value: value };
+    grow(boxed);
+}
+
+i64 main() {
+    grow(1);
+    return 0;
+}

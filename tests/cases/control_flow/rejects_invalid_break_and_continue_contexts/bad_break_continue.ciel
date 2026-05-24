@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: break outside loop or switch
+// expect-error: continue outside loop
+
+i64 main() {
+    break;
+    continue;
+    return 0;
+}

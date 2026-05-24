@@ -1,0 +1,69 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 4000
+
+import /std/lib;
+
+struct Burst {
+    Atomic<i64> counter;
+    Atomic<i64> ready;
+    Atomic<bool> start;
+    i64 repeats;
+}
+
+Result<i64, Error> worker(i64 state, Burst burst) {
+    Atomic<i64> counter = burst.counter;
+    Atomic<i64> ready = burst.ready;
+    Atomic<bool> start = burst.start;
+    i64 repeats = burst.repeats;
+
+    atomic_fetch_add(&ready, 1, SeqCst)?;
+    while (atomic_load(&start, Acquire)? == false) {
+    }
+
+    i64 i = 0;
+    while (i < repeats) {
+        atomic_fetch_add(&counter, 1, AcqRel)?;
+        i = i + 1;
+    }
+    return Ok(state + repeats);
+}
+
+i64 main() {
+    Atomic<i64> counter = must(make_atomic<i64>(0));
+    Atomic<i64> ready = must(make_atomic<i64>(0));
+    Atomic<bool> start = must(make_atomic<bool>(false));
+
+    Actor<Burst> a0 = must(spawn_actor<i64, Burst>(0, worker));
+    Actor<Burst> a1 = must(spawn_actor<i64, Burst>(0, worker));
+    Actor<Burst> a2 = must(spawn_actor<i64, Burst>(0, worker));
+    Actor<Burst> a3 = must(spawn_actor<i64, Burst>(0, worker));
+
+    Burst burst = {
+        counter: counter,
+        ready: ready,
+        start: start,
+        repeats: 1000,
+    };
+
+    must_void(send(&a0, burst));
+    must_void(send(&a1, burst));
+    must_void(send(&a2, burst));
+    must_void(send(&a3, burst));
+
+    while (must(atomic_load(&ready, SeqCst)) < 4) {
+    }
+    must_void(atomic_store(&start, true, Release));
+
+    must_void(join(&a0));
+    must_void(join(&a1));
+    must_void(join(&a2));
+    must_void(join(&a3));
+
+    i64 total = must(atomic_load(&counter, SeqCst));
+    if (total != 4000) {
+        return 1;
+    }
+    must_void(print("{}", [total]));
+    return 0;
+}

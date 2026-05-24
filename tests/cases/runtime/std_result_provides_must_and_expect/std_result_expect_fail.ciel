@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stderr-contains: expected failure
+// expect-stderr-contains: .ciel
+
+import /std/result;
+
+enum LocalError {
+    Bad,
+}
+
+Result<i64, LocalError> bad() {
+    return Err(Bad);
+}
+
+i32 main() {
+    expect(bad(), "expected failure");
+    return 1;
+}

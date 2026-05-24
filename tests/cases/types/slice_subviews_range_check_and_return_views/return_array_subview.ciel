@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 8
+
+[]i64 make() {
+    [4]i64 values = [4, 5, 6, 7];
+    return values[1..3];
+}
+
+usize main() {
+    []i64 values = make();
+    return values.len + values[1] as usize;
+}

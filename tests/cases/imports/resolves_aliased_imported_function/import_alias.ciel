@@ -1,0 +1,8 @@
+// ciel-test: compile
+// expect-c-contains: answer
+
+import ./math as math;
+
+i64 main() {
+    return math::answer();
+}

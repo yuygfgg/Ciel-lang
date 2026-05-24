@@ -1,0 +1,25 @@
+// ciel-test: compile
+// expect-c-contains: typedef struct CielDyn_measureVTable CielDyn_measureVTable;
+// expect-c-contains: void *data; const CielDyn_measureVTable *vtable;
+// expect-c-contains: .vtable->measure
+// expect-c-contains: Box *box__
+// expect-c-contains: ciel_alloc(sizeof(Box))
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box value) {
+    return value->value;
+}
+
+i64 call_measure(measure value) {
+    return measure(value);
+}
+
+i64 main() {
+    Box box = { value: 19 };
+    return call_measure(&box);
+}

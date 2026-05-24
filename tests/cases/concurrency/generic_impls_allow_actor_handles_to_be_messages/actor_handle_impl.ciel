@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/lib;
+
+Result<void, Error> accept_handle<T: ShareHandle>(T value) {
+    T local = value;
+    if (share_handle_marker(&local)) {
+        return Ok();
+    }
+    return Err(Code(1));
+}
+
+Result<i64, Error> record(i64 state, i64 msg) {
+    print_value(msg)?;
+    return Ok(state + msg);
+}
+
+i64 main() {
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, record));
+    Actor<i64> copy = must(clone_message(&actor));
+
+    must_void(accept_handle(copy));
+    must_void(send(&copy, 7));
+    must_void(join(&actor));
+    return 0;
+}

@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 8
+
+import /std/result;
+
+enum Error {
+    Bad,
+}
+
+Result<i64, Error> value(bool ok) {
+    if (ok) {
+        return Ok(7);
+    }
+    return Err(Bad);
+}
+
+Result<i64, Error> add_one() {
+    i64 x = value(true)?;
+    return Ok(x + 1);
+}
+
+i64 main() {
+    Result<i64, Error> result = add_one();
+    switch (result) {
+        case Ok(value):
+            return value;
+        case Err(error):
+            return 1;
+    }
+}

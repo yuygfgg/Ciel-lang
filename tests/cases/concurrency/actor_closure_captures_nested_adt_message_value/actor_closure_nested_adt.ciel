@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 16
+
+import /std/lib;
+
+struct Pair<T> {
+    T left;
+    T right;
+}
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+i64 main() {
+    Pair<i64> pair = { left: 4, right: 5 };
+    Maybe<Pair<i64>> captured = Some(pair);
+    Actor<i64> actor = must(spawn_actor<i64, i64>(1, |i64 state, i64 msg| {
+        switch (captured) {
+            case Some(inner):
+                print_value(state + msg + inner.left + inner.right)?;
+                return Ok(state + msg);
+            case None:
+                return Ok(state);
+        }
+    }));
+    must_void(send(&actor, 6));
+    must_void(join(&actor));
+    return 0;
+}

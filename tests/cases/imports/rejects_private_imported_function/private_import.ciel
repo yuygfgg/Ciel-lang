@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: not exported
+
+import ./private_math as math;
+
+i64 main() {
+    return math::hidden();
+}

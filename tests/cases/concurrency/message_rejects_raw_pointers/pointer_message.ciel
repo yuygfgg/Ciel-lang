@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+
+import /std/message;
+
+Result<*i64, Error> copy_pointer(*i64 ptr) {
+    return clone_message(&ptr);
+}

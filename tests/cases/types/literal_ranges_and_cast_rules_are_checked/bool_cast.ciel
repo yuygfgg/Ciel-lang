@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: cannot cast
+
+i64 main() {
+    bool value = 1 as bool;
+    return 0;
+}

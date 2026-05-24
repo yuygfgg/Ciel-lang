@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: immutable
+
+struct Box {
+    i64 value;
+}
+
+i64 main() {
+    Box box = { value: 1 };
+    i64 |()| change = || {
+        box.value = 2;
+        return box.value;
+    };
+    return change();
+}

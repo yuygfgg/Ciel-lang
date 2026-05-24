@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export i64 Item() {
+    return 1;
+}

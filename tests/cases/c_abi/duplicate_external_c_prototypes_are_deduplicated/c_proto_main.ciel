@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 5
+// expect-c-count: int32_t abs(int32_t value); => 1
+
+import ./c_proto_left as left;
+import ./c_proto_right as right;
+
+i32 main() {
+    return left::abs(-2) + right::abs(-3);
+}

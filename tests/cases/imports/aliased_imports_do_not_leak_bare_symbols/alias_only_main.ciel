@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: unknown type `Box`
+
+import ./alias_only_symbols as symbols;
+
+i64 main() {
+    Box box = { value: 1 };
+    return box.value;
+}

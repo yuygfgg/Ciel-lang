@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 27
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box box) {
+    return box->value;
+}
+
+enum Erased {
+    Has(measure),
+    Missing,
+}
+
+i64 read(Erased value) {
+    switch (value) {
+        case Has(item):
+            return measure(item);
+        case Missing:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 27 };
+    Erased value = Has(&box);
+    return read(value);
+}

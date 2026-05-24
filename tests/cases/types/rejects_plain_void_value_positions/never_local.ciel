@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: never
+
+i64 main() {
+    never value;
+    return 0;
+}

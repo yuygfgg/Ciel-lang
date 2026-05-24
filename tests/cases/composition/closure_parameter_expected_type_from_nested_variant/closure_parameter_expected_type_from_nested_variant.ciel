@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 14
+
+enum Operation {
+    Apply(i64 |(i64)|),
+    Skip,
+}
+
+enum Wrapped {
+    Has(Operation),
+    Missing,
+}
+
+i64 run(Wrapped wrapped, i64 value) {
+    switch (wrapped) {
+        case Has(Apply(callback)):
+            return callback(value);
+        case Has(Skip):
+            return value;
+        case Missing:
+            return 0;
+    }
+}
+
+i64 main() {
+    i64 delta = 6;
+    Wrapped wrapped = Has(Apply(|x| x + delta));
+    return run(wrapped, 8);
+}

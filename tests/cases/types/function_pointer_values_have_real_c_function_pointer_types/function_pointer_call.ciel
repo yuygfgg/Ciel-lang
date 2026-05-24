@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 5
+
+i64 add_one(i64 value) {
+    return value + 1;
+}
+
+i64 call_it(i64 fn(i64) func) {
+    return func(4);
+}
+
+i64 main() {
+    i64 fn(i64) local = add_one;
+    return call_it(local);
+}

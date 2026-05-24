@@ -1,0 +1,7467 @@
+use std::collections::{HashMap, HashSet};
+
+use crate::{
+    diagnostic::{DiagResult, Diagnostic},
+    hir::*,
+    resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
+    thir::*,
+    types::Ty,
+};
+
+#[derive(Clone, Debug)]
+struct FunctionSig {
+    def_id: DefId,
+    module: ModuleId,
+    name: String,
+    abi: Option<String>,
+    noescape: bool,
+    has_body: bool,
+    ret: Ty,
+    params: Vec<Ty>,
+    generics: Vec<GenericInfo>,
+    exported: bool,
+}
+
+#[derive(Clone, Debug)]
+struct GenericInfo {
+    name: String,
+    constraint: Option<ConstraintExpr>,
+}
+
+#[derive(Clone, Debug)]
+struct StructTemplate {
+    generics: Vec<String>,
+    fields: Vec<FieldDecl>,
+}
+
+#[derive(Clone, Debug)]
+struct EnumTemplate {
+    generics: Vec<String>,
+    variants: Vec<EnumVariantTemplate>,
+}
+
+#[derive(Clone, Debug)]
+struct EnumVariantTemplate {
+    name: String,
+    payload: Vec<Type>,
+}
+
+#[derive(Clone, Debug)]
+struct TypeAliasTemplate {
+    generics: Vec<String>,
+    target: TypeAliasTarget,
+}
+
+#[derive(Clone, Debug)]
+struct VariantSig {
+    enum_name: String,
+    enum_generics: Vec<String>,
+    variant_index: usize,
+    payload: Vec<Type>,
+}
+
+#[derive(Clone, Debug)]
+struct InterfaceSig {
+    name: String,
+    generics: Vec<String>,
+    ret: Type,
+    params: Vec<Param>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct InterfaceRefTy {
+    name: String,
+    args: Vec<Ty>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct InterfaceView {
+    positive: Vec<InterfaceRefTy>,
+}
+
+#[derive(Clone, Debug)]
+struct ImplSig {
+    interface_name: String,
+    interface_args: Vec<Ty>,
+    receiver_ty: Option<Ty>,
+    function_def: DefId,
+    ret: Ty,
+    params: Vec<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct GenericImplTemplate {
+    module: ModuleId,
+    item_span: crate::span::Span,
+    interface_name: String,
+    generics: Vec<GenericInfo>,
+    interface_args: Vec<Ty>,
+    receiver_ty: Option<Ty>,
+    ret: Ty,
+    params: Vec<Ty>,
+    decl: ImplDecl,
+}
+
+#[derive(Clone, Debug)]
+struct ImplAnalysis {
+    interface_name: String,
+    generics: Vec<GenericInfo>,
+    interface_args: Vec<Ty>,
+    receiver_ty: Option<Ty>,
+    ret: Ty,
+    params: Vec<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct MessageDerivationFailure {
+    path: Vec<String>,
+    ty: Ty,
+    reason: MessageDerivationFailureReason,
+}
+
+#[derive(Clone, Debug)]
+enum MessageDerivationFailureReason {
+    ExplicitThreadLocal,
+    RawPointer,
+    ActorLocalSlice,
+    DynamicInterface,
+    ExternCFunctionPointer,
+    ErasedClosure,
+    OpaqueCHandle,
+    Generic,
+    Unknown,
+}
+
+#[derive(Clone, Debug)]
+struct GenericFunctionTemplate {
+    function: FunctionDecl,
+    exported: bool,
+}
+
+#[derive(Clone, Debug)]
+struct Binding {
+    name: String,
+    ty: Ty,
+    narrowed_ty: Option<Ty>,
+    assigned: bool,
+    immutable: bool,
+}
+
+#[derive(Clone, Debug, Default)]
+struct LocalScopes {
+    scopes: Vec<HashMap<LocalId, Binding>>,
+}
+
+impl LocalScopes {
+    fn push(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    fn pop(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn insert(&mut self, id: LocalId, binding: Binding) -> Result<(), String> {
+        let scope = self.scopes.last_mut().expect("scope stack is not empty");
+        if scope.contains_key(&id) {
+            return Err(binding.name);
+        }
+        scope.insert(id, binding);
+        Ok(())
+    }
+
+    fn get(&self, id: LocalId) -> Option<&Binding> {
+        self.scopes.iter().rev().find_map(|scope| scope.get(&id))
+    }
+
+    fn get_mut(&mut self, id: LocalId) -> Option<&mut Binding> {
+        self.scopes
+            .iter_mut()
+            .rev()
+            .find_map(|scope| scope.get_mut(&id))
+    }
+
+    fn effective_ty(&self, id: LocalId) -> Option<Ty> {
+        self.get(id).map(|binding| {
+            binding
+                .narrowed_ty
+                .clone()
+                .unwrap_or_else(|| binding.ty.clone())
+        })
+    }
+
+    fn narrow_to(&mut self, id: LocalId, ty: Ty) {
+        if let Some(binding) = self.get_mut(id) {
+            binding.narrowed_ty = Some(ty);
+        }
+    }
+
+    fn clear_narrowing(&mut self, id: LocalId) {
+        if let Some(binding) = self.get_mut(id) {
+            binding.narrowed_ty = None;
+        }
+    }
+
+    fn mark_all_immutable(&mut self) {
+        for scope in &mut self.scopes {
+            for binding in scope.values_mut() {
+                binding.immutable = true;
+            }
+        }
+    }
+
+    fn merge_assigned_intersection(&mut self, left: &LocalScopes, right: &LocalScopes) {
+        for (scope_index, scope) in self.scopes.iter_mut().enumerate() {
+            let Some(left_scope) = left.scopes.get(scope_index) else {
+                continue;
+            };
+            let Some(right_scope) = right.scopes.get(scope_index) else {
+                continue;
+            };
+            for (id, binding) in scope {
+                let left_assigned = left_scope
+                    .get(id)
+                    .map(|binding| binding.assigned)
+                    .unwrap_or(binding.assigned);
+                let right_assigned = right_scope
+                    .get(id)
+                    .map(|binding| binding.assigned)
+                    .unwrap_or(binding.assigned);
+                binding.assigned = left_assigned && right_assigned;
+                let left_narrowed = left_scope
+                    .get(id)
+                    .and_then(|binding| binding.narrowed_ty.clone());
+                let right_narrowed = right_scope
+                    .get(id)
+                    .and_then(|binding| binding.narrowed_ty.clone());
+                binding.narrowed_ty = (left_narrowed == right_narrowed)
+                    .then_some(left_narrowed)
+                    .flatten();
+            }
+        }
+    }
+
+    fn replace_flow_from(&mut self, source: &LocalScopes) {
+        for (scope_index, scope) in self.scopes.iter_mut().enumerate() {
+            let Some(source_scope) = source.scopes.get(scope_index) else {
+                continue;
+            };
+            for (id, binding) in scope {
+                if let Some(source_binding) = source_scope.get(id) {
+                    binding.assigned = source_binding.assigned;
+                    binding.narrowed_ty = source_binding.narrowed_ty.clone();
+                }
+            }
+        }
+    }
+
+    fn merge_reachable_flows(&mut self, flows: &[LocalScopes]) {
+        let Some((first, rest)) = flows.split_first() else {
+            return;
+        };
+        self.replace_flow_from(first);
+        for flow in rest {
+            let current = self.clone();
+            self.merge_assigned_intersection(&current, flow);
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ControlContextKind {
+    Loop,
+    Switch,
+}
+
+#[derive(Clone, Debug)]
+struct ControlContext {
+    kind: ControlContextKind,
+    break_scopes: Vec<LocalScopes>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Flow {
+    can_fallthrough: bool,
+}
+
+impl Flow {
+    fn fallthrough() -> Self {
+        Self {
+            can_fallthrough: true,
+        }
+    }
+
+    fn no_fallthrough() -> Self {
+        Self {
+            can_fallthrough: false,
+        }
+    }
+}
+
+struct CheckedBlockFlow {
+    block: TBlock,
+    flow: Flow,
+}
+
+struct CheckedStmtFlow {
+    stmt: TStmt,
+    flow: Flow,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActorLifecycleOp {
+    Stop,
+    Join,
+}
+
+pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
+    TypeChecker::new(hir).check()
+}
+
+pub struct CheckedGenericInstance {
+    pub function: CheckedFunction,
+    pub generated_functions: Vec<CheckedFunction>,
+    pub impls: Vec<CheckedImpl>,
+}
+
+pub fn type_check_generic_instance(
+    checked: &CheckedProgram,
+    template: &CheckedGenericFunction,
+    instance_args: &[Ty],
+    def_id: DefId,
+    instance_name: String,
+    next_synthetic_def: usize,
+) -> DiagResult<CheckedGenericInstance> {
+    let mut checker = TypeChecker::new(HirProgram {
+        resolved: checked.resolved.clone(),
+        modules: checked.hir_modules.clone(),
+        locals: checked.hir_locals.clone(),
+    });
+    checker.collect_interfaces();
+    checker.collect_type_aliases_and_opaque_structs();
+    checker.collect_structs();
+    checker.collect_enums();
+    checker.collect_functions();
+    checker.collect_impls();
+    checker.merge_existing_impls(&checked.impls);
+    checker.next_synthetic_def = checker.next_synthetic_def.max(next_synthetic_def);
+    let base_generated = checker.generated_functions.len();
+    let base_impls = checker.impls.len();
+    let function = checker.instantiate_generic_template_for_mono(
+        template,
+        instance_args,
+        def_id,
+        instance_name,
+    );
+    if checker.diagnostics.is_empty() {
+        let function = function.ok_or_else(|| {
+            vec![Diagnostic::new(
+                template.function.signature.name.span,
+                format!("failed to instantiate generic function `{}`", template.name),
+            )]
+        })?;
+        let generated_functions = checker
+            .generated_functions
+            .into_iter()
+            .skip(base_generated)
+            .collect::<Vec<_>>();
+        let impls = checker
+            .impls
+            .into_iter()
+            .skip(base_impls)
+            .map(|implementation| CheckedImpl {
+                interface_name: implementation.interface_name,
+                interface_args: implementation.interface_args,
+                receiver_ty: implementation.receiver_ty,
+                function_def: implementation.function_def,
+                ret: implementation.ret,
+                params: implementation.params,
+            })
+            .collect::<Vec<_>>();
+        Ok(CheckedGenericInstance {
+            function,
+            generated_functions,
+            impls,
+        })
+    } else {
+        Err(checker.diagnostics)
+    }
+}
+
+struct TypeChecker {
+    resolved: ResolvedProgram,
+    hir_modules: Vec<Module>,
+    hir_locals: Vec<Local>,
+    diagnostics: Vec<Diagnostic>,
+    functions_by_def: HashMap<DefId, FunctionSig>,
+    functions_by_name: HashMap<String, Vec<DefId>>,
+    type_aliases: HashMap<DefId, TypeAliasTemplate>,
+    opaque_structs: HashSet<String>,
+    structs: HashMap<String, Vec<(String, Ty)>>,
+    struct_templates: HashMap<String, StructTemplate>,
+    enum_templates: HashMap<String, EnumTemplate>,
+    variants: HashMap<DefId, VariantSig>,
+    interfaces: HashMap<DefId, InterfaceSig>,
+    interface_names: HashMap<String, DefId>,
+    interface_aliases: HashMap<DefId, InterfaceExpr>,
+    interface_alias_names: HashMap<String, DefId>,
+    impls: Vec<ImplSig>,
+    generic_impls: Vec<GenericImplTemplate>,
+    generic_functions: HashMap<DefId, GenericFunctionTemplate>,
+    generated_functions: Vec<CheckedFunction>,
+    type_subst_stack: Vec<HashMap<String, Ty>>,
+    alias_expansion_stack: Vec<DefId>,
+    checked_enums: HashMap<String, CheckedEnum>,
+    current_module: ModuleId,
+    current_return_ty: Ty,
+    control_contexts: Vec<ControlContext>,
+    next_synthetic_def: usize,
+    next_closure_id: usize,
+}
+
+impl TypeChecker {
+    fn new(hir: HirProgram) -> Self {
+        let next_synthetic_def = hir.resolved.defs.len();
+        Self {
+            resolved: hir.resolved,
+            hir_modules: hir.modules,
+            hir_locals: hir.locals,
+            diagnostics: Vec::new(),
+            functions_by_def: HashMap::new(),
+            functions_by_name: HashMap::new(),
+            type_aliases: HashMap::new(),
+            opaque_structs: HashSet::new(),
+            structs: HashMap::new(),
+            struct_templates: HashMap::new(),
+            enum_templates: HashMap::new(),
+            variants: HashMap::new(),
+            interfaces: HashMap::new(),
+            interface_names: HashMap::new(),
+            interface_aliases: HashMap::new(),
+            interface_alias_names: HashMap::new(),
+            impls: Vec::new(),
+            generic_impls: Vec::new(),
+            generic_functions: HashMap::new(),
+            generated_functions: Vec::new(),
+            type_subst_stack: Vec::new(),
+            alias_expansion_stack: Vec::new(),
+            checked_enums: HashMap::new(),
+            current_module: ModuleId(0),
+            current_return_ty: Ty::Void,
+            control_contexts: Vec::new(),
+            next_synthetic_def,
+            next_closure_id: 0,
+        }
+    }
+
+    fn check(mut self) -> DiagResult<CheckedProgram> {
+        self.collect_interfaces();
+        self.collect_type_aliases_and_opaque_structs();
+        self.collect_structs();
+        self.collect_enums();
+        self.collect_functions();
+        self.validate_c_abi_functions();
+        self.collect_impls();
+        self.check_by_value_layout_cycles();
+
+        let mut checked_functions = Vec::new();
+
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::Function(function) => {
+                        self.current_module = module.id;
+                        if let Some(checked) = self.check_function_item(function, item.export) {
+                            checked_functions.push(checked);
+                        }
+                    }
+                    ItemKind::ExternBlock(block) => {
+                        for extern_item in &block.items {
+                            if let ExternItem::Function {
+                                noescape,
+                                signature,
+                            } = extern_item
+                            {
+                                let ret = self.lower_type(&signature.ret);
+                                let params = signature
+                                    .params
+                                    .iter()
+                                    .map(|param| {
+                                        (None, param.name.name.clone(), self.lower_type(&param.ty))
+                                    })
+                                    .collect::<Vec<_>>();
+                                if let Some(sig) =
+                                    self.function_sig_for(module.id, &signature.name.name)
+                                {
+                                    checked_functions.push(CheckedFunction {
+                                        def_id: sig.def_id,
+                                        name: signature.name.name.clone(),
+                                        abi: Some(block.abi.clone()),
+                                        noescape: *noescape,
+                                        exported: item.export,
+                                        ret,
+                                        params,
+                                        body: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                    ItemKind::Impl(_) | ItemKind::Interface(_) | ItemKind::InterfaceAlias(_) => {
+                        // Collected and checked through the global interface/impl tables.
+                    }
+                    _ => {}
+                }
+            }
+        }
+        checked_functions.append(&mut self.generated_functions);
+
+        if self.diagnostics.is_empty() {
+            let mut checked_structs = self
+                .structs
+                .iter()
+                .map(|(name, fields)| CheckedStruct {
+                    name: name.clone(),
+                    fields: fields.clone(),
+                })
+                .collect::<Vec<_>>();
+            checked_structs.sort_by(|a, b| a.name.cmp(&b.name));
+            let mut checked_opaque_structs = self
+                .opaque_structs
+                .iter()
+                .cloned()
+                .map(|name| CheckedOpaqueStruct { name })
+                .collect::<Vec<_>>();
+            checked_opaque_structs.sort_by(|a, b| a.name.cmp(&b.name));
+            let mut checked_enums = self.checked_enums.values().cloned().collect::<Vec<_>>();
+            checked_enums.sort_by(|a, b| a.name.cmp(&b.name));
+            let mut checked_impls = self
+                .impls
+                .iter()
+                .map(|implementation| CheckedImpl {
+                    interface_name: implementation.interface_name.clone(),
+                    interface_args: implementation.interface_args.clone(),
+                    receiver_ty: implementation.receiver_ty.clone(),
+                    function_def: implementation.function_def,
+                    ret: implementation.ret.clone(),
+                    params: implementation.params.clone(),
+                })
+                .collect::<Vec<_>>();
+            checked_impls.sort_by(|a, b| {
+                a.interface_name
+                    .cmp(&b.interface_name)
+                    .then_with(|| a.function_def.0.cmp(&b.function_def.0))
+            });
+            let interface_values = self
+                .interfaces
+                .iter()
+                .map(|(def_id, interface)| (*def_id, interface.clone()))
+                .collect::<Vec<_>>();
+            let mut checked_interfaces = interface_values
+                .iter()
+                .map(|interface| {
+                    let (def_id, interface) = interface;
+                    self.current_module = self.resolved.def(*def_id).module;
+                    let generics = interface.generics.clone();
+                    let subst = generics
+                        .iter()
+                        .cloned()
+                        .map(|name| {
+                            let generic = Ty::Generic(name.clone());
+                            (name, generic)
+                        })
+                        .collect::<HashMap<_, _>>();
+                    CheckedInterface {
+                        name: interface.name.clone(),
+                        generics,
+                        ret: self.lower_type_with_subst(&interface.ret, &subst),
+                        params: interface
+                            .params
+                            .iter()
+                            .map(|param| self.lower_type_with_subst(&param.ty, &subst))
+                            .collect(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            checked_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
+            let alias_def_ids = self.interface_aliases.keys().copied().collect::<Vec<_>>();
+            let mut checked_aliases = alias_def_ids
+                .iter()
+                .map(|def_id| {
+                    let name = self.resolved.def(*def_id).name.clone();
+                    self.current_module = self.resolved.def(*def_id).module;
+                    let view = self.interface_view(&name, &[]);
+                    CheckedInterfaceAlias {
+                        name,
+                        positive: view
+                            .positive
+                            .into_iter()
+                            .map(|entry| CheckedInterfaceRef {
+                                name: entry.name,
+                                args: entry.args,
+                            })
+                            .collect(),
+                    }
+                })
+                .collect::<Vec<_>>();
+            checked_aliases.sort_by(|a, b| a.name.cmp(&b.name));
+            let mut checked_generic_functions = self
+                .generic_functions
+                .iter()
+                .filter_map(|(def_id, template)| {
+                    let sig = self.functions_by_def.get(def_id)?;
+                    Some(CheckedGenericFunction {
+                        def_id: *def_id,
+                        module: sig.module,
+                        name: sig.name.clone(),
+                        abi: sig.abi.clone(),
+                        noescape: sig.noescape,
+                        exported: template.exported,
+                        generics: sig
+                            .generics
+                            .iter()
+                            .map(|param| CheckedGenericParam {
+                                name: param.name.clone(),
+                                constraint: param.constraint.clone(),
+                            })
+                            .collect(),
+                        ret: sig.ret.clone(),
+                        params: sig.params.clone(),
+                        function: template.function.clone(),
+                    })
+                })
+                .collect::<Vec<_>>();
+            checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(CheckedProgram {
+                resolved: self.resolved,
+                hir_modules: self.hir_modules,
+                hir_locals: self.hir_locals,
+                opaque_structs: checked_opaque_structs,
+                structs: checked_structs,
+                enums: checked_enums,
+                interfaces: checked_interfaces,
+                interface_aliases: checked_aliases,
+                impls: checked_impls,
+                functions: checked_functions,
+                generic_functions: checked_generic_functions,
+            })
+        } else {
+            Err(self.diagnostics)
+        }
+    }
+
+    fn collect_interfaces(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            self.current_module = module.id;
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::Interface(decl) => {
+                        let Some(def_id) = self.resolved.local_def(
+                            module.id,
+                            &decl.signature.name.name,
+                            &[DefKind::Interface],
+                        ) else {
+                            continue;
+                        };
+                        let generics = decl
+                            .generics
+                            .iter()
+                            .map(|param| param.name.name.clone())
+                            .collect::<Vec<_>>();
+                        self.interfaces.insert(
+                            def_id,
+                            InterfaceSig {
+                                name: decl.signature.name.name.clone(),
+                                generics,
+                                ret: decl.signature.ret.clone(),
+                                params: decl.signature.params.clone(),
+                            },
+                        );
+                        self.interface_names
+                            .insert(decl.signature.name.name.clone(), def_id);
+                    }
+                    ItemKind::InterfaceAlias(decl) => {
+                        let Some(def_id) = self.resolved.local_def(
+                            module.id,
+                            &decl.name.name,
+                            &[DefKind::InterfaceAlias],
+                        ) else {
+                            continue;
+                        };
+                        self.interface_aliases.insert(def_id, decl.expr.clone());
+                        self.interface_alias_names
+                            .insert(decl.name.name.clone(), def_id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn collect_type_aliases_and_opaque_structs(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            self.current_module = module.id;
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::TypeAlias(decl) => {
+                        let Some(def_id) = self.resolved.local_def(
+                            module.id,
+                            &decl.name.name,
+                            &[DefKind::TypeAlias],
+                        ) else {
+                            continue;
+                        };
+                        let generics = decl
+                            .generics
+                            .iter()
+                            .map(|param| param.name.name.clone())
+                            .collect::<Vec<_>>();
+                        self.type_aliases.insert(
+                            def_id,
+                            TypeAliasTemplate {
+                                generics,
+                                target: decl.target.clone(),
+                            },
+                        );
+                    }
+                    ItemKind::ExternBlock(block) => {
+                        for extern_item in &block.items {
+                            match extern_item {
+                                ExternItem::OpaqueStruct(name) => {
+                                    self.opaque_structs.insert(name.name.clone());
+                                }
+                                ExternItem::TypeAlias(decl) => {
+                                    let Some(def_id) = self.resolved.local_def(
+                                        module.id,
+                                        &decl.name.name,
+                                        &[DefKind::TypeAlias],
+                                    ) else {
+                                        continue;
+                                    };
+                                    let generics = decl
+                                        .generics
+                                        .iter()
+                                        .map(|param| param.name.name.clone())
+                                        .collect::<Vec<_>>();
+                                    self.type_aliases.insert(
+                                        def_id,
+                                        TypeAliasTemplate {
+                                            generics,
+                                            target: decl.target.clone(),
+                                        },
+                                    );
+                                }
+                                ExternItem::Function { .. } => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn check_by_value_layout_cycles(&mut self) {
+        let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::Struct(decl) => {
+                        let edges = graph.entry(decl.name.name.clone()).or_default();
+                        for field in &decl.fields {
+                            collect_layout_edges_from_type(
+                                &field.ty,
+                                &self.resolved,
+                                &self.type_aliases,
+                                edges,
+                                &mut Vec::new(),
+                            );
+                        }
+                    }
+                    ItemKind::Enum(decl) => {
+                        let edges = graph.entry(decl.name.name.clone()).or_default();
+                        for variant in &decl.variants {
+                            for payload in &variant.payload {
+                                collect_layout_edges_from_type(
+                                    payload,
+                                    &self.resolved,
+                                    &self.type_aliases,
+                                    edges,
+                                    &mut Vec::new(),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut visiting = Vec::<String>::new();
+        let mut visited = HashSet::<String>::new();
+        let names = graph.keys().cloned().collect::<Vec<_>>();
+        for name in names {
+            detect_layout_cycle(
+                &name,
+                &graph,
+                &mut visiting,
+                &mut visited,
+                &mut self.diagnostics,
+            );
+        }
+    }
+
+    fn collect_structs(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            self.current_module = module.id;
+            for item in &module.items {
+                if let ItemKind::Struct(decl) = &item.kind {
+                    if decl.generics.is_empty() {
+                        let fields = decl
+                            .fields
+                            .iter()
+                            .map(|field| {
+                                let ty = self.lower_type(&field.ty);
+                                self.reject_invalid_plain_value_type(
+                                    &ty,
+                                    field.ty.span,
+                                    "struct field",
+                                );
+                                (field.name.name.clone(), ty)
+                            })
+                            .collect::<Vec<_>>();
+                        self.structs.insert(decl.name.name.clone(), fields);
+                        continue;
+                    }
+                    let generics = decl
+                        .generics
+                        .iter()
+                        .map(|param| param.name.name.clone())
+                        .collect::<Vec<_>>();
+                    self.struct_templates.insert(
+                        decl.name.name.clone(),
+                        StructTemplate {
+                            generics,
+                            fields: decl.fields.clone(),
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    fn collect_enums(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            self.current_module = module.id;
+            for item in &module.items {
+                if let ItemKind::Enum(decl) = &item.kind {
+                    let generics = decl
+                        .generics
+                        .iter()
+                        .map(|param| param.name.name.clone())
+                        .collect::<Vec<_>>();
+                    let variants = decl
+                        .variants
+                        .iter()
+                        .map(|variant| EnumVariantTemplate {
+                            name: variant.name.name.clone(),
+                            payload: variant.payload.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    for (variant_index, variant) in decl.variants.iter().enumerate() {
+                        let Some(def_id) = self.resolved.local_def(
+                            module.id,
+                            &variant.name.name,
+                            &[DefKind::EnumVariant],
+                        ) else {
+                            continue;
+                        };
+                        self.variants.insert(
+                            def_id,
+                            VariantSig {
+                                enum_name: decl.name.name.clone(),
+                                enum_generics: generics.clone(),
+                                variant_index,
+                                payload: variant.payload.clone(),
+                            },
+                        );
+                    }
+                    self.enum_templates
+                        .insert(decl.name.name.clone(), EnumTemplate { generics, variants });
+                }
+            }
+        }
+    }
+
+    fn lower_type(&mut self, ty: &Type) -> Ty {
+        let subst = self.current_type_subst();
+        let lowered = self.lower_type_with_subst(ty, &subst);
+        self.ensure_enum_instance(&lowered);
+        self.ensure_struct_instance(&lowered);
+        lowered
+    }
+
+    fn lower_type_with_subst(&mut self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
+        let lowered = match &ty.kind {
+            TypeKind::Never => Ty::Never,
+            TypeKind::Void => Ty::Void,
+            TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
+            TypeKind::Named(name, args) => {
+                let display_name = &name.display;
+                if args.is_empty()
+                    && let TypeNameKind::Generic(generic_name) = &name.kind
+                    && let Some(replacement) = subst.get(generic_name)
+                {
+                    replacement.clone()
+                } else if let TypeNameKind::Def(def_id) = &name.kind {
+                    let def_id = *def_id;
+                    let def = self.resolved.def(def_id).clone();
+                    if def.kind == DefKind::TypeAlias {
+                        self.expand_type_alias(ty.span, def_id, args, subst)
+                    } else if let Some(interface) = self.interfaces.get(&def_id).cloned() {
+                        let required_args = interface.generics.len().saturating_sub(1);
+                        if args.len() != required_args {
+                            self.diagnostics.push(Diagnostic::new(
+                                ty.span,
+                                format!(
+                                    "dynamic interface `{}` requires {required_args} non-receiver type arguments",
+                                    display_name
+                                ),
+                            ));
+                        }
+                        if !interface_receiver_is_input(&interface) {
+                            self.diagnostics.push(Diagnostic::new(
+                                ty.span,
+                                format!(
+                                    "interface `{}` cannot be used dynamically because its receiver is not an input parameter",
+                                    display_name
+                                ),
+                            ));
+                        }
+                        Ty::DynamicInterface {
+                            name: def.name,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .collect(),
+                        }
+                    } else if self.interface_aliases.contains_key(&def_id) {
+                        let view = self.interface_view(&def.name, &[]);
+                        for entry in view.positive {
+                            if let Some(interface) =
+                                self.interface_sig_by_name(&entry.name).cloned()
+                            {
+                                let required_args = interface.generics.len().saturating_sub(1);
+                                if entry.args.len() != required_args {
+                                    self.diagnostics.push(Diagnostic::new(
+                                        ty.span,
+                                        format!(
+                                            "dynamic interface alias `{}` leaves `{}` without {required_args} non-receiver type arguments",
+                                            display_name, entry.name
+                                        ),
+                                    ));
+                                }
+                                if !interface_receiver_is_input(&interface) {
+                                    self.diagnostics.push(Diagnostic::new(
+                                        ty.span,
+                                        format!(
+                                            "interface alias `{}` cannot be used dynamically because `{}` has no input receiver",
+                                            display_name, entry.name
+                                        ),
+                                    ));
+                                }
+                            }
+                        }
+                        Ty::DynamicInterface {
+                            name: def.name,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .collect(),
+                        }
+                    } else {
+                        Ty::Named {
+                            name: def.name,
+                            args: args
+                                .iter()
+                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .collect(),
+                        }
+                    }
+                } else if args.is_empty()
+                    && let TypeNameKind::Generic(generic_name) = &name.kind
+                    && subst.contains_key(generic_name)
+                {
+                    Ty::Generic(generic_name.clone())
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        ty.span,
+                        format!("unknown type `{display_name}`"),
+                    ));
+                    Ty::Unknown
+                }
+            }
+            TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+                nullable: *nullable,
+                inner: Box::new(self.lower_type_with_subst(inner, subst)),
+            },
+            TypeKind::Const(inner) => Ty::Const(Box::new(self.lower_type_with_subst(inner, subst))),
+            TypeKind::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.lower_type_with_subst(elem, subst)),
+            },
+            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.lower_type_with_subst(elem, subst))),
+            TypeKind::Function { abi, ret, params } => Ty::Function {
+                abi: abi.clone(),
+                ret: Box::new(self.lower_type_with_subst(ret, subst)),
+                params: params
+                    .iter()
+                    .map(|param| self.lower_type_with_subst(param, subst))
+                    .collect(),
+            },
+            TypeKind::Closure { ret, params } => Ty::Closure {
+                ret: Box::new(self.lower_type_with_subst(ret, subst)),
+                params: params
+                    .iter()
+                    .map(|param| self.lower_type_with_subst(param, subst))
+                    .collect(),
+            },
+        };
+        self.ensure_enum_instance(&lowered);
+        self.ensure_struct_instance(&lowered);
+        lowered
+    }
+
+    fn current_type_subst(&self) -> HashMap<String, Ty> {
+        self.type_subst_stack.last().cloned().unwrap_or_default()
+    }
+
+    fn expand_type_alias(
+        &mut self,
+        span: crate::span::Span,
+        def_id: DefId,
+        args: &[Type],
+        outer_subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        if self.alias_expansion_stack.contains(&def_id) {
+            let name = self.resolved.def(def_id).name.clone();
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("recursive type alias `{name}`"),
+            ));
+            return Ty::Unknown;
+        }
+        let Some(template) = self.type_aliases.get(&def_id).cloned() else {
+            let name = self.resolved.def(def_id).name.clone();
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("unknown type alias `{name}`"),
+            ));
+            return Ty::Unknown;
+        };
+        if template.generics.len() != args.len() {
+            let name = self.resolved.def(def_id).name.clone();
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "type alias `{name}` expects {} type arguments, got {}",
+                    template.generics.len(),
+                    args.len()
+                ),
+            ));
+            return Ty::Unknown;
+        }
+        let mut subst = outer_subst.clone();
+        for (generic, arg) in template.generics.iter().zip(args.iter()) {
+            let concrete = self.lower_type_with_subst(arg, outer_subst);
+            subst.insert(generic.clone(), concrete);
+        }
+        self.alias_expansion_stack.push(def_id);
+        let ty = match &template.target {
+            TypeAliasTarget::Type(ty) => self.lower_type_with_subst(ty, &subst),
+            TypeAliasTarget::CSpelling { abi, spelling } => Ty::CSpelling {
+                abi: abi.clone(),
+                spelling: spelling.clone(),
+            },
+        };
+        self.alias_expansion_stack.pop();
+        ty
+    }
+
+    fn alloc_synthetic_def(&mut self) -> DefId {
+        let id = DefId(self.next_synthetic_def);
+        self.next_synthetic_def += 1;
+        id
+    }
+
+    fn ensure_enum_instance(&mut self, ty: &Ty) {
+        match ty {
+            Ty::Const(inner) => self.ensure_enum_instance(inner),
+            Ty::Named { name, args } => {
+                let Some(template) = self.enum_templates.get(name).cloned() else {
+                    return;
+                };
+                if args.iter().any(contains_generic) {
+                    return;
+                }
+                if args.len() != template.generics.len() {
+                    self.diagnostics.push(Diagnostic::new(
+                        None,
+                        format!(
+                            "enum `{name}` expects {} type arguments, got {}",
+                            template.generics.len(),
+                            args.len()
+                        ),
+                    ));
+                    return;
+                }
+                let instance_name = enum_instance_name(name, args);
+                if self.checked_enums.contains_key(&instance_name) {
+                    return;
+                }
+                let subst = template
+                    .generics
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect::<HashMap<_, _>>();
+                let variants = template
+                    .variants
+                    .iter()
+                    .map(|variant| CheckedVariant {
+                        name: variant.name.clone(),
+                        payload: variant
+                            .payload
+                            .iter()
+                            .filter_map(|payload| {
+                                let ty = self.lower_type_with_subst(payload, &subst);
+                                (!ty.is_void()).then_some(ty)
+                            })
+                            .collect(),
+                    })
+                    .collect::<Vec<_>>();
+                self.checked_enums.insert(
+                    instance_name.clone(),
+                    CheckedEnum {
+                        name: instance_name,
+                        variants,
+                    },
+                );
+            }
+            Ty::Pointer { inner, .. } => self.ensure_enum_instance(inner),
+            Ty::Array { elem, .. } | Ty::Slice(elem) => self.ensure_enum_instance(elem),
+            Ty::DynamicInterface { args, .. } => {
+                for arg in args {
+                    self.ensure_enum_instance(arg);
+                }
+            }
+            Ty::Function { ret, params, .. } => {
+                self.ensure_enum_instance(ret);
+                for param in params {
+                    self.ensure_enum_instance(param);
+                }
+            }
+            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+                self.ensure_enum_instance(ret);
+                for param in params {
+                    self.ensure_enum_instance(param);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn ensure_struct_instance(&mut self, ty: &Ty) {
+        match ty {
+            Ty::Const(inner) => self.ensure_struct_instance(inner),
+            Ty::Named { name, args } => {
+                let Some(template) = self.struct_templates.get(name).cloned() else {
+                    return;
+                };
+                if args.iter().any(contains_generic) {
+                    return;
+                }
+                if args.len() != template.generics.len() {
+                    self.diagnostics.push(Diagnostic::new(
+                        None,
+                        format!(
+                            "struct `{name}` expects {} type arguments, got {}",
+                            template.generics.len(),
+                            args.len()
+                        ),
+                    ));
+                    return;
+                }
+                let instance_name = enum_instance_name(name, args);
+                if self.structs.contains_key(&instance_name) {
+                    return;
+                }
+                let subst = template
+                    .generics
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().cloned())
+                    .collect::<HashMap<_, _>>();
+                let fields = template
+                    .fields
+                    .iter()
+                    .map(|field| {
+                        let ty = self.lower_type_with_subst(&field.ty, &subst);
+                        self.reject_invalid_plain_value_type(&ty, field.ty.span, "struct field");
+                        (field.name.name.clone(), ty)
+                    })
+                    .collect::<Vec<_>>();
+                self.structs.insert(instance_name, fields);
+            }
+            Ty::Pointer { inner, .. } => self.ensure_struct_instance(inner),
+            Ty::Array { elem, .. } | Ty::Slice(elem) => self.ensure_struct_instance(elem),
+            Ty::DynamicInterface { args, .. } => {
+                for arg in args {
+                    self.ensure_struct_instance(arg);
+                }
+            }
+            Ty::Function { ret, params, .. } => {
+                self.ensure_struct_instance(ret);
+                for param in params {
+                    self.ensure_struct_instance(param);
+                }
+            }
+            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+                self.ensure_struct_instance(ret);
+                for param in params {
+                    self.ensure_struct_instance(param);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn function_sig_for(&self, module: ModuleId, name: &str) -> Option<&FunctionSig> {
+        self.functions_by_name.get(name).and_then(|defs| {
+            defs.iter().find_map(|def_id| {
+                let sig = self.functions_by_def.get(def_id)?;
+                (sig.module == module).then_some(sig)
+            })
+        })
+    }
+
+    fn resolve_function_name(&mut self, name: &NameRef) -> Option<FunctionSig> {
+        let def_id = self.name_def_of_kind(
+            name,
+            &[DefKind::Function, DefKind::ExternFunction],
+            "function",
+        )?;
+        self.functions_by_def.get(&def_id).cloned()
+    }
+
+    fn lookup_variant_name(&self, name: &NameRef) -> Option<(DefId, VariantSig)> {
+        let def_id = self.name_def_of_kind_ref(name, &[DefKind::EnumVariant])?;
+        let sig = self.variants.get(&def_id)?.clone();
+        Some((def_id, sig))
+    }
+
+    fn lookup_interface_name(&self, name: &NameRef) -> Option<DefId> {
+        self.name_def_of_kind_ref(name, &[DefKind::Interface, DefKind::InterfaceAlias])
+    }
+
+    fn name_def_of_kind(
+        &mut self,
+        name: &NameRef,
+        kinds: &[DefKind],
+        kind_name: &str,
+    ) -> Option<DefId> {
+        let def_id = self.name_def_of_kind_ref(name, kinds)?;
+        Some(def_id).or_else(|| {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!("`{}` is not a {kind_name}", name.display),
+            ));
+            None
+        })
+    }
+
+    fn name_def_of_kind_ref(&self, name: &NameRef, kinds: &[DefKind]) -> Option<DefId> {
+        let NameRefKind::Def(def_id) = name.kind else {
+            return None;
+        };
+        let def = self.resolved.def(def_id);
+        if kinds.iter().any(|kind| *kind == def.kind) {
+            Some(def_id)
+        } else {
+            None
+        }
+    }
+
+    fn resolved_local_id(&self, name: &NameRef) -> Option<LocalId> {
+        match name.kind {
+            NameRefKind::Local(local_id) => Some(local_id),
+            _ => None,
+        }
+    }
+
+    fn interface_sig_by_name(&self, name: &str) -> Option<&InterfaceSig> {
+        self.interface_names
+            .get(name)
+            .and_then(|def_id| self.interfaces.get(def_id))
+    }
+
+    fn collect_functions(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            self.current_module = module.id;
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::Function(function) => {
+                        let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
+                            let def = self.resolved.def(*def_id);
+                            def.name == function.signature.name.name
+                                && matches!(def.kind, DefKind::Function | DefKind::ExternFunction)
+                        }) else {
+                            continue;
+                        };
+                        let exported = self.resolved.def(def_id).exported;
+                        let is_generic = !function.signature.generics.is_empty();
+                        self.insert_function_sig(
+                            def_id,
+                            module.id,
+                            &function.signature,
+                            function.abi.clone(),
+                            false,
+                            function.body.is_some(),
+                            exported,
+                        );
+                        if is_generic {
+                            self.generic_functions.insert(
+                                def_id,
+                                GenericFunctionTemplate {
+                                    function: function.clone(),
+                                    exported,
+                                },
+                            );
+                        }
+                    }
+                    ItemKind::ExternBlock(block) => {
+                        for extern_item in &block.items {
+                            if let ExternItem::Function {
+                                noescape,
+                                signature,
+                            } = extern_item
+                            {
+                                let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
+                                    let def = self.resolved.def(*def_id);
+                                    def.name == signature.name.name
+                                        && def.kind == DefKind::ExternFunction
+                                }) else {
+                                    continue;
+                                };
+                                let exported = self.resolved.def(def_id).exported;
+                                self.insert_function_sig(
+                                    def_id,
+                                    module.id,
+                                    signature,
+                                    Some(block.abi.clone()),
+                                    *noescape,
+                                    false,
+                                    exported,
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn collect_impls(&mut self) {
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            for item in &module.items {
+                let ItemKind::Impl(decl) = &item.kind else {
+                    continue;
+                };
+                self.current_module = module.id;
+                let Some(interface_def) =
+                    self.name_def_of_kind(&decl.name, &[DefKind::Interface], "interface")
+                else {
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!("unknown interface `{}` in impl", decl.name.display),
+                    ));
+                    continue;
+                };
+                let Some(interface) = self.interfaces.get(&interface_def).cloned() else {
+                    continue;
+                };
+
+                let Some(analysis) = self.analyze_impl_signature(item.span, decl, &interface)
+                else {
+                    continue;
+                };
+                if self.impl_conflicts_with_derived_message(&analysis) {
+                    continue;
+                }
+                self.check_generic_marker_impl_overlap(item.span, &analysis);
+                if analysis.generics.is_empty() {
+                    self.instantiate_impl_body(
+                        module.id,
+                        decl,
+                        &analysis.interface_name,
+                        analysis.interface_args,
+                        analysis.receiver_ty,
+                        analysis.ret,
+                        analysis.params,
+                        &HashMap::new(),
+                    );
+                } else {
+                    self.generic_impls.push(GenericImplTemplate {
+                        module: module.id,
+                        item_span: item.span,
+                        interface_name: analysis.interface_name,
+                        generics: analysis.generics,
+                        interface_args: analysis.interface_args,
+                        receiver_ty: analysis.receiver_ty,
+                        ret: analysis.ret,
+                        params: analysis.params,
+                        decl: decl.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    fn impl_conflicts_with_derived_message(&mut self, analysis: &ImplAnalysis) -> bool {
+        if !analysis.generics.is_empty()
+            || !self.is_builtin_clone_message_name(&analysis.interface_name)
+            || !interface_non_receiver_args(&analysis.interface_args).is_empty()
+        {
+            return false;
+        }
+        let Some(receiver_ty) = analysis.receiver_ty.clone() else {
+            return false;
+        };
+        if !self.type_implements_builtin_message(&receiver_ty) {
+            return false;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                None,
+                format!(
+                    "conflicting `Message` impl for `{receiver_ty}`: compiler-derived `Message` already applies"
+                ),
+            )
+            .note(
+                "Use an explicit impl only for types that need policy-defined cloning, such as synchronized handles or owned containers.",
+            ),
+        );
+        true
+    }
+
+    fn check_generic_marker_impl_overlap(
+        &mut self,
+        span: crate::span::Span,
+        analysis: &ImplAnalysis,
+    ) {
+        if analysis.generics.is_empty()
+            || !self.is_builtin_marker_interface_name(&analysis.interface_name)
+        {
+            return;
+        }
+        for template in &self.generic_impls {
+            if template.interface_name != analysis.interface_name {
+                continue;
+            }
+            if marker_impl_patterns_overlap(
+                &template.interface_args,
+                template.receiver_ty.as_ref(),
+                &analysis.interface_args,
+                analysis.receiver_ty.as_ref(),
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "ambiguous generic impls for marker interface `{}`",
+                        analysis.interface_name
+                    ),
+                ));
+                return;
+            }
+        }
+        for existing in &self.impls {
+            if existing.interface_name != analysis.interface_name {
+                continue;
+            }
+            if marker_impl_patterns_overlap(
+                &existing.interface_args,
+                existing.receiver_ty.as_ref(),
+                &analysis.interface_args,
+                analysis.receiver_ty.as_ref(),
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "generic marker impl for `{}` conflicts with an existing concrete impl",
+                        analysis.interface_name
+                    ),
+                ));
+                return;
+            }
+        }
+    }
+
+    fn analyze_impl_signature(
+        &mut self,
+        span: crate::span::Span,
+        decl: &ImplDecl,
+        interface: &InterfaceSig,
+    ) -> Option<ImplAnalysis> {
+        if decl.params.len() != interface.params.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "impl `{}` expects {} parameters, got {}",
+                    interface.name,
+                    interface.params.len(),
+                    decl.params.len()
+                ),
+            ));
+            return None;
+        }
+
+        let generics = decl
+            .generics
+            .iter()
+            .map(|param| GenericInfo {
+                name: param.name.name.clone(),
+                constraint: param.constraint.clone(),
+            })
+            .collect::<Vec<_>>();
+        let impl_subst = generics
+            .iter()
+            .map(|param| (param.name.clone(), Ty::Generic(param.name.clone())))
+            .collect::<HashMap<_, _>>();
+        let interface_placeholders = interface
+            .generics
+            .iter()
+            .map(|name| {
+                (
+                    name.clone(),
+                    interface_generic_placeholder(&interface.name, name),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let interface_lower_subst = interface_placeholders
+            .iter()
+            .map(|(name, placeholder)| (name.clone(), Ty::Generic(placeholder.clone())))
+            .collect::<HashMap<_, _>>();
+        let mut inferred = interface_placeholders
+            .values()
+            .cloned()
+            .map(|placeholder| (placeholder.clone(), Ty::Generic(placeholder)))
+            .collect::<HashMap<_, _>>();
+
+        for (idx, arg) in decl.args.iter().enumerate() {
+            let Some(generic_name) = interface.generics.iter().skip(1).nth(idx) else {
+                self.diagnostics.push(Diagnostic::new(
+                    arg.span,
+                    format!("too many type arguments for impl `{}`", interface.name),
+                ));
+                return None;
+            };
+            let placeholder = interface_placeholders
+                .get(generic_name)
+                .expect("interface generic has placeholder");
+            let concrete = self.lower_type_with_subst(arg, &impl_subst);
+            inferred.insert(placeholder.clone(), concrete);
+        }
+
+        let impl_params = decl
+            .params
+            .iter()
+            .map(|param| {
+                let ty = self.lower_type_with_subst(&param.ty, &impl_subst);
+                self.reject_invalid_plain_value_type(&ty, param.ty.span, "impl parameter");
+                ty
+            })
+            .collect::<Vec<_>>();
+        for (interface_param, impl_param) in interface.params.iter().zip(impl_params.iter()) {
+            let expected = self.lower_type_with_subst(&interface_param.ty, &interface_lower_subst);
+            unify_ty(&expected, impl_param, &mut inferred);
+        }
+        let lowered_ret = self.lower_type_with_subst(&interface.ret, &interface_lower_subst);
+        let ret = substitute_ty(&lowered_ret, &inferred);
+        let expected_params = interface
+            .params
+            .iter()
+            .map(|param| {
+                let ty = self.lower_type_with_subst(&param.ty, &interface_lower_subst);
+                substitute_ty(&ty, &inferred)
+            })
+            .collect::<Vec<_>>();
+        let placeholder_names = interface_placeholders
+            .values()
+            .cloned()
+            .collect::<HashSet<_>>();
+        if contains_any_generic_name(&ret, &placeholder_names)
+            || expected_params
+                .iter()
+                .any(|ty| contains_any_generic_name(ty, &placeholder_names))
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "impl `{}` leaves interface generic parameters unresolved",
+                    interface.name
+                ),
+            ));
+            return None;
+        }
+        for (expected, actual) in expected_params.iter().zip(impl_params.iter()) {
+            if expected != actual {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "impl `{}` parameter mismatch: expected `{expected}`, got `{actual}`",
+                        interface.name
+                    ),
+                ));
+            }
+        }
+        let interface_args = interface
+            .generics
+            .iter()
+            .map(|name| {
+                let placeholder = interface_placeholders
+                    .get(name)
+                    .expect("interface generic has placeholder");
+                inferred.get(placeholder).cloned().unwrap_or(Ty::Unknown)
+            })
+            .collect::<Vec<_>>();
+        let receiver_ty = interface.generics.first().and_then(|name| {
+            let placeholder = interface_placeholders.get(name)?;
+            inferred.get(placeholder).cloned()
+        });
+        Some(ImplAnalysis {
+            interface_name: interface.name.clone(),
+            generics,
+            interface_args,
+            receiver_ty,
+            ret,
+            params: impl_params,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn instantiate_impl_body(
+        &mut self,
+        module: ModuleId,
+        decl: &ImplDecl,
+        interface_name: &str,
+        interface_args: Vec<Ty>,
+        receiver_ty: Option<Ty>,
+        ret: Ty,
+        params_ty: Vec<Ty>,
+        subst: &HashMap<String, Ty>,
+    ) -> ImplSig {
+        if let Some(existing) =
+            self.find_impl_by_full_args(interface_name, &interface_args, receiver_ty.as_ref())
+        {
+            if subst.is_empty() {
+                self.diagnostics.push(Diagnostic::new(
+                    decl.name.span,
+                    format!("conflicting impl of `{interface_name}` for this receiver"),
+                ));
+            }
+            return existing;
+        }
+        let function_def = self.alloc_synthetic_def();
+        let function_name = impl_function_name(interface_name, &params_ty);
+        let sig = FunctionSig {
+            def_id: function_def,
+            module,
+            name: function_name.clone(),
+            abi: None,
+            noescape: false,
+            has_body: true,
+            ret: ret.clone(),
+            params: params_ty.clone(),
+            generics: Vec::new(),
+            exported: false,
+        };
+        self.functions_by_def.insert(function_def, sig.clone());
+        let params = decl
+            .params
+            .iter()
+            .zip(params_ty.iter())
+            .map(|(param, ty)| (param.local_id, param.name.name.clone(), ty.clone()))
+            .collect::<Vec<_>>();
+        let body_params = decl
+            .params
+            .iter()
+            .zip(params_ty.iter())
+            .filter_map(|(param, ty)| {
+                param
+                    .local_id
+                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+            })
+            .collect::<Vec<_>>();
+        let previous_module = self.current_module;
+        self.current_module = module;
+        self.type_subst_stack.push(subst.clone());
+        if let Some(body) = self.check_function_body(&sig, &body_params, &decl.body) {
+            self.generated_functions.push(CheckedFunction {
+                def_id: function_def,
+                name: function_name,
+                abi: None,
+                noescape: false,
+                exported: false,
+                ret: ret.clone(),
+                params: params.clone(),
+                body: Some(body),
+            });
+        }
+        self.type_subst_stack.pop();
+        self.current_module = previous_module;
+        let implementation = ImplSig {
+            interface_name: interface_name.to_string(),
+            interface_args,
+            receiver_ty,
+            function_def,
+            ret,
+            params: params_ty,
+        };
+        self.impls.push(implementation.clone());
+        implementation
+    }
+
+    fn insert_function_sig(
+        &mut self,
+        def_id: DefId,
+        module: ModuleId,
+        signature: &FunctionSignature,
+        abi: Option<String>,
+        noescape: bool,
+        has_body: bool,
+        exported: bool,
+    ) {
+        let generics = signature
+            .generics
+            .iter()
+            .map(|param| GenericInfo {
+                name: param.name.name.clone(),
+                constraint: param.constraint.clone(),
+            })
+            .collect::<Vec<_>>();
+        let subst = generics
+            .iter()
+            .map(|param| (param.name.clone(), Ty::Generic(param.name.clone())))
+            .collect::<HashMap<_, _>>();
+        let sig = FunctionSig {
+            def_id,
+            module,
+            name: signature.name.name.clone(),
+            abi,
+            noescape,
+            has_body,
+            ret: self.lower_type_with_subst(&signature.ret, &subst),
+            params: signature
+                .params
+                .iter()
+                .map(|param| {
+                    let ty = self.lower_type_with_subst(&param.ty, &subst);
+                    self.reject_invalid_plain_value_type(&ty, param.ty.span, "function parameter");
+                    ty
+                })
+                .collect(),
+            generics: generics.clone(),
+            exported,
+        };
+        self.reject_invalid_return_type(&sig.ret, signature.ret.span);
+        self.functions_by_name
+            .entry(signature.name.name.clone())
+            .or_default()
+            .push(def_id);
+        self.functions_by_def.insert(def_id, sig);
+    }
+
+    fn validate_c_abi_functions(&mut self) {
+        let mut by_symbol: HashMap<String, Vec<FunctionSig>> = HashMap::new();
+        for sig in self.functions_by_def.values() {
+            if sig.abi.as_deref() != Some("C") {
+                continue;
+            }
+            if sig.has_body && !sig.exported {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "`extern \"C\"` function bodies must be declared with `export`",
+                ));
+            }
+            if !sig.generics.is_empty() {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "`extern \"C\"` functions cannot be generic",
+                ));
+            }
+            if type_contains_closure(&sig.ret) || sig.params.iter().any(type_contains_closure) {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "closure types are not allowed in extern C declarations",
+                ));
+            }
+            by_symbol
+                .entry(sig.name.clone())
+                .or_default()
+                .push(sig.clone());
+        }
+
+        for (symbol, mut sigs) in by_symbol {
+            sigs.sort_by_key(|sig| sig.def_id.0);
+            let Some(first) = sigs.first() else {
+                continue;
+            };
+            for sig in sigs.iter().skip(1) {
+                if sig.ret != first.ret || sig.params != first.params {
+                    self.diagnostics.push(Diagnostic::new(
+                        self.resolved.def(sig.def_id).span,
+                        format!("conflicting `extern \"C\"` declarations for symbol `{symbol}`"),
+                    ));
+                }
+            }
+            let definitions = sigs.iter().filter(|sig| sig.has_body).collect::<Vec<_>>();
+            if definitions.len() > 1 {
+                for sig in definitions.iter().skip(1) {
+                    self.diagnostics.push(Diagnostic::new(
+                        self.resolved.def(sig.def_id).span,
+                        format!("multiple definitions of C ABI symbol `{symbol}`"),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn check_function_item(
+        &mut self,
+        function: &FunctionDecl,
+        exported: bool,
+    ) -> Option<CheckedFunction> {
+        let signature = &function.signature;
+        if !signature.generics.is_empty() {
+            return None;
+        }
+        let sig = self
+            .function_sig_for(self.current_module, &signature.name.name)?
+            .clone();
+        let params = signature
+            .params
+            .iter()
+            .map(|param| {
+                (
+                    param.local_id,
+                    param.name.name.clone(),
+                    self.lower_type(&param.ty),
+                )
+            })
+            .collect::<Vec<_>>();
+        let body_params = signature
+            .params
+            .iter()
+            .zip(params.iter())
+            .filter_map(|(param, (_, _, ty))| {
+                param
+                    .local_id
+                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+            })
+            .collect::<Vec<_>>();
+        let body = function
+            .body
+            .as_ref()
+            .and_then(|body| self.check_function_body(&sig, &body_params, body));
+
+        Some(CheckedFunction {
+            def_id: sig.def_id,
+            name: sig.name,
+            abi: sig.abi,
+            noescape: sig.noescape,
+            exported,
+            ret: sig.ret,
+            params,
+            body,
+        })
+    }
+
+    fn check_function_body(
+        &mut self,
+        sig: &FunctionSig,
+        params: &[(LocalId, String, Ty)],
+        body: &Block,
+    ) -> Option<TBlock> {
+        let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
+        let previous_control_contexts = std::mem::take(&mut self.control_contexts);
+        let mut scopes = LocalScopes::default();
+        scopes.push();
+        for (local_id, name, ty) in params {
+            if let Err(name) = scopes.insert(
+                *local_id,
+                Binding {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    narrowed_ty: None,
+                    assigned: true,
+                    immutable: true,
+                },
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    body.span,
+                    format!("duplicate parameter `{name}`"),
+                ));
+            }
+        }
+        let checked = self.check_block_with_existing_scope(&mut scopes, body, &sig.ret);
+        if sig.ret.is_never()
+            && checked
+                .as_ref()
+                .is_some_and(|checked| checked.flow.can_fallthrough)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "function `{}` with return type `never` can fall through",
+                    sig.name
+                ),
+            ));
+        } else if !sig.ret.is_void()
+            && !checked
+                .as_ref()
+                .is_some_and(|checked| !checked.flow.can_fallthrough)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "function `{}` must return `{}` on every path",
+                    sig.name, sig.ret
+                ),
+            ));
+        }
+        self.current_return_ty = previous_return_ty;
+        self.control_contexts = previous_control_contexts;
+        checked.map(|checked| checked.block)
+    }
+
+    fn push_control_context(&mut self, kind: ControlContextKind) {
+        self.control_contexts.push(ControlContext {
+            kind,
+            break_scopes: Vec::new(),
+        });
+    }
+
+    fn pop_control_context(&mut self) -> ControlContext {
+        self.control_contexts
+            .pop()
+            .expect("control context stack is not empty")
+    }
+
+    fn record_break_scope(&mut self, scopes: &LocalScopes) -> bool {
+        if let Some(context) = self.control_contexts.iter_mut().rev().find(|context| {
+            matches!(
+                context.kind,
+                ControlContextKind::Loop | ControlContextKind::Switch
+            )
+        }) {
+            context.break_scopes.push(scopes.clone());
+            true
+        } else {
+            false
+        }
+    }
+
+    fn has_continue_target(&self) -> bool {
+        self.control_contexts
+            .iter()
+            .rev()
+            .any(|context| matches!(context.kind, ControlContextKind::Loop))
+    }
+
+    fn check_block(
+        &mut self,
+        scopes: &mut LocalScopes,
+        block: &Block,
+        ret_ty: &Ty,
+    ) -> Option<CheckedBlockFlow> {
+        scopes.push();
+        let result = self.check_block_with_existing_scope(scopes, block, ret_ty);
+        scopes.pop();
+        result
+    }
+
+    fn check_block_with_existing_scope(
+        &mut self,
+        scopes: &mut LocalScopes,
+        block: &Block,
+        ret_ty: &Ty,
+    ) -> Option<CheckedBlockFlow> {
+        let (statements, flow) = self.check_statement_sequence(scopes, &block.statements, ret_ty);
+        Some(CheckedBlockFlow {
+            block: TBlock {
+                span: block.span,
+                statements,
+            },
+            flow,
+        })
+    }
+
+    fn check_statement_sequence(
+        &mut self,
+        scopes: &mut LocalScopes,
+        source_statements: &[Stmt],
+        ret_ty: &Ty,
+    ) -> (Vec<TStmt>, Flow) {
+        let mut statements = Vec::new();
+        let mut flow = Flow::fallthrough();
+        for stmt in source_statements {
+            if let Some(checked) = self.check_stmt(scopes, stmt, ret_ty) {
+                if flow.can_fallthrough {
+                    flow = checked.flow;
+                }
+                statements.push(checked.stmt);
+            }
+        }
+        (statements, flow)
+    }
+
+    fn check_stmt(
+        &mut self,
+        scopes: &mut LocalScopes,
+        stmt: &Stmt,
+        ret_ty: &Ty,
+    ) -> Option<CheckedStmtFlow> {
+        let (kind, flow) = match &stmt.kind {
+            StmtKind::Block(block) => {
+                let checked = self.check_block(scopes, block, ret_ty)?;
+                (TStmtKind::Block(checked.block), checked.flow)
+            }
+            StmtKind::VarDecl {
+                ty,
+                name,
+                local_id,
+                init,
+            } => {
+                let ty = self.lower_type(ty);
+                self.reject_invalid_plain_value_type(&ty, stmt.span, "local variable");
+                let init = init
+                    .as_ref()
+                    .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)));
+                if let Some(init) = &init {
+                    self.require_assignable(&ty, &init.ty, stmt.span);
+                }
+                if let Err(name) = scopes.insert(
+                    *local_id,
+                    Binding {
+                        name: name.name.clone(),
+                        ty: ty.clone(),
+                        narrowed_ty: None,
+                        assigned: init.is_some(),
+                        immutable: false,
+                    },
+                ) {
+                    self.diagnostics.push(Diagnostic::new(
+                        stmt.span,
+                        format!("duplicate local `{name}`"),
+                    ));
+                }
+                (
+                    TStmtKind::VarDecl {
+                        ty,
+                        name: name.name.clone(),
+                        local_id: *local_id,
+                        init,
+                    },
+                    Flow::fallthrough(),
+                )
+            }
+            StmtKind::Assign { target, value } => {
+                let target = self.check_lvalue(scopes, target, false)?;
+                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                self.require_assignable(&target.ty, &value.ty, stmt.span);
+                if let TExprKind::Local(local_id, _) = &target.kind
+                    && let Some(binding) = scopes.get_mut(*local_id)
+                {
+                    binding.assigned = true;
+                    binding.narrowed_ty = None;
+                }
+                (TStmtKind::Assign { target, value }, Flow::fallthrough())
+            }
+            StmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                let cond = self.check_expr(scopes, cond, Some(&Ty::Bool))?;
+                self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
+                let before = scopes.clone();
+                let mut then_scopes = before.clone();
+                self.apply_condition_narrowing(&mut then_scopes, &cond, true);
+                let checked_then = self.check_block(&mut then_scopes, then_block, ret_ty)?;
+                let mut else_scopes = before.clone();
+                self.apply_condition_narrowing(&mut else_scopes, &cond, false);
+                let checked_else = else_branch
+                    .as_ref()
+                    .and_then(|stmt| self.check_stmt(&mut else_scopes, stmt, ret_ty));
+                let else_flow = checked_else
+                    .as_ref()
+                    .map(|checked| checked.flow)
+                    .unwrap_or_else(Flow::fallthrough);
+
+                let mut reachable = Vec::new();
+                if checked_then.flow.can_fallthrough {
+                    reachable.push(then_scopes);
+                }
+                if else_flow.can_fallthrough {
+                    reachable.push(else_scopes);
+                }
+                scopes.merge_reachable_flows(&reachable);
+                let flow = Flow {
+                    can_fallthrough: !reachable.is_empty(),
+                };
+                let then_block = checked_then.block;
+                let else_branch = checked_else.map(|checked| Box::new(checked.stmt));
+                (
+                    TStmtKind::If {
+                        cond,
+                        then_block,
+                        else_branch,
+                    },
+                    flow,
+                )
+            }
+            StmtKind::While { cond, body } => {
+                let cond = self.check_expr(scopes, cond, Some(&Ty::Bool))?;
+                self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
+                let mut body_scopes = scopes.clone();
+                self.push_control_context(ControlContextKind::Loop);
+                let checked_body = self.check_block(&mut body_scopes, body, ret_ty)?;
+                let loop_context = self.pop_control_context();
+                let flow = if bool_literal_is(&cond, true) && loop_context.break_scopes.is_empty() {
+                    Flow::no_fallthrough()
+                } else {
+                    Flow::fallthrough()
+                };
+                (
+                    TStmtKind::While {
+                        cond,
+                        body: checked_body.block,
+                    },
+                    flow,
+                )
+            }
+            StmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                scopes.push();
+                let init = init
+                    .as_ref()
+                    .and_then(|init| self.check_for_init(scopes, init));
+                let cond = cond
+                    .as_ref()
+                    .and_then(|expr| self.check_expr(scopes, expr, Some(&Ty::Bool)));
+                if let Some(cond) = &cond {
+                    self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
+                }
+                let mut loop_scopes = scopes.clone();
+                let step = step
+                    .as_ref()
+                    .and_then(|step| self.check_for_step(&mut loop_scopes, step));
+                self.push_control_context(ControlContextKind::Loop);
+                let checked_body = self.check_block(&mut loop_scopes, body, ret_ty)?;
+                let loop_context = self.pop_control_context();
+                let condition_always_true = cond
+                    .as_ref()
+                    .map(|cond| bool_literal_is(cond, true))
+                    .unwrap_or(true);
+                let flow = if condition_always_true && loop_context.break_scopes.is_empty() {
+                    Flow::no_fallthrough()
+                } else {
+                    Flow::fallthrough()
+                };
+                scopes.pop();
+                (
+                    TStmtKind::For {
+                        init,
+                        cond,
+                        step,
+                        body: checked_body.block,
+                    },
+                    flow,
+                )
+            }
+            StmtKind::Switch {
+                expr,
+                cases,
+                has_default,
+                default,
+            } => self.check_switch_stmt(
+                scopes,
+                stmt.span,
+                expr,
+                cases,
+                *has_default,
+                default,
+                ret_ty,
+            )?,
+            StmtKind::Defer(expr) => {
+                let expr = self.check_expr(scopes, expr, None)?;
+                if !matches!(expr.kind, TExprKind::Call { .. }) {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        "defer requires a direct function call",
+                    ));
+                }
+                (TStmtKind::Defer(expr), Flow::fallthrough())
+            }
+            StmtKind::Return(expr) => {
+                if ret_ty.is_never() {
+                    self.diagnostics.push(Diagnostic::new(
+                        stmt.span,
+                        "`never` function cannot return normally",
+                    ));
+                    return Some(CheckedStmtFlow {
+                        stmt: TStmt {
+                            span: stmt.span,
+                            kind: TStmtKind::Return(None),
+                        },
+                        flow: Flow::no_fallthrough(),
+                    });
+                }
+                let expr = match expr {
+                    Some(expr) => {
+                        if ret_ty.is_void() {
+                            self.diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                "void function cannot return a value",
+                            ));
+                        }
+                        let expr = self.check_expr(scopes, expr, Some(ret_ty))?;
+                        self.require_assignable(ret_ty, &expr.ty, expr.span);
+                        Some(expr)
+                    }
+                    None => {
+                        if !ret_ty.is_void() {
+                            self.diagnostics.push(Diagnostic::new(
+                                stmt.span,
+                                format!("function must return `{ret_ty}`"),
+                            ));
+                        }
+                        None
+                    }
+                };
+                (TStmtKind::Return(expr), Flow::no_fallthrough())
+            }
+            StmtKind::Break => {
+                if !self.record_break_scope(scopes) {
+                    self.diagnostics
+                        .push(Diagnostic::new(stmt.span, "break outside loop or switch"));
+                }
+                (TStmtKind::Break, Flow::no_fallthrough())
+            }
+            StmtKind::Continue => {
+                if !self.has_continue_target() {
+                    self.diagnostics
+                        .push(Diagnostic::new(stmt.span, "continue outside loop"));
+                }
+                (TStmtKind::Continue, Flow::no_fallthrough())
+            }
+            StmtKind::Expr(expr) => {
+                let expr = self.check_expr(scopes, expr, None)?;
+                let flow = if expr.is_never() {
+                    Flow::no_fallthrough()
+                } else {
+                    Flow::fallthrough()
+                };
+                (TStmtKind::Expr(expr), flow)
+            }
+        };
+
+        Some(CheckedStmtFlow {
+            stmt: TStmt {
+                span: stmt.span,
+                kind,
+            },
+            flow,
+        })
+    }
+
+    fn check_for_init(&mut self, scopes: &mut LocalScopes, init: &ForInit) -> Option<TForInit> {
+        match init {
+            ForInit::VarDecl {
+                ty,
+                name,
+                local_id,
+                init: initializer,
+            } => {
+                let ty = self.lower_type(ty);
+                self.reject_invalid_plain_value_type(&ty, name.span, "local variable");
+                let checked_init = initializer
+                    .as_ref()
+                    .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)));
+                if let Some(init) = &checked_init {
+                    self.require_assignable(&ty, &init.ty, init.span);
+                }
+                let local_name = name.name.clone();
+                let local_span = name.span;
+                if let Err(duplicate) = scopes.insert(
+                    *local_id,
+                    Binding {
+                        name: local_name.clone(),
+                        ty: ty.clone(),
+                        narrowed_ty: None,
+                        assigned: checked_init.is_some(),
+                        immutable: false,
+                    },
+                ) {
+                    self.diagnostics.push(Diagnostic::new(
+                        local_span,
+                        format!("duplicate local `{duplicate}`"),
+                    ));
+                }
+                Some(TForInit::VarDecl {
+                    ty,
+                    name: local_name,
+                    local_id: *local_id,
+                    init: checked_init,
+                })
+            }
+            ForInit::Assign { target, value } => {
+                let target = self.check_lvalue(scopes, target, false)?;
+                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                self.require_assignable(&target.ty, &value.ty, value.span);
+                if let TExprKind::Local(local_id, _) = &target.kind
+                    && let Some(binding) = scopes.get_mut(*local_id)
+                {
+                    binding.assigned = true;
+                    binding.narrowed_ty = None;
+                }
+                Some(TForInit::Assign { target, value })
+            }
+            ForInit::Expr(expr) => self.check_expr(scopes, expr, None).map(TForInit::Expr),
+        }
+    }
+
+    fn check_for_step(&mut self, scopes: &mut LocalScopes, step: &ForInit) -> Option<TForInit> {
+        match step {
+            ForInit::Assign { target, value } => {
+                let target = self.check_lvalue(scopes, target, false)?;
+                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                self.require_assignable(&target.ty, &value.ty, value.span);
+                if let TExprKind::Local(local_id, _) = &target.kind
+                    && let Some(binding) = scopes.get_mut(*local_id)
+                {
+                    binding.assigned = true;
+                    binding.narrowed_ty = None;
+                }
+                Some(TForInit::Assign { target, value })
+            }
+            ForInit::Expr(expr) => self.check_expr(scopes, expr, None).map(TForInit::Expr),
+            ForInit::VarDecl { ty, name, .. } => {
+                self.diagnostics.push(Diagnostic::new(
+                    ty.span.merge(name.span),
+                    "for step cannot declare a variable",
+                ));
+                None
+            }
+        }
+    }
+
+    fn check_switch_stmt(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        expr: &Expr,
+        cases: &[CaseClause],
+        has_default: bool,
+        default: &[Stmt],
+        ret_ty: &Ty,
+    ) -> Option<(TStmtKind, Flow)> {
+        let expr = self.check_expr(scopes, expr, None)?;
+        let Ty::Named { name, args } = &expr.ty else {
+            self.diagnostics.push(Diagnostic::new(
+                expr.span,
+                format!("switch requires enum value, got `{}`", expr.ty),
+            ));
+            return Some((TStmtKind::Unsupported, Flow::fallthrough()));
+        };
+        let enum_type_name = enum_instance_name(name, args);
+        self.ensure_enum_instance(&expr.ty);
+        let Some(checked_enum) = self.checked_enums.get(&enum_type_name).cloned() else {
+            self.diagnostics.push(Diagnostic::new(
+                expr.span,
+                format!("`{}` is not an enum type", expr.ty),
+            ));
+            return Some((TStmtKind::Unsupported, Flow::fallthrough()));
+        };
+
+        let before = scopes.clone();
+        let mut top_patterns = Vec::new();
+        let mut checked_cases = Vec::new();
+        let mut reachable_after_switch = Vec::new();
+        self.push_control_context(ControlContextKind::Switch);
+        for case in cases {
+            let Some((variant_index, pattern)) =
+                self.check_case_pattern(&case.pattern, &expr.ty, &checked_enum, true)
+            else {
+                continue;
+            };
+            top_patterns.push(pattern.clone());
+
+            let mut case_scopes = before.clone();
+            case_scopes.push();
+            let mut bindings = Vec::new();
+            pattern.collect_bindings(&mut bindings);
+            for (local_id, binding_name, binding_ty) in bindings {
+                if let Err(duplicate) = case_scopes.insert(
+                    *local_id,
+                    Binding {
+                        name: binding_name.clone(),
+                        ty: binding_ty.clone(),
+                        narrowed_ty: None,
+                        assigned: true,
+                        immutable: false,
+                    },
+                ) {
+                    self.diagnostics.push(Diagnostic::new(
+                        pattern_span(&case.pattern),
+                        format!("duplicate pattern binding `{duplicate}`"),
+                    ));
+                }
+            }
+            let (statements, case_flow) =
+                self.check_statement_sequence(&mut case_scopes, &case.statements, ret_ty);
+            case_scopes.pop();
+            if case_flow.can_fallthrough {
+                reachable_after_switch.push(case_scopes);
+            }
+            checked_cases.push(TCase {
+                variant_name: checked_enum.variants[variant_index].name.clone(),
+                variant_index,
+                pattern,
+                statements,
+            });
+        }
+
+        let exhaustive = self.patterns_exhaustive_for_type(&expr.ty, &top_patterns);
+        if !has_default && !exhaustive {
+            self.diagnostics
+                .push(Diagnostic::new(span, "switch is not exhaustive"));
+        }
+
+        let mut default_scopes = before.clone();
+        default_scopes.push();
+        let default_break_start = self
+            .control_contexts
+            .last()
+            .map(|context| context.break_scopes.len())
+            .unwrap_or(0);
+        let (default, default_flow) =
+            self.check_statement_sequence(&mut default_scopes, default, ret_ty);
+        default_scopes.pop();
+        if has_default && !exhaustive {
+            if default_flow.can_fallthrough {
+                reachable_after_switch.push(default_scopes);
+            }
+        } else if has_default && let Some(context) = self.control_contexts.last_mut() {
+            context.break_scopes.truncate(default_break_start);
+        } else if !has_default && !exhaustive {
+            reachable_after_switch.push(before.clone());
+        }
+
+        let switch_context = self.pop_control_context();
+        reachable_after_switch.extend(switch_context.break_scopes);
+        scopes.merge_reachable_flows(&reachable_after_switch);
+        let flow = Flow {
+            can_fallthrough: !reachable_after_switch.is_empty(),
+        };
+
+        Some((
+            TStmtKind::Switch {
+                expr,
+                enum_type_name,
+                cases: checked_cases,
+                has_default,
+                default,
+                can_fallthrough: flow.can_fallthrough,
+            },
+            flow,
+        ))
+    }
+
+    fn check_case_pattern(
+        &mut self,
+        pattern: &Pattern,
+        expected_ty: &Ty,
+        checked_enum: &CheckedEnum,
+        is_case_head: bool,
+    ) -> Option<(usize, TPattern)> {
+        let Pattern::Variant(name, _subpatterns) = pattern else {
+            self.diagnostics.push(Diagnostic::new(
+                pattern_span(pattern),
+                "top-level wildcard pattern is not supported; use default",
+            ));
+            return None;
+        };
+        let Some(checked_pattern) = self.check_pattern(pattern, expected_ty, is_case_head) else {
+            return None;
+        };
+        let TPattern::Variant {
+            variant_index,
+            variant_name,
+            ..
+        } = &checked_pattern
+        else {
+            self.diagnostics.push(Diagnostic::new(
+                pattern_span(pattern),
+                "switch case must name an enum variant",
+            ));
+            return None;
+        };
+        if !checked_enum
+            .variants
+            .iter()
+            .any(|variant| variant.name == *variant_name)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!(
+                    "`{}` is not a variant of `{}`",
+                    name.display, checked_enum.name
+                ),
+            ));
+            return None;
+        }
+        Some((*variant_index, checked_pattern))
+    }
+
+    fn check_pattern(
+        &mut self,
+        pattern: &Pattern,
+        expected_ty: &Ty,
+        is_case_head: bool,
+    ) -> Option<TPattern> {
+        match pattern {
+            Pattern::Wildcard(span) => {
+                if is_case_head {
+                    self.diagnostics.push(Diagnostic::new(
+                        *span,
+                        "top-level wildcard pattern is not supported; use default",
+                    ));
+                    None
+                } else {
+                    Some(TPattern::Wildcard {
+                        ty: expected_ty.clone(),
+                    })
+                }
+            }
+            Pattern::Variant(name, subpatterns) => match name.kind {
+                PatternNameKind::Variant(_) => {
+                    self.check_variant_pattern(name, subpatterns, expected_ty)
+                }
+                PatternNameKind::Binding(local_id) if !is_case_head && subpatterns.is_empty() => {
+                    Some(TPattern::Binding {
+                        local_id,
+                        name: name.display.clone(),
+                        ty: expected_ty.clone(),
+                    })
+                }
+                PatternNameKind::Binding(_) => {
+                    self.diagnostics.push(Diagnostic::new(
+                        name.span,
+                        "pattern binding cannot have payload patterns",
+                    ));
+                    None
+                }
+                PatternNameKind::Error => None,
+            },
+        }
+    }
+
+    fn check_variant_pattern(
+        &mut self,
+        name: &PatternName,
+        subpatterns: &[Pattern],
+        expected_ty: &Ty,
+    ) -> Option<TPattern> {
+        let PatternNameKind::Variant(def_id) = name.kind else {
+            return None;
+        };
+        let Some(sig) = self.variants.get(&def_id).cloned() else {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!("unknown enum variant `{}`", name.display),
+            ));
+            return None;
+        };
+        let Ty::Named {
+            name: enum_name,
+            args: enum_args,
+        } = expected_ty.unqualified()
+        else {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!(
+                    "variant `{}` pattern requires enum value, got `{expected_ty}`",
+                    name.display
+                ),
+            ));
+            return None;
+        };
+        if enum_name != &sig.enum_name {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!(
+                    "variant `{}` belongs to `{}`, not `{expected_ty}`",
+                    name.display, sig.enum_name
+                ),
+            ));
+            return None;
+        }
+        if enum_args.len() != sig.enum_generics.len() {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!(
+                    "enum `{enum_name}` expects {} type arguments, got {}",
+                    sig.enum_generics.len(),
+                    enum_args.len()
+                ),
+            ));
+            return None;
+        }
+        let subst = sig
+            .enum_generics
+            .iter()
+            .cloned()
+            .zip(enum_args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        let payload_tys = sig
+            .payload
+            .iter()
+            .filter_map(|ty| {
+                let ty = self.lower_type_with_subst(ty, &subst);
+                (!ty.is_void()).then_some(ty)
+            })
+            .collect::<Vec<_>>();
+        if subpatterns.len() != payload_tys.len() {
+            self.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!(
+                    "variant `{}` expects {} pattern fields, got {}",
+                    name.display,
+                    payload_tys.len(),
+                    subpatterns.len()
+                ),
+            ));
+            return None;
+        }
+
+        let mut payload = Vec::new();
+        for (subpattern, payload_ty) in subpatterns.iter().zip(payload_tys.iter()) {
+            payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+        }
+        self.ensure_enum_instance(expected_ty);
+        Some(TPattern::Variant {
+            ty: expected_ty.clone(),
+            enum_type_name: enum_instance_name(enum_name, enum_args),
+            variant_name: name
+                .path
+                .last()
+                .map(|ident| ident.name.clone())
+                .unwrap_or_else(|| name.display.clone()),
+            variant_index: sig.variant_index,
+            payload,
+        })
+    }
+
+    fn patterns_exhaustive_for_type(&mut self, ty: &Ty, patterns: &[TPattern]) -> bool {
+        let rows = patterns
+            .iter()
+            .cloned()
+            .map(|pattern| vec![pattern])
+            .collect::<Vec<_>>();
+        self.tuple_patterns_exhaustive(&[ty.clone()], &rows)
+    }
+
+    fn tuple_patterns_exhaustive(&mut self, tys: &[Ty], rows: &[Vec<TPattern>]) -> bool {
+        let Some((first_ty, rest_tys)) = tys.split_first() else {
+            return !rows.is_empty();
+        };
+        if rows.iter().any(|row| row.len() != tys.len()) {
+            return false;
+        }
+
+        if let Some(checked_enum) = self.checked_enum_for_type(first_ty) {
+            for variant in &checked_enum.variants {
+                let mut specialized_rows = Vec::new();
+                for row in rows {
+                    match &row[0] {
+                        TPattern::Wildcard { .. } | TPattern::Binding { .. } => {
+                            let mut specialized = variant
+                                .payload
+                                .iter()
+                                .cloned()
+                                .map(|ty| TPattern::Wildcard { ty })
+                                .collect::<Vec<_>>();
+                            specialized.extend(row[1..].iter().cloned());
+                            specialized_rows.push(specialized);
+                        }
+                        TPattern::Variant {
+                            variant_name,
+                            payload,
+                            ..
+                        } if variant_name == &variant.name => {
+                            let mut specialized = payload.clone();
+                            specialized.extend(row[1..].iter().cloned());
+                            specialized_rows.push(specialized);
+                        }
+                        TPattern::Variant { .. } => {}
+                    }
+                }
+                let mut specialized_tys = variant.payload.clone();
+                specialized_tys.extend_from_slice(rest_tys);
+                if !self.tuple_patterns_exhaustive(&specialized_tys, &specialized_rows) {
+                    return false;
+                }
+            }
+            true
+        } else {
+            let rest_rows = rows
+                .iter()
+                .filter_map(|row| match row[0] {
+                    TPattern::Wildcard { .. } | TPattern::Binding { .. } => Some(row[1..].to_vec()),
+                    TPattern::Variant { .. } => None,
+                })
+                .collect::<Vec<_>>();
+            self.tuple_patterns_exhaustive(rest_tys, &rest_rows)
+        }
+    }
+
+    fn checked_enum_for_type(&mut self, ty: &Ty) -> Option<CheckedEnum> {
+        let Ty::Named { name, args } = ty.unqualified() else {
+            return None;
+        };
+        self.ensure_enum_instance(ty);
+        let instance_name = enum_instance_name(name, args);
+        self.checked_enums.get(&instance_name).cloned()
+    }
+
+    fn check_expr(
+        &mut self,
+        scopes: &mut LocalScopes,
+        expr: &Expr,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let result = match &expr.kind {
+            ExprKind::Name(name_ref) => {
+                if let Some(local_id) = self.resolved_local_id(name_ref)
+                    && let Some(binding) = scopes.get(local_id)
+                {
+                    let name = binding.name.clone();
+                    if !binding.assigned {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            format!("local `{name}` is not definitely assigned"),
+                        ));
+                    }
+                    TExpr {
+                        span: expr.span,
+                        ty: scopes
+                            .effective_ty(local_id)
+                            .unwrap_or_else(|| binding.ty.clone()),
+                        kind: TExprKind::Local(local_id, name),
+                    }
+                } else if let Some(sig) = self.resolve_function_name(name_ref) {
+                    TExpr {
+                        span: expr.span,
+                        ty: Ty::Function {
+                            abi: sig.abi.clone(),
+                            ret: Box::new(sig.ret.clone()),
+                            params: sig.params.clone(),
+                        },
+                        kind: TExprKind::Function(sig.def_id, sig.name.clone()),
+                    }
+                } else if let Some((def_id, sig)) = self.lookup_variant_name(name_ref) {
+                    let variant_name = self.resolved.def(def_id).name.clone();
+                    self.check_variant_literal(
+                        scopes,
+                        expr.span,
+                        &variant_name,
+                        sig,
+                        Vec::new(),
+                        expected,
+                    )?
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("unresolved name `{}`", name_ref.display),
+                    ));
+                    return None;
+                }
+            }
+            ExprKind::Literal(literal) => self.check_literal(expr.span, literal, expected)?,
+            ExprKind::StructLiteral(fields) => {
+                let Some(Ty::Named {
+                    name: type_name,
+                    args,
+                }) = expected
+                else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        "struct literal requires an expected struct type",
+                    ));
+                    return None;
+                };
+                let instance_name = enum_instance_name(type_name, args);
+                let Some(struct_fields) = self.structs.get(&instance_name).cloned() else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("`{}` is not a known struct", expected.unwrap()),
+                    ));
+                    return None;
+                };
+                let mut seen = HashMap::<String, ()>::new();
+                let mut checked_fields = Vec::new();
+                for init in fields {
+                    if seen.insert(init.name.name.clone(), ()).is_some() {
+                        self.diagnostics.push(Diagnostic::new(
+                            init.name.span,
+                            format!("duplicate field `{}`", init.name.name),
+                        ));
+                    }
+                    let Some((_, field_ty)) = struct_fields
+                        .iter()
+                        .find(|(field_name, _)| field_name == &init.name.name)
+                    else {
+                        self.diagnostics.push(Diagnostic::new(
+                            init.name.span,
+                            format!("unknown field `{}` on `{type_name}`", init.name.name),
+                        ));
+                        continue;
+                    };
+                    let value = self.check_expr(scopes, &init.expr, Some(field_ty))?;
+                    self.require_assignable(field_ty, &value.ty, init.expr.span);
+                    checked_fields.push((init.name.name.clone(), value));
+                }
+                for (field_name, _) in &struct_fields {
+                    if !seen.contains_key(field_name) {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            format!("missing field `{field_name}` in `{type_name}` literal"),
+                        ));
+                    }
+                }
+                TExpr {
+                    span: expr.span,
+                    ty: Ty::Named {
+                        name: type_name.clone(),
+                        args: args.clone(),
+                    },
+                    kind: TExprKind::StructLiteral {
+                        type_name: instance_name,
+                        fields: checked_fields,
+                    },
+                }
+            }
+            ExprKind::ArrayLiteral(elements) => {
+                let (elem_ty, result_ty) = match expected {
+                    Some(Ty::Array { len, elem }) => {
+                        if *len != elements.len() {
+                            self.diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                format!(
+                                    "array literal has {} elements, expected {len}",
+                                    elements.len()
+                                ),
+                            ));
+                        }
+                        ((**elem).clone(), expected.cloned().unwrap())
+                    }
+                    Some(Ty::Slice(elem)) => ((**elem).clone(), Ty::Slice(elem.clone())),
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            "array literal requires an expected array or slice type",
+                        ));
+                        return None;
+                    }
+                };
+                let checked_elements = elements
+                    .iter()
+                    .filter_map(|element| self.check_expr(scopes, element, Some(&elem_ty)))
+                    .collect::<Vec<_>>();
+                for element in &checked_elements {
+                    self.require_assignable(&elem_ty, &element.ty, element.span);
+                }
+                TExpr {
+                    span: expr.span,
+                    ty: result_ty,
+                    kind: TExprKind::ArrayLiteral(checked_elements),
+                }
+            }
+            ExprKind::ArrayRepeat { element, len } => {
+                let (elem_ty, result_ty, resolved_len) = match expected {
+                    Some(Ty::Array {
+                        len: expected_len,
+                        elem,
+                    }) => {
+                        if len.is_some() {
+                            self.diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                "array repeat literal in fixed array context must omit the length",
+                            ));
+                        }
+                        ((**elem).clone(), expected.cloned().unwrap(), *expected_len)
+                    }
+                    Some(Ty::Slice(elem)) => {
+                        let Some(len) = len else {
+                            self.diagnostics.push(Diagnostic::new(
+                                expr.span,
+                                "array repeat literal with omitted length requires an expected array type",
+                            ));
+                            return None;
+                        };
+                        ((**elem).clone(), Ty::Slice(elem.clone()), *len)
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            "array repeat literal requires an expected array or slice type",
+                        ));
+                        return None;
+                    }
+                };
+                let checked_element = self.check_expr(scopes, element, Some(&elem_ty))?;
+                self.require_assignable(&elem_ty, &checked_element.ty, checked_element.span);
+                TExpr {
+                    span: expr.span,
+                    ty: result_ty,
+                    kind: TExprKind::ArrayRepeat {
+                        element: Box::new(checked_element),
+                        len: resolved_len,
+                    },
+                }
+            }
+            ExprKind::Closure { params, body } => {
+                self.check_closure_expr(scopes, expr.span, params, body, expected)?
+            }
+            ExprKind::Unary { op, expr: inner } => {
+                if matches!(op, UnaryOp::Neg)
+                    && let ExprKind::Literal(Literal::Integer(raw)) = &inner.kind
+                    && let Some(expected_ty) = expected
+                    && expected_ty.is_signed_integer()
+                {
+                    self.check_integer_literal_range(inner.span, raw, expected_ty, true);
+                    let inner = TExpr {
+                        span: inner.span,
+                        ty: expected_ty.clone(),
+                        kind: TExprKind::Literal(Literal::Integer(raw.clone())),
+                    };
+                    return Some(TExpr {
+                        span: expr.span,
+                        ty: expected_ty.clone(),
+                        kind: TExprKind::Unary {
+                            op: *op,
+                            expr: Box::new(inner),
+                        },
+                    });
+                }
+                let inner = match op {
+                    UnaryOp::Addr => {
+                        let inner = self.check_lvalue(scopes, inner, true)?;
+                        if let TExprKind::Local(local_id, _) = &inner.kind {
+                            if let Some(binding) = scopes.get(*local_id)
+                                && binding.immutable
+                            {
+                                self.diagnostics.push(Diagnostic::new(
+                                    inner.span,
+                                    format!(
+                                        "cannot take address of immutable parameter `{}`",
+                                        binding.name
+                                    ),
+                                ));
+                            }
+                            scopes.clear_narrowing(*local_id);
+                        } else {
+                            self.diagnose_immutable_lvalue(scopes, &inner, inner.span);
+                        }
+                        inner
+                    }
+                    UnaryOp::Neg => {
+                        self.check_expr(scopes, inner, expected.filter(|ty| ty.is_numeric()))?
+                    }
+                    _ => self.check_expr(scopes, inner, None)?,
+                };
+                let ty = match op {
+                    UnaryOp::Not => {
+                        self.require_assignable(&Ty::Bool, &inner.ty, inner.span);
+                        Ty::Bool
+                    }
+                    UnaryOp::Neg => {
+                        if !(inner.ty.is_signed_integer()
+                            || matches!(inner.ty.unqualified(), Ty::F32 | Ty::F64))
+                        {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.span,
+                                format!("cannot negate `{}`", inner.ty),
+                            ));
+                        }
+                        inner.ty.clone()
+                    }
+                    UnaryOp::Addr => Ty::pointer_to(inner.ty.clone()),
+                    UnaryOp::Deref => match inner.ty.unqualified() {
+                        Ty::Pointer {
+                            nullable: false,
+                            inner,
+                        } => (**inner).clone(),
+                        Ty::Pointer { nullable: true, .. } => {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.span,
+                                "cannot dereference nullable pointer without narrowing",
+                            ));
+                            Ty::Unknown
+                        }
+                        _ => {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.span,
+                                format!("cannot dereference `{}`", inner.ty),
+                            ));
+                            Ty::Unknown
+                        }
+                    },
+                };
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Unary {
+                        op: *op,
+                        expr: Box::new(inner),
+                    },
+                }
+            }
+            ExprKind::Binary { op, left, right } => {
+                let (left, right) = if matches!(op, BinaryOp::And) {
+                    let left = self.check_expr(scopes, left, Some(&Ty::Bool))?;
+                    self.require_assignable(&Ty::Bool, &left.ty, left.span);
+                    let mut right_scopes = scopes.clone();
+                    self.apply_condition_narrowing(&mut right_scopes, &left, true);
+                    let right = self.check_expr(&mut right_scopes, right, Some(&Ty::Bool))?;
+                    (left, right)
+                } else if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                    && matches!(left.kind, ExprKind::Literal(Literal::Null))
+                {
+                    let right = self.check_expr(scopes, right, None)?;
+                    let left = self.check_expr(scopes, left, Some(&right.ty))?;
+                    (left, right)
+                } else {
+                    let left = self.check_expr(scopes, left, None)?;
+                    let right_expected = if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
+                        && matches!(right.kind, ExprKind::Literal(Literal::Null))
+                    {
+                        Some(&left.ty)
+                    } else {
+                        Some(&left.ty)
+                    };
+                    let right = self.check_expr(scopes, right, right_expected)?;
+                    (left, right)
+                };
+                let ty = self.check_binary(*op, &left, &right, expr.span);
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Binary {
+                        op: *op,
+                        left: Box::new(left),
+                        right: Box::new(right),
+                    },
+                }
+            }
+            ExprKind::Cast { expr: inner, ty } => {
+                let target = self.lower_type(ty);
+                if let ExprKind::Closure { params, body } = &inner.kind {
+                    self.check_closure_cast_allowed(&target, expr.span);
+                    return self
+                        .check_closure_expr(scopes, inner.span, params, body, Some(&target))
+                        .map(|checked| TExpr {
+                            span: expr.span,
+                            ..checked
+                        });
+                }
+                let inner = self.check_expr(scopes, inner, None)?;
+                self.check_cast_allowed(&inner.ty, &target, expr.span);
+                TExpr {
+                    span: expr.span,
+                    ty: target.clone(),
+                    kind: TExprKind::Cast {
+                        expr: Box::new(inner),
+                        ty: target,
+                    },
+                }
+            }
+            ExprKind::Call {
+                callee,
+                type_args,
+                args,
+            } => {
+                if let ExprKind::Name(name_ref) = &callee.kind
+                    && !matches!(name_ref.kind, NameRefKind::Local(_))
+                    && let Some((def_id, sig)) = self.lookup_variant_name(name_ref)
+                {
+                    let variant_name = self.resolved.def(def_id).name.clone();
+                    return self.check_variant_literal(
+                        scopes,
+                        expr.span,
+                        &variant_name,
+                        sig,
+                        args.clone(),
+                        expected,
+                    );
+                }
+                if let ExprKind::Name(name_ref) = &callee.kind
+                    && !matches!(name_ref.kind, NameRefKind::Local(_))
+                    && let Some(def_id) = self.lookup_interface_name(name_ref)
+                {
+                    return self.check_interface_call(
+                        scopes, expr.span, def_id, type_args, args, expected,
+                    );
+                }
+                if let ExprKind::Name(name_ref) = &callee.kind
+                    && !matches!(name_ref.kind, NameRefKind::Local(_))
+                    && let Some(sig) = self.resolve_function_name(name_ref)
+                {
+                    return self.check_direct_function_call(
+                        scopes, expr.span, sig, type_args, args, expected,
+                    );
+                }
+                if !type_args.is_empty() {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        "type arguments can only be used on generic function or interface calls",
+                    ));
+                    return None;
+                }
+                let callee = self.check_expr(scopes, callee, None)?;
+                let (ret, params) = match callee.ty.unqualified() {
+                    Ty::Function { ret, params, .. }
+                    | Ty::Closure { ret, params }
+                    | Ty::ClosureInstance { ret, params, .. } => ((**ret).clone(), params.clone()),
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            callee.span,
+                            format!("`{}` is not callable", callee.ty),
+                        ));
+                        return None;
+                    }
+                };
+                if params.len() != args.len() {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!(
+                            "call expects {} arguments, got {}",
+                            params.len(),
+                            args.len()
+                        ),
+                    ));
+                }
+                let mut checked_args = Vec::new();
+                for (idx, arg) in args.iter().enumerate() {
+                    let expected = params.get(idx);
+                    let checked = self.check_expr(scopes, arg, expected)?;
+                    if let Some(expected) = expected {
+                        self.require_assignable(expected, &checked.ty, arg.span);
+                    }
+                    checked_args.push(checked);
+                }
+                TExpr {
+                    span: expr.span,
+                    ty: ret,
+                    kind: TExprKind::Call {
+                        callee: Box::new(callee),
+                        args: checked_args,
+                    },
+                }
+            }
+            ExprKind::Field { base, field } => {
+                let base = self.check_expr(scopes, base, None)?;
+                let ty = self.field_ty(&base.ty, &field.name, field.span)?;
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Field {
+                        base: Box::new(base),
+                        field: field.name.clone(),
+                    },
+                }
+            }
+            ExprKind::Arrow { base, field } => {
+                let base = self.check_expr(scopes, base, None)?;
+                let Ty::Pointer {
+                    nullable: false,
+                    inner,
+                } = base.ty.unqualified()
+                else {
+                    self.diagnostics.push(Diagnostic::new(
+                        base.span,
+                        format!("`->` requires non-null pointer, got `{}`", base.ty),
+                    ));
+                    return None;
+                };
+                let ty = self.field_ty(inner, &field.name, field.span)?;
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Arrow {
+                        base: Box::new(base),
+                        field: field.name.clone(),
+                    },
+                }
+            }
+            ExprKind::Index { base, index } => {
+                let base = self.check_expr(scopes, base, None)?;
+                let index = self.check_expr(scopes, index, Some(&Ty::Usize))?;
+                if !index.ty.is_integer() {
+                    self.diagnostics
+                        .push(Diagnostic::new(index.span, "index must be integer"));
+                }
+                let ty = match base.ty.unqualified() {
+                    Ty::Array { elem, .. } | Ty::Slice(elem) => (**elem).clone(),
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            base.span,
+                            format!("cannot index `{}`", base.ty),
+                        ));
+                        Ty::Unknown
+                    }
+                };
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Index {
+                        base: Box::new(base),
+                        index: Box::new(index),
+                    },
+                }
+            }
+            ExprKind::Slice { base, start, end } => {
+                let base = self.check_expr(scopes, base, None)?;
+                let start = match start {
+                    Some(start) => {
+                        let start = self.check_expr(scopes, start, Some(&Ty::Usize))?;
+                        if !start.ty.is_integer() {
+                            self.diagnostics
+                                .push(Diagnostic::new(start.span, "slice start must be integer"));
+                        }
+                        Some(Box::new(start))
+                    }
+                    None => None,
+                };
+                let end = match end {
+                    Some(end) => {
+                        let end = self.check_expr(scopes, end, Some(&Ty::Usize))?;
+                        if !end.ty.is_integer() {
+                            self.diagnostics
+                                .push(Diagnostic::new(end.span, "slice end must be integer"));
+                        }
+                        Some(Box::new(end))
+                    }
+                    None => None,
+                };
+                let ty = match base.ty.unqualified() {
+                    Ty::Array { elem, .. } | Ty::Slice(elem) => Ty::Slice(elem.clone()),
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            base.span,
+                            format!("cannot slice `{}`", base.ty),
+                        ));
+                        Ty::Unknown
+                    }
+                };
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Slice {
+                        base: Box::new(base),
+                        start,
+                        end,
+                    },
+                }
+            }
+            ExprKind::Try(inner) => {
+                let inner = self.check_expr(scopes, inner, None)?;
+                let Some((ok_ty, err_ty)) = self.result_ok_err_tys(&inner.ty) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!(
+                            "`?` requires `/std/result` Result<T, E>, got `{}`",
+                            inner.ty
+                        ),
+                    ));
+                    return Some(TExpr {
+                        span: expr.span,
+                        ty: Ty::Unknown,
+                        kind: TExprKind::Try(Box::new(inner)),
+                    });
+                };
+                let Some((_, return_err_ty)) = self.result_ok_err_tys(&self.current_return_ty)
+                else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!(
+                            "`?` requires enclosing function to return `/std/result` Result<_, {}>",
+                            err_ty
+                        ),
+                    ));
+                    return Some(TExpr {
+                        span: expr.span,
+                        ty: Ty::Unknown,
+                        kind: TExprKind::Try(Box::new(inner)),
+                    });
+                };
+                if err_ty != return_err_ty {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!(
+                            "`?` error type mismatch: expected `{return_err_ty}`, got `{err_ty}`"
+                        ),
+                    ));
+                }
+                TExpr {
+                    span: expr.span,
+                    ty: ok_ty,
+                    kind: TExprKind::Try(Box::new(inner)),
+                }
+            }
+        };
+
+        Some(self.coerce_expr_to_expected(result, expected))
+    }
+
+    fn check_actor_spawn_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("spawn_actor expects 2 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+        let explicit_args = type_args
+            .iter()
+            .map(|arg| self.lower_type(arg))
+            .collect::<Vec<_>>();
+        if explicit_args.len() > 3 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "spawn_actor accepts at most S, M, and H type arguments",
+            ));
+            return None;
+        }
+
+        let explicit_state_ty = explicit_args.first().cloned();
+        let explicit_message_ty = explicit_args.get(1).cloned();
+        let explicit_handler_ty = explicit_args.get(2).cloned();
+
+        let initial_state = self.check_expr(scopes, &args[0], explicit_state_ty.as_ref())?;
+        let state_ty = explicit_state_ty.unwrap_or_else(|| initial_state.ty.clone());
+        self.require_assignable(&state_ty, &initial_state.ty, initial_state.span);
+
+        let mut prechecked_handler = None;
+        let mut message_ty = explicit_message_ty
+            .clone()
+            .or_else(|| self.actor_message_ty_from_spawn_expected(expected))
+            .or_else(|| self.actor_message_ty_from_closure_literal(&args[1]));
+        if message_ty.is_none() && !expr_is_closure_literal(&args[1]) {
+            let handler = self.check_expr(scopes, &args[1], explicit_handler_ty.as_ref())?;
+            message_ty =
+                callable_ret_params_ty(&handler.ty).and_then(|(_, params)| params.get(1).cloned());
+            prechecked_handler = Some(handler);
+        }
+        let Some(message_ty) = message_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "could not infer actor message type; add spawn_actor<S, M> type arguments, an expected Actor<M>, or handler parameter types",
+            ));
+            return None;
+        };
+
+        let handler_ret = self.result_ty(state_ty.clone(), self.error_ty());
+        let expected_handler_ty = Ty::Closure {
+            ret: Box::new(handler_ret.clone()),
+            params: vec![state_ty.clone(), message_ty.clone()],
+        };
+        let handler = if let Some(handler) = prechecked_handler {
+            handler
+        } else if let ExprKind::Closure { params, body } = &args[1].kind {
+            self.check_closure_expr(
+                scopes,
+                args[1].span,
+                params,
+                body,
+                Some(&expected_handler_ty),
+            )?
+        } else {
+            self.check_expr(scopes, &args[1], explicit_handler_ty.as_ref())?
+        };
+        let handler_message_ty = if let Some(explicit_handler_ty) = &explicit_handler_ty {
+            self.require_assignable(explicit_handler_ty, &handler.ty, handler.span);
+            explicit_handler_ty
+        } else {
+            &handler.ty
+        };
+        self.require_actor_handler_callable(
+            &handler.ty,
+            &state_ty,
+            &message_ty,
+            &handler_ret,
+            handler.span,
+        );
+
+        if !self.type_implements_message(&state_ty) {
+            self.push_message_requirement_diagnostic(
+                initial_state.span,
+                format!("actor state type `{state_ty}` does not implement `Message`"),
+                &state_ty,
+            );
+        }
+        if !self.type_implements_message(&message_ty) {
+            self.push_message_requirement_diagnostic(
+                span,
+                format!("actor message type `{message_ty}` does not implement `Message`"),
+                &message_ty,
+            );
+        }
+        if !self.type_implements_message(handler_message_ty) {
+            self.push_message_requirement_diagnostic(
+                handler.span,
+                format!(
+                    "actor handler type `{}` does not implement `Message`",
+                    handler_message_ty
+                ),
+                handler_message_ty,
+            );
+            self.push_actor_handler_capture_diagnostics(&handler);
+        }
+
+        let ret = self.result_ty(self.actor_ty(message_ty.clone()), self.error_ty());
+        self.ensure_struct_instance(&ret);
+        self.ensure_enum_instance(&ret);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::ActorSpawn {
+                initial_state: Box::new(initial_state),
+                handler_ty: handler.ty.clone(),
+                handler: Box::new(handler),
+                state_ty,
+                message_ty,
+            },
+        })
+    }
+
+    fn check_actor_send_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("send expects 2 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+        let explicit_args = type_args
+            .iter()
+            .map(|arg| self.lower_type(arg))
+            .collect::<Vec<_>>();
+        if explicit_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "send accepts at most one message type argument",
+            ));
+            return None;
+        }
+        let actor = self.check_expr(scopes, &args[0], None)?;
+        let inferred_message_ty = self.actor_message_ty_from_pointer(&actor.ty, actor.span);
+        let message_ty = explicit_args
+            .first()
+            .cloned()
+            .or(inferred_message_ty)
+            .unwrap_or(Ty::Unknown);
+        let value = self.check_expr(scopes, &args[1], Some(&message_ty))?;
+        self.require_assignable(&message_ty, &value.ty, value.span);
+        if !self.type_implements_message(&message_ty) {
+            self.push_message_requirement_diagnostic(
+                value.span,
+                format!("actor message type `{message_ty}` does not implement `Message`"),
+                &message_ty,
+            );
+        }
+        let ret = self.result_ty(Ty::Void, self.error_ty());
+        self.ensure_enum_instance(&ret);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::ActorSend {
+                actor: Box::new(actor),
+                value: Box::new(value),
+                message_ty,
+            },
+        })
+    }
+
+    fn check_actor_lifecycle_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        op: ActorLifecycleOp,
+    ) -> Option<TExpr> {
+        if args.len() != 1 {
+            let name = match op {
+                ActorLifecycleOp::Stop => "stop",
+                ActorLifecycleOp::Join => "join",
+            };
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{name} expects 1 argument, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "actor lifecycle calls accept at most one message type argument",
+            ));
+            return None;
+        }
+        let explicit_message_ty = type_args.first().map(|arg| self.lower_type(arg));
+        let actor = self.check_expr(scopes, &args[0], None)?;
+        let message_ty = explicit_message_ty
+            .or_else(|| self.actor_message_ty_from_pointer(&actor.ty, actor.span))
+            .unwrap_or(Ty::Unknown);
+        let ret = self.result_ty(Ty::Void, self.error_ty());
+        self.ensure_enum_instance(&ret);
+        let kind = match op {
+            ActorLifecycleOp::Stop => TExprKind::ActorStop {
+                actor: Box::new(actor),
+                message_ty,
+            },
+            ActorLifecycleOp::Join => TExprKind::ActorJoin {
+                actor: Box::new(actor),
+                message_ty,
+            },
+        };
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind,
+        })
+    }
+
+    fn check_type_metadata_call(
+        &mut self,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        name: &str,
+    ) -> Option<TExpr> {
+        if !args.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{name} expects 0 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{name} requires exactly one type argument"),
+            ));
+            return None;
+        }
+        let ty = self.lower_type(&type_args[0]);
+        self.ensure_struct_instance(&ty);
+        self.ensure_enum_instance(&ty);
+        let kind = match name {
+            "type_size" => TExprKind::TypeSize { ty },
+            "type_align" => TExprKind::TypeAlign { ty },
+            _ => return None,
+        };
+        Some(TExpr {
+            span,
+            ty: Ty::Usize,
+            kind,
+        })
+    }
+
+    fn actor_message_ty_from_spawn_expected(&self, expected: Option<&Ty>) -> Option<Ty> {
+        let Ty::Named { name, args } = expected? else {
+            return None;
+        };
+        if name != "Result" || args.len() != 2 {
+            return None;
+        }
+        let Ty::Named {
+            name: actor_name,
+            args: actor_args,
+        } = args[0].unqualified()
+        else {
+            return None;
+        };
+        if actor_name == "Actor" && actor_args.len() == 1 {
+            Some(actor_args[0].clone())
+        } else {
+            None
+        }
+    }
+
+    fn actor_message_ty_from_closure_literal(&mut self, expr: &Expr) -> Option<Ty> {
+        match &expr.kind {
+            ExprKind::Closure { params, .. } => params
+                .get(1)
+                .and_then(|param| param.ty.as_ref())
+                .map(|ty| self.lower_type(ty)),
+            ExprKind::Cast { expr, .. } => self.actor_message_ty_from_closure_literal(expr),
+            _ => None,
+        }
+    }
+
+    fn actor_message_ty_from_pointer(
+        &mut self,
+        actor_ty: &Ty,
+        span: crate::span::Span,
+    ) -> Option<Ty> {
+        let Ty::Pointer {
+            nullable: false,
+            inner,
+        } = actor_ty.unqualified()
+        else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
+            ));
+            return None;
+        };
+        let Ty::Named { name, args } = inner.unqualified() else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
+            ));
+            return None;
+        };
+        if name != "Actor" || args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
+            ));
+            return None;
+        }
+        Some(args[0].clone())
+    }
+
+    fn require_actor_handler_callable(
+        &mut self,
+        handler_ty: &Ty,
+        state_ty: &Ty,
+        message_ty: &Ty,
+        expected_ret: &Ty,
+        span: crate::span::Span,
+    ) {
+        let Some((ret, params)) = callable_ret_params_ty(handler_ty) else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handler `{handler_ty}` is not callable"),
+            ));
+            return;
+        };
+        if params.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handler expects 2 parameters, got {}", params.len()),
+            ));
+            return;
+        }
+        if params[0] != *state_ty {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "actor handler state parameter mismatch: expected `{state_ty}`, got `{}`",
+                    params[0]
+                ),
+            ));
+        }
+        if params[1] != *message_ty {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "actor handler message parameter mismatch: expected `{message_ty}`, got `{}`",
+                    params[1]
+                ),
+            ));
+        }
+        if !expected_ret.can_assign_from(&ret) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor handler must return `{expected_ret}`, got `{ret}`"),
+            ));
+        }
+    }
+
+    fn actor_ty(&self, message_ty: Ty) -> Ty {
+        Ty::Named {
+            name: "Actor".to_string(),
+            args: vec![message_ty],
+        }
+    }
+
+    fn result_ty(&self, ok_ty: Ty, err_ty: Ty) -> Ty {
+        Ty::Named {
+            name: "Result".to_string(),
+            args: vec![ok_ty, err_ty],
+        }
+    }
+
+    fn error_ty(&self) -> Ty {
+        Ty::Named {
+            name: "Error".to_string(),
+            args: Vec::new(),
+        }
+    }
+
+    fn check_direct_function_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        sig: FunctionSig,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if self.is_std_actor_function(&sig, "spawn_actor") {
+            return self.check_actor_spawn_call(scopes, span, type_args, args, expected);
+        }
+        if self.is_std_actor_function(&sig, "send") {
+            return self.check_actor_send_call(scopes, span, type_args, args);
+        }
+        if self.is_std_actor_function(&sig, "stop") {
+            return self.check_actor_lifecycle_call(
+                scopes,
+                span,
+                type_args,
+                args,
+                ActorLifecycleOp::Stop,
+            );
+        }
+        if self.is_std_actor_function(&sig, "join") {
+            return self.check_actor_lifecycle_call(
+                scopes,
+                span,
+                type_args,
+                args,
+                ActorLifecycleOp::Join,
+            );
+        }
+        if self.is_std_meta_function(&sig, "type_size")
+            || self.is_std_meta_function(&sig, "type_align")
+        {
+            return self.check_type_metadata_call(span, type_args, args, &sig.name);
+        }
+
+        let (call_sig, generic_args) = if sig.generics.is_empty() {
+            if !type_args.is_empty() {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("function `{}` is not generic", sig.name),
+                ));
+                return None;
+            }
+            (sig, None)
+        } else {
+            let (call_sig, instance_args) =
+                self.infer_generic_function_call(scopes, span, &sig, type_args, args, expected)?;
+            (call_sig, Some(instance_args))
+        };
+        let callee = TExpr {
+            span,
+            ty: Ty::Function {
+                abi: call_sig.abi.clone(),
+                ret: Box::new(call_sig.ret.clone()),
+                params: call_sig.params.clone(),
+            },
+            kind: if let Some(type_args) = generic_args {
+                TExprKind::GenericFunction {
+                    def_id: call_sig.def_id,
+                    name: call_sig.name.clone(),
+                    type_args,
+                }
+            } else {
+                TExprKind::Function(call_sig.def_id, call_sig.name.clone())
+            },
+        };
+        self.check_call_with_sig(scopes, span, callee, &call_sig.ret, &call_sig.params, args)
+    }
+
+    fn check_closure_cast_allowed(&mut self, target: &Ty, span: crate::span::Span) {
+        match target.unqualified() {
+            Ty::Closure { .. } => {}
+            Ty::Function { abi: None, .. } => {}
+            Ty::Function { abi: Some(_), .. } => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "closure expressions cannot produce extern C function pointers",
+                ));
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "closure annotation must be a closure or Ciel ABI function type, got `{target}`"
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn check_closure_expr(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        params: &[ClosureParam],
+        body: &ClosureBody,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let expected_closure_instance_id = match expected.map(Ty::unqualified) {
+            Some(Ty::ClosureInstance { id, .. }) => Some(*id),
+            _ => None,
+        };
+        let expected_sig = match expected.map(Ty::unqualified) {
+            Some(Ty::Closure { ret, params }) | Some(Ty::ClosureInstance { ret, params, .. }) => {
+                Some(((**ret).clone(), params.clone(), false))
+            }
+            Some(Ty::Function {
+                abi: None,
+                ret,
+                params,
+            }) => Some(((**ret).clone(), params.clone(), true)),
+            Some(Ty::Function { abi: Some(_), .. }) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "closure expressions cannot produce extern C function pointers",
+                ));
+                None
+            }
+            Some(other) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("closure requires expected callable type, got `{other}`"),
+                ));
+                None
+            }
+            None => None,
+        };
+
+        if let Some((_, expected_params, _)) = &expected_sig
+            && expected_params.len() != params.len()
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "closure expects {} parameters, got {}",
+                    expected_params.len(),
+                    params.len()
+                ),
+            ));
+        }
+
+        let mut checked_params = Vec::new();
+        let mut closure_scopes = scopes.clone();
+        closure_scopes.mark_all_immutable();
+        closure_scopes.push();
+        for (idx, param) in params.iter().enumerate() {
+            let param_ty = if let Some(ty) = &param.ty {
+                let ty = self.lower_type(ty);
+                if let Some((_, expected_params, _)) = &expected_sig
+                    && let Some(expected_ty) = expected_params.get(idx)
+                    && ty != *expected_ty
+                {
+                    self.diagnostics.push(Diagnostic::new(
+                        param.name.span,
+                        format!(
+                            "closure parameter `{}` expected `{expected_ty}`, got `{ty}`",
+                            param.name.name
+                        ),
+                    ));
+                }
+                ty
+            } else if let Some((_, expected_params, _)) = &expected_sig {
+                expected_params.get(idx).cloned().unwrap_or(Ty::Unknown)
+            } else {
+                self.diagnostics.push(Diagnostic::new(
+                    param.name.span,
+                    format!(
+                        "closure parameter `{}` requires an explicit type or expected callable type",
+                        param.name.name
+                    ),
+                ));
+                Ty::Unknown
+            };
+            self.reject_invalid_plain_value_type(&param_ty, param.name.span, "closure parameter");
+            if let Err(name) = closure_scopes.insert(
+                param.local_id,
+                Binding {
+                    name: param.name.name.clone(),
+                    ty: param_ty.clone(),
+                    narrowed_ty: None,
+                    assigned: true,
+                    immutable: true,
+                },
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    param.name.span,
+                    format!("duplicate closure parameter `{name}`"),
+                ));
+            }
+            checked_params.push((param.local_id, param.name.name.clone(), param_ty));
+        }
+
+        let previous_return_ty = self.current_return_ty.clone();
+        let previous_control_contexts = std::mem::take(&mut self.control_contexts);
+        let (ret_ty, checked_body) = match body {
+            ClosureBody::Expr(body_expr) => {
+                if let Some((expected_ret, _, _)) = &expected_sig {
+                    self.current_return_ty = expected_ret.clone();
+                    let checked =
+                        self.check_expr(&mut closure_scopes, body_expr, Some(expected_ret))?;
+                    self.require_assignable(expected_ret, &checked.ty, checked.span);
+                    (expected_ret.clone(), TClosureBody::Expr(Box::new(checked)))
+                } else {
+                    self.current_return_ty = Ty::Unknown;
+                    let checked = self.check_expr(&mut closure_scopes, body_expr, None)?;
+                    let ret_ty = checked.ty.clone();
+                    (ret_ty, TClosureBody::Expr(Box::new(checked)))
+                }
+            }
+            ClosureBody::Block(block) => {
+                let Some((expected_ret, _, _)) = &expected_sig else {
+                    self.diagnostics.push(Diagnostic::new(
+                        block.span,
+                        "block-bodied closure requires an expected callable return type",
+                    ));
+                    self.current_return_ty = previous_return_ty;
+                    self.control_contexts = previous_control_contexts;
+                    return None;
+                };
+                self.current_return_ty = expected_ret.clone();
+                let checked =
+                    self.check_block_with_existing_scope(&mut closure_scopes, block, expected_ret)?;
+                if expected_ret.is_never() && checked.flow.can_fallthrough {
+                    self.diagnostics.push(Diagnostic::new(
+                        block.span,
+                        "closure with return type `never` can fall through",
+                    ));
+                } else if !expected_ret.is_void() && checked.flow.can_fallthrough {
+                    self.diagnostics.push(Diagnostic::new(
+                        block.span,
+                        format!("closure must return `{expected_ret}` on every path"),
+                    ));
+                }
+                (expected_ret.clone(), TClosureBody::Block(checked.block))
+            }
+        };
+        self.current_return_ty = previous_return_ty;
+        self.control_contexts = previous_control_contexts;
+
+        let mut local_ids = HashSet::new();
+        for (local_id, _, _) in &checked_params {
+            local_ids.insert(*local_id);
+        }
+        collect_closure_body_declared_locals(&checked_body, &mut local_ids);
+        let mut capture_ids = Vec::new();
+        collect_closure_body_local_refs(&checked_body, &local_ids, &mut capture_ids);
+        let mut captures = Vec::new();
+        for local_id in capture_ids {
+            let Some(binding) = scopes.get(local_id) else {
+                continue;
+            };
+            if !binding.assigned {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "captured local `{}` is not definitely assigned at closure creation",
+                        binding.name
+                    ),
+                ));
+            }
+            captures.push(TClosureCapture {
+                local_id,
+                name: binding.name.clone(),
+                ty: scopes
+                    .effective_ty(local_id)
+                    .unwrap_or_else(|| binding.ty.clone()),
+            });
+        }
+
+        let id = if let Some(id) = expected_closure_instance_id {
+            id
+        } else {
+            let id = self.next_closure_id;
+            self.next_closure_id += 1;
+            id
+        };
+        let capture_tys = captures
+            .iter()
+            .map(|capture| capture.ty.clone())
+            .collect::<Vec<_>>();
+
+        let result_ty = if let Some((expected_ret, expected_params, target_fn)) = expected_sig {
+            if target_fn {
+                if !captures.is_empty() {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        "capturing closure cannot convert to `fn`",
+                    ));
+                }
+                Ty::Function {
+                    abi: None,
+                    ret: Box::new(expected_ret),
+                    params: expected_params,
+                }
+            } else {
+                Ty::ClosureInstance {
+                    id,
+                    ret: Box::new(expected_ret),
+                    params: expected_params,
+                    captures: capture_tys,
+                }
+            }
+        } else {
+            Ty::ClosureInstance {
+                id,
+                ret: Box::new(ret_ty.clone()),
+                params: checked_params.iter().map(|(_, _, ty)| ty.clone()).collect(),
+                captures: capture_tys,
+            }
+        };
+        Some(TExpr {
+            span,
+            ty: result_ty,
+            kind: TExprKind::Closure {
+                id,
+                params: checked_params,
+                captures,
+                body: checked_body,
+            },
+        })
+    }
+
+    fn check_call_with_sig(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        callee: TExpr,
+        ret: &Ty,
+        params: &[Ty],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if params.len() != args.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "call expects {} arguments, got {}",
+                    params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        let mut checked_args = Vec::new();
+        for (idx, arg) in args.iter().enumerate() {
+            let expected = params.get(idx);
+            let checked = self.check_expr(scopes, arg, expected)?;
+            if let Some(expected) = expected {
+                self.require_assignable(expected, &checked.ty, arg.span);
+            }
+            checked_args.push(checked);
+        }
+        Some(TExpr {
+            span,
+            ty: ret.clone(),
+            kind: TExprKind::Call {
+                callee: Box::new(callee),
+                args: checked_args,
+            },
+        })
+    }
+
+    fn infer_generic_function_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        sig: &FunctionSig,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<(FunctionSig, Vec<Ty>)> {
+        let mut subst = HashMap::<String, Ty>::new();
+        for (idx, ty) in type_args.iter().enumerate() {
+            let Some(generic) = sig.generics.get(idx) else {
+                self.diagnostics.push(Diagnostic::new(
+                    ty.span,
+                    format!("too many type arguments for `{}`", sig.name),
+                ));
+                return None;
+            };
+            let concrete = self.lower_type(ty);
+            subst.insert(generic.name.clone(), concrete);
+        }
+        if let Some(expected) = expected {
+            unify_ty(&sig.ret, expected, &mut subst);
+        }
+
+        if sig.params.len() != args.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "call expects {} arguments, got {}",
+                    sig.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+
+        let mut deferred_closure_args = Vec::new();
+        for (idx, arg) in args.iter().enumerate() {
+            let Some(param_ty) = sig.params.get(idx) else {
+                continue;
+            };
+            let expected_arg = substitute_ty(param_ty, &subst);
+            if contains_generic(&expected_arg) && expr_is_closure_literal(arg) {
+                deferred_closure_args.push(idx);
+                continue;
+            }
+            let checked = if contains_generic(&expected_arg) {
+                self.check_expr(scopes, arg, None)?
+            } else {
+                self.check_expr(scopes, arg, Some(&expected_arg))?
+            };
+            unify_ty(param_ty, &checked.ty, &mut subst);
+        }
+        for idx in deferred_closure_args {
+            let Some(param_ty) = sig.params.get(idx) else {
+                continue;
+            };
+            let Some(arg) = args.get(idx) else {
+                continue;
+            };
+            let expected_arg = substitute_ty(param_ty, &subst);
+            let checked = if contains_generic(&expected_arg) {
+                self.check_expr(scopes, arg, None)?
+            } else {
+                self.check_expr(scopes, arg, Some(&expected_arg))?
+            };
+            unify_ty(param_ty, &checked.ty, &mut subst);
+        }
+
+        for generic in &sig.generics {
+            if !subst.contains_key(&generic.name) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "could not infer generic parameter `{}` for `{}`",
+                        generic.name, sig.name
+                    ),
+                ));
+                return None;
+            }
+        }
+
+        self.check_generic_constraints(&sig.generics, &subst, span);
+        let instance_args = sig
+            .generics
+            .iter()
+            .filter_map(|generic| subst.get(&generic.name).cloned())
+            .collect::<Vec<_>>();
+        let params = sig
+            .params
+            .iter()
+            .map(|param| substitute_ty(param, &subst))
+            .collect::<Vec<_>>();
+        let ret = substitute_ty(&sig.ret, &subst);
+        Some((
+            FunctionSig {
+                def_id: sig.def_id,
+                module: sig.module,
+                name: sig.name.clone(),
+                abi: sig.abi.clone(),
+                noescape: sig.noescape,
+                has_body: sig.has_body,
+                ret,
+                params,
+                generics: Vec::new(),
+                exported: sig.exported,
+            },
+            instance_args,
+        ))
+    }
+
+    fn check_generic_constraints(
+        &mut self,
+        generics: &[GenericInfo],
+        subst: &HashMap<String, Ty>,
+        span: crate::span::Span,
+    ) {
+        self.check_generic_constraints_impl(generics, subst, span);
+    }
+
+    fn check_generic_constraints_impl(
+        &mut self,
+        generics: &[GenericInfo],
+        subst: &HashMap<String, Ty>,
+        span: crate::span::Span,
+    ) {
+        for generic in generics {
+            let Some(concrete) = subst.get(&generic.name) else {
+                continue;
+            };
+            let Some(constraint) = &generic.constraint else {
+                continue;
+            };
+            for term in &constraint.terms {
+                let args = term
+                    .args
+                    .iter()
+                    .map(|arg| self.lower_type_with_subst(arg, subst))
+                    .collect::<Vec<_>>();
+                let view =
+                    self.interface_view(&name_ref_canonical(&self.resolved, &term.name), &args);
+                for capability in view.positive {
+                    if term.negated {
+                        if self.type_implements_capability(
+                            &capability.name,
+                            &capability.args,
+                            concrete,
+                        ) {
+                            self.diagnostics.push(Diagnostic::new(
+                                span,
+                                format!(
+                                    "generic constraint not satisfied: `{}` has forbidden capability `{}`",
+                                    concrete, capability.name
+                                ),
+                            ));
+                        }
+                    } else if !self.type_implements_capability(
+                        &capability.name,
+                        &capability.args,
+                        concrete,
+                    ) {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "generic constraint not satisfied: `{}` does not implement `{}`",
+                                concrete, capability.name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    fn instantiate_generic_template_for_mono(
+        &mut self,
+        template: &CheckedGenericFunction,
+        instance_args: &[Ty],
+        def_id: DefId,
+        instance_name: String,
+    ) -> Option<CheckedFunction> {
+        if template.generics.len() != instance_args.len() {
+            self.diagnostics.push(Diagnostic::new(
+                template.function.signature.name.span,
+                format!(
+                    "generic function `{}` expects {} type arguments, got {}",
+                    template.name,
+                    template.generics.len(),
+                    instance_args.len()
+                ),
+            ));
+            return None;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(instance_args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        let generics = template
+            .generics
+            .iter()
+            .map(|generic| GenericInfo {
+                name: generic.name.clone(),
+                constraint: generic.constraint.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.check_generic_constraints(&generics, &subst, template.function.signature.name.span);
+        let params = template
+            .function
+            .signature
+            .params
+            .iter()
+            .map(|param| {
+                (
+                    param.local_id,
+                    param.name.name.clone(),
+                    self.lower_type_with_subst(&param.ty, &subst),
+                )
+            })
+            .collect::<Vec<_>>();
+        let body_params = template
+            .function
+            .signature
+            .params
+            .iter()
+            .zip(params.iter())
+            .filter_map(|(param, (_, _, ty))| {
+                param
+                    .local_id
+                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+            })
+            .collect::<Vec<_>>();
+        let ret = self.lower_type_with_subst(&template.function.signature.ret, &subst);
+        let instance_sig = FunctionSig {
+            def_id,
+            module: template.module,
+            name: instance_name.clone(),
+            abi: template.abi.clone(),
+            noescape: template.noescape,
+            has_body: true,
+            ret: ret.clone(),
+            params: params.iter().map(|(_, _, ty)| ty.clone()).collect(),
+            generics: Vec::new(),
+            exported: false,
+        };
+        self.functions_by_def.insert(def_id, instance_sig.clone());
+
+        let body = template.function.body.as_ref().and_then(|body| {
+            let previous_module = self.current_module;
+            self.current_module = template.module;
+            self.type_subst_stack.push(subst.clone());
+            let checked_body = self.check_function_body(&instance_sig, &body_params, body);
+            self.type_subst_stack.pop();
+            self.current_module = previous_module;
+            checked_body
+        });
+        body.map(|body| CheckedFunction {
+            def_id,
+            name: instance_name,
+            abi: template.abi.clone(),
+            noescape: template.noescape,
+            exported: false,
+            ret,
+            params,
+            body: Some(body),
+        })
+    }
+
+    fn check_interface_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        def_id: DefId,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let name = self.resolved.def(def_id).name.clone();
+        let Some(interface) = self.interfaces.get(&def_id).cloned() else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("interface alias `{name}` is not directly callable"),
+            ));
+            return None;
+        };
+        if interface.params.is_empty() || args.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("interface call `{name}` requires a receiver argument"),
+            ));
+            return None;
+        }
+
+        let explicit_args = type_args
+            .iter()
+            .map(|arg| self.lower_type(arg))
+            .collect::<Vec<_>>();
+        let first_arg = self.check_expr(scopes, &args[0], None)?;
+        if let Ty::DynamicInterface {
+            name: dyn_name,
+            args: dyn_args,
+        } = &first_arg.ty
+            && let Some(interface_ref) = self.dynamic_view_interface(dyn_name, dyn_args, &name)
+        {
+            return self.check_dynamic_interface_call(
+                scopes,
+                span,
+                interface,
+                &interface_ref.args,
+                first_arg,
+                &args[1..],
+            );
+        }
+
+        let mut subst = interface
+            .generics
+            .iter()
+            .cloned()
+            .map(|name| (name.clone(), Ty::Generic(name)))
+            .collect::<HashMap<_, _>>();
+        for (idx, ty) in explicit_args.iter().enumerate() {
+            let Some(generic) = interface.generics.iter().skip(1).nth(idx) else {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("too many type arguments for interface `{name}`"),
+                ));
+                return None;
+            };
+            subst.insert(generic.clone(), ty.clone());
+        }
+        if let Some(expected) = expected {
+            let ret = self.lower_type_with_subst(&interface.ret, &subst);
+            unify_ty(&ret, expected, &mut subst);
+        }
+        let mut checked_args = vec![first_arg.clone()];
+        for (idx, arg) in args.iter().enumerate() {
+            let Some(param) = interface.params.get(idx) else {
+                continue;
+            };
+            if idx == 0 {
+                unify_receiver_param(
+                    &self.lower_type_with_subst(&param.ty, &subst),
+                    &first_arg.ty,
+                    &mut subst,
+                );
+                continue;
+            }
+            let param_ty = self.lower_type_with_subst(&param.ty, &subst);
+            let checked = if contains_generic(&param_ty) {
+                self.check_expr(scopes, arg, None)?
+            } else {
+                self.check_expr(scopes, arg, Some(&param_ty))?
+            };
+            unify_ty(&param_ty, &checked.ty, &mut subst);
+            checked_args.push(checked);
+        }
+        if interface.params.len() != args.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "interface call `{name}` expects {} arguments, got {}",
+                    interface.params.len(),
+                    args.len()
+                ),
+            ));
+        }
+        for generic in &interface.generics {
+            if subst.get(generic).is_none_or(contains_generic) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("could not infer interface generic parameter `{generic}` for `{name}`"),
+                ));
+                return None;
+            }
+        }
+        let interface_args = interface
+            .generics
+            .iter()
+            .filter_map(|generic| subst.get(generic).cloned())
+            .collect::<Vec<_>>();
+        let receiver_ty = subst.get(&interface.generics[0]).cloned();
+        if let Some(implementation) = self.find_or_instantiate_impl_by_full_args(
+            &name,
+            &interface_args,
+            receiver_ty.as_ref(),
+            span,
+        ) {
+            let callee = TExpr {
+                span,
+                ty: Ty::Function {
+                    abi: None,
+                    ret: Box::new(implementation.ret.clone()),
+                    params: implementation.params.clone(),
+                },
+                kind: TExprKind::Function(implementation.function_def, name.clone()),
+            };
+            return Some(TExpr {
+                span,
+                ty: implementation.ret.clone(),
+                kind: TExprKind::Call {
+                    callee: Box::new(callee),
+                    args: checked_args,
+                },
+            });
+        }
+
+        if self.is_std_clone_message_interface(def_id)
+            && interface_non_receiver_args(&interface_args).is_empty()
+            && let Some(message_ty) = receiver_ty.clone()
+            && self.type_implements_builtin_message(&message_ty)
+        {
+            let ret = self.lower_type_with_subst(&interface.ret, &subst);
+            return Some(TExpr {
+                span,
+                ty: ret,
+                kind: TExprKind::BuiltinCloneMessage {
+                    value: Box::new(checked_args.remove(0)),
+                    message_ty,
+                },
+            });
+        }
+
+        let message = if self.is_std_clone_message_interface(def_id) {
+            receiver_ty
+                .as_ref()
+                .map(|ty| format!("`{ty}` does not implement `Message`"))
+                .unwrap_or_else(|| format!("no impl of `{name}` for this call"))
+        } else {
+            format!("no impl of `{name}` for this call")
+        };
+        if self.is_std_clone_message_interface(def_id)
+            && let Some(ty) = receiver_ty.as_ref()
+        {
+            self.push_message_requirement_diagnostic(span, message, ty);
+        } else {
+            self.diagnostics.push(Diagnostic::new(span, message));
+        }
+        None
+    }
+
+    fn check_dynamic_interface_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        interface: InterfaceSig,
+        interface_args: &[Ty],
+        receiver: TExpr,
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        let Ty::DynamicInterface { .. } = &receiver.ty else {
+            return None;
+        };
+        let mut subst = HashMap::<String, Ty>::new();
+        if let Some(receiver_generic) = interface.generics.first() {
+            subst.insert(
+                receiver_generic.clone(),
+                Ty::Generic(receiver_generic.clone()),
+            );
+        }
+        for (generic, arg) in interface.generics.iter().skip(1).zip(interface_args.iter()) {
+            subst.insert(generic.clone(), arg.clone());
+        }
+        if interface.generics.len() > 1 && interface_args.len() != interface.generics.len() - 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "dynamic interface `{}` requires {} non-receiver type arguments",
+                    interface.name,
+                    interface.generics.len() - 1
+                ),
+            ));
+            return None;
+        }
+        if args.len() + 1 != interface.params.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "dynamic interface call `{}` expects {} trailing arguments, got {}",
+                    interface.name,
+                    interface.params.len().saturating_sub(1),
+                    args.len()
+                ),
+            ));
+        }
+        let mut checked_args = Vec::new();
+        for (arg, param) in args.iter().zip(interface.params.iter().skip(1)) {
+            let param_ty = self.lower_type_with_subst(&param.ty, &subst);
+            let checked = self.check_expr(scopes, arg, Some(&param_ty))?;
+            self.require_assignable(&param_ty, &checked.ty, checked.span);
+            checked_args.push(checked);
+        }
+        let ret = self.lower_type_with_subst(&interface.ret, &subst);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::DynamicInterfaceCall {
+                interface_name: interface.name,
+                receiver: Box::new(receiver),
+                args: checked_args,
+            },
+        })
+    }
+
+    fn coerce_expr_to_expected(&mut self, expr: TExpr, expected: Option<&Ty>) -> TExpr {
+        let Some(expected) = expected else {
+            return expr;
+        };
+        if closure_instance_satisfies_signature(expected, &expr.ty) {
+            return TExpr {
+                span: expr.span,
+                ty: expected.clone(),
+                kind: expr.kind,
+            };
+        }
+        if expected.can_assign_from(&expr.ty)
+            || contains_generic(expected)
+            || matches!(expr.ty, Ty::Unknown)
+        {
+            if let (
+                Ty::Slice(expected_elem),
+                Ty::Array {
+                    elem: actual_elem, ..
+                },
+            ) = (expected, &expr.ty)
+                && expected_elem == actual_elem
+            {
+                return TExpr {
+                    span: expr.span,
+                    ty: expected.clone(),
+                    kind: TExprKind::ArrayToSlice(Box::new(expr)),
+                };
+            }
+            return expr;
+        }
+        if let (
+            Ty::Pointer {
+                nullable: false,
+                inner: expected_inner,
+            },
+            Ty::Pointer {
+                nullable: true,
+                inner: actual_inner,
+            },
+        ) = (expected, &expr.ty)
+            && expected_inner == actual_inner
+            && matches!(expr.kind, TExprKind::Literal(Literal::Null))
+        {
+            return expr;
+        }
+        if let Ty::DynamicInterface { name, args } = expected
+            && self.type_satisfies_dynamic_view(name, args, &expr.ty)
+        {
+            return TExpr {
+                span: expr.span,
+                ty: expected.clone(),
+                kind: TExprKind::MakeDynamicInterface {
+                    concrete_ty: expr.ty.clone(),
+                    expr: Box::new(expr),
+                },
+            };
+        }
+        if let Ty::Closure {
+            ret: expected_ret,
+            params: expected_params,
+        } = expected
+            && let Ty::Function {
+                abi: None,
+                ret: actual_ret,
+                params: actual_params,
+            } = expr.ty.unqualified()
+            && expected_params == actual_params
+            && expected_ret.can_assign_from(actual_ret)
+        {
+            return TExpr {
+                span: expr.span,
+                ty: expected.clone(),
+                kind: TExprKind::FunctionToClosure(Box::new(expr)),
+            };
+        }
+        self.diagnostics.push(Diagnostic::new(
+            expr.span,
+            format!("expected `{expected}`, got `{}`", expr.ty),
+        ));
+        expr
+    }
+
+    fn check_lvalue(
+        &mut self,
+        scopes: &mut LocalScopes,
+        expr: &Expr,
+        require_assigned: bool,
+    ) -> Option<TExpr> {
+        match &expr.kind {
+            ExprKind::Name(name_ref) => {
+                let Some(local_id) = self.resolved_local_id(name_ref) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("unresolved local `{}`", name_ref.display),
+                    ));
+                    return None;
+                };
+                let Some(binding) = scopes.get(local_id) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("unresolved local `{}`", name_ref.display),
+                    ));
+                    return None;
+                };
+                let name = binding.name.clone();
+                if require_assigned && !binding.assigned {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("local `{name}` is not definitely assigned"),
+                    ));
+                }
+                Some(TExpr {
+                    span: expr.span,
+                    ty: binding.ty.clone(),
+                    kind: TExprKind::Local(local_id, name),
+                })
+            }
+            ExprKind::Field { .. } | ExprKind::Arrow { .. } | ExprKind::Index { .. } => {
+                self.check_expr(scopes, expr, None)
+            }
+            ExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr: inner,
+            } => self.check_expr(scopes, inner, None).map(|inner| {
+                let ty = match &inner.ty {
+                    Ty::Pointer {
+                        nullable: false,
+                        inner,
+                    } => (**inner).clone(),
+                    _ => Ty::Unknown,
+                };
+                TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Unary {
+                        op: UnaryOp::Deref,
+                        expr: Box::new(inner),
+                    },
+                }
+            }),
+            _ => {
+                self.diagnostics
+                    .push(Diagnostic::new(expr.span, "expression is not assignable"));
+                None
+            }
+        }
+    }
+
+    fn diagnose_immutable_lvalue(
+        &mut self,
+        scopes: &LocalScopes,
+        target: &TExpr,
+        span: crate::span::Span,
+    ) {
+        let Some((local_id, name)) = lvalue_root_local(target) else {
+            return;
+        };
+        if scopes
+            .get(local_id)
+            .is_some_and(|binding| binding.immutable)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("cannot mutate immutable binding `{name}`"),
+            ));
+        }
+    }
+
+    fn check_variant_literal(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        variant_name: &str,
+        sig: VariantSig,
+        args: Vec<Expr>,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let enum_ty = match expected {
+            Some(Ty::Named { name, args }) if name == &sig.enum_name => Ty::Named {
+                name: name.clone(),
+                args: args.clone(),
+            },
+            Some(other) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "variant `{variant_name}` constructs `{}`, not `{other}`",
+                        sig.enum_name
+                    ),
+                ));
+                return None;
+            }
+            None if sig.enum_generics.is_empty() => Ty::Named {
+                name: sig.enum_name.clone(),
+                args: Vec::new(),
+            },
+            None => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("generic variant `{variant_name}` requires an expected enum type"),
+                ));
+                return None;
+            }
+        };
+
+        let Ty::Named {
+            name: enum_name,
+            args: enum_args,
+        } = &enum_ty
+        else {
+            unreachable!("variant enum type is always named");
+        };
+        if enum_args.len() != sig.enum_generics.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "enum `{enum_name}` expects {} type arguments, got {}",
+                    sig.enum_generics.len(),
+                    enum_args.len()
+                ),
+            ));
+            return None;
+        }
+        let subst = sig
+            .enum_generics
+            .iter()
+            .cloned()
+            .zip(enum_args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        let payload_tys = sig
+            .payload
+            .iter()
+            .filter_map(|ty| {
+                let ty = self.lower_type_with_subst(ty, &subst);
+                (!ty.is_void()).then_some(ty)
+            })
+            .collect::<Vec<_>>();
+        if args.len() != payload_tys.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "variant `{variant_name}` expects {} payload values, got {}",
+                    payload_tys.len(),
+                    args.len()
+                ),
+            ));
+            return None;
+        }
+
+        let mut payload = Vec::new();
+        for (arg, expected_ty) in args.iter().zip(payload_tys.iter()) {
+            let checked = self.check_expr(scopes, arg, Some(expected_ty))?;
+            self.require_assignable(expected_ty, &checked.ty, checked.span);
+            payload.push(checked);
+        }
+
+        self.ensure_enum_instance(&enum_ty);
+        let type_name = enum_instance_name(enum_name, enum_args);
+        Some(TExpr {
+            span,
+            ty: enum_ty,
+            kind: TExprKind::EnumLiteral {
+                type_name,
+                variant_name: variant_name.to_string(),
+                variant_index: sig.variant_index,
+                payload,
+            },
+        })
+    }
+
+    fn check_literal(
+        &mut self,
+        span: crate::span::Span,
+        literal: &Literal,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let ty = match literal {
+            Literal::Integer(raw) => {
+                let ty = expected
+                    .filter(|ty| {
+                        ty.is_integer() || matches!(ty.unqualified(), Ty::CSpelling { .. })
+                    })
+                    .cloned()
+                    .unwrap_or(Ty::I64);
+                if ty.is_integer() {
+                    self.check_integer_literal_range(span, raw, &ty, false);
+                }
+                ty
+            }
+            Literal::Float(raw) => {
+                let ty = expected
+                    .filter(|ty| {
+                        matches!(ty.unqualified(), Ty::F32 | Ty::F64 | Ty::CSpelling { .. })
+                    })
+                    .cloned()
+                    .unwrap_or(Ty::F64);
+                if matches!(ty.unqualified(), Ty::F32 | Ty::F64) {
+                    self.check_float_literal_range(span, raw, &ty);
+                }
+                ty
+            }
+            Literal::Char(raw) => {
+                self.check_char_literal_range(span, raw);
+                Ty::Char
+            }
+            Literal::String(_) => Ty::Slice(Box::new(Ty::Char)),
+            Literal::Bool(_) => Ty::Bool,
+            Literal::Null => match expected.map(Ty::unqualified) {
+                Some(Ty::Pointer { inner, .. }) => Ty::Pointer {
+                    nullable: true,
+                    inner: inner.clone(),
+                },
+                _ => {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        "`null` requires an expected nullable pointer type",
+                    ));
+                    Ty::Unknown
+                }
+            },
+        };
+        Some(TExpr {
+            span,
+            ty,
+            kind: TExprKind::Literal(literal.clone()),
+        })
+    }
+
+    fn check_integer_literal_range(
+        &mut self,
+        span: crate::span::Span,
+        raw: &str,
+        ty: &Ty,
+        negated: bool,
+    ) {
+        let Some(value) = parse_integer_literal_u128(raw) else {
+            self.diagnostics
+                .push(Diagnostic::new(span, "integer literal is out of range"));
+            return;
+        };
+        let Some((min_abs, max)) = integer_abs_limits(ty) else {
+            return;
+        };
+        let limit = if negated { min_abs } else { max };
+        if value > limit {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("integer literal `{raw}` is out of range for `{ty}`"),
+            ));
+        }
+    }
+
+    fn check_float_literal_range(&mut self, span: crate::span::Span, raw: &str, ty: &Ty) {
+        let normalized = raw.replace('_', "");
+        let Ok(value) = normalized.parse::<f64>() else {
+            self.diagnostics
+                .push(Diagnostic::new(span, "float literal is invalid"));
+            return;
+        };
+        if matches!(ty.unqualified(), Ty::F32) && value.is_finite() && value.abs() > f32::MAX as f64
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("float literal `{raw}` is out of range for `f32`"),
+            ));
+        }
+    }
+
+    fn check_char_literal_range(&mut self, span: crate::span::Span, raw: &str) {
+        if decode_char_literal_byte(raw).is_none() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("char literal `{raw}` is not a single byte"),
+            ));
+        }
+    }
+
+    fn check_binary(
+        &mut self,
+        op: BinaryOp,
+        left: &TExpr,
+        right: &TExpr,
+        span: crate::span::Span,
+    ) -> Ty {
+        use BinaryOp::*;
+        match op {
+            Or | And => {
+                self.require_assignable(&Ty::Bool, &left.ty, left.span);
+                self.require_assignable(&Ty::Bool, &right.ty, right.span);
+                Ty::Bool
+            }
+            Eq | Ne => {
+                if !left.ty.can_assign_from(&right.ty) && !right.ty.can_assign_from(&left.ty) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("cannot compare `{}` and `{}`", left.ty, right.ty),
+                    ));
+                }
+                if self.is_c_aggregate_value(&left.ty) || self.is_c_aggregate_value(&right.ty) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        "struct, enum, slice, and dynamic interface values cannot be compared directly",
+                    ));
+                }
+                if matches!(
+                    left.ty.unqualified(),
+                    Ty::Closure { .. } | Ty::ClosureInstance { .. }
+                ) || matches!(
+                    right.ty.unqualified(),
+                    Ty::Closure { .. } | Ty::ClosureInstance { .. }
+                ) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        "closure values cannot be compared directly",
+                    ));
+                }
+                Ty::Bool
+            }
+            Lt | Le | Gt | Ge => {
+                if !left.ty.is_numeric() && !matches!(left.ty.unqualified(), Ty::Char) {
+                    self.diagnostics.push(Diagnostic::new(
+                        left.span,
+                        format!("relational operator does not accept `{}`", left.ty),
+                    ));
+                }
+                self.require_assignable(&left.ty, &right.ty, right.span);
+                Ty::Bool
+            }
+            Add | Sub | Mul | Div | Rem => {
+                if !left.ty.is_numeric() {
+                    self.diagnostics.push(Diagnostic::new(
+                        left.span,
+                        format!("arithmetic operator does not accept `{}`", left.ty),
+                    ));
+                }
+                if matches!(op, Rem) && !left.ty.is_integer() {
+                    self.diagnostics
+                        .push(Diagnostic::new(left.span, "`%` requires integer operands"));
+                }
+                self.require_assignable(&left.ty, &right.ty, right.span);
+                left.ty.clone()
+            }
+        }
+    }
+
+    fn field_ty(&mut self, base: &Ty, field: &str, span: crate::span::Span) -> Option<Ty> {
+        match base.unqualified() {
+            Ty::Slice(elem) if field == "ptr" => Some(Ty::pointer_to((**elem).clone())),
+            Ty::Slice(_) if field == "len" => Some(Ty::Usize),
+            Ty::Named { name, args } => {
+                let instance_name = enum_instance_name(name, args);
+                let fields = self.structs.get(&instance_name)?;
+                if let Some((_, ty)) = fields.iter().find(|(candidate, _)| candidate == field) {
+                    Some(ty.clone())
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("unknown field `{field}` on `{base}`"),
+                    ));
+                    None
+                }
+            }
+            _ => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("type `{base}` has no field `{field}`"),
+                ));
+                None
+            }
+        }
+    }
+
+    fn require_assignable(&mut self, expected: &Ty, actual: &Ty, span: crate::span::Span) {
+        if contains_generic(expected) || contains_generic(actual) {
+            return;
+        }
+        if !expected.can_assign_from(actual) && !matches!(actual, Ty::Unknown) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("expected `{expected}`, got `{actual}`"),
+            ));
+        }
+    }
+
+    fn check_cast_allowed(&mut self, source: &Ty, target: &Ty, span: crate::span::Span) {
+        let source = source.unqualified();
+        let target = target.unqualified();
+        if matches!(source, Ty::Unknown) || matches!(target, Ty::Unknown) || source == target {
+            return;
+        }
+        if matches!(source, Ty::Bool) || matches!(target, Ty::Bool) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("cannot cast between `{source}` and `{target}`"),
+            ));
+            return;
+        }
+        if (source.is_numeric() || matches!(source, Ty::Char))
+            && (target.is_numeric() || matches!(target, Ty::Char))
+        {
+            return;
+        }
+        if (source.is_numeric() || matches!(source, Ty::Char | Ty::CSpelling { .. }))
+            && (target.is_numeric() || matches!(target, Ty::Char | Ty::CSpelling { .. }))
+        {
+            return;
+        }
+        if let (
+            Ty::Pointer {
+                nullable: source_nullable,
+                inner: source_inner,
+            },
+            Ty::Pointer {
+                nullable: target_nullable,
+                inner: target_inner,
+            },
+        ) = (source, target)
+        {
+            if *source_nullable && !*target_nullable {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "nullable pointer cannot be cast to non-null pointer without narrowing",
+                ));
+                return;
+            }
+            if matches!(source_inner.unqualified(), Ty::Void)
+                || matches!(target_inner.unqualified(), Ty::Void)
+            {
+                return;
+            }
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "pointer casts must go through `*void` or `?*void`",
+            ));
+            return;
+        }
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!("cannot cast `{source}` to `{target}`"),
+        ));
+    }
+
+    fn reject_invalid_plain_value_type(&mut self, ty: &Ty, span: crate::span::Span, context: &str) {
+        if ty.is_void() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{context} cannot have type `void`"),
+            ));
+            return;
+        }
+        if ty.is_never() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{context} cannot have type `never`"),
+            ));
+            return;
+        }
+        if self.is_opaque_by_value(ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{context} cannot use opaque struct `{ty}` by value"),
+            ));
+        }
+        if type_contains_plain_void_value(ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{context} cannot contain `void` or `never` by value"),
+            ));
+        }
+    }
+
+    fn reject_invalid_return_type(&mut self, ty: &Ty, span: crate::span::Span) {
+        if self.is_opaque_by_value(ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("function cannot return opaque struct `{ty}` by value"),
+            ));
+        }
+        match ty {
+            Ty::Array { elem, .. } | Ty::Slice(elem) if type_contains_plain_void_value(elem) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "function return type cannot contain `void` or `never` by value",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    fn is_opaque_by_value(&self, ty: &Ty) -> bool {
+        matches!(ty.unqualified(), Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name))
+    }
+
+    fn is_c_aggregate_value(&self, ty: &Ty) -> bool {
+        match ty.unqualified() {
+            Ty::Named { name, args } => {
+                let instance_name = enum_instance_name(name, args);
+                self.structs.contains_key(&instance_name)
+                    || self.checked_enums.contains_key(&instance_name)
+            }
+            Ty::Slice(_) | Ty::DynamicInterface { .. } => true,
+            _ => false,
+        }
+    }
+
+    fn find_impl(&self, interface_name: &str, args: &[Ty], receiver_ty: &Ty) -> Option<&ImplSig> {
+        self.impls.iter().find(|implementation| {
+            implementation.interface_name == interface_name
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|candidate| candidate == receiver_ty)
+                && interface_non_receiver_args(&implementation.interface_args) == args
+        })
+    }
+
+    fn type_implements_capability(
+        &mut self,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        self.find_impl(interface_name, args, receiver_ty).is_some()
+            || self
+                .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
+                .is_some()
+            || (self.is_builtin_clone_message_name(interface_name)
+                && args.is_empty()
+                && self.type_implements_message(receiver_ty))
+            || (self.is_builtin_share_handle_name(interface_name)
+                && args.is_empty()
+                && self.type_implements_share_handle(receiver_ty))
+            || (self.is_builtin_thread_local_name(interface_name)
+                && args.is_empty()
+                && self.type_implements_thread_local(receiver_ty))
+    }
+
+    fn type_implements_message(&mut self, ty: &Ty) -> bool {
+        self.type_implements_message_inner(ty, &mut HashSet::new())
+    }
+
+    fn push_message_requirement_diagnostic(
+        &mut self,
+        span: crate::span::Span,
+        message: impl Into<String>,
+        ty: &Ty,
+    ) {
+        let message = message.into();
+        let mut diagnostic = Diagnostic::new(span, message.clone());
+        if let Some(failure) = self.message_derivation_failure(ty) {
+            let failure = self.format_message_derivation_failure(&failure);
+            diagnostic.message = format!("{message}; {failure}");
+            diagnostic = diagnostic.note(failure);
+        }
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn message_derivation_failure(&mut self, ty: &Ty) -> Option<MessageDerivationFailure> {
+        self.message_derivation_failure_inner(ty, &mut HashSet::new())
+    }
+
+    fn message_derivation_failure_inner(
+        &mut self,
+        ty: &Ty,
+        seen: &mut HashSet<Ty>,
+    ) -> Option<MessageDerivationFailure> {
+        let ty = ty.unqualified();
+        if !seen.insert(ty.clone()) {
+            return None;
+        }
+        if self.type_has_clone_message_impl(ty) || self.type_implements_builtin_message(ty) {
+            return None;
+        }
+        if let Some(reason) = self.direct_message_block_reason(ty) {
+            return Some(MessageDerivationFailure {
+                path: Vec::new(),
+                ty: ty.clone(),
+                reason,
+            });
+        }
+        match ty {
+            Ty::Const(inner) => self.message_derivation_failure_inner(inner, seen),
+            Ty::Array { elem, .. } => {
+                self.message_derivation_failure_inner(elem, seen)
+                    .map(|mut failure| {
+                        failure.path.insert(0, "array element".to_string());
+                        failure
+                    })
+            }
+            Ty::ClosureInstance { captures, .. } => {
+                captures.iter().enumerate().find_map(|(idx, capture)| {
+                    self.message_derivation_failure_inner(capture, seen)
+                        .map(|mut failure| {
+                            failure.path.insert(0, format!("closure capture #{idx}"));
+                            failure
+                        })
+                })
+            }
+            Ty::Named { name, args } => {
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                self.ensure_struct_instance(&instance_ty);
+                self.ensure_enum_instance(&instance_ty);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    return fields.into_iter().find_map(|(field, field_ty)| {
+                        self.message_derivation_failure_inner(&field_ty, seen)
+                            .map(|mut failure| {
+                                failure.path.insert(0, format!("field `{field}`"));
+                                failure
+                            })
+                    });
+                }
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    return enm.variants.into_iter().find_map(|variant| {
+                        variant
+                            .payload
+                            .into_iter()
+                            .enumerate()
+                            .find_map(|(idx, payload)| {
+                                self.message_derivation_failure_inner(&payload, seen).map(
+                                    |mut failure| {
+                                        failure.path.insert(
+                                            0,
+                                            format!("variant `{}` payload #{idx}", variant.name),
+                                        );
+                                        failure
+                                    },
+                                )
+                            })
+                    });
+                }
+                Some(MessageDerivationFailure {
+                    path: Vec::new(),
+                    ty: ty.clone(),
+                    reason: MessageDerivationFailureReason::Unknown,
+                })
+            }
+            Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Function { abi: None, .. } => None,
+            Ty::Pointer { .. }
+            | Ty::Slice(_)
+            | Ty::DynamicInterface { .. }
+            | Ty::Function { abi: Some(_), .. }
+            | Ty::Closure { .. }
+            | Ty::Generic(_)
+            | Ty::Unknown => Some(MessageDerivationFailure {
+                path: Vec::new(),
+                ty: ty.clone(),
+                reason: self
+                    .direct_message_block_reason(ty)
+                    .unwrap_or(MessageDerivationFailureReason::Unknown),
+            }),
+        }
+    }
+
+    fn direct_message_block_reason(&mut self, ty: &Ty) -> Option<MessageDerivationFailureReason> {
+        let ty = ty.unqualified();
+        if self.find_impl("thread_local_marker", &[], ty).is_some()
+            || self
+                .instantiate_generic_impl_for_receiver("thread_local_marker", &[], ty, None)
+                .is_some()
+        {
+            return Some(MessageDerivationFailureReason::ExplicitThreadLocal);
+        }
+        match ty {
+            Ty::Const(inner) => self.direct_message_block_reason(inner),
+            Ty::Pointer { .. } => Some(MessageDerivationFailureReason::RawPointer),
+            Ty::Slice(_) => Some(MessageDerivationFailureReason::ActorLocalSlice),
+            Ty::DynamicInterface { .. } => Some(MessageDerivationFailureReason::DynamicInterface),
+            Ty::Function { abi: Some(_), .. } => {
+                Some(MessageDerivationFailureReason::ExternCFunctionPointer)
+            }
+            Ty::Closure { .. } => Some(MessageDerivationFailureReason::ErasedClosure),
+            Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name) => {
+                Some(MessageDerivationFailureReason::OpaqueCHandle)
+            }
+            Ty::Generic(_) => Some(MessageDerivationFailureReason::Generic),
+            Ty::Unknown => Some(MessageDerivationFailureReason::Unknown),
+            _ => None,
+        }
+    }
+
+    fn format_message_derivation_failure(&self, failure: &MessageDerivationFailure) -> String {
+        let location = if failure.path.is_empty() {
+            format!("`{}`", failure.ty)
+        } else {
+            format!("{} (`{}`)", failure.path.join(" -> "), failure.ty)
+        };
+        let reason = match failure.reason {
+            MessageDerivationFailureReason::ExplicitThreadLocal => {
+                "has an explicit `ThreadLocal` policy"
+            }
+            MessageDerivationFailureReason::RawPointer => {
+                "contains a raw pointer, which is actor-local by default"
+            }
+            MessageDerivationFailureReason::ActorLocalSlice => {
+                "contains a slice view without an owning `Message` container policy"
+            }
+            MessageDerivationFailureReason::DynamicInterface => {
+                "contains a dynamic interface value without a concrete message path"
+            }
+            MessageDerivationFailureReason::ExternCFunctionPointer => {
+                "contains an extern C function pointer"
+            }
+            MessageDerivationFailureReason::ErasedClosure => {
+                "contains an erased closure signature rather than a concrete closure value"
+            }
+            MessageDerivationFailureReason::OpaqueCHandle => {
+                "contains an opaque C handle without an explicit wrapper policy"
+            }
+            MessageDerivationFailureReason::Generic => {
+                "still contains an unconstrained generic type"
+            }
+            MessageDerivationFailureReason::Unknown => "has no structural `Message` derivation",
+        };
+        format!("Message derivation blocked at {location}: {reason}.")
+    }
+
+    fn push_actor_handler_capture_diagnostics(&mut self, handler: &TExpr) {
+        let TExprKind::Closure { captures, .. } = &handler.kind else {
+            return;
+        };
+        for capture in captures {
+            let Some(failure) = self.message_derivation_failure(&capture.ty) else {
+                continue;
+            };
+            self.diagnostics.push(
+                Diagnostic::new(
+                    handler.span,
+                    format!(
+                        "actor handler captures actor-local `{}` as `{}`; {}",
+                        capture.ty,
+                        capture.name,
+                        self.format_message_derivation_failure(&failure)
+                    ),
+                )
+                .note(format!(
+                    "Cross-actor handler movement requires every captured value to implement `Message`; {}",
+                    self.format_message_derivation_failure(&failure)
+                )),
+            );
+        }
+    }
+
+    fn type_implements_builtin_message(&mut self, ty: &Ty) -> bool {
+        if self.type_has_direct_thread_local_policy(ty) {
+            return false;
+        }
+        self.type_implements_builtin_message_inner(ty, &mut HashSet::new())
+    }
+
+    fn type_implements_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
+        if self.find_impl("clone_message", &[], ty).is_some() {
+            return true;
+        }
+        if self
+            .instantiate_generic_impl_for_receiver("clone_message", &[], ty, None)
+            .is_some()
+        {
+            return true;
+        }
+        if self.type_has_direct_thread_local_policy(ty) {
+            return false;
+        }
+        self.type_implements_builtin_message_inner(ty, seen)
+    }
+
+    fn type_implements_builtin_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
+        let ty = ty.unqualified();
+        if !seen.insert(ty.clone()) {
+            return true;
+        }
+        match ty {
+            Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. } => true,
+            Ty::Const(inner) => self.type_implements_message_inner(inner, seen),
+            Ty::Array { elem, .. } => self.type_implements_message_inner(elem, seen),
+            Ty::Function { abi: None, .. } => true,
+            Ty::ClosureInstance { captures, .. } => captures
+                .iter()
+                .all(|capture| self.type_implements_message_inner(capture, seen)),
+            Ty::Named { name, args } => {
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                self.ensure_struct_instance(&instance_ty);
+                self.ensure_enum_instance(&instance_ty);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    return fields
+                        .iter()
+                        .all(|(_, field_ty)| self.type_implements_message_inner(field_ty, seen));
+                }
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    return enm.variants.iter().all(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .all(|payload| self.type_implements_message_inner(payload, seen))
+                    });
+                }
+                false
+            }
+            Ty::Never
+            | Ty::Void
+            | Ty::Pointer { .. }
+            | Ty::Slice(_)
+            | Ty::DynamicInterface { .. }
+            | Ty::Function { abi: Some(_), .. }
+            | Ty::Closure { .. }
+            | Ty::Generic(_)
+            | Ty::Unknown => false,
+        }
+    }
+
+    fn type_implements_share_handle(&mut self, ty: &Ty) -> bool {
+        self.find_impl("share_handle_marker", &[], ty).is_some()
+            || self
+                .instantiate_generic_impl_for_receiver("share_handle_marker", &[], ty, None)
+                .is_some()
+    }
+
+    fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
+        self.type_implements_thread_local_inner(ty, &mut HashSet::new())
+    }
+
+    fn type_implements_thread_local_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
+        let ty = ty.unqualified();
+        if !seen.insert(ty.clone()) {
+            return false;
+        }
+
+        if self.type_has_direct_thread_local_policy(ty) {
+            return true;
+        }
+        if self.type_implements_share_handle(ty) || self.type_has_clone_message_impl(ty) {
+            return false;
+        }
+
+        match ty {
+            Ty::Const(inner) => self.type_implements_thread_local_inner(inner, seen),
+            Ty::Array { elem, .. } => self.type_implements_thread_local_inner(elem, seen),
+            Ty::ClosureInstance { captures, .. } => captures
+                .iter()
+                .any(|capture| self.type_implements_thread_local_inner(capture, seen)),
+            Ty::Named { name, args } => {
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    return fields.iter().any(|(_, field_ty)| {
+                        self.type_implements_thread_local_inner(field_ty, seen)
+                    });
+                }
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    return enm.variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .any(|payload| self.type_implements_thread_local_inner(payload, seen))
+                    });
+                }
+                false
+            }
+            Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Pointer { .. }
+            | Ty::Slice(_)
+            | Ty::DynamicInterface { .. }
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Generic(_)
+            | Ty::Unknown => false,
+        }
+    }
+
+    fn type_has_clone_message_impl(&mut self, ty: &Ty) -> bool {
+        self.find_impl("clone_message", &[], ty).is_some()
+            || self
+                .instantiate_generic_impl_for_receiver("clone_message", &[], ty, None)
+                .is_some()
+    }
+
+    fn type_has_direct_thread_local_policy(&mut self, ty: &Ty) -> bool {
+        let ty = ty.unqualified();
+        if self.find_impl("thread_local_marker", &[], ty).is_some() {
+            return true;
+        }
+        if self
+            .instantiate_generic_impl_for_receiver("thread_local_marker", &[], ty, None)
+            .is_some()
+        {
+            return true;
+        }
+
+        match ty {
+            Ty::Const(inner) => self.type_has_direct_thread_local_policy(inner),
+            Ty::Pointer { .. }
+            | Ty::Slice(_)
+            | Ty::DynamicInterface { .. }
+            | Ty::Function { abi: Some(_), .. }
+            | Ty::Closure { .. } => true,
+            Ty::Named { name, args } => {
+                if args.is_empty() && self.opaque_structs.contains(name) {
+                    return true;
+                }
+                false
+            }
+            Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Array { .. }
+            | Ty::Function { abi: None, .. }
+            | Ty::ClosureInstance { .. }
+            | Ty::Generic(_)
+            | Ty::Unknown => false,
+        }
+    }
+
+    fn find_impl_by_full_args(
+        &self,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+    ) -> Option<ImplSig> {
+        find_impl_in(&self.impls, interface_name, interface_args, receiver_ty).cloned()
+    }
+
+    fn find_or_instantiate_impl_by_full_args(
+        &mut self,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+        span: crate::span::Span,
+    ) -> Option<ImplSig> {
+        self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+            .or_else(|| {
+                self.instantiate_generic_impl(
+                    interface_name,
+                    interface_args,
+                    receiver_ty,
+                    Some(span),
+                )
+            })
+    }
+
+    fn instantiate_generic_impl_for_receiver(
+        &mut self,
+        interface_name: &str,
+        non_receiver_args: &[Ty],
+        receiver_ty: &Ty,
+        span: Option<crate::span::Span>,
+    ) -> Option<ImplSig> {
+        let interface_args = std::iter::once(receiver_ty.clone())
+            .chain(non_receiver_args.iter().cloned())
+            .collect::<Vec<_>>();
+        self.instantiate_generic_impl(interface_name, &interface_args, Some(receiver_ty), span)
+    }
+
+    fn instantiate_generic_impl(
+        &mut self,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+        span: Option<crate::span::Span>,
+    ) -> Option<ImplSig> {
+        if let Some(existing) =
+            self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+        {
+            return Some(existing);
+        }
+        let templates = self.generic_impls.clone();
+        let mut matches = Vec::new();
+        for template in templates {
+            if template.interface_name != interface_name {
+                continue;
+            }
+            let mut subst = template
+                .generics
+                .iter()
+                .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
+                .collect::<HashMap<_, _>>();
+            if template.interface_args.len() != interface_args.len() {
+                continue;
+            }
+            if !template
+                .interface_args
+                .iter()
+                .zip(interface_args.iter())
+                .all(|(pattern, actual)| unify_ty(pattern, actual, &mut subst))
+            {
+                continue;
+            }
+            if let (Some(pattern), Some(actual)) = (template.receiver_ty.as_ref(), receiver_ty)
+                && !unify_ty(pattern, actual, &mut subst)
+            {
+                continue;
+            }
+            if template
+                .generics
+                .iter()
+                .any(|generic| subst.get(&generic.name).is_none_or(contains_generic))
+            {
+                continue;
+            }
+            let diagnostic_count = self.diagnostics.len();
+            self.check_generic_constraints(
+                &template.generics,
+                &subst,
+                span.unwrap_or(template.item_span),
+            );
+            if self.diagnostics.len() != diagnostic_count {
+                self.diagnostics.truncate(diagnostic_count);
+                continue;
+            }
+            let params = template
+                .params
+                .iter()
+                .map(|ty| substitute_ty(ty, &subst))
+                .collect::<Vec<_>>();
+            let ret = substitute_ty(&template.ret, &subst);
+            let concrete_interface_args = template
+                .interface_args
+                .iter()
+                .map(|ty| substitute_ty(ty, &subst))
+                .collect::<Vec<_>>();
+            let concrete_receiver = template
+                .receiver_ty
+                .as_ref()
+                .map(|ty| substitute_ty(ty, &subst));
+            matches.push((
+                template,
+                concrete_interface_args,
+                concrete_receiver,
+                ret,
+                params,
+                subst,
+            ));
+        }
+        if matches.len() > 1 {
+            if self.is_builtin_marker_interface_name(interface_name) {
+                self.diagnostics.push(Diagnostic::new(
+                    span.unwrap_or(matches[0].0.item_span),
+                    format!("ambiguous generic impls for marker interface `{interface_name}`"),
+                ));
+            }
+            return None;
+        }
+        if let Some((template, concrete_interface_args, concrete_receiver, ret, params, subst)) =
+            matches.into_iter().next()
+        {
+            return Some(self.instantiate_impl_body(
+                template.module,
+                &template.decl,
+                &template.interface_name,
+                concrete_interface_args,
+                concrete_receiver,
+                ret,
+                params,
+                &subst,
+            ));
+        }
+        None
+    }
+
+    fn merge_existing_impls(&mut self, impls: &[CheckedImpl]) {
+        for implementation in impls {
+            if self
+                .find_impl_by_full_args(
+                    &implementation.interface_name,
+                    &implementation.interface_args,
+                    implementation.receiver_ty.as_ref(),
+                )
+                .is_some()
+            {
+                continue;
+            }
+            self.impls.push(ImplSig {
+                interface_name: implementation.interface_name.clone(),
+                interface_args: implementation.interface_args.clone(),
+                receiver_ty: implementation.receiver_ty.clone(),
+                function_def: implementation.function_def,
+                ret: implementation.ret.clone(),
+                params: implementation.params.clone(),
+            });
+        }
+    }
+
+    fn dynamic_view_interface(
+        &self,
+        dyn_name: &str,
+        dyn_args: &[Ty],
+        interface_name: &str,
+    ) -> Option<InterfaceRefTy> {
+        self.interface_view(dyn_name, dyn_args)
+            .positive
+            .into_iter()
+            .find(|entry| entry.name == interface_name)
+    }
+
+    fn type_satisfies_dynamic_view(&mut self, name: &str, args: &[Ty], actual: &Ty) -> bool {
+        let view = self.interface_view(name, args);
+        let receiver_ty = receiver_ty_from_value_ty(actual);
+        view.positive
+            .iter()
+            .all(|entry| self.type_implements_capability(&entry.name, &entry.args, &receiver_ty))
+    }
+
+    fn interface_view(&self, name: &str, args: &[Ty]) -> InterfaceView {
+        if let Some(alias) = self
+            .interface_alias_names
+            .get(name)
+            .and_then(|def_id| self.interface_aliases.get(def_id))
+        {
+            return self.interface_view_from_expr(alias, args);
+        }
+        InterfaceView {
+            positive: vec![InterfaceRefTy {
+                name: name.to_string(),
+                args: args.to_vec(),
+            }],
+        }
+    }
+
+    fn interface_view_from_expr(&self, expr: &InterfaceExpr, _args: &[Ty]) -> InterfaceView {
+        let mut view = InterfaceView::default();
+        view_add_term(&mut view, &expr.first, &self.resolved);
+        for (op, term) in &expr.rest {
+            match op {
+                InterfaceOp::Add => view_add_term(&mut view, term, &self.resolved),
+                InterfaceOp::Sub => {
+                    let name = name_ref_canonical(&self.resolved, &term.name);
+                    view.positive.retain(|entry| entry.name != name);
+                }
+            }
+        }
+        view
+    }
+
+    fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
+        let Ty::Named { name, args } = ty else {
+            return None;
+        };
+        if name != "Result" || args.len() != 2 {
+            return None;
+        }
+        if !self.current_module_can_see_std_result() {
+            return None;
+        }
+        let template = self.enum_templates.get(name)?;
+        if !template.variants.iter().any(|variant| variant.name == "Ok")
+            || !template
+                .variants
+                .iter()
+                .any(|variant| variant.name == "Err")
+        {
+            return None;
+        }
+        Some((args[0].clone(), args[1].clone()))
+    }
+
+    fn current_module_can_see_std_result(&self) -> bool {
+        if self.resolved.modules[self.current_module.0]
+            .path
+            .ends_with(std::path::Path::new("std/result.ciel"))
+        {
+            return true;
+        }
+        matches!(
+            self.resolved
+                .lookup_bare(self.current_module, "Result", &[DefKind::Enum]),
+            Ok(Some(def_id)) if self.is_std_result_enum(def_id)
+        )
+    }
+
+    fn is_std_result_enum(&self, def_id: DefId) -> bool {
+        let def = self.resolved.def(def_id);
+        def.name == "Result"
+            && def.kind == DefKind::Enum
+            && self.resolved.modules[def.module.0]
+                .path
+                .ends_with(std::path::Path::new("std/result.ciel"))
+    }
+
+    fn is_builtin_clone_message_name(&self, name: &str) -> bool {
+        name == "clone_message"
+            && self
+                .interface_names
+                .get(name)
+                .is_some_and(|def_id| self.is_std_clone_message_interface(*def_id))
+    }
+
+    fn is_builtin_share_handle_name(&self, name: &str) -> bool {
+        name == "share_handle_marker"
+            && self
+                .interface_names
+                .get(name)
+                .is_some_and(|def_id| self.is_std_share_handle_interface(*def_id))
+    }
+
+    fn is_builtin_thread_local_name(&self, name: &str) -> bool {
+        name == "thread_local_marker"
+            && self
+                .interface_names
+                .get(name)
+                .is_some_and(|def_id| self.is_std_thread_local_interface(*def_id))
+    }
+
+    fn is_builtin_marker_interface_name(&self, name: &str) -> bool {
+        self.is_builtin_clone_message_name(name)
+            || self.is_builtin_share_handle_name(name)
+            || self.is_builtin_thread_local_name(name)
+    }
+
+    fn is_std_clone_message_interface(&self, def_id: DefId) -> bool {
+        self.is_std_message_interface(def_id, "clone_message")
+    }
+
+    fn is_std_share_handle_interface(&self, def_id: DefId) -> bool {
+        self.is_std_message_interface(def_id, "share_handle_marker")
+    }
+
+    fn is_std_thread_local_interface(&self, def_id: DefId) -> bool {
+        self.is_std_message_interface(def_id, "thread_local_marker")
+    }
+
+    fn is_std_message_interface(&self, def_id: DefId, name: &str) -> bool {
+        let def = self.resolved.def(def_id);
+        def.name == name
+            && self.resolved.modules[def.module.0]
+                .path
+                .ends_with(std::path::Path::new("std/message.ciel"))
+    }
+
+    fn is_std_actor_function(&self, sig: &FunctionSig, name: &str) -> bool {
+        sig.name == name
+            && self.resolved.modules[sig.module.0]
+                .path
+                .ends_with(std::path::Path::new("std/actor.ciel"))
+    }
+
+    fn is_std_meta_function(&self, sig: &FunctionSig, name: &str) -> bool {
+        sig.name == name
+            && self.resolved.modules[sig.module.0]
+                .path
+                .ends_with(std::path::Path::new("std/meta.ciel"))
+    }
+
+    fn apply_condition_narrowing(&mut self, scopes: &mut LocalScopes, cond: &TExpr, truth: bool) {
+        for (local_id, ty) in nullable_narrowings_from_condition(cond, truth) {
+            scopes.narrow_to(local_id, ty);
+        }
+    }
+}
+
+fn pattern_span(pattern: &Pattern) -> crate::span::Span {
+    match pattern {
+        Pattern::Variant(name, _) => name.span,
+        Pattern::Wildcard(span) => *span,
+    }
+}
+
+fn nullable_narrowings_from_condition(cond: &TExpr, truth: bool) -> Vec<(LocalId, Ty)> {
+    match &cond.kind {
+        TExprKind::Binary { op, left, right } if matches!(op, BinaryOp::Eq | BinaryOp::Ne) => {
+            let should_narrow =
+                (matches!(op, BinaryOp::Ne) && truth) || (matches!(op, BinaryOp::Eq) && !truth);
+            if !should_narrow {
+                return Vec::new();
+            }
+            nullable_comparison_local(left, right)
+                .or_else(|| nullable_comparison_local(right, left))
+                .into_iter()
+                .collect()
+        }
+        TExprKind::Binary {
+            op: BinaryOp::And,
+            left,
+            right,
+        } if truth => {
+            let mut narrowings = nullable_narrowings_from_condition(left, true);
+            narrowings.extend(nullable_narrowings_from_condition(right, true));
+            narrowings
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn nullable_comparison_local(candidate: &TExpr, other: &TExpr) -> Option<(LocalId, Ty)> {
+    if !matches!(other.kind, TExprKind::Literal(Literal::Null)) {
+        return None;
+    }
+    let TExprKind::Local(local_id, _) = candidate.kind else {
+        return None;
+    };
+    let Ty::Pointer {
+        nullable: true,
+        inner,
+    } = &candidate.ty
+    else {
+        return None;
+    };
+    Some((
+        local_id,
+        Ty::Pointer {
+            nullable: false,
+            inner: inner.clone(),
+        },
+    ))
+}
+
+fn bool_literal_is(expr: &TExpr, expected: bool) -> bool {
+    matches!(expr.kind, TExprKind::Literal(Literal::Bool(value)) if value == expected)
+}
+
+fn expr_is_closure_literal(expr: &Expr) -> bool {
+    match &expr.kind {
+        ExprKind::Closure { .. } => true,
+        ExprKind::Cast { expr, .. } => expr_is_closure_literal(expr),
+        _ => false,
+    }
+}
+
+fn lvalue_root_local(expr: &TExpr) -> Option<(LocalId, &str)> {
+    match &expr.kind {
+        TExprKind::Local(local_id, name) => Some((*local_id, name.as_str())),
+        TExprKind::Field { base, .. } | TExprKind::Index { base, .. } => lvalue_root_local(base),
+        _ => None,
+    }
+}
+
+fn collect_closure_body_declared_locals(body: &TClosureBody, out: &mut HashSet<LocalId>) {
+    match body {
+        TClosureBody::Expr(expr) => collect_expr_declared_locals(expr, out),
+        TClosureBody::Block(block) => collect_block_declared_locals(block, out),
+    }
+}
+
+fn collect_block_declared_locals(block: &TBlock, out: &mut HashSet<LocalId>) {
+    for stmt in &block.statements {
+        collect_stmt_declared_locals(stmt, out);
+    }
+}
+
+fn collect_stmt_declared_locals(stmt: &TStmt, out: &mut HashSet<LocalId>) {
+    match &stmt.kind {
+        TStmtKind::Block(block) => collect_block_declared_locals(block, out),
+        TStmtKind::VarDecl { local_id, init, .. } => {
+            out.insert(*local_id);
+            if let Some(init) = init {
+                collect_expr_declared_locals(init, out);
+            }
+        }
+        TStmtKind::Assign { target, value } => {
+            collect_expr_declared_locals(target, out);
+            collect_expr_declared_locals(value, out);
+        }
+        TStmtKind::If {
+            cond,
+            then_block,
+            else_branch,
+        } => {
+            collect_expr_declared_locals(cond, out);
+            collect_block_declared_locals(then_block, out);
+            if let Some(else_branch) = else_branch {
+                collect_stmt_declared_locals(else_branch, out);
+            }
+        }
+        TStmtKind::While { cond, body } => {
+            collect_expr_declared_locals(cond, out);
+            collect_block_declared_locals(body, out);
+        }
+        TStmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_for_declared_locals(init, out);
+            }
+            if let Some(cond) = cond {
+                collect_expr_declared_locals(cond, out);
+            }
+            if let Some(step) = step {
+                collect_for_declared_locals(step, out);
+            }
+            collect_block_declared_locals(body, out);
+        }
+        TStmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            collect_expr_declared_locals(expr, out);
+            for case in cases {
+                collect_pattern_declared_locals(&case.pattern, out);
+                for stmt in &case.statements {
+                    collect_stmt_declared_locals(stmt, out);
+                }
+            }
+            for stmt in default {
+                collect_stmt_declared_locals(stmt, out);
+            }
+        }
+        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            collect_expr_declared_locals(expr, out);
+        }
+        TStmtKind::Return(None)
+        | TStmtKind::Break
+        | TStmtKind::Continue
+        | TStmtKind::Unsupported => {}
+    }
+}
+
+fn collect_for_declared_locals(init: &TForInit, out: &mut HashSet<LocalId>) {
+    match init {
+        TForInit::VarDecl { local_id, init, .. } => {
+            out.insert(*local_id);
+            if let Some(init) = init {
+                collect_expr_declared_locals(init, out);
+            }
+        }
+        TForInit::Assign { target, value } => {
+            collect_expr_declared_locals(target, out);
+            collect_expr_declared_locals(value, out);
+        }
+        TForInit::Expr(expr) => collect_expr_declared_locals(expr, out),
+    }
+}
+
+fn collect_pattern_declared_locals(pattern: &TPattern, out: &mut HashSet<LocalId>) {
+    match pattern {
+        TPattern::Binding { local_id, .. } => {
+            out.insert(*local_id);
+        }
+        TPattern::Variant { payload, .. } => {
+            for pattern in payload {
+                collect_pattern_declared_locals(pattern, out);
+            }
+        }
+        TPattern::Wildcard { .. } => {}
+    }
+}
+
+fn collect_expr_declared_locals(expr: &TExpr, out: &mut HashSet<LocalId>) {
+    match &expr.kind {
+        TExprKind::Closure { params, body, .. } => {
+            for (local_id, _, _) in params {
+                out.insert(*local_id);
+            }
+            collect_closure_body_declared_locals(body, out);
+        }
+        TExprKind::FunctionToClosure(inner)
+        | TExprKind::Unary { expr: inner, .. }
+        | TExprKind::Cast { expr: inner, .. }
+        | TExprKind::Try(inner)
+        | TExprKind::ArrayToSlice(inner) => collect_expr_declared_locals(inner, out),
+        TExprKind::Binary { left, right, .. } => {
+            collect_expr_declared_locals(left, out);
+            collect_expr_declared_locals(right, out);
+        }
+        TExprKind::Call { callee, args } => {
+            collect_expr_declared_locals(callee, out);
+            for arg in args {
+                collect_expr_declared_locals(arg, out);
+            }
+        }
+        TExprKind::MakeDynamicInterface { expr, .. } => collect_expr_declared_locals(expr, out),
+        TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            collect_expr_declared_locals(receiver, out);
+            for arg in args {
+                collect_expr_declared_locals(arg, out);
+            }
+        }
+        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
+            collect_expr_declared_locals(base, out);
+        }
+        TExprKind::Index { base, index } => {
+            collect_expr_declared_locals(base, out);
+            collect_expr_declared_locals(index, out);
+        }
+        TExprKind::Slice { base, start, end } => {
+            collect_expr_declared_locals(base, out);
+            if let Some(start) = start {
+                collect_expr_declared_locals(start, out);
+            }
+            if let Some(end) = end {
+                collect_expr_declared_locals(end, out);
+            }
+        }
+        TExprKind::BuiltinCloneMessage { value, .. } => collect_expr_declared_locals(value, out),
+        TExprKind::ActorSpawn {
+            initial_state,
+            handler,
+            ..
+        } => {
+            collect_expr_declared_locals(initial_state, out);
+            collect_expr_declared_locals(handler, out);
+        }
+        TExprKind::ActorSend { actor, value, .. } => {
+            collect_expr_declared_locals(actor, out);
+            collect_expr_declared_locals(value, out);
+        }
+        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
+            collect_expr_declared_locals(actor, out);
+        }
+        TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
+        TExprKind::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_declared_locals(value, out);
+            }
+        }
+        TExprKind::EnumLiteral { payload, .. } => {
+            for value in payload {
+                collect_expr_declared_locals(value, out);
+            }
+        }
+        TExprKind::ArrayLiteral(elements) => {
+            for element in elements {
+                collect_expr_declared_locals(element, out);
+            }
+        }
+        TExprKind::ArrayRepeat { element, .. } => collect_expr_declared_locals(element, out),
+        TExprKind::Local(..)
+        | TExprKind::Function(_, _)
+        | TExprKind::GenericFunction { .. }
+        | TExprKind::Literal(_) => {}
+    }
+}
+
+fn collect_closure_body_local_refs(
+    body: &TClosureBody,
+    local_ids: &HashSet<LocalId>,
+    out: &mut Vec<LocalId>,
+) {
+    match body {
+        TClosureBody::Expr(expr) => collect_expr_local_refs(expr, local_ids, out),
+        TClosureBody::Block(block) => collect_block_local_refs(block, local_ids, out),
+    }
+}
+
+fn collect_block_local_refs(block: &TBlock, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
+    for stmt in &block.statements {
+        collect_stmt_local_refs(stmt, local_ids, out);
+    }
+}
+
+fn collect_stmt_local_refs(stmt: &TStmt, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
+    match &stmt.kind {
+        TStmtKind::Block(block) => collect_block_local_refs(block, local_ids, out),
+        TStmtKind::VarDecl { init, .. } => {
+            if let Some(init) = init {
+                collect_expr_local_refs(init, local_ids, out);
+            }
+        }
+        TStmtKind::Assign { target, value } => {
+            collect_expr_local_refs(target, local_ids, out);
+            collect_expr_local_refs(value, local_ids, out);
+        }
+        TStmtKind::If {
+            cond,
+            then_block,
+            else_branch,
+        } => {
+            collect_expr_local_refs(cond, local_ids, out);
+            collect_block_local_refs(then_block, local_ids, out);
+            if let Some(else_branch) = else_branch {
+                collect_stmt_local_refs(else_branch, local_ids, out);
+            }
+        }
+        TStmtKind::While { cond, body } => {
+            collect_expr_local_refs(cond, local_ids, out);
+            collect_block_local_refs(body, local_ids, out);
+        }
+        TStmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                collect_for_local_refs(init, local_ids, out);
+            }
+            if let Some(cond) = cond {
+                collect_expr_local_refs(cond, local_ids, out);
+            }
+            if let Some(step) = step {
+                collect_for_local_refs(step, local_ids, out);
+            }
+            collect_block_local_refs(body, local_ids, out);
+        }
+        TStmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            collect_expr_local_refs(expr, local_ids, out);
+            for case in cases {
+                for stmt in &case.statements {
+                    collect_stmt_local_refs(stmt, local_ids, out);
+                }
+            }
+            for stmt in default {
+                collect_stmt_local_refs(stmt, local_ids, out);
+            }
+        }
+        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            collect_expr_local_refs(expr, local_ids, out);
+        }
+        TStmtKind::Return(None)
+        | TStmtKind::Break
+        | TStmtKind::Continue
+        | TStmtKind::Unsupported => {}
+    }
+}
+
+fn collect_for_local_refs(init: &TForInit, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
+    match init {
+        TForInit::VarDecl { init, .. } => {
+            if let Some(init) = init {
+                collect_expr_local_refs(init, local_ids, out);
+            }
+        }
+        TForInit::Assign { target, value } => {
+            collect_expr_local_refs(target, local_ids, out);
+            collect_expr_local_refs(value, local_ids, out);
+        }
+        TForInit::Expr(expr) => collect_expr_local_refs(expr, local_ids, out),
+    }
+}
+
+fn collect_expr_local_refs(expr: &TExpr, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
+    match &expr.kind {
+        TExprKind::Local(local_id, _) => {
+            if !local_ids.contains(local_id) && !out.contains(local_id) {
+                out.push(*local_id);
+            }
+        }
+        TExprKind::Closure { body, .. } => collect_closure_body_local_refs(body, local_ids, out),
+        TExprKind::FunctionToClosure(inner)
+        | TExprKind::Unary { expr: inner, .. }
+        | TExprKind::Cast { expr: inner, .. }
+        | TExprKind::Try(inner)
+        | TExprKind::ArrayToSlice(inner) => collect_expr_local_refs(inner, local_ids, out),
+        TExprKind::Binary { left, right, .. } => {
+            collect_expr_local_refs(left, local_ids, out);
+            collect_expr_local_refs(right, local_ids, out);
+        }
+        TExprKind::Call { callee, args } => {
+            collect_expr_local_refs(callee, local_ids, out);
+            for arg in args {
+                collect_expr_local_refs(arg, local_ids, out);
+            }
+        }
+        TExprKind::MakeDynamicInterface { expr, .. } => {
+            collect_expr_local_refs(expr, local_ids, out)
+        }
+        TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            collect_expr_local_refs(receiver, local_ids, out);
+            for arg in args {
+                collect_expr_local_refs(arg, local_ids, out);
+            }
+        }
+        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
+            collect_expr_local_refs(base, local_ids, out);
+        }
+        TExprKind::Index { base, index } => {
+            collect_expr_local_refs(base, local_ids, out);
+            collect_expr_local_refs(index, local_ids, out);
+        }
+        TExprKind::Slice { base, start, end } => {
+            collect_expr_local_refs(base, local_ids, out);
+            if let Some(start) = start {
+                collect_expr_local_refs(start, local_ids, out);
+            }
+            if let Some(end) = end {
+                collect_expr_local_refs(end, local_ids, out);
+            }
+        }
+        TExprKind::BuiltinCloneMessage { value, .. } => {
+            collect_expr_local_refs(value, local_ids, out)
+        }
+        TExprKind::ActorSpawn {
+            initial_state,
+            handler,
+            ..
+        } => {
+            collect_expr_local_refs(initial_state, local_ids, out);
+            collect_expr_local_refs(handler, local_ids, out);
+        }
+        TExprKind::ActorSend { actor, value, .. } => {
+            collect_expr_local_refs(actor, local_ids, out);
+            collect_expr_local_refs(value, local_ids, out);
+        }
+        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
+            collect_expr_local_refs(actor, local_ids, out);
+        }
+        TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
+        TExprKind::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                collect_expr_local_refs(value, local_ids, out);
+            }
+        }
+        TExprKind::EnumLiteral { payload, .. } => {
+            for value in payload {
+                collect_expr_local_refs(value, local_ids, out);
+            }
+        }
+        TExprKind::ArrayLiteral(elements) => {
+            for element in elements {
+                collect_expr_local_refs(element, local_ids, out);
+            }
+        }
+        TExprKind::ArrayRepeat { element, .. } => {
+            collect_expr_local_refs(element, local_ids, out);
+        }
+        TExprKind::Function(_, _) | TExprKind::GenericFunction { .. } | TExprKind::Literal(_) => {}
+    }
+}
+
+fn enum_instance_name(name: &str, args: &[Ty]) -> String {
+    if args.is_empty() {
+        name.to_string()
+    } else {
+        format!(
+            "{}_{}",
+            name,
+            args.iter()
+                .map(mangle_ty_fragment)
+                .collect::<Vec<_>>()
+                .join("_")
+        )
+    }
+}
+
+fn collect_layout_edges_from_type(
+    ty: &Type,
+    resolved: &ResolvedProgram,
+    aliases: &HashMap<DefId, TypeAliasTemplate>,
+    edges: &mut HashSet<String>,
+    alias_stack: &mut Vec<DefId>,
+) {
+    match &ty.kind {
+        TypeKind::Never => {}
+        TypeKind::Named(type_name, _args) => {
+            let TypeNameKind::Def(def_id) = type_name.kind else {
+                return;
+            };
+            let def = resolved.def(def_id);
+            match def.kind {
+                DefKind::Struct | DefKind::Enum => {
+                    edges.insert(def.name.clone());
+                }
+                DefKind::TypeAlias => {
+                    if alias_stack.contains(&def_id) {
+                        return;
+                    }
+                    if let Some(alias) = aliases.get(&def_id) {
+                        alias_stack.push(def_id);
+                        if let TypeAliasTarget::Type(ty) = &alias.target {
+                            collect_layout_edges_from_type(
+                                ty,
+                                resolved,
+                                aliases,
+                                edges,
+                                alias_stack,
+                            );
+                        }
+                        alias_stack.pop();
+                    }
+                }
+                _ => {}
+            }
+        }
+        TypeKind::Array { elem, .. } => {
+            collect_layout_edges_from_type(elem, resolved, aliases, edges, alias_stack);
+        }
+        TypeKind::Const(inner) => {
+            collect_layout_edges_from_type(inner, resolved, aliases, edges, alias_stack);
+        }
+        TypeKind::Pointer { .. }
+        | TypeKind::Slice(_)
+        | TypeKind::Function { .. }
+        | TypeKind::Closure { .. } => {}
+        TypeKind::Void | TypeKind::Primitive(_) => {}
+    }
+}
+
+fn detect_layout_cycle(
+    name: &str,
+    graph: &HashMap<String, HashSet<String>>,
+    visiting: &mut Vec<String>,
+    visited: &mut HashSet<String>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    if visited.contains(name) {
+        return;
+    }
+    if let Some(pos) = visiting.iter().position(|entry| entry == name) {
+        let mut cycle = visiting[pos..].to_vec();
+        cycle.push(name.to_string());
+        diagnostics.push(Diagnostic::new(
+            None,
+            format!("by-value recursive layout cycle: {}", cycle.join(" -> ")),
+        ));
+        return;
+    }
+    visiting.push(name.to_string());
+    if let Some(edges) = graph.get(name) {
+        for next in edges {
+            detect_layout_cycle(next, graph, visiting, visited, diagnostics);
+        }
+    }
+    visiting.pop();
+    visited.insert(name.to_string());
+}
+
+fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
+    match primitive {
+        PrimitiveType::Bool => Ty::Bool,
+        PrimitiveType::Char => Ty::Char,
+        PrimitiveType::I8 => Ty::I8,
+        PrimitiveType::I16 => Ty::I16,
+        PrimitiveType::I32 => Ty::I32,
+        PrimitiveType::I64 => Ty::I64,
+        PrimitiveType::U8 => Ty::U8,
+        PrimitiveType::U16 => Ty::U16,
+        PrimitiveType::U32 => Ty::U32,
+        PrimitiveType::U64 => Ty::U64,
+        PrimitiveType::Usize => Ty::Usize,
+        PrimitiveType::F32 => Ty::F32,
+        PrimitiveType::F64 => Ty::F64,
+    }
+}
+
+fn ty_from_hir_surface(ty: &Type, resolved: &ResolvedProgram) -> Ty {
+    match &ty.kind {
+        TypeKind::Never => Ty::Never,
+        TypeKind::Void => Ty::Void,
+        TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
+        TypeKind::Named(name, args) => match &name.kind {
+            TypeNameKind::Generic(generic) => Ty::Generic(generic.clone()),
+            TypeNameKind::Def(_) => Ty::Named {
+                name: match &name.kind {
+                    TypeNameKind::Def(def_id) => resolved.def(*def_id).name.clone(),
+                    _ => name.display.clone(),
+                },
+                args: args
+                    .iter()
+                    .map(|arg| ty_from_hir_surface(arg, resolved))
+                    .collect(),
+            },
+            TypeNameKind::Error => Ty::Unknown,
+        },
+        TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+            nullable: *nullable,
+            inner: Box::new(ty_from_hir_surface(inner, resolved)),
+        },
+        TypeKind::Const(inner) => Ty::Const(Box::new(ty_from_hir_surface(inner, resolved))),
+        TypeKind::Array { len, elem } => Ty::Array {
+            len: *len,
+            elem: Box::new(ty_from_hir_surface(elem, resolved)),
+        },
+        TypeKind::Slice(elem) => Ty::Slice(Box::new(ty_from_hir_surface(elem, resolved))),
+        TypeKind::Function { abi, ret, params } => Ty::Function {
+            abi: abi.clone(),
+            ret: Box::new(ty_from_hir_surface(ret, resolved)),
+            params: params
+                .iter()
+                .map(|param| ty_from_hir_surface(param, resolved))
+                .collect(),
+        },
+        TypeKind::Closure { ret, params } => Ty::Closure {
+            ret: Box::new(ty_from_hir_surface(ret, resolved)),
+            params: params
+                .iter()
+                .map(|param| ty_from_hir_surface(param, resolved))
+                .collect(),
+        },
+    }
+}
+
+fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
+    match ty {
+        Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
+        Ty::Generic(name) => subst
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Ty::Generic(name.clone())),
+        Ty::Pointer { nullable, inner } => Ty::Pointer {
+            nullable: *nullable,
+            inner: Box::new(substitute_ty(inner, subst)),
+        },
+        Ty::Array { len, elem } => Ty::Array {
+            len: *len,
+            elem: Box::new(substitute_ty(elem, subst)),
+        },
+        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, subst))),
+        Ty::Named { name, args } => Ty::Named {
+            name: name.clone(),
+            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
+        },
+        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            name: name.clone(),
+            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
+        },
+        Ty::Function { abi, ret, params } => Ty::Function {
+            abi: abi.clone(),
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+        },
+        Ty::Closure { ret, params } => Ty::Closure {
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+        },
+        Ty::ClosureInstance {
+            id,
+            ret,
+            params,
+            captures,
+        } => Ty::ClosureInstance {
+            id: *id,
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+            captures: captures
+                .iter()
+                .map(|capture| substitute_ty(capture, subst))
+                .collect(),
+        },
+        other => other.clone(),
+    }
+}
+
+fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
+    match pattern {
+        Ty::Const(inner) => unify_ty(inner, actual.unqualified(), subst),
+        Ty::Generic(name) => match subst.get(name) {
+            Some(Ty::Generic(existing)) if existing == name => {
+                subst.insert(name.clone(), actual.clone());
+                true
+            }
+            Some(existing) => existing == actual,
+            None => {
+                subst.insert(name.clone(), actual.clone());
+                true
+            }
+        },
+        Ty::Pointer {
+            nullable,
+            inner: pattern_inner,
+        } => match actual.unqualified() {
+            Ty::Pointer {
+                nullable: actual_nullable,
+                inner: actual_inner,
+            } if nullable == actual_nullable => unify_ty(pattern_inner, actual_inner, subst),
+            _ => false,
+        },
+        Ty::Array {
+            len,
+            elem: pattern_elem,
+        } => match actual.unqualified() {
+            Ty::Array {
+                len: actual_len,
+                elem: actual_elem,
+            } if len == actual_len => unify_ty(pattern_elem, actual_elem, subst),
+            _ => false,
+        },
+        Ty::Slice(pattern_elem) => match actual.unqualified() {
+            Ty::Slice(actual_elem) => unify_ty(pattern_elem, actual_elem, subst),
+            _ => false,
+        },
+        Ty::Named { name, args } => match actual.unqualified() {
+            Ty::Named {
+                name: actual_name,
+                args: actual_args,
+            } if name == actual_name && args.len() == actual_args.len() => args
+                .iter()
+                .zip(actual_args.iter())
+                .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
+            _ => false,
+        },
+        Ty::DynamicInterface { name, args } => match actual.unqualified() {
+            Ty::DynamicInterface {
+                name: actual_name,
+                args: actual_args,
+            } if name == actual_name && args.len() == actual_args.len() => args
+                .iter()
+                .zip(actual_args.iter())
+                .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
+            _ => false,
+        },
+        Ty::Function { abi, ret, params } => match actual.unqualified() {
+            Ty::Function {
+                abi: actual_abi,
+                ret: actual_ret,
+                params: actual_params,
+            } if abi == actual_abi && params.len() == actual_params.len() => {
+                unify_ty(ret, actual_ret, subst)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+            }
+            _ => false,
+        },
+        Ty::Closure { ret, params } => match actual.unqualified() {
+            Ty::Closure {
+                ret: actual_ret,
+                params: actual_params,
+            } if params.len() == actual_params.len() => {
+                unify_ty(ret, actual_ret, subst)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+            }
+            Ty::ClosureInstance {
+                ret: actual_ret,
+                params: actual_params,
+                ..
+            } if params.len() == actual_params.len() => {
+                unify_ty(ret, actual_ret, subst)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+            }
+            _ => false,
+        },
+        Ty::ClosureInstance {
+            id,
+            ret,
+            params,
+            captures,
+        } => match actual.unqualified() {
+            Ty::ClosureInstance {
+                id: actual_id,
+                ret: actual_ret,
+                params: actual_params,
+                captures: actual_captures,
+            } if id == actual_id
+                && params.len() == actual_params.len()
+                && captures.len() == actual_captures.len() =>
+            {
+                unify_ty(ret, actual_ret, subst)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+                    && captures
+                        .iter()
+                        .zip(actual_captures.iter())
+                        .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+            }
+            _ => false,
+        },
+        other => other == actual.unqualified(),
+    }
+}
+
+fn closure_instance_satisfies_signature(expected: &Ty, actual: &Ty) -> bool {
+    match (expected.unqualified(), actual.unqualified()) {
+        (
+            Ty::Closure {
+                ret: expected_ret,
+                params: expected_params,
+            },
+            Ty::ClosureInstance {
+                ret: actual_ret,
+                params: actual_params,
+                ..
+            },
+        ) => expected_params == actual_params && expected_ret.can_assign_from(actual_ret),
+        _ => false,
+    }
+}
+
+fn callable_ret_params_ty(ty: &Ty) -> Option<(Ty, Vec<Ty>)> {
+    match ty.unqualified() {
+        Ty::Function { ret, params, .. }
+        | Ty::Closure { ret, params }
+        | Ty::ClosureInstance { ret, params, .. } => Some(((**ret).clone(), params.clone())),
+        _ => None,
+    }
+}
+
+fn unify_receiver_param(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
+    match pattern {
+        Ty::Const(inner) => unify_receiver_param(inner, actual, subst),
+        Ty::Pointer { inner, .. } => match actual.unqualified() {
+            Ty::Pointer {
+                inner: actual_inner,
+                ..
+            } => unify_ty(inner, actual_inner, subst),
+            _ => unify_ty(inner, actual, subst),
+        },
+        _ => unify_ty(pattern, actual, subst),
+    }
+}
+
+fn contains_generic(ty: &Ty) -> bool {
+    match ty {
+        Ty::Const(inner) => contains_generic(inner),
+        Ty::Generic(_) => true,
+        Ty::Pointer { inner, .. } => contains_generic(inner),
+        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_generic(elem),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            args.iter().any(contains_generic)
+        }
+        Ty::Function { ret, params, .. } => {
+            contains_generic(ret) || params.iter().any(contains_generic)
+        }
+        Ty::Closure { ret, params } => contains_generic(ret) || params.iter().any(contains_generic),
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_generic(ret)
+                || params.iter().any(contains_generic)
+                || captures.iter().any(contains_generic)
+        }
+        _ => false,
+    }
+}
+
+fn type_contains_plain_void_value(ty: &Ty) -> bool {
+    match ty {
+        Ty::Const(inner) => type_contains_plain_void_value(inner),
+        Ty::Never | Ty::Void => true,
+        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_plain_void_value(elem),
+        Ty::Function { params, .. }
+        | Ty::Closure { params, .. }
+        | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_void_value),
+        Ty::Pointer { .. }
+        | Ty::Named { .. }
+        | Ty::DynamicInterface { .. }
+        | Ty::Generic(_)
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Unknown => false,
+    }
+}
+
+fn type_contains_closure(ty: &Ty) -> bool {
+    match ty {
+        Ty::Const(inner) => type_contains_closure(inner),
+        Ty::Closure { .. } | Ty::ClosureInstance { .. } => true,
+        Ty::Pointer { inner, .. } => type_contains_closure(inner),
+        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_closure(elem),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            args.iter().any(type_contains_closure)
+        }
+        Ty::Function { ret, params, .. } => {
+            type_contains_closure(ret) || params.iter().any(type_contains_closure)
+        }
+        Ty::Never
+        | Ty::Void
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Generic(_)
+        | Ty::Unknown => false,
+    }
+}
+
+fn parse_integer_literal_u128(raw: &str) -> Option<u128> {
+    let normalized = raw.replace('_', "");
+    if let Some(hex) = normalized
+        .strip_prefix("0x")
+        .or_else(|| normalized.strip_prefix("0X"))
+    {
+        u128::from_str_radix(hex, 16).ok()
+    } else {
+        normalized.parse::<u128>().ok()
+    }
+}
+
+fn integer_abs_limits(ty: &Ty) -> Option<(u128, u128)> {
+    Some(match ty.unqualified() {
+        Ty::I8 => (128, 127),
+        Ty::I16 => (32768, 32767),
+        Ty::I32 => (2147483648, 2147483647),
+        Ty::I64 => (9223372036854775808, 9223372036854775807),
+        Ty::U8 => (0, u8::MAX as u128),
+        Ty::U16 => (0, u16::MAX as u128),
+        Ty::U32 => (0, u32::MAX as u128),
+        Ty::U64 => (0, u64::MAX as u128),
+        Ty::Usize => (0, usize::MAX as u128),
+        _ => return None,
+    })
+}
+
+fn decode_char_literal_byte(raw: &str) -> Option<u8> {
+    let inner = raw.strip_prefix('\'')?.strip_suffix('\'')?;
+    if let Some(escaped) = inner.strip_prefix('\\') {
+        return match escaped {
+            "'" => Some(b'\''),
+            "\"" => Some(b'"'),
+            "\\" => Some(b'\\'),
+            "0" => Some(0),
+            "n" => Some(b'\n'),
+            "r" => Some(b'\r'),
+            "t" => Some(b'\t'),
+            hex if hex.starts_with('x') && hex.len() == 3 => u8::from_str_radix(&hex[1..], 16).ok(),
+            _ => None,
+        };
+    }
+    let mut chars = inner.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    (ch as u32 <= u8::MAX as u32).then_some(ch as u8)
+}
+
+fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Const(inner) => receiver_ty_from_value_ty(inner),
+        Ty::Pointer { inner, .. } => (**inner).clone(),
+        other => other.clone(),
+    }
+}
+
+fn interface_non_receiver_args(args: &[Ty]) -> &[Ty] {
+    if args.is_empty() { args } else { &args[1..] }
+}
+
+fn interface_generic_placeholder(interface_name: &str, generic_name: &str) -> String {
+    format!("__ciel_iface_{}_{}", interface_name, generic_name)
+}
+
+fn impl_function_name(interface_name: &str, params: &[Ty]) -> String {
+    format!(
+        "__impl_{}_{}",
+        interface_name,
+        params
+            .iter()
+            .map(mangle_ty_fragment)
+            .collect::<Vec<_>>()
+            .join("_")
+    )
+}
+
+fn find_impl_in<'a>(
+    impls: &'a [ImplSig],
+    interface_name: &str,
+    interface_args: &[Ty],
+    receiver_ty: Option<&Ty>,
+) -> Option<&'a ImplSig> {
+    impls.iter().find(|implementation| {
+        implementation.interface_name == interface_name
+            && implementation.interface_args == interface_args
+            && match (implementation.receiver_ty.as_ref(), receiver_ty) {
+                (Some(left), Some(right)) => left == right,
+                (None, None) => true,
+                (Some(_), None) => true,
+                _ => false,
+            }
+    })
+}
+
+fn marker_impl_patterns_overlap(
+    left_args: &[Ty],
+    left_receiver: Option<&Ty>,
+    right_args: &[Ty],
+    right_receiver: Option<&Ty>,
+) -> bool {
+    if left_args.len() != right_args.len() {
+        return false;
+    }
+    let receiver_overlaps = match (left_receiver, right_receiver) {
+        (Some(left), Some(right)) => marker_ty_patterns_overlap(left, right),
+        (None, None) => true,
+        (Some(_), None) | (None, Some(_)) => true,
+    };
+    receiver_overlaps
+        && left_args
+            .iter()
+            .zip(right_args.iter())
+            .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+}
+
+fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
+    match (left.unqualified(), right.unqualified()) {
+        (Ty::Generic(_), _) | (_, Ty::Generic(_)) => true,
+        (
+            Ty::Pointer {
+                nullable: left_nullable,
+                inner: left_inner,
+            },
+            Ty::Pointer {
+                nullable: right_nullable,
+                inner: right_inner,
+            },
+        ) => left_nullable == right_nullable && marker_ty_patterns_overlap(left_inner, right_inner),
+        (
+            Ty::Array {
+                len: left_len,
+                elem: left_elem,
+            },
+            Ty::Array {
+                len: right_len,
+                elem: right_elem,
+            },
+        ) => left_len == right_len && marker_ty_patterns_overlap(left_elem, right_elem),
+        (Ty::Slice(left_elem), Ty::Slice(right_elem)) => {
+            marker_ty_patterns_overlap(left_elem, right_elem)
+        }
+        (
+            Ty::Named {
+                name: left_name,
+                args: left_args,
+            },
+            Ty::Named {
+                name: right_name,
+                args: right_args,
+            },
+        )
+        | (
+            Ty::DynamicInterface {
+                name: left_name,
+                args: left_args,
+            },
+            Ty::DynamicInterface {
+                name: right_name,
+                args: right_args,
+            },
+        ) => {
+            left_name == right_name
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+        }
+        (
+            Ty::Function {
+                abi: left_abi,
+                ret: left_ret,
+                params: left_params,
+            },
+            Ty::Function {
+                abi: right_abi,
+                ret: right_ret,
+                params: right_params,
+            },
+        ) => {
+            left_abi == right_abi
+                && left_params.len() == right_params.len()
+                && marker_ty_patterns_overlap(left_ret, right_ret)
+                && left_params
+                    .iter()
+                    .zip(right_params.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+        }
+        (
+            Ty::Closure {
+                ret: left_ret,
+                params: left_params,
+            },
+            Ty::Closure {
+                ret: right_ret,
+                params: right_params,
+            },
+        ) => {
+            left_params.len() == right_params.len()
+                && marker_ty_patterns_overlap(left_ret, right_ret)
+                && left_params
+                    .iter()
+                    .zip(right_params.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+        }
+        (
+            Ty::ClosureInstance {
+                id: left_id,
+                ret: left_ret,
+                params: left_params,
+                captures: left_captures,
+            },
+            Ty::ClosureInstance {
+                id: right_id,
+                ret: right_ret,
+                params: right_params,
+                captures: right_captures,
+            },
+        ) => {
+            left_id == right_id
+                && left_params.len() == right_params.len()
+                && left_captures.len() == right_captures.len()
+                && marker_ty_patterns_overlap(left_ret, right_ret)
+                && left_params
+                    .iter()
+                    .zip(right_params.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+                && left_captures
+                    .iter()
+                    .zip(right_captures.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+        }
+        (left, right) => left == right,
+    }
+}
+
+fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
+    match ty {
+        Ty::Const(inner) => contains_any_generic_name(inner, names),
+        Ty::Generic(name) => names.contains(name),
+        Ty::Pointer { inner, .. } => contains_any_generic_name(inner, names),
+        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_any_generic_name(elem, names),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            args.iter().any(|arg| contains_any_generic_name(arg, names))
+        }
+        Ty::Function { ret, params, .. } => {
+            contains_any_generic_name(ret, names)
+                || params
+                    .iter()
+                    .any(|param| contains_any_generic_name(param, names))
+        }
+        Ty::Closure { ret, params } => {
+            contains_any_generic_name(ret, names)
+                || params
+                    .iter()
+                    .any(|param| contains_any_generic_name(param, names))
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_any_generic_name(ret, names)
+                || params
+                    .iter()
+                    .any(|param| contains_any_generic_name(param, names))
+                || captures
+                    .iter()
+                    .any(|capture| contains_any_generic_name(capture, names))
+        }
+        _ => false,
+    }
+}
+
+fn view_add_term(view: &mut InterfaceView, term: &InterfaceTerm, resolved: &ResolvedProgram) {
+    let entry = InterfaceRefTy {
+        name: name_ref_canonical(resolved, &term.name),
+        args: term
+            .args
+            .iter()
+            .map(|ty| ty_from_hir_surface(ty, resolved))
+            .collect(),
+    };
+    if !view.positive.contains(&entry) {
+        view.positive.push(entry);
+    }
+}
+
+fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
+    match name.kind {
+        NameRefKind::Def(def_id) => resolved.def(def_id).name.clone(),
+        _ => name.display.clone(),
+    }
+}
+
+fn interface_receiver_is_input(interface: &InterfaceSig) -> bool {
+    let Some(receiver) = interface.generics.first() else {
+        return false;
+    };
+    interface
+        .params
+        .iter()
+        .any(|param| ast_type_mentions_name(&param.ty, receiver))
+}
+
+fn ast_type_mentions_name(ty: &Type, name: &str) -> bool {
+    match &ty.kind {
+        TypeKind::Named(type_name, args) => {
+            matches!(&type_name.kind, TypeNameKind::Generic(generic) if generic == name)
+                || args.iter().any(|arg| ast_type_mentions_name(arg, name))
+        }
+        TypeKind::Pointer { inner, .. } => ast_type_mentions_name(inner, name),
+        TypeKind::Const(inner) => ast_type_mentions_name(inner, name),
+        TypeKind::Array { elem, .. } | TypeKind::Slice(elem) => ast_type_mentions_name(elem, name),
+        TypeKind::Function { ret, params, .. } => {
+            ast_type_mentions_name(ret, name)
+                || params
+                    .iter()
+                    .any(|param| ast_type_mentions_name(param, name))
+        }
+        TypeKind::Closure { ret, params } => {
+            ast_type_mentions_name(ret, name)
+                || params
+                    .iter()
+                    .any(|param| ast_type_mentions_name(param, name))
+        }
+        TypeKind::Never | TypeKind::Void | TypeKind::Primitive(_) => false,
+    }
+}
+
+fn mangle_ty_fragment(ty: &Ty) -> String {
+    match ty {
+        Ty::Never => "never".to_string(),
+        Ty::Const(inner) => format!("const_{}", mangle_ty_fragment(inner)),
+        Ty::Void => "void".to_string(),
+        Ty::Bool => "bool".to_string(),
+        Ty::Char => "char".to_string(),
+        Ty::I8 => "i8".to_string(),
+        Ty::I16 => "i16".to_string(),
+        Ty::I32 => "i32".to_string(),
+        Ty::I64 => "i64".to_string(),
+        Ty::U8 => "u8".to_string(),
+        Ty::U16 => "u16".to_string(),
+        Ty::U32 => "u32".to_string(),
+        Ty::U64 => "u64".to_string(),
+        Ty::Usize => "usize".to_string(),
+        Ty::F32 => "f32".to_string(),
+        Ty::F64 => "f64".to_string(),
+        Ty::CSpelling { abi, spelling } => {
+            format!(
+                "c_{}_{}",
+                mangle_abi_fragment(Some(abi)),
+                sanitize_mangle_fragment(spelling)
+            )
+        }
+        Ty::Pointer { inner, nullable } => {
+            if *nullable {
+                format!("qptr_{}", mangle_ty_fragment(inner))
+            } else {
+                format!("ptr_{}", mangle_ty_fragment(inner))
+            }
+        }
+        Ty::Array { len, elem } => format!("arr{len}_{}", mangle_ty_fragment(elem)),
+        Ty::Slice(elem) => format!("slice_{}", mangle_ty_fragment(elem)),
+        Ty::Named { name, args } => enum_instance_name(name, args),
+        Ty::Generic(name) => format!("gen_{name}"),
+        Ty::DynamicInterface { name, args } => {
+            if args.is_empty() {
+                format!("dyn_{name}")
+            } else {
+                format!(
+                    "dyn_{}_{}",
+                    name,
+                    args.iter()
+                        .map(mangle_ty_fragment)
+                        .collect::<Vec<_>>()
+                        .join("_")
+                )
+            }
+        }
+        Ty::Function { abi, ret, params } => {
+            let params = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params
+                    .iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            };
+            format!(
+                "fn_{}_ret_{}_args_{}",
+                mangle_abi_fragment(abi.as_deref()),
+                mangle_ty_fragment(ret),
+                params
+            )
+        }
+        Ty::Closure { ret, params } => {
+            let params = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params
+                    .iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            };
+            format!("closure_ret_{}_args_{}", mangle_ty_fragment(ret), params)
+        }
+        Ty::ClosureInstance {
+            id,
+            ret,
+            params,
+            captures,
+        } => {
+            let params = if params.is_empty() {
+                "void".to_string()
+            } else {
+                params
+                    .iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            };
+            let captures = if captures.is_empty() {
+                "empty".to_string()
+            } else {
+                captures
+                    .iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            };
+            format!(
+                "closure_inst{id}_ret_{}_args_{}_caps_{}",
+                mangle_ty_fragment(ret),
+                params,
+                captures
+            )
+        }
+        Ty::Unknown => "unknown".to_string(),
+    }
+}
+
+fn mangle_abi_fragment(abi: Option<&str>) -> String {
+    let Some(abi) = abi else {
+        return "ciel".to_string();
+    };
+    let out = abi
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if out.is_empty() {
+        "abi".to_string()
+    } else {
+        out
+    }
+}
+
+fn sanitize_mangle_fragment(value: &str) -> String {
+    let out = value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>();
+    if out.is_empty() {
+        "type".to_string()
+    } else {
+        out
+    }
+}

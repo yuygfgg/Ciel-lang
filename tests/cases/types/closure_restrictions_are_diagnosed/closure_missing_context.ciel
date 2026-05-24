@@ -1,0 +1,6 @@
+// ciel-test: error
+// expect-error: requires an explicit type or expected callable type
+
+i64 main() {
+    return (|value| value)(1);
+}

@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: defer requires a direct function call
+
+import /std/result;
+
+enum Error {
+    Bad,
+}
+
+Result<void, Error> cleanup() {
+    return Ok;
+}
+
+Result<void, Error> work() {
+    defer cleanup()?;
+    return Ok;
+}
+
+i64 main() {
+    return 0;
+}

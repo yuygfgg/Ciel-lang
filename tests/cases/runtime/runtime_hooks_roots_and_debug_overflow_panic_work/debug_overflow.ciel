@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stderr-contains: integer overflow
+// expect-stderr-contains: debug_overflow.ciel
+
+i8 add_one(i8 value) {
+    return value + 1;
+}
+
+i32 main() {
+    add_one(127);
+    return 1;
+}

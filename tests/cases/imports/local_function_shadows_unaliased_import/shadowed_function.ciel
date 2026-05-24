@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export i64 pick() {
+    return 2;
+}

@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: top-level wildcard
+
+enum Maybe {
+    Some(i64),
+    None,
+}
+
+i64 pick(Maybe value) {
+    switch (value) {
+        case _:
+            return 0;
+    }
+}
+
+i64 main() {
+    return 0;
+}

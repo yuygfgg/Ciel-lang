@@ -1,0 +1,102 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/lib;
+
+struct Metrics {
+    Atomic<i64> total;
+    Mutex<i64> last;
+    Channel<i64> out;
+}
+
+enum Step<T> {
+    Add(T),
+    Emit(T),
+}
+
+struct Envelope<T> {
+    T item;
+    i64 scale;
+}
+
+struct SetLast {
+    i64 value;
+}
+
+struct ReadLast {
+}
+
+impl update_value<i64, i64>(*SetLast updater, i64 value) {
+    return Ok({
+        value: updater->value,
+        result: value,
+    });
+}
+
+impl update_value<i64, i64>(*ReadLast updater, i64 value) {
+    return Ok({
+        value: value,
+        result: value,
+    });
+}
+
+Result<void, Error> send_envelope<T: Message>(
+    *Actor<Envelope<T>> actor,
+    T item,
+    i64 scale
+) {
+    return send(actor, { item: item, scale: scale });
+}
+
+i64 main() {
+    Metrics metrics = {
+        total: must(make_atomic<i64>(0)),
+        last: must(make_mutex<i64>(0)),
+        out: must(make_channel<i64>()),
+    };
+
+    Actor<Envelope<Step<i64>>> actor = must(spawn_actor<i64, Envelope<Step<i64>>>(0, |i64 state, Envelope<Step<i64>> msg| {
+        Atomic<i64> total = metrics.total;
+        Mutex<i64> last = metrics.last;
+        Channel<i64> out = metrics.out;
+
+        switch (msg.item) {
+            case Add(value):
+                i64 amount = value * msg.scale;
+                atomic_fetch_add(&total, amount, AcqRel)?;
+                SetLast set = { value: amount };
+                mutex_update<i64, SetLast, i64>(&last, &set)?;
+                return Ok(state + amount);
+            case Emit(value):
+                i64 total_value = atomic_load(&total, Acquire)?;
+                channel_send(&out, total_value + value)?;
+                return Ok(state);
+        }
+    }));
+
+    must_void(send_envelope(&actor, Add(10), 2));
+    must_void(send_envelope(&actor, Add(3), 5));
+    must_void(send_envelope(&actor, Emit(7), 1));
+
+    i64 received = must(channel_recv(&metrics.out));
+    must_void(join(&actor));
+
+    ReadLast read = {};
+    i64 last = must(mutex_update<i64, ReadLast, i64>(&metrics.last, &read));
+    i64 total = must(atomic_load(&metrics.total, SeqCst));
+
+    if (received != 42) {
+        return 1;
+    }
+    if (last != 15) {
+        return 2;
+    }
+    if (total != 35) {
+        return 3;
+    }
+
+    must_void(channel_close(&metrics.out));
+    must_void(print("{}", [received]));
+    return 0;
+}

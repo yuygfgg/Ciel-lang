@@ -1,0 +1,36 @@
+#c_include "stddef.h"
+#c_include "stdint.h"
+
+export extern "C" {
+    type c_char = "char";
+    type c_schar = "signed char";
+    type c_uchar = "unsigned char";
+    type c_short = "short";
+    type c_ushort = "unsigned short";
+    type c_int = "int";
+    type c_uint = "unsigned int";
+    type c_long = "long";
+    type c_ulong = "unsigned long";
+    type c_long_long = "long long";
+    type c_ulong_long = "unsigned long long";
+    type c_float = "float";
+    type c_double = "double";
+
+    type c_size_t = "size_t";
+    type c_ptrdiff_t = "ptrdiff_t";
+    type c_intptr_t = "intptr_t";
+    type c_uintptr_t = "uintptr_t";
+    type c_intmax_t = "intmax_t";
+    type c_uintmax_t = "uintmax_t";
+}
+
+#if !is_target_os("windows")
+#c_include "sys/types.h"
+
+export extern "C" {
+    type c_ssize_t = "ssize_t";
+}
+#endif
+
+export type c_string = *char;
+export type const_c_string = *const char;

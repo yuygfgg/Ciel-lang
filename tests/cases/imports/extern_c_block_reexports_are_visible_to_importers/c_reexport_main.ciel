@@ -1,0 +1,8 @@
+// ciel-test: run
+// expect-exit: 12
+
+import ./c_reexport as c;
+
+i32 main() {
+    return c::abs(-12);
+}

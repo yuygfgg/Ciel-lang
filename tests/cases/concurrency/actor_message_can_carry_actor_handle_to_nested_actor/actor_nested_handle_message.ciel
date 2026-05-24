@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 1021
+
+import /std/lib;
+
+struct Forward {
+    Actor<i64> target;
+    i64 value;
+}
+
+Result<i64, Error> sink(i64 state, i64 msg) {
+    print_value(msg)?;
+    return Ok(state + msg);
+}
+
+Result<i64, Error> bridge(i64 state, Forward msg) {
+    Actor<i64> target = msg.target;
+    send(&target, msg.value + state)?;
+    return Ok(state + 1);
+}
+
+i64 main() {
+    Actor<i64> target = must(spawn_actor<i64, i64>(0, sink));
+    Actor<Forward> forwarder = must(spawn_actor<i64, Forward>(0, bridge));
+
+    must_void(send(&forwarder, { target: target, value: 10 }));
+    must_void(send(&forwarder, { target: target, value: 20 }));
+
+    must_void(join(&forwarder));
+    must_void(join(&target));
+    return 0;
+}

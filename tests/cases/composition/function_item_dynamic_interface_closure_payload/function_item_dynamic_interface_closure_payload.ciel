@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 17
+
+interface<T> i64 value(*T item);
+interface<T> i64 weight(*T item);
+interface weighted = value + weight;
+
+struct Item {
+    i64 value;
+    i64 weight;
+}
+
+impl value(*Item item) {
+    return item->value;
+}
+
+impl weight(*Item item) {
+    return item->weight;
+}
+
+enum Handler<T> {
+    Use(i64 |(T)|),
+    Ignore,
+}
+
+i64 read_weighted(weighted item) {
+    return value(item) + weight(item);
+}
+
+i64 run<T>(Handler<T> handler, T value) {
+    switch (handler) {
+        case Use(callback):
+            return callback(value);
+        case Ignore:
+            return 0;
+    }
+}
+
+i64 main() {
+    Item item = { value: 12, weight: 5 };
+    Handler<weighted> handler = Use(read_weighted);
+    return run(handler, &item);
+}

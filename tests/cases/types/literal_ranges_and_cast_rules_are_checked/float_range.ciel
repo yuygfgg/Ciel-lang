@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: out of range
+
+i64 main() {
+    f32 value = 1e39;
+    return 0;
+}

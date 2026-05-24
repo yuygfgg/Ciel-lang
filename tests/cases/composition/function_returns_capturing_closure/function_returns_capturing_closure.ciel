@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 15
+
+i64 |(i64)| make_adder(i64 base) {
+    return |x| x + base;
+}
+
+i64 main() {
+    i64 |(i64)| add_ten = make_adder(10);
+    return add_ten(5);
+}

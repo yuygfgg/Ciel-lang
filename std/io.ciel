@@ -1,0 +1,347 @@
+export import /std/result;
+import /std/c as c;
+import /std/message;
+import ./io_posix as posix;
+
+extern "C" {
+    c::c_int ciel_errno();
+    *char ciel_cstr_from_slice(*char ptr, usize len);
+    usize ciel_f32_to_string(f32 value, *char out, usize cap);
+    usize ciel_f64_to_string(f64 value, *char out, usize cap);
+    c::c_int ciel_io_open_read(*char path);
+    c::c_int ciel_io_open_write(*char path);
+    c::c_int ciel_io_open_append(*char path);
+}
+
+export struct Fd {
+    c::c_int raw;
+}
+
+impl thread_local_marker(*Fd value) {
+    return true;
+}
+
+export enum OpenMode {
+    Read,
+    Write,
+    Append,
+}
+
+export interface<T> []char to_string(*T value);
+export interface printable = to_string;
+
+export Error last_error() {
+    return Code(ciel_errno() as i64);
+}
+
+export Fd from_raw_fd(c::c_int raw) {
+    return { raw: raw };
+}
+
+export c::c_int raw_fd(Fd fd) {
+    return fd.raw;
+}
+
+export Fd stdin() {
+    return from_raw_fd(0 as c::c_int);
+}
+
+export Fd stdout() {
+    return from_raw_fd(1 as c::c_int);
+}
+
+export Fd stderr() {
+    return from_raw_fd(2 as c::c_int);
+}
+
+Result<Fd, Error> fd_result(c::c_int raw) {
+    if ((raw as i64) < 0) {
+        return Err(last_error());
+    }
+    return Ok(from_raw_fd(raw));
+}
+
+export Result<Fd, Error> open([]char path, OpenMode mode) {
+    *char c_path = ciel_cstr_from_slice(path.ptr, path.len);
+    switch (mode) {
+        case Read:
+            return fd_result(ciel_io_open_read(c_path));
+        case Write:
+            return fd_result(ciel_io_open_write(c_path));
+        case Append:
+            return fd_result(ciel_io_open_append(c_path));
+    }
+}
+
+export Result<Fd, Error> open_read([]char path) {
+    return open(path, Read);
+}
+
+export Result<Fd, Error> create([]char path) {
+    return open(path, Write);
+}
+
+export Result<Fd, Error> append([]char path) {
+    return open(path, Append);
+}
+
+export Result<void, Error> close(Fd fd) {
+    c::c_int rc = posix::close(fd.raw);
+    if ((rc as i64) < 0) {
+        return Err(last_error());
+    }
+    return Ok;
+}
+
+export Result<usize, Error> read(Fd fd, []u8 out) {
+    c::c_ssize_t n = posix::read(fd.raw, out.ptr as *void, out.len as c::c_size_t);
+    if ((n as i64) < 0) {
+        return Err(last_error());
+    }
+    return Ok(n as usize);
+}
+
+export Result<usize, Error> write(Fd fd, []u8 data) {
+    c::c_ssize_t n = posix::write(fd.raw, data.ptr as *const void, data.len as c::c_size_t);
+    if ((n as i64) < 0) {
+        return Err(last_error());
+    }
+    return Ok(n as usize);
+}
+
+export Result<usize, Error> write_text_once(Fd fd, []char text) {
+    c::c_ssize_t n = posix::write(fd.raw, text.ptr as *const void, text.len as c::c_size_t);
+    if ((n as i64) < 0) {
+        return Err(last_error());
+    }
+    return Ok(n as usize);
+}
+
+export Result<void, Error> write_all(Fd fd, []u8 data) {
+    usize offset = 0;
+    while (offset < data.len) {
+        usize n = write(fd, data[offset..])?;
+        if (n == 0) {
+            return Err(Text("write returned zero"));
+        }
+        offset = offset + n;
+    }
+    return Ok;
+}
+
+export Result<void, Error> write_text(Fd fd, []char text) {
+    usize offset = 0;
+    while (offset < text.len) {
+        usize n = write_text_once(fd, text[offset..])?;
+        if (n == 0) {
+            return Err(Text("write returned zero"));
+        }
+        offset = offset + n;
+    }
+    return Ok;
+}
+
+export []char u64_to_string(u64 value) {
+    [20]char buf = ['\0';];
+    usize i = 20;
+    u64 n = value;
+    if (n == 0) {
+        i = i - 1;
+        buf[i] = '0';
+    }
+    while (n > 0) {
+        i = i - 1;
+        buf[i] = (((n % 10) + 48) as char);
+        n = n / 10;
+    }
+    return buf[i..];
+}
+
+export []char usize_to_string(usize value) {
+    [32]char buf = ['\0';];
+    usize i = 32;
+    usize n = value;
+    if (n == 0) {
+        i = i - 1;
+        buf[i] = '0';
+    }
+    while (n > 0) {
+        i = i - 1;
+        buf[i] = (((n % 10) + 48) as char);
+        n = n / 10;
+    }
+    return buf[i..];
+}
+
+export []char i64_to_string(i64 value) {
+    if (value == -9223372036854775808) {
+        return "-9223372036854775808";
+    }
+    if (value < 0) {
+        [20]char digits = ['\0';];
+        usize i = 20;
+        u64 n = (-value) as u64;
+        if (n == 0) {
+            i = i - 1;
+            digits[i] = '0';
+        }
+        while (n > 0) {
+            i = i - 1;
+            digits[i] = (((n % 10) + 48) as char);
+            n = n / 10;
+        }
+        [21]char out = ['\0';];
+        out[0] = '-';
+        usize j = 0;
+        while ((i + j) < 20) {
+            out[j + 1] = digits[i + j];
+            j = j + 1;
+        }
+        return out[..j + 1];
+    }
+    return u64_to_string(value as u64);
+}
+
+export []char f32_to_string(f32 value) {
+    [64]char buf = ['\0';];
+    usize len = ciel_f32_to_string(value, &buf[0], 64);
+    return buf[..len];
+}
+
+export []char f64_to_string(f64 value) {
+    [64]char buf = ['\0';];
+    usize len = ciel_f64_to_string(value, &buf[0], 64);
+    return buf[..len];
+}
+
+impl to_string(*[]char value) {
+    return *value;
+}
+
+impl to_string(*char value) {
+    [1]char buf = [*value];
+    return buf;
+}
+
+impl to_string(*bool value) {
+    if (*value) {
+        return "true";
+    }
+    return "false";
+}
+
+impl to_string(*u8 value) {
+    return u64_to_string((*value) as u64);
+}
+
+impl to_string(*u16 value) {
+    return u64_to_string((*value) as u64);
+}
+
+impl to_string(*u32 value) {
+    return u64_to_string((*value) as u64);
+}
+
+impl to_string(*u64 value) {
+    return u64_to_string(*value);
+}
+
+impl to_string(*usize value) {
+    return usize_to_string(*value);
+}
+
+impl to_string(*i8 value) {
+    return i64_to_string((*value) as i64);
+}
+
+impl to_string(*i16 value) {
+    return i64_to_string((*value) as i64);
+}
+
+impl to_string(*i32 value) {
+    return i64_to_string((*value) as i64);
+}
+
+impl to_string(*i64 value) {
+    return i64_to_string(*value);
+}
+
+impl to_string(*f32 value) {
+    return f32_to_string(*value);
+}
+
+impl to_string(*f64 value) {
+    return f64_to_string(*value);
+}
+
+impl to_string(*Error value) {
+    switch (*value) {
+        case Text(text):
+            return text;
+        case Code(code):
+            return i64_to_string(code);
+    }
+}
+
+export Result<void, Error> write_value<T: printable>(Fd fd, T value) {
+    T local = value;
+    return write_text(fd, to_string(&local));
+}
+
+export Result<void, Error> print_value<T: printable>(T value) {
+    return write_value(stdout(), value);
+}
+
+export Result<void, Error> eprint_value<T: printable>(T value) {
+    return write_value(stderr(), value);
+}
+
+export Result<void, Error> println_value<T: printable>(T value) {
+    write_value(stdout(), value)?;
+    return write_text(stdout(), "\n");
+}
+
+export Result<void, Error> eprintln_value<T: printable>(T value) {
+    write_value(stderr(), value)?;
+    return write_text(stderr(), "\n");
+}
+
+export Result<void, Error> write_format(Fd fd, []char fmt, []printable values) {
+    usize start = 0;
+    usize i = 0;
+    usize value_index = 0;
+    while ((i + 1) < fmt.len) {
+        if (fmt[i] == '{' && fmt[i + 1] == '}') {
+            write_text(fd, fmt[start..i])?;
+            if (value_index < values.len) {
+                write_text(fd, to_string(values[value_index]))?;
+                value_index = value_index + 1;
+            } else {
+                write_text(fd, "{}")?;
+            }
+            i = i + 2;
+            start = i;
+        } else {
+            i = i + 1;
+        }
+    }
+    return write_text(fd, fmt[start..]);
+}
+
+export Result<void, Error> print([]char fmt, []printable values) {
+    return write_format(stdout(), fmt, values);
+}
+
+export Result<void, Error> eprint([]char fmt, []printable values) {
+    return write_format(stderr(), fmt, values);
+}
+
+export Result<void, Error> println([]char fmt, []printable values) {
+    write_format(stdout(), fmt, values)?;
+    return write_text(stdout(), "\n");
+}
+
+export Result<void, Error> eprintln([]char fmt, []printable values) {
+    write_format(stderr(), fmt, values)?;
+    return write_text(stderr(), "\n");
+}

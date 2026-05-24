@@ -1,0 +1,47 @@
+// ciel-test: run
+// expect-exit: 48
+
+interface<T> i64 value(*T item);
+interface<T> i64 weight(*T item);
+interface<T> void clear(*T item);
+interface weighted = value + weight - clear;
+
+enum Slot<T> {
+    Full(T),
+    Empty,
+}
+
+struct Item {
+    i64 value;
+    i64 weight;
+}
+
+impl value(*Item item) {
+    return item->value;
+}
+
+impl weight(*Item item) {
+    return item->weight;
+}
+
+impl clear(*Item item) {
+    item->value = 0;
+    item->weight = 0;
+    return;
+}
+
+i64 visit(Slot<weighted> slot, i64 |(weighted)| visitor) {
+    switch (slot) {
+        case Full(item):
+            return visitor(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Item item = { value: 20, weight: 4 };
+    Slot<weighted> slot = Full(&item);
+    i64 scale = 2;
+    return visit(slot, |erased| (value(erased) + weight(erased)) * scale);
+}

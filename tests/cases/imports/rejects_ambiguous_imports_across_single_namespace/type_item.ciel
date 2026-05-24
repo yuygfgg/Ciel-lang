@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export struct Item {
+    i64 value;
+}

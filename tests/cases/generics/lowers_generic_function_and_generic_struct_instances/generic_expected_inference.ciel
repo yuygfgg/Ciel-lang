@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 29
+
+struct Wrap<T> {
+    T value;
+}
+
+Wrap<T> wrap<T>(T value) {
+    return { value: value };
+}
+
+T unwrap<T>(Wrap<T> value) {
+    return value.value;
+}
+
+i64 main() {
+    i64 value = unwrap(wrap(29));
+    return value;
+}

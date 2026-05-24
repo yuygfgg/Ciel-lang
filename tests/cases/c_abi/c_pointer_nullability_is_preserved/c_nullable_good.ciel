@@ -1,0 +1,11 @@
+// ciel-test: compile
+
+extern "C" {
+    void takes_nullable(?*i32 value);
+}
+
+i32 main() {
+    i32 value = 1;
+    takes_nullable(&value);
+    return value;
+}

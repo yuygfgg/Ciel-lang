@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 4
+
+import /std/lib;
+
+struct Pair {
+    i64 value;
+    bool enabled;
+}
+
+i64 main() {
+    Pair pair = { value: 4, enabled: true };
+    Pair cloned = must(clone_message(&pair));
+    if (cloned.enabled) {
+        return cloned.value;
+    }
+    return 1;
+}

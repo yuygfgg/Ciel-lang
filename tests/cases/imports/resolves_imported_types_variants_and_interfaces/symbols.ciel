@@ -1,0 +1,16 @@
+// ciel-test: dependency
+
+export struct Box {
+    i64 value;
+}
+
+export enum Maybe {
+    Some(i64),
+    None,
+}
+
+export interface<T> i64 measure(*T value);
+
+impl measure(*Box value) {
+    return value->value;
+}

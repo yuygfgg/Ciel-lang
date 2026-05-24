@@ -1,0 +1,11 @@
+// ciel-test: manual
+
+import /std/result;
+
+Result<i64, Error> value() {
+    return Ok(5);
+}
+
+i64 main() {
+    return must(value());
+}

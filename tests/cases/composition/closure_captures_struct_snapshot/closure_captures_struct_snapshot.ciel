@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 5
+
+struct Box {
+    i64 value;
+}
+
+i64 main() {
+    Box box = { value: 5 };
+    i64 |()| read = || box.value;
+    box.value = 9;
+    return read();
+}

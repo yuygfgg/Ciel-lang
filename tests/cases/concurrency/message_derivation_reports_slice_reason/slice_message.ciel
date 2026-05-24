@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+// expect-error: slice view without an owning `Message` container policy
+
+import /std/message;
+
+Result<[]i64, Error> copy_slice([]i64 values) {
+    []i64 local = values;
+    return clone_message(&local);
+}

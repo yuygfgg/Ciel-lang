@@ -1,0 +1,9 @@
+// ciel-test: compile
+// expect-c-contains: int32_t entry(int32_t value);
+// expect-c-contains: int32_t entry(int32_t value) {
+// expect-c-not-contains: ciel_0_entry
+// expect-c-not-contains: int main(void)
+
+export extern "C" i32 entry(i32 value) {
+    return value + 1;
+}

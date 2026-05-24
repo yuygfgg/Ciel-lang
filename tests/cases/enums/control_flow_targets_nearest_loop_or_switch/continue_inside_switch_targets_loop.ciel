@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 1
+
+enum Choice {
+    A,
+    B,
+}
+
+i64 main() {
+    Choice choice = A;
+    i64 count = 0;
+    while (count < 1) {
+        switch (choice) {
+            case A:
+                count = count + 1;
+                continue;
+            case B:
+                return 9;
+        }
+        return 8;
+    }
+    return count;
+}

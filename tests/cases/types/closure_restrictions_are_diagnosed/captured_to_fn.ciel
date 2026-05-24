@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: capturing closure cannot convert to `fn`
+
+i64 main() {
+    i64 base = 1;
+    i64 fn(i64) func = |i64 value| value + base;
+    return func(1);
+}

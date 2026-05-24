@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 23
+
+import ./lexical_shadow_import;
+
+i64 before() {
+    return pick();
+}
+
+i64 pick() {
+    return 3;
+}
+
+i64 after() {
+    return pick();
+}
+
+i64 main() {
+    return before() * 10 + after();
+}

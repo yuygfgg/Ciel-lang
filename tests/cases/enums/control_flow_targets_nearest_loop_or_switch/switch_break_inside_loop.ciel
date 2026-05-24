@@ -1,0 +1,23 @@
+// ciel-test: compile
+
+enum Choice {
+    A,
+    B,
+}
+
+i64 main() {
+    Choice choice = A;
+    i64 value;
+    while (true) {
+        switch (choice) {
+            case A:
+                value = 7;
+                break;
+            case B:
+                value = 8;
+                break;
+        }
+        return value;
+    }
+    return 0;
+}

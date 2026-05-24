@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: compiler-derived `Message` already applies
+
+import /std/message;
+
+impl clone_message(*i64 value) {
+    return Ok(*value);
+}
+
+i64 main() {
+    return 0;
+}

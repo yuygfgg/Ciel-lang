@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: f32=1.5 f64=-2.25
+
+import /std/io;
+
+i32 main() {
+    must_void(print("f32={} f64={}", [1.5 as f32, -2.25]));
+    return 0;
+}

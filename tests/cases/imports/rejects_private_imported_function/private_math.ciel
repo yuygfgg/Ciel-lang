@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+i64 hidden() {
+    return 1;
+}

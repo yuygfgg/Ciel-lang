@@ -1,0 +1,45 @@
+// ciel-test: host
+// host: exported_c_abi.host.c
+// expect-exit: 59
+
+struct Pair {
+    i32 a;
+    i32 b;
+}
+
+enum Tagged {
+    WithValue(i32),
+    Empty,
+}
+
+export extern "C" Pair make_pair(i32 a, i32 b) {
+    return { a: a, b: b };
+}
+
+export extern "C" i32 sum_pair(Pair pair) {
+    return pair.a + pair.b;
+}
+
+export extern "C" i32 read_tagged(Tagged tagged) {
+    switch (tagged) {
+        case WithValue(value):
+            return value;
+        case Empty:
+            return 0;
+    }
+}
+
+export extern "C" ?*i32 maybe_ptr(bool take, *i32 ptr) {
+    if (take) {
+        return ptr;
+    }
+    return null;
+}
+
+export extern "C" i32 call_callback(extern "C" i32 fn(i32) callback, i32 value) {
+    return callback(value);
+}
+
+export extern "C" i32 sum_slice([]i32 values) {
+    return values[0] + values[1];
+}

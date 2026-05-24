@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 1
+
+import /std/lib;
+
+Result<void, Error> accept_shared<T: ShareHandle>(T value) {
+    return Ok;
+}
+
+Result<i64, Error> increment(i64 state, Atomic<i64> counter) {
+    Atomic<i64> local = counter;
+    atomic_fetch_add(&local, 1, SeqCst)?;
+    return Ok(state + 1);
+}
+
+i64 main() {
+    Atomic<i64> counter = must(make_atomic<i64>(0));
+    must_void(accept_shared(counter));
+
+    Actor<Atomic<i64>> actor = must(spawn_actor<i64, Atomic<i64>>(0, increment));
+    must_void(send(&actor, counter));
+    must_void(join(&actor));
+
+    i64 value = must(atomic_load(&counter, SeqCst));
+    return value;
+}

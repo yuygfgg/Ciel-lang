@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 15
+
+import /std/lib;
+
+i64 main() {
+    i64 base = 10;
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        print_value(base + msg)?;
+        return Ok(state + msg);
+    }));
+    must_void(send(&actor, 5));
+    must_void(join(&actor));
+    return 0;
+}

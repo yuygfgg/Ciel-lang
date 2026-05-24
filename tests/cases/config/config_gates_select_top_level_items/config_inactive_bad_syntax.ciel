@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 7
+
+#if has_feature("off")
+i64 broken( {
+#else
+i64 main() {
+    return 7;
+}
+#endif

@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 36
+
+T identity_apply<T>(T value) {
+    T |(T)| id = |x| x;
+    return id(value);
+}
+
+T capture_apply<T>(T base, T value) {
+    T |(T)| choose_base = |x| base;
+    return choose_base(value);
+}
+
+i64 main() {
+    i32 small = identity_apply<i32>(5);
+    i64 big = identity_apply<i64>(7);
+    i32 captured_small = capture_apply<i32>(11, 0);
+    i64 captured_big = capture_apply<i64>(13, 0);
+    return small as i64 + big + captured_small as i64 + captured_big;
+}

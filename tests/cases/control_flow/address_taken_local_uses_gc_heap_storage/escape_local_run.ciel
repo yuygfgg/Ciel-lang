@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 7
+
+*i64 keep() {
+    i64 value = 7;
+    return &value;
+}
+
+i64 main() {
+    *i64 p = keep();
+    return *p;
+}

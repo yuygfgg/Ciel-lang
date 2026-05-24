@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 13
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box box) {
+    return box->value;
+}
+
+enum Holder<T> {
+    Full(T),
+    Empty,
+}
+
+i64 read(Holder<measure> holder) {
+    switch (holder) {
+        case Full(item):
+            return measure(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 13 };
+    Holder<measure> holder = Full(box);
+    return read(holder);
+}

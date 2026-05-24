@@ -1,0 +1,27 @@
+// ciel-test: compile
+// expect-c-contains: through__Box_i64
+// expect-c-contains: id__Box_i64
+// expect-c-not-contains: never__
+// expect-c-not-contains: ciel_unmonomorphized_
+
+struct Box<T> {
+    T value;
+}
+
+T id<T>(T value) {
+    return value;
+}
+
+T through<T>(T value) {
+    return id(value);
+}
+
+T unused_generic<T>(T value) {
+    return value;
+}
+
+i64 main() {
+    Box<i64> box = { value: 31 };
+    Box<i64> out = through(box);
+    return out.value;
+}

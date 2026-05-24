@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 28
+
+interface<T> i64 score(*T value);
+interface<T> void reset(*T value);
+interface scorable = score - reset;
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+struct Item {
+    i64 base;
+    i64 bonus;
+}
+
+impl score(*Item item) {
+    return item->base + item->bonus;
+}
+
+Maybe<i64> adjust_score<T: scorable + !reset>(Maybe<T> value, i64 |(i64)| adjust) {
+    switch (value) {
+        case Some(inner):
+            return Some(adjust(score(&inner)));
+        case None:
+            return None;
+    }
+}
+
+i64 main() {
+    Item item = { base: 10, bonus: 3 };
+    i64 bias = 15;
+    Maybe<Item> input = Some(item);
+    Maybe<i64> output = adjust_score(input, |value| value + bias);
+    switch (output) {
+        case Some(value):
+            return value;
+        case None:
+            return 0;
+    }
+}

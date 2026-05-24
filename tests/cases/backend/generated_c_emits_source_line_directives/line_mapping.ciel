@@ -1,0 +1,8 @@
+// ciel-test: compile
+// expect-c-contains: #line
+// expect-c-contains: typedef struct CielSourceLocation
+// expect-c-contains: static CIEL_MAYBE_UNUSED const CielSourceLocation ciel_loc_
+
+i64 main() {
+    return 1;
+}

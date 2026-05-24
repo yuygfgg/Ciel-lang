@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 12
+
+struct Box {
+    i64 value;
+}
+
+i64 read(?*Box box) {
+    if (box == null) {
+        return 0;
+    }
+    return box->value;
+}
+
+i64 read_and(?*Box box) {
+    if (box != null && box->value > 0) {
+        return box->value;
+    }
+    return 0;
+}
+
+i64 main() {
+    Box box = { value: 6 };
+    return read(&box) + read_and(&box);
+}

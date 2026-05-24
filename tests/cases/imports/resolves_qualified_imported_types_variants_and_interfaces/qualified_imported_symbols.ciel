@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 15
+
+import ./qualified_symbols as symbols;
+
+i64 main() {
+    symbols::Box box = { value: 7 };
+    symbols::Maybe maybe = symbols::Some(8);
+    switch (maybe) {
+        case symbols::Some(value):
+            return symbols::measure(&box) + value;
+        case symbols::None:
+            return 0;
+    }
+}

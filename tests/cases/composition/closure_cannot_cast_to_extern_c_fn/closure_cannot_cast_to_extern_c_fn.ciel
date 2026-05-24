@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: extern C function pointers
+
+i64 main() {
+    extern "C" i64 fn(i64) callback = (|x| x) as extern "C" i64 fn(i64);
+    return callback(1);
+}

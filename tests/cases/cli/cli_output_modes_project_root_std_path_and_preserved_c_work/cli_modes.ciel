@@ -1,0 +1,5 @@
+// ciel-test: manual
+
+i64 main() {
+    return 3;
+}

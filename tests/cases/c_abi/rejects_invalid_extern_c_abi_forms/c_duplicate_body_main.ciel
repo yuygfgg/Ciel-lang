@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: multiple definitions
+
+import ./c_duplicate_body_left as left;
+import ./c_duplicate_body_right as right;
+
+i32 main() {
+    return 0;
+}

@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: A
+
+#c_include "stdio.h"
+import /std/result;
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum Error {
+    Bad,
+}
+
+Result<i64, Error> fail() {
+    return Err(Bad);
+}
+
+Result<i64, Error> early() {
+    defer putchar(65);
+    i64 value = fail()?;
+    defer putchar(66);
+    return Ok(value);
+}
+
+i32 main() {
+    early();
+    return 0;
+}

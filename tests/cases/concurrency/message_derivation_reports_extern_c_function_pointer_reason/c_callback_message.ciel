@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+// expect-error: extern C function pointer
+
+import /std/message;
+
+extern "C" {
+    type Callback = i32 fn(i32);
+}
+
+Result<Callback, Error> copy_callback(Callback callback) {
+    Callback local = callback;
+    return clone_message(&local);
+}

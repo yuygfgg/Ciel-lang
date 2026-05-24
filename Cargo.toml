@@ -1,0 +1,15 @@
+[package]
+name = "cielc"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+logos = "0.15"
+
+[lib]
+name = "cielc"
+path = "src/lib.rs"
+
+[[bin]]
+name = "cielc"
+path = "src/main.rs"

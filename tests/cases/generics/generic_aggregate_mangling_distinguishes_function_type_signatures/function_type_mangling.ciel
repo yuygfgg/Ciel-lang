@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 10
+
+type I32Callback = i32 fn(i32);
+type I64Callback = i64 fn(i64);
+
+struct Holder<T> {
+    T value;
+}
+
+i32 plus_one(i32 value) {
+    return value + 1;
+}
+
+i64 plus_two(i64 value) {
+    return value + 2;
+}
+
+i32 main() {
+    Holder<I32Callback> left = { value: plus_one };
+    Holder<I64Callback> right = { value: plus_two };
+    return left.value(3) + (right.value(4) as i32);
+}

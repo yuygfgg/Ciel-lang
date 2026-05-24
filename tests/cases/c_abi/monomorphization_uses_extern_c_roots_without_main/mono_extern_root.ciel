@@ -1,0 +1,17 @@
+// ciel-test: compile
+// expect-c-contains: entry(void)
+// expect-c-contains: id__i64
+// expect-c-not-contains: _unused(
+// expect-c-not-contains: int main(void)
+
+T id<T>(T value) {
+    return value;
+}
+
+i64 unused() {
+    return id(5);
+}
+
+export extern "C" i64 entry() {
+    return id(7);
+}

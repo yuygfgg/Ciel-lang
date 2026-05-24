@@ -1,0 +1,28 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+interface<T> i64 read(*T stream);
+interface<T> void seek(*T stream);
+interface streaming = read - seek;
+
+struct Stream {
+    i64 value;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl seek(*Stream stream) {
+    stream->value = 0;
+    return;
+}
+
+i64 generic_read<T: streaming + !seek>(*T stream) {
+    return read(stream);
+}
+
+i64 main() {
+    Stream stream = { value: 5 };
+    return generic_read(&stream);
+}

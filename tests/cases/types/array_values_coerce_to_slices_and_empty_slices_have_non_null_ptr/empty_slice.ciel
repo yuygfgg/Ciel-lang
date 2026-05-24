@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 0
+
+usize main() {
+    []i64 values = [];
+    if (values.ptr == null) {
+        return 1;
+    }
+    return values.len;
+}

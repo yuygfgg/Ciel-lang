@@ -1,0 +1,15 @@
+// ciel-test: compile
+// expect-c-contains: int64_t (*func)(int64_t arg0)
+// expect-c-not-contains: void * func
+
+i64 add_one(i64 value) {
+    return value + 1;
+}
+
+i64 call_it(i64 fn(i64) func) {
+    return func(4);
+}
+
+i64 main() {
+    return call_it(add_one);
+}

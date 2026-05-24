@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: void
+
+struct Bad {
+    void value;
+}
+
+i64 main() {
+    return 0;
+}

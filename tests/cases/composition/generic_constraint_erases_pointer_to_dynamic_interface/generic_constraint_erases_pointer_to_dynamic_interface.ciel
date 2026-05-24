@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 21
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box box) {
+    return box->value;
+}
+
+measure |()| make_reader<T: measure>(*T value) {
+    return || value;
+}
+
+i64 main() {
+    Box box = { value: 21 };
+    measure |()| reader = make_reader(&box);
+    return measure(reader());
+}

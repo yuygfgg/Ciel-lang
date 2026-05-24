@@ -1,0 +1,21 @@
+// ciel-test: compile
+// expect-c-contains: typedef struct Result_i64_Error Result_i64_Error;
+// expect-c-contains: .as.Ok
+
+enum Error {
+    Failed,
+}
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+Result<i64, Error> good() {
+    return Ok(7);
+}
+
+i64 main() {
+    good();
+    return 0;
+}

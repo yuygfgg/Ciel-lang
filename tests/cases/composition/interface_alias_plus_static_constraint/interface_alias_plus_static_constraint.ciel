@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 14
+
+interface<T> i64 read(*T stream);
+interface<T> i64 size(*T stream);
+interface sized_reader = read + size;
+
+struct Stream {
+    i64 value;
+    i64 len;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl size(*Stream stream) {
+    return stream->len;
+}
+
+i64 total<T: sized_reader>(*T stream) {
+    return read(stream) + size(stream);
+}
+
+i64 main() {
+    Stream stream = { value: 9, len: 5 };
+    return total(&stream);
+}

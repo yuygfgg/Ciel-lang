@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 6
+
+#if has_feature("off")
+i64 main() {
+    return missing_name;
+}
+#else
+i64 main() {
+    return 6;
+}
+#endif

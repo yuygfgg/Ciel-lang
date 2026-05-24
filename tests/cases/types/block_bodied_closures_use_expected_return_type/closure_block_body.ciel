@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 10
+
+i64 main() {
+    i64 |(i64)| clamp = |i64 value| {
+        if (value > 10) {
+            return 10;
+        }
+        return value;
+    };
+    return clamp(14);
+}

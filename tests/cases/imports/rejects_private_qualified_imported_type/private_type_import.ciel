@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: not exported
+
+import ./private_symbols as private;
+
+i64 main() {
+    private::Hidden hidden = { value: 1 };
+    return hidden.value;
+}

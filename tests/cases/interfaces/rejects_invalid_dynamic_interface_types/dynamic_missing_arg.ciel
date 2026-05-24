@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: requires 1 non-receiver type arguments
+
+interface<T, U> bool eq(*T value, U other);
+
+bool bad(eq value) {
+    return true;
+}
+
+i64 main() {
+    return 0;
+}

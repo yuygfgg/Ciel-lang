@@ -1,0 +1,33 @@
+export import /std/error;
+import /std/panic;
+
+export enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+export T expect<T, E>(Result<T, E> value, []char message) {
+    switch (value) {
+        case Ok(result):
+            return result;
+        case Err(error):
+            panic(message);
+    }
+}
+
+export T must<T, E>(Result<T, E> value) {
+    return expect(value, "must failed");
+}
+
+export void expect_void<E>(Result<void, E> value, []char message) {
+    switch (value) {
+        case Ok:
+            return;
+        case Err(error):
+            panic(message);
+    }
+}
+
+export void must_void<E>(Result<void, E> value) {
+    expect_void(value, "must failed");
+}

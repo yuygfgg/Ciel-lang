@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 19
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box value) {
+    return value->value;
+}
+
+i64 call_measure(measure value) {
+    return measure(value);
+}
+
+i64 main() {
+    Box box = { value: 19 };
+    return call_measure(&box);
+}

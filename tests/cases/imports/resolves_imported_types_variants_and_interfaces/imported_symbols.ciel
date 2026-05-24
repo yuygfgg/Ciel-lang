@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 11
+
+import ./symbols;
+
+i64 main() {
+    Box box = { value: 5 };
+    Maybe maybe = Some(6);
+    switch (maybe) {
+        case Some(value):
+            return measure(&box) + value;
+        case None:
+            return 0;
+    }
+}

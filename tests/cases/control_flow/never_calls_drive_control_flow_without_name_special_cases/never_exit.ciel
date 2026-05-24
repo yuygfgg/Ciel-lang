@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 7
+
+#c_include "stdlib.h"
+
+extern "C" {
+    never exit(i32 code);
+}
+
+i64 main() {
+    exit(7);
+}

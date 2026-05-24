@@ -1,0 +1,69 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+
+bool is_code(Error error, i64 expected) {
+    switch (error) {
+        case Text(text):
+            return false;
+        case Code(code):
+            return code == expected;
+    }
+}
+
+bool is_invalid_load(Result<i64, Error> result) {
+    switch (result) {
+        case Ok(value):
+            return false;
+        case Err(error):
+            return is_code(error, 22);
+    }
+}
+
+bool is_invalid_store(Result<void, Error> result) {
+    switch (result) {
+        case Ok:
+            return false;
+        case Err(error):
+            return is_code(error, 22);
+    }
+}
+
+bool is_invalid_compare(Result<CompareExchange<i64>, Error> result) {
+    switch (result) {
+        case Ok(value):
+            return false;
+        case Err(error):
+            return is_code(error, 22);
+    }
+}
+
+i64 main() {
+    Atomic<i64> value = must(make_atomic<i64>(1));
+
+    if (is_invalid_load(atomic_load<i64>(&value, Release)) == false) {
+        return 1;
+    }
+    if (is_invalid_load(atomic_load<i64>(&value, AcqRel)) == false) {
+        return 2;
+    }
+    if (is_invalid_store(atomic_store<i64>(&value, 2, Acquire)) == false) {
+        return 3;
+    }
+    if (is_invalid_store(atomic_store<i64>(&value, 2, AcqRel)) == false) {
+        return 4;
+    }
+    if (is_invalid_compare(atomic_compare_exchange<i64>(&value, 1, 2, SeqCst, Release)) == false) {
+        return 5;
+    }
+    if (is_invalid_compare(atomic_compare_exchange<i64>(&value, 1, 2, Release, Acquire)) == false) {
+        return 6;
+    }
+
+    i64 still_works = must(atomic_load<i64>(&value, SeqCst));
+    if (still_works != 1) {
+        return 7;
+    }
+    return 0;
+}

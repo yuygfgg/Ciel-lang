@@ -1,0 +1,30 @@
+export import /std/error;
+export import /std/message;
+export import /std/result;
+
+export struct Actor<M> {
+    *void handle;
+}
+
+impl<M> clone_message(*Actor<M> value) {
+    return Ok(*value);
+}
+
+impl<M> share_handle_marker(*Actor<M> value) {
+    return true;
+}
+
+// Compiler built-in: lowered to the pthread-backed actor runtime.
+export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message, H: Message>(
+    S initial_state,
+    H handler
+);
+
+// Compiler built-in: clones the payload before enqueueing it.
+export Result<void, Error> send<M: Message>(*Actor<M> actor, M value);
+
+// Compiler built-in: requests actor shutdown.
+export Result<void, Error> stop<M: Message>(*Actor<M> actor);
+
+// Compiler built-in: waits for the actor worker to finish.
+export Result<void, Error> join<M: Message>(*Actor<M> actor);

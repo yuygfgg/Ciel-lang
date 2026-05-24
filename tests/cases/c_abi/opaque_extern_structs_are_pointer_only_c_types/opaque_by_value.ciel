@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: opaque
+
+extern "C" {
+    opaque struct FILE;
+}
+
+i64 main() {
+    FILE file;
+    return 0;
+}

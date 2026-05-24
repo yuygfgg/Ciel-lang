@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: requires non-null pointer
+
+struct Box {
+    i64 value;
+}
+
+i64 main() {
+    Box box = { value: 1 };
+    ?*Box ptr = &box;
+    if (ptr != null) {
+        *?*Box ptr_addr = &ptr;
+        return ptr->value;
+    }
+    return 0;
+}

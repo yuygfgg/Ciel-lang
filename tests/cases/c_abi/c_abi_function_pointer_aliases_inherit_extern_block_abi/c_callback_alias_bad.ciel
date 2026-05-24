@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: expected
+
+extern "C" {
+    type Callback = i32 fn(i32);
+}
+
+i32 internal_callback(i32 value) {
+    return value;
+}
+
+i32 main() {
+    Callback callback = internal_callback;
+    return callback(1);
+}

@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: not exhaustive
+
+enum Maybe {
+    Some(i64),
+    None,
+}
+
+i64 main() {
+    Maybe value = Some(1);
+    switch (value) {
+        case Some(x):
+            return x;
+    }
+    return 0;
+}

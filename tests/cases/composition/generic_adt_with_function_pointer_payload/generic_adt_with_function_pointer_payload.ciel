@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 9
+
+enum Holder<T> {
+    With(T),
+    Empty,
+}
+
+i64 add_three(i64 value) {
+    return value + 3;
+}
+
+i64 main() {
+    Holder<i64 fn(i64)> holder = With(add_three);
+    switch (holder) {
+        case With(callback):
+            return callback(6);
+        case Empty:
+            return 0;
+    }
+}

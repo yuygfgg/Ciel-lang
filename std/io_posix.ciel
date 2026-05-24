@@ -1,0 +1,9 @@
+import /std/c as c;
+
+#c_include "unistd.h"
+
+export extern "C" {
+    c::c_ssize_t read(c::c_int fd, *void buf, c::c_size_t count);
+    c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
+    c::c_int close(c::c_int fd);
+}

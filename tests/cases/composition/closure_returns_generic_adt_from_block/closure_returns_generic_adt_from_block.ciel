@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 18
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+i64 main() {
+    Maybe<i64> |(i64)| positive = |x| {
+        if (x > 0) {
+            return Some(x);
+        }
+        return None;
+    };
+    Maybe<i64> output = positive(18);
+    switch (output) {
+        case Some(value):
+            return value;
+        case None:
+            return 0;
+    }
+}

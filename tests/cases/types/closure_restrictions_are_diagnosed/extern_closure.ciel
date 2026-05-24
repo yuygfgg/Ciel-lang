@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: closure types are not allowed in extern C
+
+extern "C" {
+    void takes_closure(void |()| callback);
+}
+
+i64 main() {
+    return 0;
+}

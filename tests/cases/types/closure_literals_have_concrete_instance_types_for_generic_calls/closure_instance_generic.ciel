@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 12
+
+T keep<T>(T value) {
+    return value;
+}
+
+i64 main() {
+    i64 base = 4;
+    return keep(|i64 x| x + base)(8);
+}

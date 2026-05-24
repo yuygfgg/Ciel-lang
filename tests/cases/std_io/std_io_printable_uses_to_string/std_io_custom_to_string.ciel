@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: custom-value
+
+import /std/io;
+
+struct Label {
+    []char text;
+}
+
+impl to_string(*Label value) {
+    return value->text;
+}
+
+i32 main() {
+    Label label = { text: "custom-value" };
+    must_void(print("{}", [label]));
+    return 0;
+}

@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: expected `*i32`, got `?*i32`
+
+extern "C" {
+    ?*i32 maybe_ptr();
+}
+
+i32 main() {
+    *i32 ptr = maybe_ptr();
+    return *ptr;
+}

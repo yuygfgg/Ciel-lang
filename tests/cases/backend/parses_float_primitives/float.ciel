@@ -1,0 +1,7 @@
+// ciel-test: compile
+// expect-c-contains: double ciel_
+
+f64 main() {
+    f64 x = 1.5;
+    return x;
+}

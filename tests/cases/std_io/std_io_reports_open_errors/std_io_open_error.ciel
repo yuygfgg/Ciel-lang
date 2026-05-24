@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 7
+
+import /std/io;
+
+i32 main() {
+    Result<Fd, Error> result = open_read("/tmp/ciel_std_io_missing_file_should_not_exist");
+    switch (result) {
+        case Ok(fd):
+            must_void(close(fd));
+            return 1;
+        case Err(error):
+            return 7;
+    }
+}

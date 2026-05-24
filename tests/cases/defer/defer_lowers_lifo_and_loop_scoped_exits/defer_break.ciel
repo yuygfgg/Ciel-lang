@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: IXO
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+i32 main() {
+    defer putchar(79);
+    while (true) {
+        defer putchar(73);
+        break;
+    }
+    putchar(88);
+    return 0;
+}

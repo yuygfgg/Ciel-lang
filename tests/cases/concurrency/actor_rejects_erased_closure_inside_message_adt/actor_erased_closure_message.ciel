@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: actor message type
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+struct Job {
+    i64 |(i64)| apply;
+    i64 value;
+}
+
+Result<i64, Error> handle(i64 state, Job job) {
+    return Ok(state + job.apply(job.value));
+}
+
+i64 main() {
+    Actor<Job> actor = must(spawn_actor<i64, Job>(0, handle));
+    must_void(join(&actor));
+    return 0;
+}

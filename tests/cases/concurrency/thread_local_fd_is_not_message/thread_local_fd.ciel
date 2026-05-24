@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+
+Result<void, Error> accept_local<T: ThreadLocal>(T value) {
+    T local = value;
+    if (thread_local_marker(&local)) {
+        return Ok;
+    }
+    return Err(Code(1));
+}
+
+i64 main() {
+    Fd fd = stdout();
+    must_void(accept_local(fd));
+    return 0;
+}

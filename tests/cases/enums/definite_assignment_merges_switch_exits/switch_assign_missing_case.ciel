@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: not definitely assigned
+
+enum Choice {
+    A,
+    B,
+}
+
+i64 main() {
+    Choice choice = A;
+    i64 value;
+    switch (choice) {
+        case A:
+            value = 1;
+        case B:
+            break;
+    }
+    return value;
+}

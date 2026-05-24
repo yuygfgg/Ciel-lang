@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: value=42 ok=true signed=-7 byte=255
+
+import /std/io;
+
+i32 main() {
+    must_void(print("value={} ok={}", [42 as usize, true]));
+    must_void(print(" signed={} byte={}", [-7, 255 as u8]));
+    return 0;
+}

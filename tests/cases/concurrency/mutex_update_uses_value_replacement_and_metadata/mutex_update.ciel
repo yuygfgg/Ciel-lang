@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 25
+// expect-c-contains: sizeof(int64_t), CIEL_ALIGNOF(int64_t)
+
+import /std/lib;
+
+struct Add {
+    i64 delta;
+}
+
+impl update_value<i64, i64>(*Add updater, i64 value) {
+    Update<i64, i64> next = {
+        value: value + updater->delta,
+        result: value,
+    };
+    return Ok(next);
+}
+
+i64 main() {
+    Mutex<i64> mutex = must(make_mutex<i64>(10));
+    Add add = { delta: 5 };
+    i64 first = must(mutex_update<i64, Add, i64>(&mutex, &add));
+    i64 second = must(mutex_update<i64, Add, i64>(&mutex, &add));
+    must_void(print("{}", [first + second]));
+    return 0;
+}

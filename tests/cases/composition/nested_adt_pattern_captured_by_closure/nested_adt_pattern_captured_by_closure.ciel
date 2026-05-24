@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 25
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+enum Pair<T> {
+    Both(Maybe<T>, Maybe<T>),
+    Empty,
+}
+
+i64 read(Pair<i64> pair) {
+    switch (pair) {
+        case Both(Some(left), Some(right)):
+            i64 |()| add = || left + right;
+            return add();
+        case Both(Some(value), None):
+            return value;
+        case Both(None, Some(value)):
+            return value;
+        case Both(None, None):
+            return 0;
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Pair<i64> pair = Both(Some(10), Some(15));
+    return read(pair);
+}

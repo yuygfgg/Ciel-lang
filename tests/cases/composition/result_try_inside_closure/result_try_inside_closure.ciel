@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/result;
+
+enum LocalError {
+    Bad,
+}
+
+Result<i64, LocalError> read_value() {
+    return Ok(11);
+}
+
+i64 main() {
+    Result<i64, LocalError> |()| work = || {
+        i64 value = read_value()?;
+        return Ok(value + 1);
+    };
+    Result<i64, LocalError> result = work();
+    switch (result) {
+        case Ok(value):
+            return value;
+        case Err(error):
+            return 0;
+    }
+}

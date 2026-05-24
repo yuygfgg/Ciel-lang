@@ -1,0 +1,24 @@
+// ciel-test: run
+// expect-exit: 11
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+T |(Maybe<T>)| unwrap_or<T>(T fallback) {
+    return |value| {
+        switch (value) {
+            case Some(inner):
+                return inner;
+            case None:
+                return fallback;
+        }
+    };
+}
+
+i64 main() {
+    i64 |(Maybe<i64>)| read = unwrap_or(11);
+    Maybe<i64> value = None;
+    return read(value);
+}

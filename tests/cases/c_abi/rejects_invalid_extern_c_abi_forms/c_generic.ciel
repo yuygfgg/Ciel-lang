@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: cannot be generic
+
+extern "C" i32 identity<T>(i32 value);
+
+i32 main() {
+    return 0;
+}

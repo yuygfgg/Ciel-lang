@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: out of range
+
+i64 main() {
+    i8 value = 128;
+    return value as i64;
+}

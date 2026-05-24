@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 18
+
+enum Factory<T> {
+    Make(T fn(i64) |()|),
+    Missing,
+}
+
+i64 add_ten(i64 value) {
+    return value + 10;
+}
+
+i64 run(Factory<i64> factory, i64 value) {
+    switch (factory) {
+        case Make(make):
+            i64 fn(i64) callback = make();
+            return callback(value);
+        case Missing:
+            return 0;
+    }
+}
+
+i64 main() {
+    Factory<i64> factory = Make(|| add_ten);
+    return run(factory, 8);
+}

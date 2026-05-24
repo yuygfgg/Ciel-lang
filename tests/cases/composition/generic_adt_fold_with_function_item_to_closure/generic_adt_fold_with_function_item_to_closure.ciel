@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 10
+
+enum Pair<T> {
+    Both(T, T),
+    Empty,
+}
+
+i64 add(i64 left, i64 right) {
+    return left + right;
+}
+
+T fold_pair<T>(Pair<T> pair, T zero, T |(T, T)| combine) {
+    switch (pair) {
+        case Both(left, right):
+            return combine(left, right);
+        case Empty:
+            return zero;
+    }
+}
+
+i64 main() {
+    Pair<i64> pair = Both(4, 6);
+    return fold_pair(pair, 0, add);
+}

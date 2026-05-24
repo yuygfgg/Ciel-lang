@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export enum LeftChoice {
+    Same,
+}

@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 100
+
+interface<T> i64 measure(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box box) {
+    return box->value;
+}
+
+enum Job {
+    Run(i64 |()|),
+    Empty,
+}
+
+i64 execute(Job job) {
+    switch (job) {
+        case Run(callback):
+            return callback();
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 31 };
+    measure erased = &box;
+    Job job = Run(|| measure(erased));
+    box.value = 100;
+    return execute(job);
+}

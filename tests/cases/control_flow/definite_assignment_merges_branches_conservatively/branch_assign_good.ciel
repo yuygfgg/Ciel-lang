@@ -1,0 +1,11 @@
+// ciel-test: compile
+
+i64 main() {
+    i64 value;
+    if (true) {
+        value = 1;
+    } else {
+        value = 2;
+    }
+    return value;
+}

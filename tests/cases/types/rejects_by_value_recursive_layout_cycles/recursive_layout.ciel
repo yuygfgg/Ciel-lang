@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: recursive layout cycle
+
+struct A {
+    A a;
+}
+
+i64 main() {
+    return 0;
+}

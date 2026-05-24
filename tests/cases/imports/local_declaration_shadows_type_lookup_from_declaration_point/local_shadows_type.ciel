@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: local `Box` shadows type lookup
+
+struct Box {
+    i64 value;
+}
+
+i64 main() {
+    i64 Box = 1;
+    Box value = { value: 2 };
+    return Box;
+}

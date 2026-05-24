@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 45
+
+import /std/lib;
+
+Result<i64, Error> handle(i64 state, i64 msg) {
+    print_value(msg)?;
+    return Ok(state + msg);
+}
+
+i64 main() {
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, handle));
+    must_void(send(&actor, 4));
+    must_void(send(&actor, 5));
+    must_void(join(&actor));
+    return 0;
+}

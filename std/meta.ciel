@@ -1,0 +1,3 @@
+// Compiler built-ins: lowered to C sizeof/alignof for the concrete type argument.
+export usize type_size<T>();
+export usize type_align<T>();

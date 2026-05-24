@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: immutable
+
+i64 main() {
+    i64 value = 1;
+    i64 |()| read = || {
+        *i64 ptr = &value;
+        return *ptr;
+    };
+    return read();
+}

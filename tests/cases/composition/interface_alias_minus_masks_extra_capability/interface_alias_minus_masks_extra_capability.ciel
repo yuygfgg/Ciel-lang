@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 7
+
+interface<T> i64 read(*T stream);
+interface<T> void seek(*T stream);
+interface streaming = read - seek;
+
+struct Stream {
+    i64 value;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl seek(*Stream stream) {
+    stream->value = 99;
+    return;
+}
+
+i64 read_stream(streaming stream) {
+    return read(stream);
+}
+
+i64 main() {
+    Stream stream = { value: 7 };
+    return read_stream(&stream);
+}

@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: allowed only at item level
+
+i64 main() {
+    #if has_feature("bad")
+    return 1;
+    #endif
+    return 0;
+}

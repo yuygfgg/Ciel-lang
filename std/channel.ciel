@@ -1,0 +1,71 @@
+export import /std/error;
+export import /std/message;
+export import /std/result;
+import /std/c as c;
+import /std/meta;
+
+extern "C" {
+    opaque struct CielChannel;
+
+    c::c_int ciel_errno();
+    ?*CielChannel ciel_channel_make(usize value_size, usize value_align);
+    c::c_int ciel_channel_send(*CielChannel channel, *const void value);
+    ?*void ciel_channel_recv(*CielChannel channel);
+    c::c_int ciel_channel_close(*CielChannel channel);
+}
+
+export struct Channel<T> {
+    *void handle;
+}
+
+impl<T> clone_message(*Channel<T> value) {
+    return Ok(*value);
+}
+
+impl<T> share_handle_marker(*Channel<T> value) {
+    return true;
+}
+
+Error runtime_error() {
+    c::c_int code = ciel_errno();
+    if ((code as i64) == 0) {
+        return Code(5);
+    }
+    return Code(code as i64);
+}
+
+export Result<Channel<T>, Error> make_channel<T: Message>() {
+    ?*CielChannel raw = ciel_channel_make(type_size<T>(), type_align<T>());
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<void, Error> channel_send<T: Message>(*Channel<T> channel, T value) {
+    T local = value;
+    T cloned = clone_message(&local)?;
+    c::c_int rc = ciel_channel_send(channel->handle as *CielChannel, &cloned as *const void);
+    if ((rc as i64) != 0) {
+        return Err(Code(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<T, Error> channel_recv<T: Message>(*Channel<T> channel) {
+    ?*void raw = ciel_channel_recv(channel->handle as *CielChannel);
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    T value = *typed;
+    return Ok(value);
+}
+
+export Result<void, Error> channel_close<T: Message>(*Channel<T> channel) {
+    c::c_int rc = ciel_channel_close(channel->handle as *CielChannel);
+    if ((rc as i64) != 0) {
+        return Err(Code(rc as i64));
+    }
+    return Ok;
+}

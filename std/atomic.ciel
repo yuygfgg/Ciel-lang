@@ -1,0 +1,296 @@
+export import /std/error;
+export import /std/message;
+export import /std/result;
+import /std/c as c;
+import /std/meta;
+
+extern "C" {
+    opaque struct CielAtomic;
+
+    c::c_int ciel_errno();
+    ?*CielAtomic ciel_atomic_make(usize value_size, usize value_align, *const void initial);
+    ?*void ciel_atomic_load(*CielAtomic atomic, c::c_int order);
+    c::c_int ciel_atomic_store(*CielAtomic atomic, *const void value, c::c_int order);
+    ?*void ciel_atomic_exchange(*CielAtomic atomic, *const void value, c::c_int order);
+    ?*void ciel_atomic_compare_exchange(
+        *CielAtomic atomic,
+        *const void expected,
+        *const void desired,
+        *c::c_int exchanged,
+        c::c_int success,
+        c::c_int failure
+    );
+    ?*void ciel_atomic_fetch_add(*CielAtomic atomic, *const void value, c::c_int order);
+    ?*void ciel_atomic_fetch_sub(*CielAtomic atomic, *const void value, c::c_int order);
+}
+
+export enum MemoryOrder {
+    Relaxed,
+    Acquire,
+    Release,
+    AcqRel,
+    SeqCst,
+}
+
+export struct Atomic<T> {
+    *void handle;
+}
+
+export struct CompareExchange<T> {
+    bool exchanged;
+    T previous;
+}
+
+export interface<T> bool atomic_value_marker(*T value);
+export interface AtomicValue = atomic_value_marker;
+
+export interface<T> bool atomic_integer_marker(*T value);
+export interface AtomicInteger = atomic_integer_marker;
+
+impl atomic_value_marker(*bool value) {
+    return true;
+}
+
+impl atomic_value_marker(*i64 value) {
+    return true;
+}
+
+impl atomic_value_marker(*u64 value) {
+    return true;
+}
+
+impl atomic_value_marker(*usize value) {
+    return true;
+}
+
+impl atomic_integer_marker(*i64 value) {
+    return true;
+}
+
+impl atomic_integer_marker(*u64 value) {
+    return true;
+}
+
+impl atomic_integer_marker(*usize value) {
+    return true;
+}
+
+impl<T> clone_message(*Atomic<T> value) {
+    return Ok(*value);
+}
+
+impl<T> share_handle_marker(*Atomic<T> value) {
+    return true;
+}
+
+Error runtime_error() {
+    c::c_int code = ciel_errno();
+    if ((code as i64) == 0) {
+        return Code(5);
+    }
+    return Code(code as i64);
+}
+
+Error invalid_memory_order() {
+    return Code(22);
+}
+
+c::c_int memory_order_code(MemoryOrder order) {
+    switch (order) {
+        case Relaxed:
+            return 0 as c::c_int;
+        case Acquire:
+            return 1 as c::c_int;
+        case Release:
+            return 2 as c::c_int;
+        case AcqRel:
+            return 3 as c::c_int;
+        case SeqCst:
+            return 4 as c::c_int;
+    }
+    return 4 as c::c_int;
+}
+
+bool valid_load_order(MemoryOrder order) {
+    switch (order) {
+        case Relaxed:
+            return true;
+        case Acquire:
+            return true;
+        case Release:
+            return false;
+        case AcqRel:
+            return false;
+        case SeqCst:
+            return true;
+    }
+    return false;
+}
+
+bool valid_store_order(MemoryOrder order) {
+    switch (order) {
+        case Relaxed:
+            return true;
+        case Acquire:
+            return false;
+        case Release:
+            return true;
+        case AcqRel:
+            return false;
+        case SeqCst:
+            return true;
+    }
+    return false;
+}
+
+bool valid_compare_failure_order(MemoryOrder success, MemoryOrder failure) {
+    switch (failure) {
+        case Relaxed:
+            return true;
+        case Release:
+            return false;
+        case AcqRel:
+            return false;
+        case Acquire:
+            switch (success) {
+                case Relaxed:
+                    return false;
+                case Acquire:
+                    return true;
+                case Release:
+                    return false;
+                case AcqRel:
+                    return true;
+                case SeqCst:
+                    return true;
+            }
+        case SeqCst:
+            switch (success) {
+                case Relaxed:
+                    return false;
+                case Acquire:
+                    return false;
+                case Release:
+                    return false;
+                case AcqRel:
+                    return false;
+                case SeqCst:
+                    return true;
+            }
+    }
+    return false;
+}
+
+*CielAtomic raw_atomic<T>(*Atomic<T> atomic) {
+    return atomic->handle as *CielAtomic;
+}
+
+export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
+    T local = initial;
+    ?*CielAtomic raw = ciel_atomic_make(type_size<T>(), type_align<T>(), &local as *const void);
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<T, Error> atomic_load<T: AtomicValue>(*Atomic<T> atomic, MemoryOrder order) {
+    if (valid_load_order(order) == false) {
+        return Err(invalid_memory_order());
+    }
+    ?*void raw = ciel_atomic_load(raw_atomic(atomic), memory_order_code(order));
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    return Ok(*typed);
+}
+
+export Result<void, Error> atomic_store<T: AtomicValue>(
+    *Atomic<T> atomic,
+    T value,
+    MemoryOrder order
+) {
+    if (valid_store_order(order) == false) {
+        return Err(invalid_memory_order());
+    }
+    T local = value;
+    c::c_int rc = ciel_atomic_store(raw_atomic(atomic), &local as *const void, memory_order_code(order));
+    if ((rc as i64) != 0) {
+        return Err(Code(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<T, Error> atomic_exchange<T: AtomicValue>(
+    *Atomic<T> atomic,
+    T value,
+    MemoryOrder order
+) {
+    T local = value;
+    ?*void raw = ciel_atomic_exchange(raw_atomic(atomic), &local as *const void, memory_order_code(order));
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    return Ok(*typed);
+}
+
+export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
+    *Atomic<T> atomic,
+    T expected,
+    T desired,
+    MemoryOrder success,
+    MemoryOrder failure
+) {
+    if (valid_compare_failure_order(success, failure) == false) {
+        return Err(invalid_memory_order());
+    }
+    T expected_local = expected;
+    T desired_local = desired;
+    c::c_int exchanged = 0 as c::c_int;
+    ?*void raw = ciel_atomic_compare_exchange(
+        raw_atomic(atomic),
+        &expected_local as *const void,
+        &desired_local as *const void,
+        &exchanged,
+        memory_order_code(success),
+        memory_order_code(failure)
+    );
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    return Ok({
+        exchanged: (exchanged as i64) != 0,
+        previous: *typed,
+    });
+}
+
+export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
+    *Atomic<T> atomic,
+    T value,
+    MemoryOrder order
+) {
+    T local = value;
+    ?*void raw = ciel_atomic_fetch_add(raw_atomic(atomic), &local as *const void, memory_order_code(order));
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    return Ok(*typed);
+}
+
+export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
+    *Atomic<T> atomic,
+    T value,
+    MemoryOrder order
+) {
+    T local = value;
+    ?*void raw = ciel_atomic_fetch_sub(raw_atomic(atomic), &local as *const void, memory_order_code(order));
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    *T typed = raw as *T;
+    return Ok(*typed);
+}

@@ -1,0 +1,65 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 37
+// expect-c-contains: ciel_atomic_compare_exchange
+
+import /std/lib;
+
+i64 main() {
+    Atomic<i64> counter = must(make_atomic<i64>(10));
+
+    i64 start = must(atomic_load(&counter, SeqCst));
+    must_void(atomic_store(&counter, 20, Release));
+    i64 after_store = must(atomic_load(&counter, Acquire));
+    i64 old_exchange = must(atomic_exchange(&counter, 30, AcqRel));
+
+    CompareExchange<i64> miss = must(atomic_compare_exchange(&counter, 99, 40, AcqRel, Acquire));
+    CompareExchange<i64> hit = must(atomic_compare_exchange(&counter, 30, 40, SeqCst, Acquire));
+
+    i64 old_add = must(atomic_fetch_add(&counter, 2, AcqRel));
+    i64 old_sub = must(atomic_fetch_sub(&counter, 5, AcqRel));
+    i64 final_value = must(atomic_load(&counter, SeqCst));
+
+    Atomic<bool> flag = must(make_atomic<bool>(false));
+    must_void(atomic_store(&flag, true, SeqCst));
+    bool flag_value = must(atomic_load(&flag, Acquire));
+
+    Atomic<u64> unsigned_counter = must(make_atomic<u64>(1));
+    u64 old_unsigned = must(atomic_fetch_add(&unsigned_counter, 4, SeqCst));
+    u64 final_unsigned = must(atomic_load(&unsigned_counter, SeqCst));
+
+    Atomic<usize> sized_counter = must(make_atomic<usize>(3));
+    usize old_sized = must(atomic_fetch_sub(&sized_counter, 1, SeqCst));
+    usize final_sized = must(atomic_load(&sized_counter, SeqCst));
+
+    if (start != 10) {
+        return 1;
+    }
+    if (after_store != 20) {
+        return 2;
+    }
+    if (old_exchange != 20) {
+        return 3;
+    }
+    if (miss.exchanged != false || miss.previous != 30) {
+        return 4;
+    }
+    if (hit.exchanged != true || hit.previous != 30) {
+        return 5;
+    }
+    if (old_add != 40 || old_sub != 42 || final_value != 37) {
+        return 6;
+    }
+    if (flag_value != true) {
+        return 7;
+    }
+    if (old_unsigned != 1 || final_unsigned != 5) {
+        return 8;
+    }
+    if (old_sized != 3 || final_sized != 2) {
+        return 9;
+    }
+
+    must_void(print("{}", [final_value]));
+    return 0;
+}

@@ -1,0 +1,8 @@
+// ciel-test: run
+// expect-exit: 12
+
+import ./writer_facade;
+
+i64 main() {
+    return writer::open();
+}

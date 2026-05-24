@@ -1,0 +1,29 @@
+// ciel-test: error
+// expect-error: no impl of `seek`
+
+interface<T> i64 read(*T stream);
+interface<T> void seek(*T stream);
+interface streaming = read - seek;
+
+struct Stream {
+    i64 value;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl seek(*Stream stream) {
+    stream->value = 0;
+    return;
+}
+
+i64 bad(streaming stream) {
+    seek(stream);
+    return read(stream);
+}
+
+i64 main() {
+    Stream stream = { value: 5 };
+    return bad(&stream);
+}

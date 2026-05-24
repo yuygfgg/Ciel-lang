@@ -1,0 +1,8 @@
+// ciel-test: compile
+// expect-c-contains: static char ciel_str_0[] = "abc";
+// expect-c-not-contains: (char *)"abc"
+
+usize main() {
+    []char s = "abc";
+    return s.len;
+}

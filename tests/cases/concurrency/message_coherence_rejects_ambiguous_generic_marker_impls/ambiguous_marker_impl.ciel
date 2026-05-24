@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: ambiguous generic impls for marker interface `thread_local_marker`
+
+import /std/message;
+
+struct Box<T> {
+    T value;
+}
+
+impl<T> thread_local_marker(*Box<T> value) {
+    return true;
+}
+
+impl<U> thread_local_marker(*Box<U> value) {
+    return true;
+}
+
+i64 main() {
+    return 0;
+}

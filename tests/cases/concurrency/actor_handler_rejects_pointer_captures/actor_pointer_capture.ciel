@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: actor handler captures actor-local `*i64` as `ptr`
+// expect-error: raw pointer
+
+import /std/lib;
+
+i64 main() {
+    i64 local = 3;
+    *i64 ptr = &local;
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        return Ok(state + msg + *ptr);
+    }));
+    must_void(join(&actor));
+    return 0;
+}

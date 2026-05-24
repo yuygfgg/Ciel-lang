@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: not definitely assigned
+
+i64 main() {
+    i64 value;
+    *i64 p = &value;
+    return 0;
+}

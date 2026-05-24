@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 17
+// expect-c-contains: ciel_slice_range_check
+
+usize main() {
+    []i64 values = [1, 2, 3, 4, 5];
+    []i64 tail = values[2..];
+    []i64 mid = values[1..4];
+    []i64 prefix = values[..2];
+    []i64 all = values[..];
+    return tail[0] as usize + mid.len + mid[2] as usize + prefix[1] as usize + all.len;
+}

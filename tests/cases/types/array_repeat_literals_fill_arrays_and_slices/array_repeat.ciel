@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 0
+
+usize main() {
+    [4]i64 fixed = [7;];
+    []i64 slice = [3; 5];
+    if (fixed[0] != 7 || fixed[3] != 7) {
+        return 1;
+    }
+    if (slice.len != (5 as usize) || slice[0] != 3 || slice[4] != 3) {
+        return 2;
+    }
+    return 0;
+}

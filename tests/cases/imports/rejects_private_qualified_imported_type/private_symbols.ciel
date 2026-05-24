@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+struct Hidden {
+    i64 value;
+}

@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 3
+
+#c_include "string.h"
+
+extern "C" {
+    usize strlen(*const char s);
+}
+
+usize main() {
+    []char text = "abc";
+    return strlen(text.ptr);
+}

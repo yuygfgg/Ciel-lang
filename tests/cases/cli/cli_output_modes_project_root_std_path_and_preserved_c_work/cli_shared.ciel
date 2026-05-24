@@ -1,0 +1,5 @@
+// ciel-test: manual
+
+export extern "C" i64 entry() {
+    return 9;
+}

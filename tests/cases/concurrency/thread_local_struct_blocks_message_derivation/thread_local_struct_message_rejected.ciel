@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+// expect-error: field `fd`
+// expect-error: explicit `ThreadLocal` policy
+
+import /std/lib;
+
+struct LocalEnvelope {
+    Fd fd;
+}
+
+i64 main() {
+    LocalEnvelope envelope = { fd: stdout() };
+    LocalEnvelope copy = must(clone_message(&envelope));
+    return raw_fd(copy.fd) as i64;
+}

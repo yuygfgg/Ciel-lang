@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 1
+
+interface<T, U> bool same(*T value, U other);
+interface same_i64 = same<i64>;
+
+enum Matcher {
+    Has(same_i64),
+    Missing,
+}
+
+struct Box {
+    i64 value;
+}
+
+impl same<i64>(*Box box, i64 other) {
+    return box->value == other;
+}
+
+i64 check(Matcher matcher, i64 expected) {
+    switch (matcher) {
+        case Has(value):
+            if (same(value, expected)) {
+                return 1;
+            }
+            return 0;
+        case Missing:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 44 };
+    Matcher matcher = Has(&box);
+    return check(matcher, 44);
+}

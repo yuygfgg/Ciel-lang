@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 7
+
+T apply<T>(T |(T)| func, T value) {
+    return func(value);
+}
+
+i64 main() {
+    return apply(|x| x + 2, 5);
+}

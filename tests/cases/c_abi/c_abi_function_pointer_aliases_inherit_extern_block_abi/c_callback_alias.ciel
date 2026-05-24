@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 10
+
+extern "C" {
+    type Callback = i32 fn(i32);
+}
+
+export extern "C" i32 exported_callback(i32 value) {
+    return value + 4;
+}
+
+i32 main() {
+    Callback callback = exported_callback;
+    return callback(6);
+}

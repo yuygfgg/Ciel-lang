@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: file-output
+
+import /std/io;
+
+i32 main() {
+    Fd file = must(create("/tmp/ciel_std_io_fixture.txt"));
+    must_void(write_text(file, "file-output"));
+    must_void(close(file));
+
+    Fd input = must(open_read("/tmp/ciel_std_io_fixture.txt"));
+    [32]u8 buffer = [0;];
+    usize n = must(read(input, buffer));
+    must_void(close(input));
+    must(write(stdout(), buffer[..n]));
+    return 0;
+}

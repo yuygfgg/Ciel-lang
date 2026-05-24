@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: opaque C handle without an explicit wrapper policy
+
+import /std/message;
+
+extern "C" {
+    opaque struct NativeHandle;
+}
+
+Result<NativeHandle, Error> copy_native(NativeHandle handle) {
+    return clone_message(&handle);
+}

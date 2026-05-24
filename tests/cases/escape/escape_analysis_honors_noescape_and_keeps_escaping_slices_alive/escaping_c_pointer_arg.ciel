@@ -1,0 +1,13 @@
+// ciel-test: compile
+// expect-c-contains: int64_t *value__
+// expect-c-contains: ciel_alloc(sizeof(int64_t))
+
+extern "C" {
+    void observe(*i64 value);
+}
+
+i64 main() {
+    i64 value = 5;
+    observe(&value);
+    return value;
+}

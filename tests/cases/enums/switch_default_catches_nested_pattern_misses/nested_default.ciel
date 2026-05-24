@@ -1,0 +1,24 @@
+// ciel-test: run
+// expect-exit: 9
+
+enum Inner {
+    A(i64),
+    B,
+}
+
+enum Outer {
+    Wrap(Inner),
+}
+
+i64 pick(Outer value) {
+    switch (value) {
+        case Wrap(A(x)):
+            return x;
+        default:
+            return 9;
+    }
+}
+
+i64 main() {
+    return pick(Wrap(B));
+}

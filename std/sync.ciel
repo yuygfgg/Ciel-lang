@@ -1,0 +1,68 @@
+export import /std/error;
+export import /std/message;
+export import /std/result;
+import /std/c as c;
+import /std/meta;
+
+extern "C" {
+    opaque struct CielMutex;
+
+    c::c_int ciel_errno();
+    ?*CielMutex ciel_mutex_make(usize value_size, usize value_align, *const void initial);
+    ?*void ciel_mutex_lock(*CielMutex mutex);
+    c::c_int ciel_mutex_unlock(*CielMutex mutex);
+}
+
+export struct Mutex<T> {
+    *void handle;
+}
+
+export struct Update<T, R> {
+    T value;
+    R result;
+}
+
+export interface<F, T, R> Result<Update<T, R>, Error> update_value(*F updater, T value);
+
+impl<T> clone_message(*Mutex<T> value) {
+    return Ok(*value);
+}
+
+impl<T> share_handle_marker(*Mutex<T> value) {
+    return true;
+}
+
+Error runtime_error() {
+    c::c_int code = ciel_errno();
+    if ((code as i64) == 0) {
+        return Code(5);
+    }
+    return Code(code as i64);
+}
+
+export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
+    T local = initial;
+    T cloned = clone_message(&local)?;
+    ?*CielMutex raw = ciel_mutex_make(type_size<T>(), type_align<T>(), &cloned as *const void);
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<R, Error> mutex_update<T: Message, F, R>(*Mutex<T> mutex, *F updater) {
+    *CielMutex raw_mutex = mutex->handle as *CielMutex;
+    ?*void raw_slot = ciel_mutex_lock(raw_mutex);
+    if (raw_slot == null) {
+        return Err(runtime_error());
+    }
+    defer ciel_mutex_unlock(raw_mutex);
+
+    *T slot = raw_slot as *T;
+    T current = clone_message(slot)?;
+    Update<T, R> next = update_value<T, R>(updater, current)?;
+    T replacement_source = next.value;
+    T replacement = clone_message(&replacement_source)?;
+    *slot = replacement;
+    return Ok(next.result);
+}

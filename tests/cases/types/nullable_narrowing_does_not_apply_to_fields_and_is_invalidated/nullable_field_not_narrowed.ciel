@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: requires non-null pointer
+
+struct Box {
+    i64 value;
+}
+
+struct Holder {
+    ?*Box ptr;
+}
+
+i64 main() {
+    Holder holder = { ptr: null };
+    if (holder.ptr != null) {
+        return holder.ptr->value;
+    }
+    return 0;
+}

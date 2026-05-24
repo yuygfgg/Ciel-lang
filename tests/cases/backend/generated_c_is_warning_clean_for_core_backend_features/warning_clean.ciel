@@ -1,0 +1,21 @@
+// ciel-test: compile
+// warning-clean: true
+
+struct Point {
+    i64 x;
+    i64 y;
+}
+
+Point make_point(i64 x, i64 y) {
+    return { x: x, y: y };
+}
+
+i64 sum([]i64 values) {
+    return values[0] + values[1];
+}
+
+i64 main() {
+    Point p = make_point(3, 4);
+    []i64 values = [p.x, p.y];
+    return sum(values);
+}

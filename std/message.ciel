@@ -1,0 +1,14 @@
+export import /std/error;
+export import /std/result;
+
+// Compiler built-in: this declaration exposes the message conversion interface.
+export interface<T> Result<T, Error> clone_message(*T value);
+export interface Message = clone_message;
+
+// Reserved marker: policy is defined by explicit library/runtime implementations.
+export interface<T> bool share_handle_marker(*T value);
+export interface ShareHandle = share_handle_marker;
+
+// Reserved marker: policy is defined by explicit library/runtime implementations.
+export interface<T> bool thread_local_marker(*T value);
+export interface ThreadLocal = thread_local_marker;

@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: not exhaustive
+
+enum Inner {
+    A(i64),
+    B,
+}
+
+enum Outer {
+    Wrap(Inner),
+    Empty,
+}
+
+i64 pick(Outer value) {
+    switch (value) {
+        case Wrap(A(x)):
+            return x;
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    return 0;
+}

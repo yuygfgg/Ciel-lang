@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: omitted length requires an expected array type
+
+usize main() {
+    []i64 values = [1;];
+    return values.len;
+}

@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 41
+
+interface<T> i64 measure(*T value);
+interface measurable = measure;
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box box) {
+    return box->value;
+}
+
+i64 read<T: measurable>(Maybe<T> value) {
+    switch (value) {
+        case Some(inner):
+            return measure(&inner);
+        case None:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 41 };
+    Maybe<Box> value = Some(box);
+    return read(value);
+}

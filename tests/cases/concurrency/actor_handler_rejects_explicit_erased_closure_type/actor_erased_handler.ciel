@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+i64 main() {
+    Actor<i64> actor = must(spawn_actor<i64, i64, Result<i64, Error> |(i64, i64)|>(
+        0,
+        |i64 state, i64 msg| {
+            return Ok(state + msg);
+        }
+    ));
+    must_void(join(&actor));
+    return 0;
+}

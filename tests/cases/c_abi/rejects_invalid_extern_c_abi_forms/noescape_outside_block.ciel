@@ -1,0 +1,4 @@
+// ciel-test: error
+// expect-error: noescape
+
+noescape i32 f();

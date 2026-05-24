@@ -1,0 +1,7 @@
+// ciel-test: run
+// expect-exit: 128
+
+i64 main() {
+    i8 value = -128;
+    return value as i64;
+}

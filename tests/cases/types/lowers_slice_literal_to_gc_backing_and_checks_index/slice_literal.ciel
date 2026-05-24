@@ -1,0 +1,7 @@
+// ciel-test: run
+// expect-exit: 2
+
+usize main() {
+    []i64 values = [1, 2, 3];
+    return values[1] as usize;
+}

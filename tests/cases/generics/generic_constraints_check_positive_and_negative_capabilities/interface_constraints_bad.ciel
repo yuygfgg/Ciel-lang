@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+interface<T> i64 measure(*T value);
+interface<T> void seek(*T value);
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*Box value) {
+    return value->value;
+}
+
+impl seek(*Box value) {
+    return;
+}
+
+i64 read_measure<T: measure + !seek>(*T value) {
+    return measure(value);
+}
+
+i64 main() {
+    Box box = { value: 17 };
+    return read_measure(&box);
+}

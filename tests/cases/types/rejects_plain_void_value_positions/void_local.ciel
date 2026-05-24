@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: void
+
+i64 main() {
+    void value;
+    return 0;
+}

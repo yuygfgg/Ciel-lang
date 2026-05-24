@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: cannot be compared directly
+
+struct Point {
+    i64 x;
+}
+
+bool same(Point a, Point b) {
+    return a == b;
+}
+
+i64 main() {
+    return 0;
+}

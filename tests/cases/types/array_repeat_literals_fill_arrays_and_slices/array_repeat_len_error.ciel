@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: fixed array context must omit the length
+
+i64 main() {
+    [3]i64 values = [1; 3];
+    return values[0];
+}

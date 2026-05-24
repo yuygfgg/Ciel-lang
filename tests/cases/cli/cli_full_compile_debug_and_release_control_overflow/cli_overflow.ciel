@@ -1,0 +1,6 @@
+// ciel-test: manual
+
+i32 main() {
+    i8 value = 127;
+    return (value + 1) as i32;
+}

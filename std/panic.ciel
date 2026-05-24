@@ -1,0 +1,7 @@
+extern "C" {
+    noescape never ciel_panic(*char message, usize len);
+}
+
+export never panic([]char message) {
+    ciel_panic(message.ptr, message.len);
+}

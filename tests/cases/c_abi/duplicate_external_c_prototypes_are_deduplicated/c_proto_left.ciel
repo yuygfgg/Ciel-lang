@@ -1,0 +1,7 @@
+// ciel-test: dependency
+
+#c_include "stdlib.h"
+
+export extern "C" {
+    i32 abs(i32 value);
+}

@@ -1,0 +1,12 @@
+// ciel-test: compile
+// expect-c-contains: typedef struct FILE FILE;
+// expect-c-contains: FILE *fopen(char *path, char *mode);
+
+extern "C" {
+    opaque struct FILE;
+    ?*FILE fopen(*char path, *char mode);
+}
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,6 @@
+// ciel-test: error
+// expect-error: unsupported ABI
+
+extern "stdcall" {
+    i32 f();
+}

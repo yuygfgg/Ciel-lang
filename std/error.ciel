@@ -1,0 +1,4 @@
+export enum Error {
+    Text([]char),
+    Code(i64),
+}

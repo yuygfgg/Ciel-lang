@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 4
+
+#if has_feature("unknown")
+i64 selected() {
+    return 1;
+}
+#else
+i64 selected() {
+    return 4;
+}
+#endif
+
+i64 main() {
+    return selected();
+}

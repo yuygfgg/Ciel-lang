@@ -1,0 +1,6 @@
+// ciel-test: error
+// expect-error: must be declared with `export`
+
+extern "C" i32 entry() {
+    return 0;
+}

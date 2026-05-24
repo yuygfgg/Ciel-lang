@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: immutable parameter
+
+*i64 expose(i64 value) {
+    return &value;
+}
+
+i64 main() {
+    return 0;
+}

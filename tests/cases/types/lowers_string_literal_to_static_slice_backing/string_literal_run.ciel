@@ -1,0 +1,7 @@
+// ciel-test: run
+// expect-exit: 3
+
+usize main() {
+    []char s = "abc";
+    return s.len;
+}

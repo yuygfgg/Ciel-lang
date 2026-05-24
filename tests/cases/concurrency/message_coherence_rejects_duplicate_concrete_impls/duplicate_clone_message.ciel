@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: conflicting impl of `clone_message`
+
+import /std/message;
+
+struct PointerBox {
+    *i64 value;
+}
+
+impl clone_message(*PointerBox value) {
+    return Ok(*value);
+}
+
+impl clone_message(*PointerBox value) {
+    return Ok(*value);
+}
+
+i64 main() {
+    return 0;
+}

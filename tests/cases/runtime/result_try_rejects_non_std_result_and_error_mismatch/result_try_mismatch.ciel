@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: error type mismatch
+
+import /std/result;
+
+enum ReadError {
+    BadRead,
+}
+
+enum WriteError {
+    BadWrite,
+}
+
+Result<i64, ReadError> read_value() {
+    return Err(BadRead);
+}
+
+Result<i64, WriteError> write_value() {
+    i64 value = read_value()?;
+    return Ok(value);
+}
+
+i64 main() {
+    return 0;
+}

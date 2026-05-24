@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied
+// expect-error: atomic_value_marker
+
+import /std/lib;
+
+i64 main() {
+    Atomic<i32> value = must(make_atomic<i32>(1));
+    return 0;
+}

@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 33
+
+interface<T> i64 value(*T item);
+interface<T> bool active(*T item);
+interface active_value = value + active;
+
+struct Item {
+    i64 n;
+    bool ok;
+}
+
+impl value(*Item item) {
+    return item->n;
+}
+
+impl active(*Item item) {
+    return item->ok;
+}
+
+i64 read(active_value item) {
+    if (active(item)) {
+        return value(item);
+    }
+    return 0;
+}
+
+i64 main() {
+    Item item = { n: 33, ok: true };
+    return read(&item);
+}

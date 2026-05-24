@@ -1,0 +1,53 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 25
+
+import /std/lib;
+
+struct Pair<T> {
+    T left;
+    T right;
+}
+
+enum Command<T> {
+    Add(T),
+    Print(T),
+}
+
+struct Envelope<T> {
+    T item;
+    i64 scale;
+}
+
+Envelope<T> wrap<T: Message>(T item, i64 scale) {
+    return { item: item, scale: scale };
+}
+
+Result<void, Error> send_wrapped<T: Message>(*Actor<Envelope<T>> actor, T item, i64 scale) {
+    return send(actor, wrap(item, scale));
+}
+
+Result<i64, Error> handle(i64 state, Envelope<Command<Pair<i64>>> msg) {
+    switch (msg.item) {
+        case Add(pair):
+            return Ok(state + ((pair.left + pair.right) * msg.scale));
+        case Print(pair):
+            print_value(state + ((pair.left + pair.right) * msg.scale))?;
+            return Ok(state);
+    }
+}
+
+i64 main() {
+    Actor<Envelope<Command<Pair<i64>>>> actor = must(spawn_actor<i64, Envelope<Command<Pair<i64>>>>(0, handle));
+
+    Pair<i64> first = { left: 2, right: 3 };
+    Command<Pair<i64>> add = Add(first);
+    must_void(send_wrapped(&actor, add, 2));
+
+    Pair<i64> second = { left: 1, right: 4 };
+    Command<Pair<i64>> print = Print(second);
+    must_void(send_wrapped(&actor, print, 3));
+
+    must_void(join(&actor));
+    return 0;
+}

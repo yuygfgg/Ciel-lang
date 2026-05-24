@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: ambiguous pattern lookup `Same`
+
+import ./left_variant;
+import ./right_variant;
+
+i64 pick(LeftChoice value) {
+    switch (value) {
+        case Same:
+            return 1;
+    }
+}
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export extern "C" i32 same_symbol() {
+    return 2;
+}

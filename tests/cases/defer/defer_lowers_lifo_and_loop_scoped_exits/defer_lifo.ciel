@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: BA
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+i32 main() {
+    defer putchar(65);
+    defer putchar(66);
+    return 0;
+}

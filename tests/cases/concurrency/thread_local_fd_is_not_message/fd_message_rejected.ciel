@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+// expect-error: explicit `ThreadLocal` policy
+
+import /std/lib;
+
+i64 main() {
+    Fd fd = stdout();
+    Fd copy = must(clone_message(&fd));
+    return raw_fd(copy) as i64;
+}

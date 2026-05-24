@@ -1,0 +1,9 @@
+// ciel-test: run
+// expect-exit: 8
+
+i64 main() {
+    i64 |(i64)| f = (|x| {
+        return x + 1;
+    }) as i64 |(i64)|;
+    return f(7);
+}

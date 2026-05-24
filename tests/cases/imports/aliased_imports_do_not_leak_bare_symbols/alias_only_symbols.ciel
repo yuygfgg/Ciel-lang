@@ -1,0 +1,5 @@
+// ciel-test: dependency
+
+export struct Box {
+    i64 value;
+}

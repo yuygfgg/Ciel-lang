@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: ambiguous type lookup `Item`
+
+import ./left_item;
+import ./right_item;
+
+i64 main() {
+    Item item = { value: 1 };
+    return item.value;
+}

@@ -1,0 +1,39 @@
+// ciel-test: error
+// expect-error: no impl of `seek`
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+interface streaming = read - seek;
+
+enum Packet {
+    Item(streaming),
+    Empty,
+}
+
+struct Device {
+    i64 value;
+    i64 offset;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+impl seek(*Device device) {
+    return device->offset;
+}
+
+i64 visit(Packet packet, i64 |(streaming)| callback) {
+    switch (packet) {
+        case Item(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Device device = { value: 4, offset: 2 };
+    Packet packet = Item(&device);
+    return visit(packet, |item| read(item) + seek(item));
+}

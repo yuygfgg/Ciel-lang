@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 11
+
+enum Outer<T> {
+    Wrap(T, void),
+    Empty,
+}
+
+void touch() {
+    return;
+}
+
+i64 apply<T>(Outer<T> value, i64 |(void, T)| callback) {
+    switch (value) {
+        case Wrap(item, marker):
+            return callback(marker, item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Outer<i64> value = Wrap(9, touch());
+    return apply(value, |marker, item| {
+        marker;
+        return item + 2;
+    });
+}

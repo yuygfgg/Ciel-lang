@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 12
+
+interface<T> i64 |(i64)| mapper(*T value);
+interface maps_i64 = mapper;
+
+enum Slot<T> {
+    Full(T),
+    Empty,
+}
+
+struct Box {
+    i64 base;
+}
+
+impl mapper(*Box box) {
+    i64 base = box->base;
+    return |value| value + base;
+}
+
+i64 main() {
+    Box box = { base: 7 };
+    Slot<maps_i64> slot = Full(&box);
+    switch (slot) {
+        case Full(item):
+            i64 |(i64)| f = mapper(item);
+            return f(5);
+        case Empty:
+            return 0;
+    }
+}

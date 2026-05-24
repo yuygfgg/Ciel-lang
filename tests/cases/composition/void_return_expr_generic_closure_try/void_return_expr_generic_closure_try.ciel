@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: V
+
+import /std/result;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum LocalError {
+    Failed,
+}
+
+T through<T>(T value) {
+    return value;
+}
+
+void mark() {
+    putchar(86);
+}
+
+Result<void, LocalError> call(void |()| action) {
+    return Ok(through<void>(action()));
+}
+
+i64 main() {
+    must(call(|| mark()));
+    return 0;
+}

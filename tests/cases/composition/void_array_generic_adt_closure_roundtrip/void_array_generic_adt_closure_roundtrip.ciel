@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 6
+
+struct Tokens {
+    i64 value;
+}
+
+enum Box<T> {
+    Full(T),
+    Empty,
+}
+
+i64 visit<T>(Box<T> box, i64 |(T)| callback) {
+    switch (box) {
+        case Full(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    [3]void markers;
+    Tokens tokens = { value: 6 };
+    Box<Tokens> box = Full(tokens);
+    return visit(box, |item| {
+        markers[1];
+        return item.value;
+    });
+}

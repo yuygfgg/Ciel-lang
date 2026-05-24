@@ -1,0 +1,29 @@
+// ciel-test: error
+// expect-error: does not implement `clone_message`
+
+import /std/lib;
+
+interface<T> i64 read(*T value);
+interface readable = read;
+
+struct Counter {
+    i64 value;
+}
+
+impl read(*Counter counter) {
+    return counter->value;
+}
+
+struct Envelope {
+    Result<readable, Error> payload;
+}
+
+i64 main() {
+    Channel<Envelope> channel = must(make_channel<Envelope>());
+    Counter counter = { value: 5 };
+    readable view = &counter;
+    Envelope envelope = { payload: Ok(view) };
+    must(channel_send(&channel, envelope));
+    must(channel_close(&channel));
+    return 0;
+}

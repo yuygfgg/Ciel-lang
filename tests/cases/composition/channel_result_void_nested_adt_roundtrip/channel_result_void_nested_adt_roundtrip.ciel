@@ -1,0 +1,47 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 17
+
+import /std/lib;
+
+enum Step<T> {
+    Value(T),
+    Done(void),
+}
+
+struct Envelope<T> {
+    Result<Step<T>, Error> result;
+    void marker;
+}
+
+Result<void, Error> post<T: Message>(*Channel<Envelope<T>> channel, Step<T> step) {
+    Envelope<T> envelope = { result: Ok(step) };
+    return channel_send(channel, envelope);
+}
+
+i64 main() {
+    Channel<Envelope<i64>> channel = must(make_channel<Envelope<i64>>());
+    must(post(&channel, Value(17)));
+    must(post(&channel, Done));
+
+    Envelope<i64> first = must(channel_recv(&channel));
+    Envelope<i64> second = must(channel_recv(&channel));
+    must(channel_close(&channel));
+
+    i64 total = 0;
+    switch (must(first.result)) {
+        case Value(value):
+            total = total + value;
+        case Done(marker):
+            marker;
+    }
+    switch (must(second.result)) {
+        case Value(value):
+            total = total + value;
+        case Done(marker):
+            marker;
+    }
+
+    must(print("{}", [total]));
+    return 0;
+}

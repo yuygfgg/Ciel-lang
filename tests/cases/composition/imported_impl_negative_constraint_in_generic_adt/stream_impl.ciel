@@ -1,0 +1,17 @@
+// ciel-test: dependency
+
+export interface<T> i64 read(*T value);
+export interface<T> i64 seek(*T value);
+
+export struct Stream {
+    i64 value;
+    i64 offset;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl seek(*Stream stream) {
+    return stream->offset;
+}

@@ -1,0 +1,30 @@
+// ciel-test: error
+// expect-error: capturing closure cannot convert to `fn`
+
+interface<T> i64 install(*T target, i64 fn(i64) callback);
+interface installer = install;
+
+enum Plan {
+    Use(installer, i64 fn(i64)),
+    Empty,
+}
+
+struct Box {
+    i64 value;
+}
+
+impl install(*Box box, i64 fn(i64) callback) {
+    return callback(box->value);
+}
+
+i64 main() {
+    Box box = { value: 4 };
+    i64 base = 5;
+    Plan plan = Use(&box, |value| value + base);
+    switch (plan) {
+        case Use(target, callback):
+            return install(target, callback);
+        case Empty:
+            return 0;
+    }
+}

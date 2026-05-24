@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 14
+
+import /std/lib;
+
+interface<T, U> Result<U, Error> convert(*T value, U seed);
+interface convert_i64 = convert<i64>;
+
+enum Step {
+    Apply(convert_i64, i64),
+    Skip(void),
+}
+
+struct Box {
+    i64 value;
+}
+
+impl convert<i64>(*Box box, i64 seed) {
+    return Ok(box->value + seed);
+}
+
+Result<i64, Error> eval(Step step, Result<i64, Error> |(convert_i64, i64)| callback) {
+    switch (step) {
+        case Apply(item, seed):
+            return callback(item, seed);
+        case Skip(marker):
+            marker;
+            return Ok(0);
+    }
+}
+
+i64 main() {
+    Box box = { value: 9 };
+    Step step = Apply(&box, 5);
+    return must(eval(step, |item, seed| convert(item, seed)));
+}

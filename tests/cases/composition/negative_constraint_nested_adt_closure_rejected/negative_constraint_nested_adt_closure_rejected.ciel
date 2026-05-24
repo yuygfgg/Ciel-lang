@@ -1,0 +1,35 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+
+struct Box<T> {
+    T value;
+}
+
+struct Device {
+    i64 value;
+    i64 offset;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+impl seek(*Device device) {
+    return device->offset;
+}
+
+i64 fold<T: read + !seek>(Box<T> box, i64 |(T)| callback) {
+    return callback(box.value);
+}
+
+i64 main() {
+    Device device = { value: 3, offset: 4 };
+    Box<Device> box = { value: device };
+    return fold(box, |item| {
+        Device local = item;
+        return read(&local);
+    });
+}

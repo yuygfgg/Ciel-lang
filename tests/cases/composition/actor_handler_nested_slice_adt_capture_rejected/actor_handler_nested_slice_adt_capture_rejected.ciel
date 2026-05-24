@@ -1,0 +1,35 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: slice view without an owning `Message` container policy
+
+import /std/lib;
+
+struct Payload<T> {
+    T value;
+}
+
+enum Holder<T> {
+    Wrap(T),
+    Empty,
+}
+
+i64 main() {
+    []i64 values = [1, 2, 3];
+    Payload<[]i64> payload = { value: values };
+    Holder<Payload<[]i64>> holder = Wrap(payload);
+
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 message| {
+        Holder<Payload<[]i64>> local = holder;
+        switch (local) {
+            case Wrap(item):
+                item.value[0];
+            case Empty:
+        }
+        return Ok(state + message);
+    }));
+
+    must(send(&actor, 1));
+    must(join(&actor));
+    return 0;
+}

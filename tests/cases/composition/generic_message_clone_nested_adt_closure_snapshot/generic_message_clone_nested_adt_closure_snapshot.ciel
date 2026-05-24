@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/lib;
+
+struct Box<T> {
+    T value;
+}
+
+enum Holder<T> {
+    Full(T),
+    Empty,
+}
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 evaluate(Holder<Box<i64 |(i64)|>> holder, i64 input) {
+    switch (holder) {
+        case Full(box):
+            return box.value(input);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    i64 offset = 4;
+    Box<i64 |(i64)|> box = { value: clone_value(|i64 value| value + offset) };
+    offset = 50;
+    Holder<Box<i64 |(i64)|>> holder = Full(box);
+    return evaluate(holder, 8);
+}

@@ -1,0 +1,49 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 19
+
+import /std/lib;
+
+enum Command<T> {
+    Add(T),
+    Emit(void),
+}
+
+struct Bias<T> {
+    void marker;
+    T value;
+}
+
+struct Capture<T> {
+    Channel<T> out;
+    Bias<T> bias;
+}
+
+i64 main() {
+    Capture<i64> capture = {
+        out: must(make_channel<i64>()),
+        bias: { value: 4 },
+    };
+
+    Actor<Command<i64>> actor = must(spawn_actor<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
+        Capture<i64> local = capture;
+        switch (command) {
+            case Add(value):
+                return Ok(state + value + local.bias.value);
+            case Emit(marker):
+                marker;
+                channel_send(&local.out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    must(send(&actor, Add(6)));
+    must(send(&actor, Add(5)));
+    must(send(&actor, Emit));
+
+    i64 value = must(channel_recv(&capture.out));
+    must(join(&actor));
+    must(channel_close(&capture.out));
+    must(print("{}", [value]));
+    return 0;
+}

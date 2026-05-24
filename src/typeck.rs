@@ -4194,6 +4194,44 @@ impl TypeChecker {
         })
     }
 
+    fn check_generic_inference_arg(
+        &mut self,
+        scopes: &mut LocalScopes,
+        arg: &Expr,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if expr_is_closure_literal(arg) {
+            return self.check_closure_literal_preserving_instance(scopes, arg, expected);
+        }
+        self.check_expr(scopes, arg, expected)
+    }
+
+    fn check_closure_literal_preserving_instance(
+        &mut self,
+        scopes: &mut LocalScopes,
+        arg: &Expr,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        match &arg.kind {
+            ExprKind::Closure { params, body } => {
+                self.check_closure_expr(scopes, arg.span, params, body, expected)
+            }
+            ExprKind::Cast { expr, ty } => {
+                let ExprKind::Closure { params, body } = &expr.kind else {
+                    return self.check_expr(scopes, arg, expected);
+                };
+                let target = self.lower_type(ty);
+                self.check_closure_cast_allowed(&target, arg.span);
+                self.check_closure_expr(scopes, expr.span, params, body, Some(&target))
+                    .map(|checked| TExpr {
+                        span: arg.span,
+                        ..checked
+                    })
+            }
+            _ => self.check_expr(scopes, arg, expected),
+        }
+    }
+
     fn infer_generic_function_call(
         &mut self,
         scopes: &mut LocalScopes,
@@ -4215,9 +4253,13 @@ impl TypeChecker {
             let concrete = self.lower_type(ty);
             subst.insert(generic.name.clone(), concrete);
         }
-        if let Some(expected) = expected {
-            unify_ty(&sig.ret, expected, &mut subst);
-        }
+        let expected_hints = if let Some(expected) = expected {
+            let mut hints = subst.clone();
+            unify_ty(&sig.ret, expected, &mut hints);
+            hints
+        } else {
+            subst.clone()
+        };
 
         if sig.params.len() != args.len() {
             self.diagnostics.push(Diagnostic::new(
@@ -4235,16 +4277,17 @@ impl TypeChecker {
             let Some(param_ty) = sig.params.get(idx) else {
                 continue;
             };
-            let expected_arg = substitute_ty(param_ty, &subst);
-            if contains_generic(&expected_arg) && expr_is_closure_literal(arg) {
+            let (expected_arg, expected_for_arg) =
+                inference_arg_expected(param_ty, &subst, &expected_hints);
+            if contains_generic(&expected_arg)
+                && expected_for_arg.is_none()
+                && expr_is_closure_literal(arg)
+            {
                 deferred_closure_args.push(idx);
                 continue;
             }
-            let checked = if contains_generic(&expected_arg) {
-                self.check_expr(scopes, arg, None)?
-            } else {
-                self.check_expr(scopes, arg, Some(&expected_arg))?
-            };
+            let checked =
+                self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
             unify_ty(param_ty, &checked.ty, &mut subst);
         }
         for idx in deferred_closure_args {
@@ -4254,13 +4297,13 @@ impl TypeChecker {
             let Some(arg) = args.get(idx) else {
                 continue;
             };
-            let expected_arg = substitute_ty(param_ty, &subst);
-            let checked = if contains_generic(&expected_arg) {
-                self.check_expr(scopes, arg, None)?
-            } else {
-                self.check_expr(scopes, arg, Some(&expected_arg))?
-            };
+            let (_, expected_for_arg) = inference_arg_expected(param_ty, &subst, &expected_hints);
+            let checked =
+                self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
             unify_ty(param_ty, &checked.ty, &mut subst);
+        }
+        if let Some(expected) = expected {
+            unify_ty(&sig.ret, expected, &mut subst);
         }
 
         for generic in &sig.generics {
@@ -6864,6 +6907,29 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
         },
         other => other.clone(),
     }
+}
+
+fn inference_arg_expected(
+    param_ty: &Ty,
+    subst: &HashMap<String, Ty>,
+    expected_hints: &HashMap<String, Ty>,
+) -> (Ty, Option<Ty>) {
+    let expected_arg = substitute_ty(param_ty, subst);
+    if !contains_generic(&expected_arg) {
+        return (expected_arg.clone(), Some(expected_arg));
+    }
+
+    let mut hinted_subst = expected_hints.clone();
+    for (name, ty) in subst {
+        hinted_subst.insert(name.clone(), ty.clone());
+    }
+    let hinted_arg = substitute_ty(param_ty, &hinted_subst);
+    let expected_for_arg = if contains_generic(&hinted_arg) {
+        None
+    } else {
+        Some(hinted_arg)
+    };
+    (expected_arg, expected_for_arg)
 }
 
 fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {

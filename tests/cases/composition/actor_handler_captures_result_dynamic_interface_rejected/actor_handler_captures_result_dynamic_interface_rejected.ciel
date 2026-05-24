@@ -1,0 +1,31 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+interface<T> i64 read(*T value);
+interface readable = read;
+
+struct Counter {
+    i64 value;
+}
+
+impl read(*Counter counter) {
+    return counter->value;
+}
+
+i64 main() {
+    Counter counter = { value: 8 };
+    Result<readable, Error> captured = Ok(&counter);
+
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 message| {
+        Result<readable, Error> local = captured;
+        readable view = must(local);
+        return Ok(state + message + read(view));
+    }));
+
+    must(send(&actor, 1));
+    must(join(&actor));
+    return 0;
+}

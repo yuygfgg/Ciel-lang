@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 21
+
+interface<T> i64 read(*T value);
+interface readable = read;
+
+enum Holder {
+    Full(readable),
+    Empty,
+}
+
+struct Device {
+    i64 value;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+i64 |()| make_reader(Holder holder) {
+    switch (holder) {
+        case Full(item):
+            return || read(item);
+        case Empty:
+            return || 0;
+    }
+}
+
+i64 main() {
+    Device device = { value: 21 };
+    Holder holder = Full(&device);
+    i64 |()| reader = make_reader(holder);
+    return reader();
+}

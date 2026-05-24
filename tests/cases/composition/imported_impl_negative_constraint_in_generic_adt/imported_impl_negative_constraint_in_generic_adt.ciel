@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+import ./stream_impl;
+
+struct Box<T> {
+    T value;
+}
+
+i64 fold<T: read + !seek>(Box<T> box, i64 |(T)| callback) {
+    return callback(box.value);
+}
+
+i64 main() {
+    Stream stream = { value: 6, offset: 2 };
+    Box<Stream> box = { value: stream };
+    return fold(box, |item| {
+        Stream local = item;
+        return read(&local);
+    });
+}

@@ -1,0 +1,51 @@
+// ciel-test: run
+// expect-exit: 42
+
+import /std/lib;
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+interface<T> void reset(*T value);
+interface readable_seekable = read + seek - reset;
+
+enum Slot<T> {
+    Full(T),
+    Empty,
+}
+
+struct Device {
+    i64 value;
+    i64 offset;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+impl seek(*Device device) {
+    return device->offset;
+}
+
+impl reset(*Device device) {
+    device->value = 0;
+    device->offset = 0;
+    return;
+}
+
+Result<i64, Error> visit(Slot<readable_seekable> slot, Result<i64, Error> |(readable_seekable)| callback) {
+    switch (slot) {
+        case Full(item):
+            return callback(item);
+        case Empty:
+            return Ok(0);
+    }
+}
+
+i64 main() {
+    Device device = { value: 30, offset: 5 };
+    Slot<readable_seekable> slot = Full(&device);
+    i64 bias = 7;
+    return must(visit(slot, |item| {
+        return Ok(read(item) + seek(item) + bias);
+    }));
+}

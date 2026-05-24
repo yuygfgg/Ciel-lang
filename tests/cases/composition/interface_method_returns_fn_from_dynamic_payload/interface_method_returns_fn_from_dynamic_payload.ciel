@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 10
+
+interface<T> i64 fn(i64) select(*T value);
+interface selector = select;
+
+enum Plan {
+    Use(selector, i64),
+    Empty,
+}
+
+struct Box {
+    bool doubled;
+}
+
+i64 double_value(i64 value) {
+    return value * 2;
+}
+
+i64 add_three(i64 value) {
+    return value + 3;
+}
+
+impl select(*Box box) {
+    if (box->doubled) {
+        return double_value;
+    }
+    return add_three;
+}
+
+i64 main() {
+    Box box = { doubled: true };
+    Plan plan = Use(&box, 5);
+    switch (plan) {
+        case Use(item, input):
+            i64 fn(i64) function = select(item);
+            return function(input);
+        case Empty:
+            return 0;
+    }
+}

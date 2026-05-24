@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 15
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+interface readable = read - seek;
+
+struct Device {
+    i64 value;
+    i64 offset;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+impl seek(*Device device) {
+    return device->offset;
+}
+
+i64 fold<T: readable>(T value, i64 |(T)| callback) {
+    return callback(value);
+}
+
+i64 main() {
+    Device device = { value: 10, offset: 5 };
+    return fold(device, |item| {
+        Device local = item;
+        return read(&local) + seek(&local);
+    });
+}

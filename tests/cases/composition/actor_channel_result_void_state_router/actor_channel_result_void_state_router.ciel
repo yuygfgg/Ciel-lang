@@ -1,0 +1,65 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 15
+
+import /std/lib;
+
+enum Command<T> {
+    Add(T),
+    Flush(void),
+}
+
+enum Event<T> {
+    Total(T),
+    Closed(void),
+}
+
+struct State<T> {
+    Channel<Result<Event<T>, Error>> out;
+    T total;
+}
+
+i64 main() {
+    Channel<Result<Event<i64>, Error>> out = must(make_channel<Result<Event<i64>, Error>>());
+    State<i64> initial = { out: out, total: 0 };
+
+    Actor<Command<i64>> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, |State<i64> state, Command<i64> command| {
+        State<i64> next = state;
+        switch (command) {
+            case Add(value):
+                next.total = next.total + value;
+                return Ok(next);
+            case Flush(marker):
+                marker;
+                channel_send(&next.out, Ok(Total(next.total)))?;
+                channel_send(&next.out, Ok(Closed))?;
+                return Ok(next);
+        }
+    }));
+
+    must(send(&actor, Add(9)));
+    must(send(&actor, Add(6)));
+    must(send(&actor, Flush));
+
+    Result<Event<i64>, Error> first = must(channel_recv(&out));
+    Result<Event<i64>, Error> second = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+
+    i64 total = 0;
+    switch (must(first)) {
+        case Total(value):
+            total = total + value;
+        case Closed(marker):
+            marker;
+    }
+    switch (must(second)) {
+        case Total(value):
+            total = total + value;
+        case Closed(marker):
+            marker;
+    }
+
+    must(print("{}", [total]));
+    return 0;
+}

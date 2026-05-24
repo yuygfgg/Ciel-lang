@@ -1,0 +1,34 @@
+// ciel-test: error
+// expect-error: forbidden capability `same`
+
+interface<T, U> bool same(*T value, U other);
+
+struct Box {
+    i64 value;
+}
+
+impl same<i64>(*Box box, i64 other) {
+    return box->value == other;
+}
+
+impl same<bool>(*Box box, bool other) {
+    if (other) {
+        return box->value != 0;
+    }
+    return box->value == 0;
+}
+
+i64 accept<T: same<i64> + !same<bool>>(T value, i64 |(T)| callback) {
+    return callback(value);
+}
+
+i64 main() {
+    Box box = { value: 7 };
+    return accept(box, |item| {
+        Box local = item;
+        if (same(&local, 7)) {
+            return 1;
+        }
+        return 0;
+    });
+}

@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 16
+
+interface<T> i64 read(*T value);
+interface readable = read;
+
+enum Slot<T> {
+    Full(T),
+    Empty,
+}
+
+struct Device {
+    i64 value;
+}
+
+impl read(*Device device) {
+    return device->value;
+}
+
+Slot<T> wrap<T>(T value) {
+    return Full(value);
+}
+
+i64 visit(Slot<readable> slot, i64 |(readable)| callback) {
+    switch (slot) {
+        case Full(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Device device = { value: 16 };
+    Slot<readable> slot = wrap(&device);
+    return visit(slot, |item| read(item));
+}

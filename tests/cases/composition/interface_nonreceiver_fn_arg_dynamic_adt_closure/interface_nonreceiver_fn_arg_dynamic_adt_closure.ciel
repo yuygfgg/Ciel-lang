@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 18
+
+interface<T, F> i64 apply_with(*T value, F callback, i64 input);
+interface with_i64_callback = apply_with<i64 fn(i64)>;
+
+enum Plan {
+    Run(with_i64_callback, i64 fn(i64), i64),
+    Empty,
+}
+
+struct Box {
+    i64 base;
+}
+
+i64 add_two(i64 value) {
+    return value + 2;
+}
+
+impl apply_with<i64 fn(i64)>(*Box box, i64 fn(i64) callback, i64 input) {
+    return box->base + callback(input);
+}
+
+i64 evaluate(Plan plan, i64 |(with_i64_callback, i64 fn(i64), i64)| callback) {
+    switch (plan) {
+        case Run(item, function, input):
+            return callback(item, function, input);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { base: 10 };
+    Plan plan = Run(&box, add_two, 6);
+    return evaluate(plan, |item, function, input| apply_with(item, function, input));
+}

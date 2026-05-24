@@ -1,0 +1,47 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: LR
+
+import /std/result;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum LocalError {
+    Failed,
+}
+
+enum Work<T> {
+    Run(T),
+    Skip(void),
+}
+
+Result<void, LocalError> mark(i32 ch) {
+    putchar(ch);
+    return Ok;
+}
+
+Result<void, LocalError> execute<T>(Work<T> work, Result<void, LocalError> |(T)| task) {
+    switch (work) {
+        case Run(value):
+            mark(76)?;
+            return task(value);
+        case Skip(marker):
+            marker;
+            return Ok;
+    }
+}
+
+i32 main() {
+    Result<void, LocalError> |(i64)| task = |i64 value| {
+        value;
+        mark(82)?;
+        return Ok;
+    };
+    Work<i64> work = Run(10);
+    must(execute(work, task));
+    return 0;
+}

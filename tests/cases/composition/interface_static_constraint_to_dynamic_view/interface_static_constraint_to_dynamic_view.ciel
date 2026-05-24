@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 55
+
+interface<T> i64 read(*T value);
+interface<T> i64 size(*T value);
+interface page_view = read + size;
+
+enum Boxed {
+    Item(page_view),
+    Empty,
+}
+
+struct Page {
+    i64 first;
+    i64 count;
+}
+
+impl read(*Page page) {
+    return page->first;
+}
+
+impl size(*Page page) {
+    return page->count;
+}
+
+Boxed erase<T: page_view>(*T value) {
+    return Item(value);
+}
+
+i64 visit(Boxed boxed, i64 |(page_view)| callback) {
+    switch (boxed) {
+        case Item(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Page page = { first: 21, count: 34 };
+    return visit(erase(&page), |item| read(item) + size(item));
+}

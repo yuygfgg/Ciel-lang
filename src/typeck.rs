@@ -894,6 +894,12 @@ impl TypeChecker {
                     }
                     self.enum_templates
                         .insert(decl.name.name.clone(), EnumTemplate { generics, variants });
+                    if decl.generics.is_empty() {
+                        self.ensure_enum_instance(&Ty::Named {
+                            name: decl.name.name.clone(),
+                            args: Vec::new(),
+                        });
+                    }
                 }
             }
         }
@@ -5593,6 +5599,7 @@ impl TypeChecker {
         }
         match ty {
             Ty::Bool
+            | Ty::Void
             | Ty::Char
             | Ty::I8
             | Ty::I16
@@ -5636,7 +5643,6 @@ impl TypeChecker {
                 false
             }
             Ty::Never
-            | Ty::Void
             | Ty::Pointer { .. }
             | Ty::Slice(_)
             | Ty::DynamicInterface { .. }
@@ -5959,6 +5965,17 @@ impl TypeChecker {
 
     fn type_satisfies_dynamic_view(&mut self, name: &str, args: &[Ty], actual: &Ty) -> bool {
         let view = self.interface_view(name, args);
+        if let Ty::DynamicInterface {
+            name: actual_name,
+            args: actual_args,
+        } = actual.unqualified()
+        {
+            let actual_view = self.interface_view(actual_name, actual_args);
+            return view
+                .positive
+                .iter()
+                .all(|expected| actual_view.positive.contains(expected));
+        }
         let receiver_ty = receiver_ty_from_value_ty(actual);
         view.positive
             .iter()
@@ -5966,12 +5983,26 @@ impl TypeChecker {
     }
 
     fn interface_view(&self, name: &str, args: &[Ty]) -> InterfaceView {
+        self.interface_view_inner(name, args, &mut HashSet::new())
+    }
+
+    fn interface_view_inner(
+        &self,
+        name: &str,
+        args: &[Ty],
+        expanding: &mut HashSet<String>,
+    ) -> InterfaceView {
         if let Some(alias) = self
             .interface_alias_names
             .get(name)
             .and_then(|def_id| self.interface_aliases.get(def_id))
         {
-            return self.interface_view_from_expr(alias, args);
+            if !expanding.insert(name.to_string()) {
+                return InterfaceView::default();
+            }
+            let view = self.interface_view_from_expr(alias, args, expanding);
+            expanding.remove(name);
+            return view;
         }
         InterfaceView {
             positive: vec![InterfaceRefTy {
@@ -5981,19 +6012,52 @@ impl TypeChecker {
         }
     }
 
-    fn interface_view_from_expr(&self, expr: &InterfaceExpr, _args: &[Ty]) -> InterfaceView {
+    fn interface_view_from_expr(
+        &self,
+        expr: &InterfaceExpr,
+        _args: &[Ty],
+        expanding: &mut HashSet<String>,
+    ) -> InterfaceView {
         let mut view = InterfaceView::default();
-        view_add_term(&mut view, &expr.first, &self.resolved);
+        self.view_add_term(&mut view, &expr.first, expanding);
         for (op, term) in &expr.rest {
             match op {
-                InterfaceOp::Add => view_add_term(&mut view, term, &self.resolved),
+                InterfaceOp::Add => self.view_add_term(&mut view, term, expanding),
                 InterfaceOp::Sub => {
-                    let name = name_ref_canonical(&self.resolved, &term.name);
-                    view.positive.retain(|entry| entry.name != name);
+                    let removed = self.interface_view_for_term(term, expanding);
+                    view.positive
+                        .retain(|entry| !removed.positive.contains(entry));
                 }
             }
         }
         view
+    }
+
+    fn view_add_term(
+        &self,
+        view: &mut InterfaceView,
+        term: &InterfaceTerm,
+        expanding: &mut HashSet<String>,
+    ) {
+        for entry in self.interface_view_for_term(term, expanding).positive {
+            if !view.positive.contains(&entry) {
+                view.positive.push(entry);
+            }
+        }
+    }
+
+    fn interface_view_for_term(
+        &self,
+        term: &InterfaceTerm,
+        expanding: &mut HashSet<String>,
+    ) -> InterfaceView {
+        let name = name_ref_canonical(&self.resolved, &term.name);
+        let args = term
+            .args
+            .iter()
+            .map(|ty| ty_from_hir_surface(ty, &self.resolved))
+            .collect::<Vec<_>>();
+        self.interface_view_inner(&name, &args, expanding)
     }
 
     fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
@@ -7334,20 +7398,6 @@ fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
                     .any(|capture| contains_any_generic_name(capture, names))
         }
         _ => false,
-    }
-}
-
-fn view_add_term(view: &mut InterfaceView, term: &InterfaceTerm, resolved: &ResolvedProgram) {
-    let entry = InterfaceRefTy {
-        name: name_ref_canonical(resolved, &term.name),
-        args: term
-            .args
-            .iter()
-            .map(|ty| ty_from_hir_surface(ty, resolved))
-            .collect(),
-    };
-    if !view.positive.contains(&entry) {
-        view.positive.push(entry);
     }
 }
 

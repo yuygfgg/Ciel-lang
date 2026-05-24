@@ -468,10 +468,15 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::Closure { captures, .. } => {
                 for capture in captures {
-                    if let Some(param_idx) = self.local_to_param.get(&capture.local_id) {
-                        out.push(StorageSource::Param(*param_idx));
+                    if let Some(sources) = self.aliases.get(&capture.local_id) {
+                        out.extend(sources.iter().cloned());
                     } else {
-                        out.push(StorageSource::Local(capture.local_id));
+                        let capture_expr = TExpr {
+                            span: expr.span,
+                            ty: capture.ty.clone(),
+                            kind: TExprKind::Local(capture.local_id, capture.name.clone()),
+                        };
+                        self.collect_storage_sources(&capture_expr, out);
                     }
                 }
             }

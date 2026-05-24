@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 13
+
+import /std/lib;
+
+enum Event<T> {
+    Value(T),
+    Ack(Result<void, Error>),
+}
+
+Result<void, Error> send_event<T: Message>(*Channel<Event<T>> channel, Event<T> event) {
+    channel_send(channel, event)?;
+    return Ok;
+}
+
+i64 main() {
+    Channel<Event<i64>> channel = must(make_channel<Event<i64>>());
+    Result<void, Error> |(i64)| emit = |i64 value| {
+        Channel<Event<i64>> local = channel;
+        send_event(&local, Value(value))?;
+        send_event(&local, Ack(Ok))?;
+        return Ok;
+    };
+
+    must(emit(13));
+    Event<i64> first = must(channel_recv(&channel));
+    Event<i64> second = must(channel_recv(&channel));
+    must(channel_close(&channel));
+
+    switch (first) {
+        case Value(value):
+            switch (second) {
+                case Ack(result):
+                    must(result);
+                    return value;
+                case Value(other):
+                    return other;
+            }
+        case Ack(result):
+            must(result);
+            return 0;
+    }
+}

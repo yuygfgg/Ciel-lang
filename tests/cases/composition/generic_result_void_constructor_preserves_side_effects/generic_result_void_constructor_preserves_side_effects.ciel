@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: C
+
+import /std/result;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum LocalError {
+    Failed,
+}
+
+void mark() {
+    putchar(67);
+}
+
+Result<void, LocalError> ok_with_side_effect() {
+    return Ok(mark());
+}
+
+i32 main() {
+    must(ok_with_side_effect());
+    return 0;
+}

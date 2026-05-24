@@ -1,0 +1,30 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+interface<T> i64 read(*T value);
+interface<T> void seek(*T value);
+interface readable = read - seek;
+
+struct Reader {
+    i64 value;
+}
+
+impl read(*Reader reader) {
+    return reader->value;
+}
+
+impl seek(*Reader reader) {
+    reader->value = 0;
+    return;
+}
+
+i64 static_only<T: readable + !seek>(T value) {
+    return read(&value);
+}
+
+i64 main() {
+    Reader reader = { value: 5 };
+    readable dynamic = &reader;
+    dynamic;
+    return static_only(reader);
+}

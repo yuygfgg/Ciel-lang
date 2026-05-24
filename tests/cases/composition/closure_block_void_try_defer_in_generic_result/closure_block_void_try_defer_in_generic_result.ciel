@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: AB
+
+import /std/result;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum LocalError {
+    Failed,
+}
+
+Result<void, LocalError> step() {
+    putchar(65);
+    return Ok;
+}
+
+void finish() {
+    putchar(66);
+}
+
+Result<void, LocalError> run_task<T>(T value, Result<void, LocalError> |(T)| task) {
+    defer finish();
+    return task(value);
+}
+
+i32 main() {
+    Result<void, LocalError> |(i64)| task = |i64 value| {
+        step()?;
+        if (value == 2) {
+            return Ok;
+        }
+        return Err(Failed);
+    };
+
+    must(run_task(2, task));
+    return 0;
+}

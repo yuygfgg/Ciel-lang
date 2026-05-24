@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: erased closure signature
+
+import /std/lib;
+
+i64 main() {
+    i64 |(i64)| op = |i64 value| value + 1;
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        return Ok(state + op(msg));
+    }));
+    must(join(&actor));
+    return 0;
+}

@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 10
+
+struct Maker {
+    i64 fn(i64) |()| build;
+}
+
+i64 add_two(i64 value) {
+    return value + 2;
+}
+
+i64 main() {
+    Maker maker = { build: || add_two };
+    i64 fn(i64) apply = maker.build();
+    return apply(8);
+}

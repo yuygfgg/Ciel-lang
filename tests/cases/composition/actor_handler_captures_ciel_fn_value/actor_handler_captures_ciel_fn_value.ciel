@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 20
+
+import /std/lib;
+
+i64 bump(i64 value) {
+    return value + 1;
+}
+
+i64 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    i64 fn(i64) op = bump;
+
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        Channel<i64> local_out = out;
+        i64 next = op(state + msg);
+        channel_send(&local_out, next)?;
+        return Ok(next);
+    }));
+
+    must(send(&actor, 5));
+    must(send(&actor, 7));
+
+    i64 first = must(channel_recv(&out));
+    i64 second = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+
+    must(print("{}", [first + second]));
+    return 0;
+}

@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 41
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+Maybe<U> map<T, U>(Maybe<T> input, U |(T)| transform) {
+    switch (input) {
+        case Some(value):
+            return Some(transform(value));
+        case None:
+            return None;
+    }
+}
+
+i64 main() {
+    Maybe<void> input = Some;
+    Maybe<i64> output = map(input, |value| {
+        value;
+        return 41;
+    });
+    switch (output) {
+        case Some(value):
+            return value;
+        case None:
+            return 0;
+    }
+}

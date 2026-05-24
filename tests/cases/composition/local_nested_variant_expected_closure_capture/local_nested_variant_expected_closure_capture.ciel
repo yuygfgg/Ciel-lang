@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 12
+
+enum Holder<T> {
+    Wrap(T),
+    Empty,
+}
+
+i64 apply(Holder<i64 |(i64)|> holder, i64 value) {
+    switch (holder) {
+        case Wrap(callback):
+            return callback(value);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    i64 offset = 7;
+    Holder<i64 |(i64)|> holder = Wrap(|value| value + offset);
+    return apply(holder, 5);
+}

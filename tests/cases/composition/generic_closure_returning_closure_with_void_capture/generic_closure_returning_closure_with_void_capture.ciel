@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 31
+
+struct Marker<T> {
+    T value;
+    void tag;
+}
+
+i64 |()| make_reader<T>(Marker<T> marker, i64 |(T)| project) {
+    return || {
+        marker.tag;
+        return project(marker.value);
+    };
+}
+
+i64 main() {
+    Marker<i64> marker = { value: 30 };
+    i64 bias = 1;
+    i64 |()| reader = make_reader(marker, |value| value + bias);
+    return reader();
+}

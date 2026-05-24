@@ -1021,13 +1021,15 @@ impl<'a> CGenerator<'a> {
             } => {
                 self.collect_expr_dynamic(inner);
                 self.collect_ty_dynamic(concrete_ty);
-                self.dynamic_impls.insert(
-                    self.dynamic_impl_key(&expr.ty, concrete_ty),
-                    DynamicImplUse {
-                        dyn_ty: expr.ty.clone(),
-                        concrete_ty: concrete_ty.clone(),
-                    },
-                );
+                if !matches!(concrete_ty.unqualified(), Ty::DynamicInterface { .. }) {
+                    self.dynamic_impls.insert(
+                        self.dynamic_impl_key(&expr.ty, concrete_ty),
+                        DynamicImplUse {
+                            dyn_ty: expr.ty.clone(),
+                            concrete_ty: concrete_ty.clone(),
+                        },
+                    );
+                }
             }
             TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_dynamic(receiver);
@@ -3331,6 +3333,7 @@ impl<'a> CGenerator<'a> {
                 indent,
                 span,
             ),
+            Ty::Void => Ok(()),
             Ty::Bool
             | Ty::Char
             | Ty::I8
@@ -4084,6 +4087,9 @@ impl<'a> CGenerator<'a> {
         concrete_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
+        if matches!(concrete_ty.unqualified(), Ty::DynamicInterface { .. }) {
+            return self.emit_dynamic_interface_reerasure(expr, inner, concrete_ty, indent);
+        }
         let data_expr = self.gen_expr_in_stmt(inner, indent)?;
         let data_ptr = if matches!(concrete_ty, Ty::Pointer { .. }) {
             format!("(void *)({data_expr})")
@@ -4105,6 +4111,51 @@ impl<'a> CGenerator<'a> {
         let vtable = self.dynamic_table_name(&expr.ty, concrete_ty);
         Ok(format!(
             "({dyn_c}){{ .data = {data_ptr}, .vtable = &{vtable} }}"
+        ))
+    }
+
+    fn emit_dynamic_interface_reerasure(
+        &mut self,
+        expr: &TExpr,
+        inner: &TExpr,
+        concrete_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let Ty::DynamicInterface { name, args } = &expr.ty else {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                "internal error: dynamic re-erasure target is not dynamic",
+            )]);
+        };
+        let source_code = self.gen_expr_in_stmt(inner, indent)?;
+        let source_temp = self.next_temp("dyn_source");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = {source_code};",
+                self.c_decl(concrete_ty, &source_temp)
+            ),
+        );
+        let vtable_ty = self.dynamic_vtable_name(&expr.ty);
+        let vtable_temp = self.next_temp("dyn_vtable");
+        self.line_indent(
+            indent,
+            &format!(
+                "{vtable_ty} *{vtable_temp} = ({vtable_ty} *)ciel_alloc(sizeof({vtable_ty}));"
+            ),
+        );
+        for interface in self.dynamic_view_interfaces(name, args) {
+            self.line_indent(
+                indent,
+                &format!(
+                    "{vtable_temp}->{} = ({source_temp}).vtable->{};",
+                    interface.name, interface.name
+                ),
+            );
+        }
+        let dyn_c = self.c_type(&expr.ty);
+        Ok(format!(
+            "({dyn_c}){{ .data = ({source_temp}).data, .vtable = {vtable_temp} }}"
         ))
     }
 

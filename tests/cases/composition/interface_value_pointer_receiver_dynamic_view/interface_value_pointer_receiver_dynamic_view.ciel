@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 41
+
+interface<T> i64 snapshot(T value);
+interface<T> i64 borrow(*T value);
+interface both_receivers = snapshot + borrow;
+
+struct Cell {
+    i64 value;
+}
+
+impl snapshot(Cell cell) {
+    return cell.value;
+}
+
+impl borrow(*Cell cell) {
+    return cell->value + 1;
+}
+
+i64 read_both(both_receivers value) {
+    return snapshot(value) + borrow(value);
+}
+
+i64 main() {
+    Cell cell = { value: 20 };
+    return read_both(&cell);
+}

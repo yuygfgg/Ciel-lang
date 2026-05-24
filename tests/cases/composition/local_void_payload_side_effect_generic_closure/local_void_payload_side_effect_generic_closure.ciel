@@ -1,0 +1,44 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: V
+
+import /std/result;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum LocalError {
+    Failed,
+}
+
+enum Signal<T> {
+    Hit(T),
+    Done(void),
+}
+
+void mark() {
+    putchar(86);
+}
+
+Result<void, LocalError> handle<T>(Signal<T> signal, Result<void, LocalError> |(T)| on_hit) {
+    switch (signal) {
+        case Hit(value):
+            return on_hit(value);
+        case Done(marker):
+            marker;
+            return Ok;
+    }
+}
+
+i32 main() {
+    Signal<void> signal = Hit(mark());
+    Result<void, LocalError> |(void)| on_hit = |value| {
+        value;
+        return Ok;
+    };
+    must(handle(signal, on_hit));
+    return 0;
+}

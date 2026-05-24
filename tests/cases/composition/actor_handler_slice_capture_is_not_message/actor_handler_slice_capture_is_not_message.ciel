@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: slice view without an owning `Message` container policy
+
+import /std/lib;
+
+i64 main() {
+    [2]i64 backing = [1, 2];
+    []i64 view = backing;
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        return Ok(state + msg + view[0]);
+    }));
+    must(join(&actor));
+    return 0;
+}

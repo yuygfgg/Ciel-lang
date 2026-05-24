@@ -16,6 +16,7 @@ enum TestKind {
     Manual,
     KnownFailCompile,
     KnownFailCc,
+    KnownFailRun,
     KnownFailAccepts,
 }
 
@@ -258,6 +259,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
                     "manual" => TestKind::Manual,
                     "known-fail-compile" => TestKind::KnownFailCompile,
                     "known-fail-cc" => TestKind::KnownFailCc,
+                    "known-fail-run" => TestKind::KnownFailRun,
                     "known-fail-accepts" => TestKind::KnownFailAccepts,
                     _ => return Err(format!("unknown ciel-test kind `{value}`")),
                 });
@@ -368,6 +370,26 @@ fn validate_case(case: &Case) -> Result<(), String> {
             {
                 return Err(
                     "known-fail-cc fixtures cannot declare C, runtime, host, or warning expectations"
+                        .to_string(),
+                );
+            }
+        }
+        TestKind::KnownFailRun => {
+            if case.known_fail_reason.is_none() {
+                return Err("known-fail-run fixtures require `known-fail-reason`".to_string());
+            }
+            if case.expect_exit.is_none() {
+                return Err("known-fail-run fixtures require `expect-exit`".to_string());
+            }
+            if !case.expect_errors.is_empty()
+                || !case.expect_c_contains.is_empty()
+                || !case.expect_c_not_contains.is_empty()
+                || !case.expect_c_counts.is_empty()
+                || case.warning_clean
+                || case.host.is_some()
+            {
+                return Err(
+                    "known-fail-run fixtures cannot declare C, error, host, or warning expectations"
                         .to_string(),
                 );
             }
@@ -530,6 +552,20 @@ fn run_case(case: &Case) -> Result<(), String> {
                     }
                     Ok(())
                 }
+            }
+        }
+        TestKind::KnownFailRun => {
+            let c = compile_case(case)?;
+            let exe = compile_c(&case.path, &c, "known_fail_run.exe", &[])?;
+            let output = Command::new(&exe)
+                .output()
+                .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
+            match check_output(case, &output) {
+                Ok(()) => Err(format!(
+                    "known-fail-run now passes; promote this fixture. recorded reason: {}",
+                    case.known_fail_reason.as_deref().unwrap()
+                )),
+                Err(_) => Ok(()),
             }
         }
         TestKind::KnownFailAccepts => match compile_case(case) {

@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 42
+
+interface<T> i64 read(*T value);
+interface<T> void reset(*T value);
+interface readable_view = read - reset;
+
+enum Stored {
+    Full(readable_view),
+    Empty,
+}
+
+struct Source {
+    i64 value;
+}
+
+impl read(*Source value) {
+    return value->value;
+}
+
+impl reset(*Source value) {
+    value->value = 0;
+    return;
+}
+
+Stored erase<T: readable_view>(*T value) {
+    return Full(value);
+}
+
+i64 load(Stored stored) {
+    switch (stored) {
+        case Full(item):
+            return read(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Source source = { value: 42 };
+    return load(erase(&source));
+}

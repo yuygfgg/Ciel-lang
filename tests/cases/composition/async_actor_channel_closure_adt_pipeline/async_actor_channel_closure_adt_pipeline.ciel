@@ -1,0 +1,46 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 24
+
+import /std/lib;
+
+enum Job<T> {
+    Add(T),
+    Emit(void),
+}
+
+struct Sink<T> {
+    Channel<T> out;
+    T base;
+}
+
+Result<void, Error> send_job<T: Message>(*Actor<Job<T>> actor, Job<T> job) {
+    return send(actor, job);
+}
+
+i64 main() {
+    Sink<i64> sink = { out: must(make_channel<i64>()), base: 3 };
+    i64 multiplier = 2;
+
+    Actor<Job<i64>> actor = must(spawn_actor<i64, Job<i64>>(0, |i64 state, Job<i64> job| {
+        Sink<i64> local_sink = sink;
+        switch (job) {
+            case Add(value):
+                return Ok(state + (value * multiplier) + local_sink.base);
+            case Emit(marker):
+                marker;
+                channel_send(&local_sink.out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    must(send_job(&actor, Add(4)));
+    must(send_job(&actor, Add(5)));
+    must(send_job(&actor, Emit));
+
+    i64 observed = must(channel_recv(&sink.out));
+    must(join(&actor));
+    must(channel_close(&sink.out));
+    must(print("{}", [observed]));
+    return 0;
+}

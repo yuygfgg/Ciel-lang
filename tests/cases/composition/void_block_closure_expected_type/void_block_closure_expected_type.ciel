@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: block-bodied closure requires an expected callable return type
+
+import /std/result;
+
+enum LocalError {
+    Failed,
+}
+
+Result<void, LocalError> make_ok() {
+    return Ok;
+}
+
+i64 main() {
+    (|| {
+        make_ok()?;
+        return Ok;
+    });
+    return 0;
+}

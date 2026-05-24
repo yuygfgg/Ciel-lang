@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: cannot be used dynamically
+
+interface<T> T make(i64 value);
+interface maker = make;
+
+enum Bad {
+    Item(maker),
+}
+
+i64 main() {
+    return 0;
+}

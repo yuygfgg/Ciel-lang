@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 19
+
+interface<T> i64 read(*T value);
+interface<T> void reset(*T value);
+interface readable = read - reset;
+
+struct Source {
+    i64 value;
+}
+
+impl read(*Source source) {
+    return source->value;
+}
+
+i64 fold_source<T: readable + !reset>(T source, i64 |(T)| callback) {
+    return callback(source);
+}
+
+i64 main() {
+    Source source = { value: 12 };
+    i64 add = 7;
+    return fold_source(source, |item| {
+        Source local = item;
+        return read(&local) + add;
+    });
+}

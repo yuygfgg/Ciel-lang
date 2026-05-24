@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 11
+
+import /std/lib;
+
+enum Event<T> {
+    Data(T),
+    Flush(void),
+}
+
+void send_event<T: Message>(*Channel<Event<T>> channel, Event<T> event) {
+    must(channel_send(channel, event));
+}
+
+i64 main() {
+    Channel<Event<i64>> channel = must(make_channel<Event<i64>>());
+    send_event(&channel, Data(11));
+    send_event(&channel, Flush);
+
+    Event<i64> first = must(channel_recv(&channel));
+    Event<i64> second = must(channel_recv(&channel));
+    must(channel_close(&channel));
+
+    i64 total = 0;
+    switch (first) {
+        case Data(value):
+            total = total + value;
+        case Flush(marker):
+            marker;
+    }
+    switch (second) {
+        case Data(value):
+            total = total + value;
+        case Flush(marker):
+            marker;
+    }
+
+    must(print("{}", [total]));
+    return 0;
+}

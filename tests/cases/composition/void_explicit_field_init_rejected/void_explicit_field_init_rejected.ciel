@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: void fields are implicit
+
+struct Wrapper<T> {
+    T value;
+    void tag;
+}
+
+void make_tag() {
+    return;
+}
+
+i64 main() {
+    Wrapper<i64> wrapper = { value: 12, tag: make_tag() };
+    return wrapper.value;
+}

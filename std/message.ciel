@@ -5,6 +5,10 @@ export import /std/result;
 export interface<T> Result<T, Error> clone_message(*T value);
 export interface Message = clone_message;
 
+impl clone_message(*Error value) {
+    return Ok(*value);
+}
+
 // Reserved marker: policy is defined by explicit library/runtime implementations.
 export interface<T> bool share_handle_marker(*T value);
 export interface ShareHandle = share_handle_marker;

@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 9
+
+interface<T> i64 measure(*T value);
+
+struct Counter {
+    i64 value;
+}
+
+impl measure(*Counter counter) {
+    return counter->value;
+}
+
+i64 |()| make_reader() {
+    Counter counter = { value: 9 };
+    measure measured = &counter;
+    return || measure(measured);
+}
+
+i64 main() {
+    i64 |()| read = make_reader();
+    return read();
+}

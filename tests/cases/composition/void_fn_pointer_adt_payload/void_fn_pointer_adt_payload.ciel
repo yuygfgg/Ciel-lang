@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 18
+
+struct CallbackBox<T> {
+    T callback;
+    void tag;
+}
+
+enum Slot<T> {
+    Filled(CallbackBox<T>),
+    Empty,
+}
+
+i64 run_slot(Slot<i64 fn(i64)> slot, i64 input) {
+    switch (slot) {
+        case Filled(box):
+            box.tag;
+            return box.callback(input);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    CallbackBox<i64 fn(i64)> box = { callback: |i64 value| value * 3 };
+    Slot<i64 fn(i64)> slot = Filled(box);
+    return run_slot(slot, 6);
+}

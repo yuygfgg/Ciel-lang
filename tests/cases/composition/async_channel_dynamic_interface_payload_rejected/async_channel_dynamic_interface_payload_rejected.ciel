@@ -1,0 +1,28 @@
+// ciel-test: error
+// expect-error: does not implement `clone_message`
+
+import /std/lib;
+
+interface<T> i64 measure(*T value);
+
+struct Counter {
+    i64 value;
+}
+
+impl measure(*Counter counter) {
+    return counter->value;
+}
+
+enum Event {
+    Measured(measure),
+    Done(void),
+}
+
+i64 main() {
+    Channel<Event> channel = must(make_channel<Event>());
+    Counter counter = { value: 5 };
+    measure view = &counter;
+    must(channel_send(&channel, Measured(view)));
+    must(channel_close(&channel));
+    return 0;
+}

@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: dynamic interface value without a concrete message path
+
+import /std/lib;
+
+interface<T> i64 measure(*T value);
+
+struct Counter {
+    i64 value;
+}
+
+impl measure(*Counter counter) {
+    return counter->value;
+}
+
+i64 main() {
+    Counter counter = { value: 4 };
+    measure measured = &counter;
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        return Ok(state + msg + measure(measured));
+    }));
+    must(join(&actor));
+    return 0;
+}

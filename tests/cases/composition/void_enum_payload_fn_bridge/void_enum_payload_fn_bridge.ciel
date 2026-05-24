@@ -1,0 +1,38 @@
+// ciel-test: run
+// expect-exit: 14
+
+enum Event<T> {
+    Ready(void, T),
+    Empty,
+}
+
+struct Dispatch {
+    i64 fn(i64) op;
+    void tag;
+}
+
+void mark_ready() {
+    return;
+}
+
+i64 add_six(i64 value) {
+    return value + 6;
+}
+
+i64 main() {
+    Dispatch dispatch = { op: add_six };
+    Event<Dispatch> event = Ready(mark_ready(), dispatch);
+
+    switch (event) {
+        case Ready(marker, current):
+            i64 fn(i64) |()| get_op = || {
+                marker;
+                current.tag;
+                return current.op;
+            };
+            i64 fn(i64) op = get_op();
+            return op(8);
+        case Empty:
+            return 0;
+    }
+}

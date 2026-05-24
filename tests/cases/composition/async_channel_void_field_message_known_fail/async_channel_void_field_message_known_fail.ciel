@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 7
+
+import /std/lib;
+
+struct Token {
+    void tag;
+    i64 value;
+}
+
+enum Event<T> {
+    Item(T),
+    Done(void),
+}
+
+Result<void, Error> post<T: Message>(*Channel<Event<T>> channel, T value) {
+    return channel_send(channel, Item(value));
+}
+
+i64 main() {
+    Channel<Event<Token>> channel = must(make_channel<Event<Token>>());
+    Token token = { value: 7 };
+    must(post(&channel, token));
+
+    Event<Token> event = must(channel_recv(&channel));
+    must(channel_close(&channel));
+    switch (event) {
+        case Item(item):
+            return item.value;
+        case Done(marker):
+            marker;
+            return 0;
+    }
+}

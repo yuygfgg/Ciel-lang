@@ -1,0 +1,50 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 22
+
+import /std/lib;
+
+enum Command<T> {
+    Store(T),
+    Flush(void),
+}
+
+struct Audit {
+    Channel<i64> out;
+}
+
+Result<void, Error> publish<T: Message>(*Channel<T> channel, T value) {
+    channel_send(channel, value)?;
+    return Ok;
+}
+
+i64 main() {
+    Audit audit = { out: must(make_channel<i64>()) };
+
+    Actor<Command<i64>> actor = must(spawn_actor<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
+        Audit local_audit = audit;
+        switch (command) {
+            case Store(value):
+                i64 next = state + value;
+                if (next > 10) {
+                    publish(&local_audit.out, next)?;
+                }
+                return Ok(next);
+            case Flush(marker):
+                marker;
+                publish(&local_audit.out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    must(send(&actor, Store(4)));
+    must(send(&actor, Store(7)));
+    must(send(&actor, Flush));
+
+    i64 first = must(channel_recv(&audit.out));
+    i64 second = must(channel_recv(&audit.out));
+    must(join(&actor));
+    must(channel_close(&audit.out));
+    must(print("{}", [first + second]));
+    return 0;
+}

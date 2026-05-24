@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 17
+
+import /std/result;
+
+enum LocalError {
+    Failed,
+}
+
+struct Cell {
+    i64 value;
+    void tag;
+}
+
+Result<void, LocalError> apply<T>(T value, Result<void, LocalError> |(T)| action) {
+    return action(value);
+}
+
+i64 main() {
+    Cell cell = { value: 17 };
+    i64 |()| read_snapshot = || {
+        cell.tag;
+        return cell.value;
+    };
+
+    cell.value = 99;
+
+    must(apply(cell, |Cell current| {
+        current.tag;
+        if (current.value == 99) {
+            return Ok;
+        }
+        return Err(Failed);
+    }));
+
+    return read_snapshot();
+}

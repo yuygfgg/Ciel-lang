@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 18
+
+struct Pipeline<T> {
+    T fn(T) |(T)| select;
+}
+
+i64 plus_three(i64 value) {
+    return value + 3;
+}
+
+T apply_pipeline<T>(Pipeline<T> pipeline, T seed) {
+    T fn(T) step = pipeline.select(seed);
+    return step(seed);
+}
+
+i64 main() {
+    Pipeline<i64> pipeline = { select: |i64 seed| {
+        seed;
+        return plus_three;
+    } };
+    return apply_pipeline(pipeline, 15);
+}

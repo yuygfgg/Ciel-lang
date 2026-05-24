@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: capturing closure cannot convert to `fn`
+
+struct CallbackBox<T> {
+    T callback;
+    void tag;
+}
+
+i64 main() {
+    i64 base = 4;
+    CallbackBox<i64 fn(i64)> box = { callback: |i64 value| value + base };
+    return box.callback(1);
+}

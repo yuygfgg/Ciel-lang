@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 3
+
+i64 |()| make_counter() {
+    [3]void markers;
+    []void view = markers;
+    return || view.len as i64;
+}
+
+i64 main() {
+    i64 |()| count = make_counter();
+    return count();
+}

@@ -1,0 +1,38 @@
+// ciel-test: run
+// expect-exit: 7
+
+interface<T, U> bool same(*T value, U other);
+interface same_i64 = same<i64>;
+
+enum Check {
+    Item(same_i64, i64),
+    Empty,
+}
+
+struct Box {
+    i64 value;
+}
+
+impl same<i64>(*Box box, i64 other) {
+    return box->value == other;
+}
+
+i64 apply(Check check, i64 |(same_i64, i64)| predicate) {
+    switch (check) {
+        case Item(item, expected):
+            return predicate(item, expected);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Box box = { value: 13 };
+    Check check = Item(&box, 13);
+    return apply(check, |item, expected| {
+        if (same(item, expected)) {
+            return 7;
+        }
+        return 0;
+    });
+}

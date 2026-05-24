@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 31
+
+interface<T> i64 read(*T value);
+interface<T> i64 weight(*T value);
+interface readable = read;
+interface weighted_readable = read + weight;
+
+struct Item {
+    i64 value;
+    i64 extra;
+}
+
+impl read(*Item item) {
+    return item->value;
+}
+
+impl weight(*Item item) {
+    return item->extra;
+}
+
+readable narrow(weighted_readable item) {
+    return item;
+}
+
+i64 main() {
+    Item item = { value: 31, extra: 4 };
+    weighted_readable rich = &item;
+    readable plain = narrow(rich);
+    return read(plain);
+}

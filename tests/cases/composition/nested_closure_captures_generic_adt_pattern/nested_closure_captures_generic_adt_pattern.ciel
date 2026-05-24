@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 23
+
+enum PairOrOne<T> {
+    Pair(T, T),
+    One(T),
+}
+
+i64 sum_pair<T>(PairOrOne<T> input, i64 |(T)| project) {
+    switch (input) {
+        case Pair(left, right):
+            i64 |()| outer = || {
+                i64 |()| inner = || project(right);
+                return project(left) + inner();
+            };
+            return outer();
+        case One(value):
+            return project(value);
+    }
+}
+
+i64 main() {
+    PairOrOne<i64> input = Pair(10, 13);
+    return sum_pair(input, |value| value);
+}

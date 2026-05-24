@@ -1,0 +1,47 @@
+// ciel-test: run
+// expect-exit: 43
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+interface<T> void reset(*T value);
+interface readable_seekable = read + seek - reset;
+
+enum Packet<T> {
+    One(T),
+    Empty,
+}
+
+struct Device {
+    i64 base;
+    i64 offset;
+}
+
+impl read(*Device device) {
+    return device->base;
+}
+
+impl seek(*Device device) {
+    return device->offset;
+}
+
+impl reset(*Device device) {
+    device->base = 0;
+    device->offset = 0;
+    return;
+}
+
+i64 visit(Packet<readable_seekable> packet, i64 |(readable_seekable)| callback) {
+    switch (packet) {
+        case One(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Device device = { base: 30, offset: 4 };
+    Packet<readable_seekable> packet = One(&device);
+    i64 bias = 9;
+    return visit(packet, |item| read(item) + seek(item) + bias);
+}

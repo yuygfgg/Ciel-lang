@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 7
+
+i64 |()| make_reader() {
+    [3]i64 values = [2, 7, 11];
+    []i64 view = values;
+    return || view[1];
+}
+
+i64 main() {
+    i64 |()| read = make_reader();
+    return read();
+}

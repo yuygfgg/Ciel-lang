@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+
+enum Event {
+    Done(void),
+    Value(i64),
+}
+
+i64 main() {
+    Event event = Done;
+    switch (event) {
+        case Done(marker):
+            void |()| finish = || marker;
+            finish();
+            return 0;
+        case Value(value):
+            return value;
+    }
+}

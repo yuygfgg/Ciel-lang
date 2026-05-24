@@ -1,0 +1,48 @@
+// ciel-test: run
+// expect-exit: 29
+
+interface<T> i64 read(*T value);
+interface<T> i64 weight(*T value);
+interface<T> void reset(*T value);
+interface readable = read - reset;
+interface weighted = weight;
+interface read_weight = readable + weighted - reset;
+
+enum Packet {
+    Some(read_weight),
+    Empty,
+}
+
+struct Entry {
+    i64 left;
+    i64 right;
+}
+
+impl read(*Entry value) {
+    return value->left;
+}
+
+impl weight(*Entry value) {
+    return value->right;
+}
+
+impl reset(*Entry value) {
+    value->left = 0;
+    value->right = 0;
+    return;
+}
+
+i64 fold(Packet packet, i64 |(read_weight)| visit) {
+    switch (packet) {
+        case Some(item):
+            return visit(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Entry entry = { left: 11, right: 18 };
+    Packet packet = Some(&entry);
+    return fold(packet, |item| read(item) + weight(item));
+}

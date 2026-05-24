@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: capturing closure cannot convert to `fn`
+
+struct Box<T> {
+    T value;
+}
+
+i64 main() {
+    i64 base = 4;
+    Box<i64 fn(i64)> box = { value: |i64 value| value + base };
+    return box.value(1);
+}

@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 5
+
+enum Maybe<T> {
+    Some(T),
+    None,
+}
+
+struct Acc {
+    i64 total;
+}
+
+Acc fold_void(Maybe<void> input, Acc seed, Acc |(Acc, void)| step) {
+    switch (input) {
+        case Some(value):
+            return step(seed, value);
+        case None:
+            return seed;
+    }
+}
+
+i64 main() {
+    [4]void markers;
+    []void view = markers;
+    Maybe<void> input = Some;
+    Acc seed = { total: view.len as i64 };
+
+    Acc result = fold_void(input, seed, |Acc state, void marker| {
+        marker;
+        markers[2];
+        Acc next = { total: state.total + 1 };
+        return next;
+    });
+
+    return result.total;
+}

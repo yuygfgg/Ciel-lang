@@ -1,0 +1,28 @@
+// ciel-test: error
+// expect-error: forbidden capability `reset`
+
+interface<T> i64 read(*T value);
+interface<T> void reset(*T value);
+interface readable_view = read - reset;
+
+struct Source {
+    i64 value;
+}
+
+impl read(*Source value) {
+    return value->value;
+}
+
+impl reset(*Source value) {
+    value->value = 0;
+    return;
+}
+
+i64 guarded<T: readable_view + !reset>(*T value, i64 |(*T)| callback) {
+    return callback(value);
+}
+
+i64 main() {
+    Source source = { value: 9 };
+    return guarded(&source, |item| read(item));
+}

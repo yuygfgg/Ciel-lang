@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 12
+
+struct Box<T> {
+    T value;
+}
+
+i64 apply(Box<i64 fn(i64)> box, i64 input) {
+    return box.value(input);
+}
+
+i64 main() {
+    Box<i64 fn(i64)> box = { value: |i64 value| value * 2 };
+    return apply(box, 6);
+}

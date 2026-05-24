@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 1
+
+interface<T, U> bool eq(*T value, U other);
+interface comparable_i64 = eq<i64>;
+
+enum Stored<T> {
+    Item(T),
+    Empty,
+}
+
+struct Number {
+    i64 value;
+}
+
+impl eq<i64>(*Number number, i64 other) {
+    return number->value == other;
+}
+
+i64 check(Stored<comparable_i64> stored, bool |(comparable_i64)| callback) {
+    switch (stored) {
+        case Item(value):
+            if (callback(value)) {
+                return 1;
+            }
+            return 0;
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Number number = { value: 42 };
+    Stored<comparable_i64> stored = Item(&number);
+    return check(stored, |item| eq(item, 42));
+}

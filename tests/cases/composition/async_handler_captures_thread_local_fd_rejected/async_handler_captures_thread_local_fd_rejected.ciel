@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: explicit `ThreadLocal` policy
+
+import /std/lib;
+
+struct Env {
+    Fd fd;
+    Channel<i64> out;
+}
+
+i64 main() {
+    Env env = { fd: stdout(), out: must(make_channel<i64>()) };
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        Env local_env = env;
+        channel_send(&local_env.out, raw_fd(local_env.fd) as i64)?;
+        return Ok(state + msg);
+    }));
+    must(join(&actor));
+    return 0;
+}

@@ -1,0 +1,24 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+
+enum LocalError {
+    Failed,
+}
+
+Result<void, LocalError> cleanup() {
+    return Ok;
+}
+
+T id<T>(T value) {
+    return value;
+}
+
+i64 main() {
+    must(cleanup());
+    expect(cleanup(), "cleanup failed");
+    void value;
+    id(value);
+    return 0;
+}

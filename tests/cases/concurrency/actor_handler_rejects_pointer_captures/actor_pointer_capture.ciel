@@ -12,6 +12,6 @@ i64 main() {
     Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
         return Ok(state + msg + *ptr);
     }));
-    must_void(join(&actor));
+    must(join(&actor));
     return 0;
 }

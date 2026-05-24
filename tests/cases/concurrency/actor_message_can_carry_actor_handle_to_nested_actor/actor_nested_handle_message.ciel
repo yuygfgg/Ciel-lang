@@ -24,10 +24,10 @@ i64 main() {
     Actor<i64> target = must(spawn_actor<i64, i64>(0, sink));
     Actor<Forward> forwarder = must(spawn_actor<i64, Forward>(0, bridge));
 
-    must_void(send(&forwarder, { target: target, value: 10 }));
-    must_void(send(&forwarder, { target: target, value: 20 }));
+    must(send(&forwarder, { target: target, value: 10 }));
+    must(send(&forwarder, { target: target, value: 20 }));
 
-    must_void(join(&forwarder));
-    must_void(join(&target));
+    must(join(&forwarder));
+    must(join(&target));
     return 0;
 }

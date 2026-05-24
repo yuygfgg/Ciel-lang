@@ -128,6 +128,14 @@ impl Ty {
         matches!(self.unqualified(), Ty::Void)
     }
 
+    pub fn is_erased_value(&self) -> bool {
+        match self.unqualified() {
+            Ty::Void => true,
+            Ty::Array { elem, .. } => elem.is_erased_value(),
+            _ => false,
+        }
+    }
+
     pub fn is_never(&self) -> bool {
         matches!(self.unqualified(), Ty::Never)
     }

@@ -42,12 +42,12 @@ i64 main() {
 
     Pair<i64> first = { left: 2, right: 3 };
     Command<Pair<i64>> add = Add(first);
-    must_void(send_wrapped(&actor, add, 2));
+    must(send_wrapped(&actor, add, 2));
 
     Pair<i64> second = { left: 1, right: 4 };
     Command<Pair<i64>> print = Print(second);
-    must_void(send_wrapped(&actor, print, 3));
+    must(send_wrapped(&actor, print, 3));
 
-    must_void(join(&actor));
+    must(join(&actor));
     return 0;
 }

@@ -6,13 +6,13 @@ import /std/io;
 
 i32 main() {
     Fd file = must(create("/tmp/ciel_std_io_fixture.txt"));
-    must_void(write_text(file, "file-output"));
-    must_void(close(file));
+    must(write_text(file, "file-output"));
+    must(close(file));
 
     Fd input = must(open_read("/tmp/ciel_std_io_fixture.txt"));
     [32]u8 buffer = [0;];
     usize n = must(read(input, buffer));
-    must_void(close(input));
+    must(close(input));
     must(write(stdout(), buffer[..n]));
     return 0;
 }

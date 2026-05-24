@@ -75,12 +75,12 @@ i64 main() {
         }
     }));
 
-    must_void(send_envelope(&actor, Add(10), 2));
-    must_void(send_envelope(&actor, Add(3), 5));
-    must_void(send_envelope(&actor, Emit(7), 1));
+    must(send_envelope(&actor, Add(10), 2));
+    must(send_envelope(&actor, Add(3), 5));
+    must(send_envelope(&actor, Emit(7), 1));
 
     i64 received = must(channel_recv(&metrics.out));
-    must_void(join(&actor));
+    must(join(&actor));
 
     ReadLast read = {};
     i64 last = must(mutex_update<i64, ReadLast, i64>(&metrics.last, &read));
@@ -96,7 +96,7 @@ i64 main() {
         return 3;
     }
 
-    must_void(channel_close(&metrics.out));
-    must_void(print("{}", [received]));
+    must(channel_close(&metrics.out));
+    must(print("{}", [received]));
     return 0;
 }

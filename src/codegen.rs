@@ -44,6 +44,7 @@ pub fn generate_c(
         current_closure_owner: None,
         defer_stack: Vec::new(),
         loop_defer_starts: Vec::new(),
+        continue_targets: Vec::new(),
         current_return_ty: Ty::Void,
         temp_counter: 0,
     };
@@ -72,6 +73,7 @@ struct CGenerator<'a> {
     current_closure_owner: Option<DefId>,
     defer_stack: Vec<Vec<String>>,
     loop_defer_starts: Vec<usize>,
+    continue_targets: Vec<Option<String>>,
     current_return_ty: Ty,
     temp_counter: usize,
 }
@@ -399,8 +401,16 @@ impl<'a> CGenerator<'a> {
     fn emit_struct_layout(&mut self, idx: usize) {
         let strukt = self.program.checked.structs[idx].clone();
         self.line(&format!("struct {} {{", strukt.name));
+        let mut emitted_field = false;
         for (field, ty) in &strukt.fields {
+            if ty.is_erased_value() {
+                continue;
+            }
+            emitted_field = true;
             self.line(&format!("    {};", self.c_decl(ty, field)));
+        }
+        if !emitted_field {
+            self.line("    char _ciel_empty;");
         }
         self.line("};");
         self.line("");
@@ -1783,7 +1793,7 @@ impl<'a> CGenerator<'a> {
         let falls_through = self.gen_block_inner(body, 1)?;
         if falls_through && function.ret.is_never() {
             self.line_indent(1, "ciel_panic(NULL, 0);");
-        } else if falls_through && !function.ret.is_void() {
+        } else if falls_through && !function.ret.is_erased_value() {
             self.line_indent(1, "ciel_panic(NULL, 0);");
             self.line_indent(1, &format!("return {};", self.zero_value(&function.ret)));
         }
@@ -1829,6 +1839,13 @@ impl<'a> CGenerator<'a> {
                 init,
             } => {
                 let cname = self.local_c_name(*local_id, name);
+                if ty.is_erased_value() {
+                    if let Some(init) = init {
+                        let value = self.gen_expr_in_stmt(init, indent)?;
+                        self.line_indent(indent, &format!("(void)({value});"));
+                    }
+                    return Ok(true);
+                }
                 if self.local_is_heap(*local_id) {
                     self.line_indent(
                         indent,
@@ -1918,6 +1935,13 @@ impl<'a> CGenerator<'a> {
                 Ok(true)
             }
             TStmtKind::Assign { target, value } => {
+                if target.ty.is_erased_value() {
+                    let target = self.gen_expr_in_stmt(target, indent)?;
+                    let value = self.gen_expr_in_stmt(value, indent)?;
+                    self.line_indent(indent, &format!("(void)({target});"));
+                    self.line_indent(indent, &format!("(void)({value});"));
+                    return Ok(true);
+                }
                 let target = self.gen_expr_in_stmt(target, indent)?;
                 if let Ty::Slice(_) = value.ty
                     && let TExprKind::ArrayLiteral(elements) = &value.kind
@@ -1960,20 +1984,24 @@ impl<'a> CGenerator<'a> {
                 Ok(then_falls_through || else_falls_through)
             }
             TStmtKind::While { cond, body } => {
-                if expr_contains_try(cond) {
+                if expr_needs_stmt_lowering(cond) {
                     self.line_indent(indent, "while (true)");
                     self.line_indent(indent, "{");
                     let cond = self.gen_expr_in_stmt(cond, indent + 1)?;
                     self.line_indent(indent + 1, &format!("if (!({cond})) break;"));
                     self.loop_defer_starts.push(self.defer_stack.len());
+                    self.continue_targets.push(None);
                     self.gen_block(body, indent + 1)?;
+                    self.continue_targets.pop();
                     self.loop_defer_starts.pop();
                     self.line_indent(indent, "}");
                 } else {
                     let cond = self.gen_expr(cond)?;
                     self.line_indent(indent, &format!("while ({cond})"));
                     self.loop_defer_starts.push(self.defer_stack.len());
+                    self.continue_targets.push(None);
                     self.gen_block(body, indent)?;
+                    self.continue_targets.pop();
                     self.loop_defer_starts.pop();
                 }
                 Ok(true)
@@ -1984,6 +2012,15 @@ impl<'a> CGenerator<'a> {
                 step,
                 body,
             } => {
+                if for_stmt_needs_stmt_lowering(init.as_ref(), cond.as_ref(), step.as_ref()) {
+                    return self.gen_lowered_for_stmt(
+                        init.as_ref(),
+                        cond.as_ref(),
+                        step.as_ref(),
+                        body,
+                        indent,
+                    );
+                }
                 let init = if let Some(TForInit::VarDecl {
                     ty,
                     name,
@@ -2012,7 +2049,9 @@ impl<'a> CGenerator<'a> {
                     .unwrap_or_default();
                 self.line_indent(indent, &format!("for ({init}; {cond}; {step})"));
                 self.loop_defer_starts.push(self.defer_stack.len());
+                self.continue_targets.push(None);
                 self.gen_block(body, indent)?;
+                self.continue_targets.pop();
                 self.loop_defer_starts.pop();
                 Ok(true)
             }
@@ -2093,6 +2132,13 @@ impl<'a> CGenerator<'a> {
             }
             TStmtKind::Return(expr) => {
                 if let Some(expr) = expr {
+                    if self.current_return_ty.is_erased_value() {
+                        let value = self.gen_expr_in_stmt(expr, indent)?;
+                        self.line_indent(indent, &format!("(void)({value});"));
+                        self.emit_all_defers(indent);
+                        self.line_indent(indent, "return;");
+                        return Ok(false);
+                    }
                     if let Ty::Slice(_) = expr.ty
                         && let TExprKind::ArrayLiteral(elements) = &expr.kind
                     {
@@ -2140,7 +2186,11 @@ impl<'a> CGenerator<'a> {
             }
             TStmtKind::Continue => {
                 self.emit_loop_defers(indent);
-                self.line_indent(indent, "continue;");
+                if let Some(label) = self.continue_targets.last().and_then(|label| label.clone()) {
+                    self.line_indent(indent, &format!("goto {label};"));
+                } else {
+                    self.line_indent(indent, "continue;");
+                }
                 Ok(false)
             }
             TStmtKind::Expr(expr) => {
@@ -2174,7 +2224,13 @@ impl<'a> CGenerator<'a> {
                 if !skip_current {
                     out.push(format!("{value_expr}.tag == {variant_index}"));
                 }
-                for (idx, pattern) in payload.iter().enumerate() {
+                let mut physical_idx = 0;
+                for pattern in payload {
+                    if pattern.ty().is_erased_value() {
+                        continue;
+                    }
+                    let idx = physical_idx;
+                    physical_idx += 1;
                     let child = format!("{value_expr}.as.{variant_name}._{idx}");
                     self.collect_pattern_conditions(pattern, &child, false, out);
                 }
@@ -2191,6 +2247,9 @@ impl<'a> CGenerator<'a> {
         match pattern {
             TPattern::Wildcard { .. } => {}
             TPattern::Binding { local_id, name, ty } => {
+                if ty.is_erased_value() {
+                    return Ok(());
+                }
                 let cname = self.local_c_name(*local_id, name);
                 if self.local_is_heap(*local_id) {
                     self.line_indent(
@@ -2215,7 +2274,13 @@ impl<'a> CGenerator<'a> {
                 payload,
                 ..
             } => {
-                for (idx, pattern) in payload.iter().enumerate() {
+                let mut physical_idx = 0;
+                for pattern in payload {
+                    if pattern.ty().is_erased_value() {
+                        continue;
+                    }
+                    let idx = physical_idx;
+                    physical_idx += 1;
                     let child = format!("{value_expr}.as.{variant_name}._{idx}");
                     self.emit_pattern_bindings(pattern, &child, indent)?;
                 }
@@ -2233,6 +2298,13 @@ impl<'a> CGenerator<'a> {
                 init,
             } => {
                 let cname = self.local_c_name(*local_id, name);
+                if ty.is_erased_value() {
+                    return if let Some(init) = init {
+                        Ok(format!("(void)({})", self.gen_expr(init)?))
+                    } else {
+                        Ok(String::new())
+                    };
+                }
                 if let Some(init) = init {
                     Ok(format!(
                         "{} = {}",
@@ -2243,12 +2315,147 @@ impl<'a> CGenerator<'a> {
                     Ok(self.c_decl(ty, &cname))
                 }
             }
-            TForInit::Assign { target, value } => Ok(format!(
-                "{} = {}",
-                self.gen_expr(target)?,
-                self.gen_expr(value)?
-            )),
+            TForInit::Assign { target, value } => {
+                if target.ty.is_erased_value() {
+                    Ok(format!(
+                        "(void)({}), (void)({})",
+                        self.gen_expr(target)?,
+                        self.gen_expr(value)?
+                    ))
+                } else {
+                    Ok(format!(
+                        "{} = {}",
+                        self.gen_expr(target)?,
+                        self.gen_expr(value)?
+                    ))
+                }
+            }
             TForInit::Expr(expr) => self.gen_expr(expr),
+        }
+    }
+
+    fn gen_lowered_for_stmt(
+        &mut self,
+        init: Option<&TForInit>,
+        cond: Option<&TExpr>,
+        step: Option<&TForInit>,
+        body: &TBlock,
+        indent: usize,
+    ) -> DiagResult<bool> {
+        self.line_indent(indent, "{");
+        if let Some(init) = init {
+            self.gen_for_init_stmt(init, indent + 1)?;
+        }
+        self.line_indent(indent + 1, "while (true)");
+        self.line_indent(indent + 1, "{");
+        if let Some(cond) = cond {
+            let cond = self.gen_expr_in_stmt(cond, indent + 2)?;
+            self.line_indent(indent + 2, &format!("if (!({cond})) break;"));
+        }
+        let step_label = self.next_temp("for_step");
+        self.loop_defer_starts.push(self.defer_stack.len());
+        self.continue_targets.push(Some(step_label.clone()));
+        self.gen_block(body, indent + 2)?;
+        self.continue_targets.pop();
+        self.loop_defer_starts.pop();
+        self.line_indent(indent + 2, &format!("{step_label}:;"));
+        if let Some(step) = step {
+            self.gen_for_init_stmt(step, indent + 2)?;
+        }
+        self.line_indent(indent + 1, "}");
+        self.line_indent(indent, "}");
+        Ok(true)
+    }
+
+    fn gen_for_init_stmt(&mut self, init: &TForInit, indent: usize) -> DiagResult<()> {
+        match init {
+            TForInit::VarDecl {
+                ty,
+                name,
+                local_id,
+                init,
+            } => {
+                let cname = self.local_c_name(*local_id, name);
+                if ty.is_erased_value() {
+                    if let Some(init) = init {
+                        let value = self.gen_expr_in_stmt(init, indent)?;
+                        self.line_indent(indent, &format!("(void)({value});"));
+                    }
+                    return Ok(());
+                }
+                if self.local_is_heap(*local_id) {
+                    return self.gen_heap_local_decl(ty, name, *local_id, init.as_ref(), indent);
+                }
+                if let Some(init) = init
+                    && let Ty::Slice(_) = ty
+                    && let TExprKind::ArrayLiteral(elements) = &init.kind
+                {
+                    let value = self.emit_slice_literal_temp(ty, elements, indent)?;
+                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
+                    return Ok(());
+                }
+                if let Some(init) = init
+                    && let Ty::Array { elem, .. } = ty
+                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
+                {
+                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
+                    self.emit_array_repeat_init(&cname, elem, element, *len, indent)?;
+                    return Ok(());
+                }
+                if let Some(init) = init
+                    && let Ty::Slice(_) = ty
+                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
+                {
+                    let value = self.emit_slice_repeat_temp(ty, element, *len, indent)?;
+                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
+                    return Ok(());
+                }
+                if let Some(init) = init {
+                    let value = self.gen_expr_in_stmt(init, indent)?;
+                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
+                } else {
+                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
+                }
+                Ok(())
+            }
+            TForInit::Assign { target, value } => {
+                if target.ty.is_erased_value() {
+                    let target = self.gen_expr_in_stmt(target, indent)?;
+                    let value = self.gen_expr_in_stmt(value, indent)?;
+                    self.line_indent(indent, &format!("(void)({target});"));
+                    self.line_indent(indent, &format!("(void)({value});"));
+                    return Ok(());
+                }
+                let target = self.gen_expr_in_stmt(target, indent)?;
+                if let Ty::Slice(_) = value.ty
+                    && let TExprKind::ArrayLiteral(elements) = &value.kind
+                {
+                    let value = self.emit_slice_literal_temp(&value.ty, elements, indent)?;
+                    self.line_indent(indent, &format!("{target} = {value};"));
+                    return Ok(());
+                }
+                if let Ty::Slice(_) = value.ty
+                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
+                {
+                    let value = self.emit_slice_repeat_temp(&value.ty, element, *len, indent)?;
+                    self.line_indent(indent, &format!("{target} = {value};"));
+                    return Ok(());
+                }
+                if let Ty::Array { elem, .. } = &value.ty
+                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
+                {
+                    self.emit_array_repeat_init(&target, elem, element, *len, indent)?;
+                    return Ok(());
+                }
+                let value = self.gen_expr_in_stmt(value, indent)?;
+                self.line_indent(indent, &format!("{target} = {value};"));
+                Ok(())
+            }
+            TForInit::Expr(expr) => {
+                let value = self.gen_expr_in_stmt(expr, indent)?;
+                self.line_indent(indent, &format!("(void)({value});"));
+                Ok(())
+            }
         }
     }
 
@@ -2307,6 +2514,45 @@ impl<'a> CGenerator<'a> {
         self.gen_expr_with_lowering(expr, Some(indent))
     }
 
+    fn gen_call_args(
+        &mut self,
+        args: &[TExpr],
+        stmt_indent: Option<usize>,
+    ) -> DiagResult<Vec<String>> {
+        if args.iter().any(|arg| arg.ty.is_erased_value()) {
+            let Some(indent) = stmt_indent else {
+                return Err(vec![Diagnostic::new(
+                    args.iter()
+                        .find(|arg| arg.ty.is_erased_value())
+                        .map(|arg| arg.span),
+                    "erased void argument needs statement lowering",
+                )]);
+            };
+            let mut out = Vec::new();
+            for arg in args {
+                let value = self.gen_expr_in_stmt(arg, indent)?;
+                if arg.ty.is_erased_value() {
+                    self.line_indent(indent, &format!("(void)({value});"));
+                } else {
+                    let temp = self.next_temp("call_arg");
+                    self.line_indent(
+                        indent,
+                        &format!("{} = {value};", self.c_decl(&arg.ty, &temp)),
+                    );
+                    out.push(temp);
+                }
+            }
+            return Ok(out);
+        }
+
+        let mut out = Vec::new();
+        for arg in args {
+            let value = self.gen_expr_with_lowering(arg, stmt_indent)?;
+            out.push(value);
+        }
+        Ok(out)
+    }
+
     fn gen_expr_with_lowering(
         &mut self,
         expr: &TExpr,
@@ -2314,6 +2560,9 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<String> {
         let code = match &expr.kind {
             TExprKind::Local(local_id, name) => {
+                if expr.ty.is_erased_value() {
+                    return Ok("((void)0)".to_string());
+                }
                 if let Some(captured) = self.current_capture_locals.get(local_id) {
                     captured.clone()
                 } else {
@@ -2340,18 +2589,22 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Literal(literal) => self.gen_literal(expr.span, literal, &expr.ty),
             TExprKind::StructLiteral { type_name, fields } => {
-                let fields = fields
-                    .iter()
-                    .map(|(name, value)| {
-                        Ok(format!(
-                            ".{} = {}",
-                            name,
-                            self.gen_expr_with_lowering(value, stmt_indent)?
-                        ))
-                    })
-                    .collect::<DiagResult<Vec<_>>>()?
-                    .join(", ");
-                format!("({type_name}){{ {fields} }}")
+                let mut emitted_fields = Vec::new();
+                for (name, value) in fields {
+                    let value_code = self.gen_expr_with_lowering(value, stmt_indent)?;
+                    if value.ty.is_erased_value() {
+                        if let Some(indent) = stmt_indent {
+                            self.line_indent(indent, &format!("(void)({value_code});"));
+                        }
+                        continue;
+                    }
+                    emitted_fields.push(format!(".{} = {}", name, value_code));
+                }
+                if emitted_fields.is_empty() {
+                    format!("({type_name}){{0}}")
+                } else {
+                    format!("({type_name}){{ {} }}", emitted_fields.join(", "))
+                }
             }
             TExprKind::EnumLiteral {
                 type_name,
@@ -2359,18 +2612,19 @@ impl<'a> CGenerator<'a> {
                 variant_index,
                 payload,
             } => {
-                let payload = payload
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, value)| {
-                        Ok(format!(
-                            "._{} = {}",
-                            idx,
-                            self.gen_expr_with_lowering(value, stmt_indent)?
-                        ))
-                    })
-                    .collect::<DiagResult<Vec<_>>>()?
-                    .join(", ");
+                let mut payload_fields = Vec::new();
+                for value in payload {
+                    let value_code = self.gen_expr_with_lowering(value, stmt_indent)?;
+                    if value.ty.is_erased_value() {
+                        if let Some(indent) = stmt_indent {
+                            self.line_indent(indent, &format!("(void)({value_code});"));
+                        }
+                        continue;
+                    }
+                    let idx = payload_fields.len();
+                    payload_fields.push(format!("._{} = {}", idx, value_code));
+                }
+                let payload = payload_fields.join(", ");
                 if payload.is_empty() {
                     format!("({type_name}){{ .tag = {variant_index} }}")
                 } else {
@@ -2389,6 +2643,15 @@ impl<'a> CGenerator<'a> {
                         "slice array literal needs statement lowering in this compiler slice",
                     )]);
                 }
+                if expr.ty.is_erased_value() {
+                    if let Some(indent) = stmt_indent {
+                        for element in elements {
+                            let value = self.gen_expr_in_stmt(element, indent)?;
+                            self.line_indent(indent, &format!("(void)({value});"));
+                        }
+                    }
+                    return Ok("((void)0)".to_string());
+                }
                 let elements = elements
                     .iter()
                     .map(|element| self.gen_expr_with_lowering(element, stmt_indent))
@@ -2405,6 +2668,13 @@ impl<'a> CGenerator<'a> {
                         expr.span,
                         "slice array repeat literal needs statement lowering in this compiler slice",
                     )]);
+                }
+                if expr.ty.is_erased_value() {
+                    if let Some(indent) = stmt_indent {
+                        let value = self.gen_expr_in_stmt(element, indent)?;
+                        self.line_indent(indent, &format!("(void)({value});"));
+                    }
+                    return Ok("((void)0)".to_string());
                 }
                 if let Ty::Array { elem, .. } = &expr.ty
                     && let Some(indent) = stmt_indent
@@ -2518,11 +2788,7 @@ impl<'a> CGenerator<'a> {
                     return self.emit_closure_call(callee, args, stmt_indent);
                 }
                 let callee = self.gen_expr_with_lowering(callee, stmt_indent)?;
-                let args = args
-                    .iter()
-                    .map(|arg| self.gen_expr_with_lowering(arg, stmt_indent))
-                    .collect::<DiagResult<Vec<_>>>()?
-                    .join(", ");
+                let args = self.gen_call_args(args, stmt_indent)?.join(", ");
                 format!("{callee}({args})")
             }
             TExprKind::ArrayToSlice(inner) => {
@@ -2538,6 +2804,12 @@ impl<'a> CGenerator<'a> {
                         "internal error: array-to-slice conversion has non-array source",
                     )]);
                 };
+                if elem.is_erased_value() {
+                    return Ok(format!(
+                        "({}){{ .ptr = NULL, .len = {len} }}",
+                        self.slice_name(elem)
+                    ));
+                }
                 let inner_code = self.gen_expr_with_lowering(inner, stmt_indent)?;
                 format!(
                     "({}){{ .ptr = {inner_code}, .len = {len} }}",
@@ -2572,12 +2844,8 @@ impl<'a> CGenerator<'a> {
                 } else {
                     receiver_code
                 };
-                let args = args
-                    .iter()
-                    .map(|arg| self.gen_expr_with_lowering(arg, stmt_indent))
-                    .collect::<DiagResult<Vec<_>>>()?;
                 let mut call_args = vec![format!("({receiver_code}).data")];
-                call_args.extend(args);
+                call_args.extend(self.gen_call_args(args, stmt_indent)?);
                 format!(
                     "({receiver_code}).vtable->{}({})",
                     interface_name,
@@ -2585,6 +2853,13 @@ impl<'a> CGenerator<'a> {
                 )
             }
             TExprKind::Field { base, field } => {
+                if expr.ty.is_erased_value() {
+                    let base = self.gen_expr_with_lowering(base, stmt_indent)?;
+                    if let Some(indent) = stmt_indent {
+                        self.line_indent(indent, &format!("(void)({base});"));
+                    }
+                    return Ok("((void)0)".to_string());
+                }
                 format!(
                     "({}).{}",
                     self.gen_expr_with_lowering(base, stmt_indent)?,
@@ -2592,6 +2867,13 @@ impl<'a> CGenerator<'a> {
                 )
             }
             TExprKind::Arrow { base, field } => {
+                if expr.ty.is_erased_value() {
+                    let base = self.gen_expr_with_lowering(base, stmt_indent)?;
+                    if let Some(indent) = stmt_indent {
+                        self.line_indent(indent, &format!("(void)({base});"));
+                    }
+                    return Ok("((void)0)".to_string());
+                }
                 format!(
                     "({})->{}",
                     self.gen_expr_with_lowering(base, stmt_indent)?,
@@ -2604,15 +2886,27 @@ impl<'a> CGenerator<'a> {
                 match &base.ty {
                     Ty::Slice(_) => {
                         let (file, line) = self.location_args(expr.span);
-                        format!(
-                            "({base_code}).ptr[ciel_bounds_check((size_t)({index_code}), ({base_code}).len, {file}, {line})]"
-                        )
+                        if expr.ty.is_erased_value() {
+                            format!(
+                                "((void)({base_code}), (void)ciel_bounds_check((size_t)({index_code}), ({base_code}).len, {file}, {line}), (void)0)"
+                            )
+                        } else {
+                            format!(
+                                "({base_code}).ptr[ciel_bounds_check((size_t)({index_code}), ({base_code}).len, {file}, {line})]"
+                            )
+                        }
                     }
                     Ty::Array { len, .. } => {
                         let (file, line) = self.location_args(expr.span);
-                        format!(
-                            "({base_code})[ciel_bounds_check((size_t)({index_code}), {len}, {file}, {line})]"
-                        )
+                        if expr.ty.is_erased_value() {
+                            format!(
+                                "((void)({base_code}), (void)ciel_bounds_check((size_t)({index_code}), {len}, {file}, {line}), (void)0)"
+                            )
+                        } else {
+                            format!(
+                                "({base_code})[ciel_bounds_check((size_t)({index_code}), {len}, {file}, {line})]"
+                            )
+                        }
                     }
                     _ => format!("({base_code})[{index_code}]"),
                 }
@@ -2705,10 +2999,18 @@ impl<'a> CGenerator<'a> {
                 self.emit_actor_lifecycle_expr(expr, actor, "ciel_actor_join", indent)?
             }
             TExprKind::TypeSize { ty } => {
-                format!("sizeof({})", self.c_sizeof_type(ty))
+                if ty.is_erased_value() {
+                    "0".to_string()
+                } else {
+                    format!("sizeof({})", self.c_sizeof_type(ty))
+                }
             }
             TExprKind::TypeAlign { ty } => {
-                format!("CIEL_ALIGNOF({})", self.c_sizeof_type(ty))
+                if ty.is_erased_value() {
+                    "1".to_string()
+                } else {
+                    format!("CIEL_ALIGNOF({})", self.c_sizeof_type(ty))
+                }
             }
         };
         Ok(code)
@@ -2765,7 +3067,7 @@ impl<'a> CGenerator<'a> {
             ),
         );
         self.line_indent(indent, "}");
-        if expr.ty.is_void() || !inner_layout.ok_has_payload {
+        if expr.ty.is_erased_value() || !inner_layout.ok_has_payload {
             Ok("((void)0)".to_string())
         } else {
             Ok(format!("{temp}.as.{}._0", inner_layout.ok_name))
@@ -3515,8 +3817,12 @@ impl<'a> CGenerator<'a> {
         let callee = self.gen_expr_in_stmt(callee, indent)?;
         let mut temp_args = Vec::new();
         for arg in args {
-            let temp = self.next_temp("defer_arg");
             let value = self.gen_expr_in_stmt(arg, indent)?;
+            if arg.ty.is_erased_value() {
+                self.line_indent(indent, &format!("(void)({value});"));
+                continue;
+            }
+            let temp = self.next_temp("defer_arg");
             self.line_indent(
                 indent,
                 &format!("{} = {value};", self.c_decl(&arg.ty, &temp)),
@@ -3540,6 +3846,22 @@ impl<'a> CGenerator<'a> {
         };
         let data = self.next_temp("slice_data");
         let slice = self.next_temp("slice");
+        if elem.is_erased_value() {
+            for element in elements {
+                let value = self.gen_expr_in_stmt(element, indent)?;
+                self.line_indent(indent, &format!("(void)({value});"));
+            }
+            self.line_indent(
+                indent,
+                &format!(
+                    "{} {slice} = ({}){{ .ptr = NULL, .len = {} }};",
+                    self.c_type(ty),
+                    self.c_type(ty),
+                    elements.len()
+                ),
+            );
+            return Ok(slice);
+        }
         self.line_indent(
             indent,
             &format!(
@@ -3579,6 +3901,19 @@ impl<'a> CGenerator<'a> {
         };
         let data = self.next_temp("slice_data");
         let slice = self.next_temp("slice");
+        if elem.is_erased_value() {
+            let value = self.gen_expr_in_stmt(element, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+            self.line_indent(
+                indent,
+                &format!(
+                    "{} {slice} = ({}){{ .ptr = NULL, .len = {len} }};",
+                    self.c_type(ty),
+                    self.c_type(ty),
+                ),
+            );
+            return Ok(slice);
+        }
         self.line_indent(
             indent,
             &format!(
@@ -3701,6 +4036,10 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<()> {
         for (idx, element) in elements.iter().enumerate() {
             let value = self.gen_expr_in_stmt(element, indent)?;
+            if element.ty.is_erased_value() {
+                self.line_indent(indent, &format!("(void)({value});"));
+                continue;
+            }
             self.line_indent(indent, &format!("(*{cname})[{idx}] = {value};"));
         }
         Ok(())
@@ -3714,6 +4053,11 @@ impl<'a> CGenerator<'a> {
         len: usize,
         indent: usize,
     ) -> DiagResult<()> {
+        if elem_ty.is_erased_value() {
+            let value = self.gen_expr_in_stmt(element, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+            return Ok(());
+        }
         let value_temp = self.next_temp("repeat_value");
         let index_temp = self.next_temp("repeat_i");
         let value = self.gen_expr_in_stmt(element, indent)?;
@@ -3802,6 +4146,9 @@ impl<'a> CGenerator<'a> {
                 &format!("{env_name} *{temp} = ({env_name} *)ciel_alloc(sizeof({env_name}));"),
             );
             for (idx, capture) in captures.iter().enumerate() {
+                if capture.ty.is_erased_value() {
+                    continue;
+                }
                 let value = TExpr {
                     span: expr.span,
                     ty: capture.ty.clone(),
@@ -3863,12 +4210,8 @@ impl<'a> CGenerator<'a> {
         } else {
             callee_code
         };
-        let args = args
-            .iter()
-            .map(|arg| self.gen_expr_with_lowering(arg, stmt_indent))
-            .collect::<DiagResult<Vec<_>>>()?;
         let mut call_args = vec![format!("({receiver}).env")];
-        call_args.extend(args);
+        call_args.extend(self.gen_call_args(args, stmt_indent)?);
         Ok(format!("({receiver}).call({})", call_args.join(", ")))
     }
 
@@ -3891,11 +4234,19 @@ impl<'a> CGenerator<'a> {
             }
             let env_name = self.closure_env_name(closure.owner, closure.id);
             self.line(&format!("struct {env_name} {{"));
+            let mut emitted_capture = false;
             for (idx, capture) in closure.captures.iter().enumerate() {
+                if capture.ty.is_erased_value() {
+                    continue;
+                }
+                emitted_capture = true;
                 self.line(&format!(
                     "    {};",
                     self.c_decl(&capture.ty, &format!("cap{idx}"))
                 ));
+            }
+            if !emitted_capture {
+                self.line("    char _ciel_empty;");
             }
             self.line("};");
             self.line("");
@@ -4038,6 +4389,7 @@ impl<'a> CGenerator<'a> {
             closure
                 .params
                 .iter()
+                .filter(|(_, _, ty)| !ty.is_erased_value())
                 .enumerate()
                 .map(|(idx, (local_id, _, _))| (*local_id, format!("arg{idx}")))
                 .collect(),
@@ -4063,7 +4415,7 @@ impl<'a> CGenerator<'a> {
         match &closure.body {
             TClosureBody::Expr(expr) => {
                 let value = self.gen_expr_in_stmt(expr, 1)?;
-                if ret.is_void() {
+                if ret.is_erased_value() {
                     self.line_indent(1, &format!("(void)({value});"));
                     self.line_indent(1, "return;");
                 } else {
@@ -4074,7 +4426,7 @@ impl<'a> CGenerator<'a> {
                 let falls_through = self.gen_block_inner(block, 1)?;
                 if falls_through && ret.is_never() {
                     self.line_indent(1, "ciel_panic(NULL, 0);");
-                } else if falls_through && !ret.is_void() {
+                } else if falls_through && !ret.is_erased_value() {
                     self.line_indent(1, "ciel_panic(NULL, 0);");
                     self.line_indent(1, &format!("return {};", self.zero_value(&ret)));
                 }
@@ -4102,11 +4454,11 @@ impl<'a> CGenerator<'a> {
         ));
         let env_name = self.function_closure_env_name(&wrapper.closure_ty, &wrapper.function_ty);
         self.line_indent(1, &format!("{env_name} *env = ({env_name} *)env_raw;"));
-        let args = (0..params.len())
+        let args = (0..params.iter().filter(|ty| !ty.is_erased_value()).count())
             .map(|idx| format!("arg{idx}"))
             .collect::<Vec<_>>()
             .join(", ");
-        if ret.is_void() {
+        if ret.is_erased_value() {
             self.line_indent(1, &format!("env->func({args});"));
             self.line_indent(1, "return;");
         } else {
@@ -4123,10 +4475,11 @@ impl<'a> CGenerator<'a> {
         decls.extend(
             params
                 .iter()
+                .filter(|ty| !ty.is_erased_value())
                 .enumerate()
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
-        self.c_decl(&ret, &format!("(*call)({})", decls.join(", ")))
+        self.c_return_decl(&ret, &format!("(*call)({})", decls.join(", ")))
     }
 
     fn closure_thunk_decl(&self, closure: &ClosureDef) -> String {
@@ -4140,6 +4493,7 @@ impl<'a> CGenerator<'a> {
         decls.extend(
             params
                 .iter()
+                .filter(|ty| !ty.is_erased_value())
                 .enumerate()
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
@@ -4148,7 +4502,7 @@ impl<'a> CGenerator<'a> {
         } else {
             decls.join(", ")
         };
-        self.c_decl(
+        self.c_return_decl(
             &ret,
             &format!(
                 "{}({params})",
@@ -4165,10 +4519,11 @@ impl<'a> CGenerator<'a> {
         decls.extend(
             params
                 .iter()
+                .filter(|ty| !ty.is_erased_value())
                 .enumerate()
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
-        self.c_decl(
+        self.c_return_decl(
             &ret,
             &format!(
                 "{}({})",
@@ -4203,15 +4558,14 @@ impl<'a> CGenerator<'a> {
                 let field_params = self.dynamic_interface_params(&interface);
                 let params = field_params
                     .iter()
+                    .filter(|ty| !ty.is_erased_value())
                     .enumerate()
                     .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
                     .collect::<Vec<_>>()
                     .join(", ");
                 self.line(&format!(
-                    "    {} (*{})({});",
-                    self.c_type(&field_ret),
-                    interface.name,
-                    params
+                    "    {};",
+                    self.c_return_decl(&field_ret, &format!("(*{})({})", interface.name, params)),
                 ));
             }
             self.line("};");
@@ -4231,19 +4585,25 @@ impl<'a> CGenerator<'a> {
                     let params = self.dynamic_interface_params(&interface);
                     let params = params
                         .iter()
+                        .filter(|ty| !ty.is_erased_value())
                         .enumerate()
                         .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
                         .collect::<Vec<_>>()
                         .join(", ");
                     self.line(&format!(
-                        "{} {}({});",
-                        self.c_type(&ret),
-                        self.dynamic_shim_name(
-                            &dynamic_use.dyn_ty,
-                            &dynamic_use.concrete_ty,
-                            &interface.name
-                        ),
-                        params
+                        "{};",
+                        self.c_return_decl(
+                            &ret,
+                            &format!(
+                                "{}({})",
+                                self.dynamic_shim_name(
+                                    &dynamic_use.dyn_ty,
+                                    &dynamic_use.concrete_ty,
+                                    &interface.name
+                                ),
+                                params
+                            )
+                        )
                     ));
                 }
             }
@@ -4264,6 +4624,7 @@ impl<'a> CGenerator<'a> {
                 let params = self.dynamic_interface_params(&interface);
                 let params_decl = params
                     .iter()
+                    .filter(|ty| !ty.is_erased_value())
                     .enumerate()
                     .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
                     .collect::<Vec<_>>()
@@ -4274,8 +4635,8 @@ impl<'a> CGenerator<'a> {
                     &interface.name,
                 );
                 self.line(&format!(
-                    "{} {shim_name}({params_decl}) {{",
-                    self.c_type(&ret)
+                    "{} {{",
+                    self.c_return_decl(&ret, &format!("{shim_name}({params_decl})"))
                 ));
                 let mut args = Vec::new();
                 let first_param = implementation
@@ -4288,15 +4649,20 @@ impl<'a> CGenerator<'a> {
                 } else {
                     args.push(format!("*({} *)arg0", self.c_type(&first_param)));
                 }
-                for idx in 1..implementation.params.len() {
-                    args.push(format!("arg{idx}"));
+                let mut physical_idx = 1;
+                for param in implementation.params.iter().skip(1) {
+                    if param.is_erased_value() {
+                        continue;
+                    }
+                    args.push(format!("arg{physical_idx}"));
+                    physical_idx += 1;
                 }
                 let call = format!(
                     "{}({})",
                     self.c_name(implementation.function_def),
                     args.join(", ")
                 );
-                if ret.is_void() {
+                if ret.is_erased_value() {
                     self.line_indent(1, &format!("{call};"));
                 } else {
                     self.line_indent(1, &format!("return {call};"));
@@ -4323,17 +4689,18 @@ impl<'a> CGenerator<'a> {
 
     fn function_decl(&self, function: &CheckedFunction, _prototype: bool) -> String {
         let name = self.c_name(function.def_id);
-        let params = if function.params.is_empty() {
+        let params = function
+            .params
+            .iter()
+            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .map(|(_, name, ty)| self.c_decl(ty, name))
+            .collect::<Vec<_>>();
+        let params = if params.is_empty() {
             "void".to_string()
         } else {
-            function
-                .params
-                .iter()
-                .map(|(_, name, ty)| self.c_decl(ty, name))
-                .collect::<Vec<_>>()
-                .join(", ")
+            params.join(", ")
         };
-        self.c_decl(&function.ret, &format!("{name}({params})"))
+        self.c_return_decl(&function.ret, &format!("{name}({params})"))
     }
 
     fn c_name(&self, def_id: DefId) -> String {
@@ -4341,6 +4708,14 @@ impl<'a> CGenerator<'a> {
             .get(&def_id)
             .cloned()
             .unwrap_or_else(|| format!("ciel_missing_{}", def_id.0))
+    }
+
+    fn c_return_decl(&self, ty: &Ty, name: &str) -> String {
+        if ty.is_erased_value() {
+            c_base_decl("void", name)
+        } else {
+            self.c_decl(ty, name)
+        }
     }
 
     fn c_decl(&self, ty: &Ty, name: &str) -> String {
@@ -4381,17 +4756,18 @@ impl<'a> CGenerator<'a> {
                 c_base_decl(&self.closure_type_name(ty), name)
             }
             Ty::Function { ret, params, .. } => {
+                let params = params
+                    .iter()
+                    .filter(|ty| !ty.is_erased_value())
+                    .enumerate()
+                    .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
+                    .collect::<Vec<_>>();
                 let params = if params.is_empty() {
                     "void".to_string()
                 } else {
-                    params
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
-                        .collect::<Vec<_>>()
-                        .join(", ")
+                    params.join(", ")
                 };
-                self.c_decl(ret, &format!("(*{name})({params})"))
+                self.c_return_decl(ret, &format!("(*{name})({params})"))
             }
             Ty::Generic(_) | Ty::Unknown => c_base_decl("void", name),
         }
@@ -4438,6 +4814,9 @@ impl<'a> CGenerator<'a> {
     }
 
     fn zero_value(&self, ty: &Ty) -> String {
+        if ty.is_erased_value() {
+            return String::new();
+        }
         match ty {
             Ty::Const(inner) => self.zero_value(inner),
             Ty::Never => String::new(),
@@ -5024,49 +5403,56 @@ fn span_key(span: crate::span::Span) -> (usize, usize, usize) {
     (span.file.0, span.start, span.end)
 }
 
-fn expr_contains_try(expr: &TExpr) -> bool {
+fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
     match &expr.kind {
-        TExprKind::Try(_) => true,
-        TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => expr_contains_try(expr),
+        TExprKind::Try(_)
+        | TExprKind::Slice { .. }
+        | TExprKind::MakeDynamicInterface { .. }
+        | TExprKind::BuiltinCloneMessage { .. }
+        | TExprKind::ActorSpawn { .. }
+        | TExprKind::ActorSend { .. }
+        | TExprKind::ActorStop { .. }
+        | TExprKind::ActorJoin { .. }
+        | TExprKind::FunctionToClosure(_) => true,
+        TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
+            expr_needs_stmt_lowering(expr)
+        }
         TExprKind::Binary { left, right, .. } => {
-            expr_contains_try(left) || expr_contains_try(right)
+            expr_needs_stmt_lowering(left) || expr_needs_stmt_lowering(right)
         }
         TExprKind::Call { callee, args, .. } => {
-            expr_contains_try(callee) || args.iter().any(expr_contains_try)
+            expr_needs_stmt_lowering(callee)
+                || args
+                    .iter()
+                    .any(|arg| arg.ty.is_erased_value() || expr_needs_stmt_lowering(arg))
         }
-        TExprKind::Closure { body, .. } => closure_body_contains_try(body),
-        TExprKind::FunctionToClosure(inner) => expr_contains_try(inner),
-        TExprKind::ArrayToSlice(inner) => expr_contains_try(inner),
-        TExprKind::MakeDynamicInterface { expr, .. } => expr_contains_try(expr),
+        TExprKind::Closure { captures, .. } => !captures.is_empty(),
+        TExprKind::ArrayToSlice(inner) => expr_needs_stmt_lowering(inner),
         TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
-            expr_contains_try(receiver) || args.iter().any(expr_contains_try)
+            expr_needs_stmt_lowering(receiver)
+                || args
+                    .iter()
+                    .any(|arg| arg.ty.is_erased_value() || expr_needs_stmt_lowering(arg))
         }
-        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => expr_contains_try(base),
-        TExprKind::Index { base, index } => expr_contains_try(base) || expr_contains_try(index),
-        TExprKind::Slice { base, start, end } => {
-            expr_contains_try(base)
-                || start.as_ref().is_some_and(|expr| expr_contains_try(expr))
-                || end.as_ref().is_some_and(|expr| expr_contains_try(expr))
+        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
+            expr.ty.is_erased_value() || expr_needs_stmt_lowering(base)
         }
-        TExprKind::BuiltinCloneMessage { value, .. } => expr_contains_try(value),
-        TExprKind::ActorSpawn {
-            initial_state,
-            handler,
-            ..
-        } => expr_contains_try(initial_state) || expr_contains_try(handler),
-        TExprKind::ActorSend { actor, value, .. } => {
-            expr_contains_try(actor) || expr_contains_try(value)
-        }
-        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
-            expr_contains_try(actor)
+        TExprKind::Index { base, index } => {
+            expr_needs_stmt_lowering(base) || expr_needs_stmt_lowering(index)
         }
         TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => false,
-        TExprKind::StructLiteral { fields, .. } => {
-            fields.iter().any(|(_, value)| expr_contains_try(value))
+        TExprKind::StructLiteral { fields, .. } => fields
+            .iter()
+            .any(|(_, value)| value.ty.is_erased_value() || expr_needs_stmt_lowering(value)),
+        TExprKind::EnumLiteral { payload, .. } => payload
+            .iter()
+            .any(|value| value.ty.is_erased_value() || expr_needs_stmt_lowering(value)),
+        TExprKind::ArrayLiteral(elements) => {
+            expr.ty.is_erased_value() || elements.iter().any(expr_needs_stmt_lowering)
         }
-        TExprKind::EnumLiteral { payload, .. } => payload.iter().any(expr_contains_try),
-        TExprKind::ArrayLiteral(elements) => elements.iter().any(expr_contains_try),
-        TExprKind::ArrayRepeat { element, .. } => expr_contains_try(element),
+        TExprKind::ArrayRepeat { element, .. } => {
+            expr.ty.is_erased_value() || expr_needs_stmt_lowering(element)
+        }
         TExprKind::Local(..)
         | TExprKind::Function(_, _)
         | TExprKind::GenericFunction { .. }
@@ -5074,72 +5460,23 @@ fn expr_contains_try(expr: &TExpr) -> bool {
     }
 }
 
-fn closure_body_contains_try(body: &TClosureBody) -> bool {
-    match body {
-        TClosureBody::Expr(expr) => expr_contains_try(expr),
-        TClosureBody::Block(block) => block.statements.iter().any(stmt_contains_try),
-    }
+fn for_stmt_needs_stmt_lowering(
+    init: Option<&TForInit>,
+    cond: Option<&TExpr>,
+    step: Option<&TForInit>,
+) -> bool {
+    init.is_some_and(for_clause_needs_stmt_lowering)
+        || cond.is_some_and(expr_needs_stmt_lowering)
+        || step.is_some_and(for_clause_needs_stmt_lowering)
 }
 
-fn stmt_contains_try(stmt: &TStmt) -> bool {
-    match &stmt.kind {
-        TStmtKind::Block(block) => block.statements.iter().any(stmt_contains_try),
-        TStmtKind::VarDecl { init, .. } => init.as_ref().is_some_and(expr_contains_try),
-        TStmtKind::Assign { target, value } => {
-            expr_contains_try(target) || expr_contains_try(value)
-        }
-        TStmtKind::If {
-            cond,
-            then_block,
-            else_branch,
-        } => {
-            expr_contains_try(cond)
-                || then_block.statements.iter().any(stmt_contains_try)
-                || else_branch
-                    .as_ref()
-                    .is_some_and(|stmt| stmt_contains_try(stmt))
-        }
-        TStmtKind::While { cond, body } => {
-            expr_contains_try(cond) || body.statements.iter().any(stmt_contains_try)
-        }
-        TStmtKind::For {
-            init,
-            cond,
-            step,
-            body,
-        } => {
-            init.as_ref().is_some_and(for_clause_contains_try)
-                || cond.as_ref().is_some_and(expr_contains_try)
-                || step.as_ref().is_some_and(for_clause_contains_try)
-                || body.statements.iter().any(stmt_contains_try)
-        }
-        TStmtKind::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            expr_contains_try(expr)
-                || cases
-                    .iter()
-                    .any(|case| case.statements.iter().any(stmt_contains_try))
-                || default.iter().any(stmt_contains_try)
-        }
-        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-            expr_contains_try(expr)
-        }
-        TStmtKind::Return(None)
-        | TStmtKind::Break
-        | TStmtKind::Continue
-        | TStmtKind::Unsupported => false,
-    }
-}
-
-fn for_clause_contains_try(clause: &TForInit) -> bool {
+fn for_clause_needs_stmt_lowering(clause: &TForInit) -> bool {
     match clause {
-        TForInit::VarDecl { init, .. } => init.as_ref().is_some_and(expr_contains_try),
-        TForInit::Assign { target, value } => expr_contains_try(target) || expr_contains_try(value),
-        TForInit::Expr(expr) => expr_contains_try(expr),
+        TForInit::VarDecl { init, .. } => init.as_ref().is_some_and(expr_needs_stmt_lowering),
+        TForInit::Assign { target, value } => {
+            expr_needs_stmt_lowering(target) || expr_needs_stmt_lowering(value)
+        }
+        TForInit::Expr(expr) => expr_needs_stmt_lowering(expr),
     }
 }
 

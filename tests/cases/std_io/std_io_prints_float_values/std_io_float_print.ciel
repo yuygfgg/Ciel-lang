@@ -5,6 +5,6 @@
 import /std/io;
 
 i32 main() {
-    must_void(print("f32={} f64={}", [1.5 as f32, -2.25]));
+    must(print("f32={} f64={}", [1.5 as f32, -2.25]));
     return 0;
 }

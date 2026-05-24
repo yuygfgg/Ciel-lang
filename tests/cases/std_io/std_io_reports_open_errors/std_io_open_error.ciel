@@ -7,7 +7,7 @@ i32 main() {
     Result<Fd, Error> result = open_read("/tmp/ciel_std_io_missing_file_should_not_exist");
     switch (result) {
         case Ok(fd):
-            must_void(close(fd));
+            must(close(fd));
             return 1;
         case Err(error):
             return 7;

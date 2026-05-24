@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: explicitly assigned
+
+i64 main() {
+    void value;
+    value = value;
+    return 0;
+}

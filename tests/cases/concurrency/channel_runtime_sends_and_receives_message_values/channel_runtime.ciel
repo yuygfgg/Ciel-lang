@@ -7,11 +7,11 @@ import /std/lib;
 
 i64 main() {
     Channel<i64> channel = must(make_channel<i64>());
-    must_void(channel_send(&channel, 40));
-    must_void(channel_send(&channel, 2));
+    must(channel_send(&channel, 40));
+    must(channel_send(&channel, 2));
     i64 first = must(channel_recv(&channel));
     i64 second = must(channel_recv(&channel));
-    must_void(channel_close(&channel));
-    must_void(print("{}", [first + second]));
+    must(channel_close(&channel));
+    must(print("{}", [first + second]));
     return 0;
 }

@@ -46,24 +46,24 @@ i64 main() {
         repeats: 1000,
     };
 
-    must_void(send(&a0, burst));
-    must_void(send(&a1, burst));
-    must_void(send(&a2, burst));
-    must_void(send(&a3, burst));
+    must(send(&a0, burst));
+    must(send(&a1, burst));
+    must(send(&a2, burst));
+    must(send(&a3, burst));
 
     while (must(atomic_load(&ready, SeqCst)) < 4) {
     }
-    must_void(atomic_store(&start, true, Release));
+    must(atomic_store(&start, true, Release));
 
-    must_void(join(&a0));
-    must_void(join(&a1));
-    must_void(join(&a2));
-    must_void(join(&a3));
+    must(join(&a0));
+    must(join(&a1));
+    must(join(&a2));
+    must(join(&a3));
 
     i64 total = must(atomic_load(&counter, SeqCst));
     if (total != 4000) {
         return 1;
     }
-    must_void(print("{}", [total]));
+    must(print("{}", [total]));
     return 0;
 }

@@ -1,10 +1,12 @@
-// ciel-test: error
-// expect-error: void
+// ciel-test: run
+// expect-exit: 0
 
-i64 bad(void value) {
-    return 0;
+void pass_through(void value) {
+    return value;
 }
 
 i64 main() {
+    void value;
+    pass_through(value);
     return 0;
 }

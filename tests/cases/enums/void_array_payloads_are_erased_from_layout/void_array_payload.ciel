@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-c-not-contains: void _0[4]
+
+enum Marker {
+    Has([4]void),
+    Empty,
+}
+
+i64 main() {
+    Marker marker = Has;
+    switch (marker) {
+        case Has(values):
+            values[2];
+            return 0;
+        case Empty:
+            return 1;
+    }
+}

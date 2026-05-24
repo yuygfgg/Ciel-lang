@@ -1141,7 +1141,7 @@ impl TypeChecker {
                             .iter()
                             .filter_map(|payload| {
                                 let ty = self.lower_type_with_subst(payload, &subst);
-                                (!ty.is_void()).then_some(ty)
+                                (!ty.is_erased_value()).then_some(ty)
                             })
                             .collect(),
                     })
@@ -1814,6 +1814,12 @@ impl TypeChecker {
                     "closure types are not allowed in extern C declarations",
                 ));
             }
+            if sig.params.iter().any(Ty::is_erased_value) {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "`extern \"C\"` parameters cannot have type `void` by value",
+                ));
+            }
             by_symbol
                 .entry(sig.name.clone())
                 .or_default()
@@ -1935,7 +1941,7 @@ impl TypeChecker {
                     sig.name
                 ),
             ));
-        } else if !sig.ret.is_void()
+        } else if !sig.ret.is_erased_value()
             && !checked
                 .as_ref()
                 .is_some_and(|checked| !checked.flow.can_fallthrough)
@@ -2053,9 +2059,18 @@ impl TypeChecker {
             } => {
                 let ty = self.lower_type(ty);
                 self.reject_invalid_plain_value_type(&ty, stmt.span, "local variable");
-                let init = init
-                    .as_ref()
-                    .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)));
+                let init = if ty.is_erased_value() {
+                    if init.is_some() {
+                        self.diagnostics.push(Diagnostic::new(
+                            stmt.span,
+                            "void values are implicit and cannot be explicitly initialized",
+                        ));
+                    }
+                    None
+                } else {
+                    init.as_ref()
+                        .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
+                };
                 if let Some(init) = &init {
                     self.require_assignable(&ty, &init.ty, stmt.span);
                 }
@@ -2065,7 +2080,7 @@ impl TypeChecker {
                         name: name.name.clone(),
                         ty: ty.clone(),
                         narrowed_ty: None,
-                        assigned: init.is_some(),
+                        assigned: init.is_some() || ty.is_erased_value(),
                         immutable: false,
                     },
                 ) {
@@ -2088,6 +2103,12 @@ impl TypeChecker {
                 let target = self.check_lvalue(scopes, target, false)?;
                 self.diagnose_immutable_lvalue(scopes, &target, target.span);
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                if target.ty.is_erased_value() {
+                    self.diagnostics.push(Diagnostic::new(
+                        stmt.span,
+                        "void values are implicit and cannot be explicitly assigned",
+                    ));
+                }
                 self.require_assignable(&target.ty, &value.ty, stmt.span);
                 if let TExprKind::Local(local_id, _) = &target.kind
                     && let Some(binding) = scopes.get_mut(*local_id)
@@ -2243,18 +2264,18 @@ impl TypeChecker {
                 }
                 let expr = match expr {
                     Some(expr) => {
-                        if ret_ty.is_void() {
+                        let expr = self.check_expr(scopes, expr, Some(ret_ty))?;
+                        if ret_ty.is_void() && !expr.ty.is_void() {
                             self.diagnostics.push(Diagnostic::new(
                                 expr.span,
-                                "void function cannot return a value",
+                                "void function cannot return a non-void value",
                             ));
                         }
-                        let expr = self.check_expr(scopes, expr, Some(ret_ty))?;
                         self.require_assignable(ret_ty, &expr.ty, expr.span);
                         Some(expr)
                     }
                     None => {
-                        if !ret_ty.is_void() {
+                        if !ret_ty.is_erased_value() {
                             self.diagnostics.push(Diagnostic::new(
                                 stmt.span,
                                 format!("function must return `{ret_ty}`"),
@@ -2309,9 +2330,19 @@ impl TypeChecker {
             } => {
                 let ty = self.lower_type(ty);
                 self.reject_invalid_plain_value_type(&ty, name.span, "local variable");
-                let checked_init = initializer
-                    .as_ref()
-                    .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)));
+                let checked_init = if ty.is_erased_value() {
+                    if initializer.is_some() {
+                        self.diagnostics.push(Diagnostic::new(
+                            name.span,
+                            "void values are implicit and cannot be explicitly initialized",
+                        ));
+                    }
+                    None
+                } else {
+                    initializer
+                        .as_ref()
+                        .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
+                };
                 if let Some(init) = &checked_init {
                     self.require_assignable(&ty, &init.ty, init.span);
                 }
@@ -2323,7 +2354,7 @@ impl TypeChecker {
                         name: local_name.clone(),
                         ty: ty.clone(),
                         narrowed_ty: None,
-                        assigned: checked_init.is_some(),
+                        assigned: checked_init.is_some() || ty.is_erased_value(),
                         immutable: false,
                     },
                 ) {
@@ -2343,6 +2374,12 @@ impl TypeChecker {
                 let target = self.check_lvalue(scopes, target, false)?;
                 self.diagnose_immutable_lvalue(scopes, &target, target.span);
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                if target.ty.is_erased_value() {
+                    self.diagnostics.push(Diagnostic::new(
+                        target.span,
+                        "void values are implicit and cannot be explicitly assigned",
+                    ));
+                }
                 self.require_assignable(&target.ty, &value.ty, value.span);
                 if let TExprKind::Local(local_id, _) = &target.kind
                     && let Some(binding) = scopes.get_mut(*local_id)
@@ -2362,6 +2399,12 @@ impl TypeChecker {
                 let target = self.check_lvalue(scopes, target, false)?;
                 self.diagnose_immutable_lvalue(scopes, &target, target.span);
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
+                if target.ty.is_erased_value() {
+                    self.diagnostics.push(Diagnostic::new(
+                        target.span,
+                        "void values are implicit and cannot be explicitly assigned",
+                    ));
+                }
                 self.require_assignable(&target.ty, &value.ty, value.span);
                 if let TExprKind::Local(local_id, _) = &target.kind
                     && let Some(binding) = scopes.get_mut(*local_id)
@@ -2650,21 +2693,26 @@ impl TypeChecker {
             .cloned()
             .zip(enum_args.iter().cloned())
             .collect::<HashMap<_, _>>();
-        let payload_tys = sig
+        let logical_payload_tys = sig
             .payload
             .iter()
-            .filter_map(|ty| {
-                let ty = self.lower_type_with_subst(ty, &subst);
-                (!ty.is_void()).then_some(ty)
-            })
+            .map(|ty| self.lower_type_with_subst(ty, &subst))
             .collect::<Vec<_>>();
-        if subpatterns.len() != payload_tys.len() {
+        let physical_payload_tys = logical_payload_tys
+            .iter()
+            .filter(|ty| !ty.is_erased_value())
+            .cloned()
+            .collect::<Vec<_>>();
+        let use_logical_payload = subpatterns.len() == logical_payload_tys.len();
+        let use_physical_payload =
+            subpatterns.len() == physical_payload_tys.len() && !use_logical_payload;
+        if !use_logical_payload && !use_physical_payload {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
                 format!(
                     "variant `{}` expects {} pattern fields, got {}",
                     name.display,
-                    payload_tys.len(),
+                    physical_payload_tys.len(),
                     subpatterns.len()
                 ),
             ));
@@ -2672,8 +2720,14 @@ impl TypeChecker {
         }
 
         let mut payload = Vec::new();
-        for (subpattern, payload_ty) in subpatterns.iter().zip(payload_tys.iter()) {
-            payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+        if use_logical_payload {
+            for (subpattern, payload_ty) in subpatterns.iter().zip(logical_payload_tys.iter()) {
+                payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+            }
+        } else {
+            for (subpattern, payload_ty) in subpatterns.iter().zip(physical_payload_tys.iter()) {
+                payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+            }
         }
         self.ensure_enum_instance(expected_ty);
         Some(TPattern::Variant {
@@ -2726,7 +2780,11 @@ impl TypeChecker {
                             payload,
                             ..
                         } if variant_name == &variant.name => {
-                            let mut specialized = payload.clone();
+                            let mut specialized = payload
+                                .iter()
+                                .filter(|pattern| !pattern.ty().is_erased_value())
+                                .cloned()
+                                .collect::<Vec<_>>();
                             specialized.extend(row[1..].iter().cloned());
                             specialized_rows.push(specialized);
                         }
@@ -2854,12 +2912,19 @@ impl TypeChecker {
                         ));
                         continue;
                     };
+                    if field_ty.is_erased_value() {
+                        self.diagnostics.push(Diagnostic::new(
+                            init.name.span,
+                            "void fields are implicit and cannot be explicitly initialized",
+                        ));
+                        continue;
+                    }
                     let value = self.check_expr(scopes, &init.expr, Some(field_ty))?;
                     self.require_assignable(field_ty, &value.ty, init.expr.span);
                     checked_fields.push((init.name.name.clone(), value));
                 }
-                for (field_name, _) in &struct_fields {
-                    if !seen.contains_key(field_name) {
+                for (field_name, field_ty) in &struct_fields {
+                    if !field_ty.is_erased_value() && !seen.contains_key(field_name) {
                         self.diagnostics.push(Diagnostic::new(
                             expr.span,
                             format!("missing field `{field_name}` in `{type_name}` literal"),
@@ -2984,6 +3049,12 @@ impl TypeChecker {
                 let inner = match op {
                     UnaryOp::Addr => {
                         let inner = self.check_lvalue(scopes, inner, true)?;
+                        if inner.ty.is_erased_value() {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.span,
+                                "cannot take the address of a void value",
+                            ));
+                        }
                         if let TExprKind::Local(local_id, _) = &inner.kind {
                             if let Some(binding) = scopes.get(*local_id)
                                 && binding.immutable
@@ -3984,7 +4055,7 @@ impl TypeChecker {
                         block.span,
                         "closure with return type `never` can fall through",
                     ));
-                } else if !expected_ret.is_void() && checked.flow.can_fallthrough {
+                } else if !expected_ret.is_erased_value() && checked.flow.can_fallthrough {
                     self.diagnostics.push(Diagnostic::new(
                         block.span,
                         format!("closure must return `{expected_ret}` on every path"),
@@ -4851,20 +4922,24 @@ impl TypeChecker {
             .cloned()
             .zip(enum_args.iter().cloned())
             .collect::<HashMap<_, _>>();
-        let payload_tys = sig
+        let logical_payload_tys = sig
             .payload
             .iter()
-            .filter_map(|ty| {
-                let ty = self.lower_type_with_subst(ty, &subst);
-                (!ty.is_void()).then_some(ty)
-            })
+            .map(|ty| self.lower_type_with_subst(ty, &subst))
             .collect::<Vec<_>>();
-        if args.len() != payload_tys.len() {
+        let physical_payload_tys = logical_payload_tys
+            .iter()
+            .filter(|ty| !ty.is_erased_value())
+            .cloned()
+            .collect::<Vec<_>>();
+        let use_logical_payload = args.len() == logical_payload_tys.len();
+        let use_physical_payload = args.len() == physical_payload_tys.len() && !use_logical_payload;
+        if !use_logical_payload && !use_physical_payload {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!(
                     "variant `{variant_name}` expects {} payload values, got {}",
-                    payload_tys.len(),
+                    physical_payload_tys.len(),
                     args.len()
                 ),
             ));
@@ -4872,10 +4947,21 @@ impl TypeChecker {
         }
 
         let mut payload = Vec::new();
-        for (arg, expected_ty) in args.iter().zip(payload_tys.iter()) {
+        let payload_inputs = if use_logical_payload {
+            args.iter()
+                .zip(logical_payload_tys.iter())
+                .collect::<Vec<_>>()
+        } else {
+            args.iter()
+                .zip(physical_payload_tys.iter())
+                .collect::<Vec<_>>()
+        };
+        for (arg, expected_ty) in payload_inputs {
             let checked = self.check_expr(scopes, arg, Some(expected_ty))?;
             self.require_assignable(expected_ty, &checked.ty, checked.span);
-            payload.push(checked);
+            if use_logical_payload || !expected_ty.is_erased_value() {
+                payload.push(checked);
+            }
         }
 
         self.ensure_enum_instance(&enum_ty);
@@ -5165,13 +5251,6 @@ impl TypeChecker {
     }
 
     fn reject_invalid_plain_value_type(&mut self, ty: &Ty, span: crate::span::Span, context: &str) {
-        if ty.is_void() {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!("{context} cannot have type `void`"),
-            ));
-            return;
-        }
         if ty.is_never() {
             self.diagnostics.push(Diagnostic::new(
                 span,
@@ -5185,10 +5264,10 @@ impl TypeChecker {
                 format!("{context} cannot use opaque struct `{ty}` by value"),
             ));
         }
-        if type_contains_plain_void_value(ty) {
+        if type_contains_plain_never_value(ty) {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("{context} cannot contain `void` or `never` by value"),
+                format!("{context} cannot contain `never` by value"),
             ));
         }
     }
@@ -5201,10 +5280,10 @@ impl TypeChecker {
             ));
         }
         match ty {
-            Ty::Array { elem, .. } | Ty::Slice(elem) if type_contains_plain_void_value(elem) => {
+            Ty::Array { elem, .. } | Ty::Slice(elem) if type_contains_plain_never_value(elem) => {
                 self.diagnostics.push(Diagnostic::new(
                     span,
-                    "function return type cannot contain `void` or `never` by value",
+                    "function return type cannot contain `never` by value",
                 ));
             }
             _ => {}
@@ -6917,18 +6996,19 @@ fn contains_generic(ty: &Ty) -> bool {
     }
 }
 
-fn type_contains_plain_void_value(ty: &Ty) -> bool {
+fn type_contains_plain_never_value(ty: &Ty) -> bool {
     match ty {
-        Ty::Const(inner) => type_contains_plain_void_value(inner),
-        Ty::Never | Ty::Void => true,
-        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_plain_void_value(elem),
+        Ty::Const(inner) => type_contains_plain_never_value(inner),
+        Ty::Never => true,
+        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_plain_never_value(elem),
         Ty::Function { params, .. }
         | Ty::Closure { params, .. }
-        | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_void_value),
+        | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_never_value),
         Ty::Pointer { .. }
         | Ty::Named { .. }
         | Ty::DynamicInterface { .. }
         | Ty::Generic(_)
+        | Ty::Void
         | Ty::Bool
         | Ty::Char
         | Ty::I8

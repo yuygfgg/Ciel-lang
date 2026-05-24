@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: void fields are implicit
+
+struct Marker {
+    void tag;
+}
+
+void make_done() {
+    return;
+}
+
+i64 main() {
+    Marker marker = { tag: make_done() };
+    return 0;
+}

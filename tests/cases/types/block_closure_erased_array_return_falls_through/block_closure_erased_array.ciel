@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 0
+
+i64 main() {
+    ([4]void) |()| make = || {
+        [4]void markers;
+        markers;
+    };
+    make();
+    return 0;
+}

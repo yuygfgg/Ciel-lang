@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: explicitly initialized
+
+void make_done() {
+    return;
+}
+
+i64 main() {
+    void value = make_done();
+    return 0;
+}

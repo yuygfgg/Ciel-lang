@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: WCASCBSD
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+bool stop(void marker) {
+    putchar(87);
+    return false;
+}
+
+bool keep(void marker) {
+    putchar(67);
+    return true;
+}
+
+i64 step(void marker) {
+    putchar(83);
+    return 1;
+}
+
+void cleanup(void marker) {
+    putchar(68);
+}
+
+i32 main() {
+    void marker;
+    defer cleanup(marker);
+    while (stop(marker)) {
+    }
+    for (i64 i = 0; i < 2 && keep(marker); i = i + step(marker)) {
+        if (i == 0) {
+            putchar(65);
+            continue;
+        }
+        putchar(66);
+    }
+    return 0;
+}

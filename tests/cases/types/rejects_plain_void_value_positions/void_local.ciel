@@ -1,7 +1,12 @@
-// ciel-test: error
-// expect-error: void
+// ciel-test: run
+// expect-exit: 0
+
+void consume(void value) {
+    return value;
+}
 
 i64 main() {
     void value;
+    consume(value);
     return 0;
 }

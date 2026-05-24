@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+
+enum Result<T, E> {
+    Ok(T),
+    Err(E),
+}
+
+enum LocalError {
+    Failed,
+}
+
+Result<void, LocalError> ok() {
+    return Ok;
+}
+
+void unwrap(Result<void, LocalError> result) {
+    switch (result) {
+        case Ok(value):
+            return value;
+        case Err(error):
+            return;
+    }
+}
+
+i64 main() {
+    unwrap(ok());
+    return 0;
+}

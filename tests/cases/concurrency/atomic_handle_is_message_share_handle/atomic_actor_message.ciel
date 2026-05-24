@@ -15,11 +15,11 @@ Result<i64, Error> increment(i64 state, Atomic<i64> counter) {
 
 i64 main() {
     Atomic<i64> counter = must(make_atomic<i64>(0));
-    must_void(accept_shared(counter));
+    must(accept_shared(counter));
 
     Actor<Atomic<i64>> actor = must(spawn_actor<i64, Atomic<i64>>(0, increment));
-    must_void(send(&actor, counter));
-    must_void(join(&actor));
+    must(send(&actor, counter));
+    must(join(&actor));
 
     i64 value = must(atomic_load(&counter, SeqCst));
     return value;

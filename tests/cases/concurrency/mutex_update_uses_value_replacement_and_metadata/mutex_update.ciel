@@ -22,6 +22,6 @@ i64 main() {
     Add add = { delta: 5 };
     i64 first = must(mutex_update<i64, Add, i64>(&mutex, &add));
     i64 second = must(mutex_update<i64, Add, i64>(&mutex, &add));
-    must_void(print("{}", [first + second]));
+    must(print("{}", [first + second]));
     return 0;
 }

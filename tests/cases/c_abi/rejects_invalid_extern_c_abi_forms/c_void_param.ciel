@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: parameters cannot have type `void`
+
+extern "C" void bad(void value);
+
+i64 main() {
+    return 0;
+}

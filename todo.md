@@ -130,7 +130,10 @@ currently inconsistent with the design.
 
 - [x] Implement transparent type aliases.
 - [x] Emit and type-check opaque structs from `extern "C"` blocks.
-- [x] Reject plain locals, fields, and parameters of type `void`.
+- [x] Treat `void` as an implicit zero-size value in locals, fields,
+      parameters, enum payloads, pattern bindings, and `[N]void` arrays.
+- [x] Reject explicit concrete initialization, assignment, and address-taking of
+      `void` values.
 - [x] Check by-value recursive struct/enum layout cycles.
 - [x] Implement nullable local narrowing:
       `if (p != null)`, `if (p == null) return`, and `&&` short-circuit cases.
@@ -352,6 +355,8 @@ currently inconsistent with the design.
 - [x] Generate opaque struct forward declarations for C types such as `FILE`.
 - [x] Preserve explicit C pointer nullability in type checking.
 - [x] Enforce C ABI for `extern "C"` and `export extern "C"` declarations.
+- [x] Reject by-value `void` parameters in `extern "C"` declarations while
+      allowing erased `void` parameters in the internal Ciel ABI.
 - [x] Implement `export extern "C"` symbol naming for function bodies.
 - [x] Implement `export extern "C" { ... }` re-export semantics for Ciel
       importers.

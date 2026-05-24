@@ -3,15 +3,14 @@
 This proposal changes Ciel's `void` from a special "no value" marker into a
 proper zero-size, single-value type.
 
-The goal is to remove API splits such as `must` versus `must_void`,
-`expect` versus `expect_void`, and later `error_context` versus
-`error_context_void`, while preserving C ABI `void` lowering.
+The goal is to let one generic `must` and `expect` implementation handle
+`Result<void, E>` while preserving C ABI `void` lowering.
 
 ## Problem
 
-`void` is currently valid as a function return type and as a type argument, such
-as `Result<void, E>`, but plain locals, fields, and parameters of type `void` are
-invalid.
+Before this change, `void` was valid as a function return type and as a type
+argument, such as `Result<void, E>`, but plain locals, fields, and parameters of
+type `void` were invalid.
 
 That means generic functions cannot naturally handle `T = void`:
 
@@ -27,31 +26,26 @@ export T expect<T, E>(Result<T, E> value, []char message) {
 ```
 
 For `T = void`, the `Ok` value has no runtime payload, `result` has no storage,
-and `return result` should lower to `return;`. Today this shape requires a
-separate helper:
-
-```rust
-export void expect_void<E>(Result<void, E> value, []char message);
-```
-
-Every generic helper around `Result<T, E>` repeats the same split.
+and `return result` should lower to `return;`. Previously this shape required
+separate non-generic helper APIs.
 
 ## Proposal
 
 `void` is a normal inhabited type with exactly one value.
 
 ```rust
-void done = {};
+void done;
 ```
 
-The value has no runtime storage. It may appear in locals, parameters, fields,
-enum payloads, generic substitutions, and return positions.
+The value has no runtime storage and has no literal spelling. It may appear in
+locals, parameters, fields, enum payloads, generic substitutions, and return
+positions.
 
 The C backend erases `void` values:
 
 ```rust
 void f() {
-    return {};
+    return;
 }
 ```
 
@@ -66,19 +60,32 @@ void f(void) {
 `void` remains the spelling for a C ABI `void` return. The language-level change
 is that `void` is also a valid zero-size value type inside Ciel.
 
-## Unit Literal
+## Implicit Void Value
 
-The existing empty struct literal spelling is the unit value:
+`void` has no literal. The empty struct literal remains a struct literal and is
+not reused as a unit literal.
 
-```rust
-void value = {};
-```
-
-`return;` remains valid in a `void` function and is equivalent to:
+Concrete `void` locals are implicitly initialized:
 
 ```rust
-return {};
+void value;
 ```
+
+Concrete code does not explicitly initialize or assign `void` values:
+
+```rust
+void value = make_done(); // error
+value = make_done();      // error
+```
+
+Use the expression statement form when evaluation is needed:
+
+```rust
+make_done();
+```
+
+Generic code may still contain value flow that instantiates to `void`; the
+backend erases that flow after preserving side effects.
 
 `return Ok;` remains valid for `Result<void, E>` when `Ok` is the `Result` success
 variant instantiated with a `void` payload.
@@ -111,17 +118,6 @@ must(close(fd));
 
 where `close(fd)` returns `Result<void, Error>`.
 
-The specialized `must_void` and `expect_void` helpers become unnecessary
-compatibility wrappers during migration:
-
-```rust
-export void must_void<E>(Result<void, E> value) {
-    must(value);
-}
-```
-
-They can be removed after the standard library and tests are updated.
-
 ## Parameters, Locals, and Fields
 
 `void` values are allowed in ordinary value positions:
@@ -133,9 +129,10 @@ void ignore(void value) {
 
 struct Marker {
     void tag;
+    i64 value;
 }
 
-Marker marker = { tag: {} };
+Marker marker = { value: 7 };
 ```
 
 These values have no runtime storage. They exist so generic code can remain
@@ -181,7 +178,7 @@ may also use the payloadless spelling:
 void expect_done<E>(Result<void, E> result) {
     switch (result) {
         case Ok:
-            return {};
+            return;
         case Err(error):
             panic("expected success");
     }
@@ -191,21 +188,29 @@ void expect_done<E>(Result<void, E> result) {
 The payload-binding form is useful for generic code; the payloadless form is
 more readable in concrete `void` code.
 
-## Assignment And Calls
+## Initialization, Assignment, And Calls
 
-Assignments and argument passing involving `void` are type checked normally:
+Concrete `void` locals and fields are implicit. They cannot be explicitly
+initialized or assigned:
 
 ```rust
-void a = {};
-void b = a;
-take_void(b);
+void a;
+void b = a; // error
+a = b;      // error
 ```
 
-The generated code performs no data movement. Evaluation order is still
-preserved for expressions that produce `void`.
+Argument passing and returns can still use existing `void` expressions:
 
 ```rust
-void value = side_effecting_void_call();
+void a;
+take_void(a);
+```
+
+The generated code performs no data movement. Evaluation order is preserved for
+generic expressions that instantiate to `void`.
+
+```rust
+side_effecting_void_call();
 next();
 ```
 
@@ -226,7 +231,7 @@ struct Pair<T> {
 The `marker` field type checks and can be selected:
 
 ```rust
-void marker = pair.marker;
+pair.marker;
 ```
 
 but taking its address is invalid:
@@ -243,16 +248,13 @@ addressable sentinel, it should use a normal zero-field struct instead.
 Arrays of `void` are allowed at the type level:
 
 ```rust
-[4]void markers = [{};];
+[4]void markers;
 ```
 
 They have length but no element storage. Indexing returns the single `void`
 value after performing the normal bounds check.
 
-Slices of `void` are allowed only if the runtime slice representation can carry a
-length with a null or sentinel data pointer. If this complicates the first
-implementation, `[]void` can remain temporarily unsupported as a staged
-restriction. The long-term model should allow it for generic consistency.
+Slices of `void` carry their length with a null data pointer.
 
 ## Pointers
 
@@ -263,12 +265,9 @@ Rules:
 
 ```rust
 *void opaque;     // opaque pointer
-void value = {};  // unit value
+void value;       // implicit void value
 &value;           // error: void values have no addressable storage
 ```
-
-This preserves the current role of `*void` without turning unit values into
-objects with identity.
 
 ## Type Checking
 
@@ -276,9 +275,10 @@ The type checker should stop rejecting `void` in plain value positions.
 
 It should still reject:
 
-1. address-of a `void` lvalue;
-2. `extern "C"` by-value `void` parameters;
-3. operations that require representation, such as direct equality on structs
+1. explicit initialization or assignment of concrete `void` values;
+2. address-of a `void` lvalue;
+3. `extern "C"` by-value `void` parameters;
+4. operations that require representation, such as direct equality on structs
    containing only erased fields if the current equality rules already reject
    direct aggregate comparison.
 
@@ -289,7 +289,8 @@ T id<T>(T value) {
     return value;
 }
 
-void done = id({});
+void done;
+id(done);
 ```
 
 Expected-type inference can infer `T = void` when the expected type is known.
@@ -302,15 +303,17 @@ effects.
 Examples:
 
 ```rust
-void x = call();
-return x;
+T forward<T>(T value) {
+    return value;
+}
 ```
 
-lowers like:
+For `T = void`, this lowers like:
 
 ```c
-call();
-return;
+void forward(void) {
+    return;
+}
 ```
 
 Struct fields of type `void` are omitted from the C struct. Enum payload fields
@@ -334,27 +337,25 @@ Result<void, Error> cleanup() {
     return Ok;
 }
 
-void done = must(cleanup());
+must(cleanup());
 ```
 
-Most call sites should write the statement form:
+Call sites write the statement form:
 
 ```rust
 must(cleanup());
 ```
 
-The assignment form is legal for generic uniformity.
-
 ## Migration Plan
 
 1. Change the semantic rule so `void` is permitted in locals, parameters, fields,
    and pattern bindings.
-2. Teach assignment, return, call, and pattern checking to treat `void` as a
-   normal concrete type.
-3. Update C lowering to erase `void` locals, parameters, fields, and payloads
+2. Reject explicit concrete initialization and assignment of `void` values.
+3. Teach return, call, and pattern checking to treat `void` as a single implicit
+   value.
+4. Update C lowering to erase `void` locals, parameters, fields, and payloads
    while preserving side effects.
-4. Rewrite `/std/result` to keep only generic `must` and `expect`.
-5. Keep `must_void` and `expect_void` as wrappers for one transition period.
+5. Rewrite `/std/result` to keep only generic `must` and `expect`.
 6. Add regression fixtures for:
    - `must(Result<void, E>)`;
    - `expect(Result<void, E>, message)`;
@@ -364,15 +365,13 @@ The assignment form is legal for generic uniformity.
    - rejection of address-of `void`;
    - rejection of `extern "C"` by-value `void` parameters.
 
-## Open Questions
+## Resolved Decisions
 
-1. Should concrete `Result<void, E>` pattern matching prefer `case Ok:` in
-   diagnostics even though `case Ok(value):` is valid?
-2. Should `[]void` be implemented immediately or staged after arrays and fields?
-3. Should the language eventually add an explicit `unit` alias for readability,
-   or keep `void` as the only spelling?
-4. Should taking the address of a zero-field struct remain valid while taking the
-   address of `void` remains invalid? This proposal says yes.
-5. Should exported non-`extern` Ciel functions with erased `void` parameters keep
-   ABI-stable placeholder parameters, or may the compiler omit them because their
-   ABI is Ciel-internal?
+1. Concrete `Result<void, E>` examples and diagnostics prefer `case Ok:`, while
+   `case Ok(value):` remains valid for generic uniformity.
+2. No `unit` alias is added. `void` remains the only spelling.
+3. Taking the address of a zero-field struct remains valid. Taking the address of
+   `void` remains invalid.
+4. Exported non-`extern` Ciel functions may omit erased `void` parameters because
+   their ABI is Ciel-internal. Stable C-facing ABI remains explicit
+   `extern "C"`.

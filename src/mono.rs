@@ -1247,7 +1247,7 @@ impl<'a> AggregateCollector<'a> {
                     .iter()
                     .filter_map(|payload| {
                         let ty = self.lower_ast_type(payload, &subst);
-                        if ty.is_void() {
+                        if ty.is_erased_value() {
                             None
                         } else {
                             self.collect_ty(&ty);

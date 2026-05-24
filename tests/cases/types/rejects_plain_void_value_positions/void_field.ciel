@@ -1,10 +1,13 @@
-// ciel-test: error
-// expect-error: void
+// ciel-test: run
+// expect-exit: 7
 
-struct Bad {
-    void value;
+struct Marker {
+    void tag;
+    i64 value;
 }
 
 i64 main() {
-    return 0;
+    Marker marker = { value: 7 };
+    marker.tag;
+    return marker.value;
 }

@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: address of a void value
+
+i64 main() {
+    void value;
+    *void ptr = &value;
+    return 0;
+}

@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: A
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+enum Event {
+    Done(void),
+}
+
+void mark() {
+    putchar(65);
+}
+
+i32 main() {
+    Event event = Done(mark());
+    switch (event) {
+        case Done(_):
+            return 0;
+    }
+}

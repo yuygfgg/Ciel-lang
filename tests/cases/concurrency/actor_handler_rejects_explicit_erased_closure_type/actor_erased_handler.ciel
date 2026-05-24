@@ -11,6 +11,6 @@ i64 main() {
             return Ok(state + msg);
         }
     ));
-    must_void(join(&actor));
+    must(join(&actor));
     return 0;
 }

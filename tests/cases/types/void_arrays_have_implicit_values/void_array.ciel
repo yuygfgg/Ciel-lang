@@ -1,0 +1,9 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-c-contains: ciel_bounds_check
+
+i64 main() {
+    [4]void markers;
+    markers[2];
+    return 0;
+}

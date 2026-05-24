@@ -242,9 +242,12 @@ Ciel mutability is governed by binding and lvalue rules.
 const Big       // generated as const Big
 ```
 
-`void` is valid as a function return type and as a type argument such as
-`Result<void, E>`. Plain locals, fields, and parameters of type `void` are
-invalid.
+`void` is a zero-size, single-value type. It is valid as a function return type,
+as a type argument such as `Result<void, E>`, and in locals, fields, parameters,
+enum payloads, and pattern bindings. Concrete `void` values are implicit:
+locals and fields of type `void` are not explicitly initialized or assigned.
+The backend erases `void` storage while preserving expression evaluation order.
+Taking the address of a `void` value is invalid.
 
 `never` is the uninhabited type for expressions that never complete normally.
 It is valid as a function return type. Plain locals, fields, and parameters of
@@ -256,6 +259,10 @@ zero-indexed. Index expressions are bounds-checked and panic on out-of-bounds
 access. Slice subview expressions are range-checked and panic if the range is
 invalid. Arrays do not decay to pointers. Array-to-slice conversion is implicit
 when a `[]T` is expected.
+
+`[N]void` has a length but no element storage. It is declared without an
+initializer, and indexing performs the normal bounds check before producing the
+implicit `void` value. `[]void` stores a length with a null data pointer.
 
 Type aliases are transparent. They introduce a new name for an existing type;
 they do not introduce nominal identity.
@@ -669,8 +676,9 @@ current loop iteration and then runs the loop step expression when one exists.
 `switch` cases do not fall through: only the selected case body executes.
 
 Non-`void` functions must return a value on every normal control-flow path.
-`void` functions may fall through. `return expr;` in a `void` function is
-invalid, and bare `return;` in a non-`void` function is invalid.
+`void` functions may fall through. `return expr;` in a `void` function is valid
+only when `expr` has type `void`; this supports generic functions instantiated
+with `T = void`. Bare `return;` in a non-`void` function is invalid.
 `never` functions must not fall through and cannot use `return`; they terminate
 the process, abort, panic, or loop forever. Calls to functions returning
 `never` are not normal fallthrough paths.
@@ -1343,8 +1351,6 @@ export enum Result<T, E> {
 
 export T must<T, E>(Result<T, E> value);
 export T expect<T, E>(Result<T, E> value, []char message);
-export void must_void<E>(Result<void, E> value);
-export void expect_void<E>(Result<void, E> value, []char message);
 ```
 
 ```rust
@@ -1649,7 +1655,9 @@ extern "C" i32 fn(*void, *void) // C ABI
 
 The Ciel internal ABI may lower large returns and arguments using hidden
 pointers. Any declaration marked `extern "C"` or `export extern "C"` must obey
-the target platform C ABI as written.
+the target platform C ABI as written. By-value `void` parameters are invalid in
+`extern "C"` declarations; an empty C parameter list is written by omitting
+parameters.
 
 Generated Ciel libraries expose a small host ABI:
 

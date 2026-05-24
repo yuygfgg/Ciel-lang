@@ -9,7 +9,7 @@ i64 main() {
     Atomic<i64> counter = must(make_atomic<i64>(10));
 
     i64 start = must(atomic_load(&counter, SeqCst));
-    must_void(atomic_store(&counter, 20, Release));
+    must(atomic_store(&counter, 20, Release));
     i64 after_store = must(atomic_load(&counter, Acquire));
     i64 old_exchange = must(atomic_exchange(&counter, 30, AcqRel));
 
@@ -21,7 +21,7 @@ i64 main() {
     i64 final_value = must(atomic_load(&counter, SeqCst));
 
     Atomic<bool> flag = must(make_atomic<bool>(false));
-    must_void(atomic_store(&flag, true, SeqCst));
+    must(atomic_store(&flag, true, SeqCst));
     bool flag_value = must(atomic_load(&flag, Acquire));
 
     Atomic<u64> unsigned_counter = must(make_atomic<u64>(1));
@@ -60,6 +60,6 @@ i64 main() {
         return 9;
     }
 
-    must_void(print("{}", [final_value]));
+    must(print("{}", [final_value]));
     return 0;
 }

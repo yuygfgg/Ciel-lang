@@ -13,6 +13,6 @@ Result<void, Error> accept_local<T: ThreadLocal>(T value) {
 
 i64 main() {
     Fd fd = stdout();
-    must_void(accept_local(fd));
+    must(accept_local(fd));
     return 0;
 }

@@ -10,7 +10,7 @@ i64 main() {
         print_value(base + msg)?;
         return Ok(state + msg);
     }));
-    must_void(send(&actor, 5));
-    must_void(join(&actor));
+    must(send(&actor, 5));
+    must(join(&actor));
     return 0;
 }

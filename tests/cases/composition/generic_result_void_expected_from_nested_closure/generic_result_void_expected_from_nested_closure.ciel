@@ -1,0 +1,48 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: VX
+
+import /std/lib;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+struct Runner<T> {
+    T callback;
+    void tag;
+}
+
+enum Work<T> {
+    Do(T),
+    Done(void),
+}
+
+void mark(i32 ch) {
+    putchar(ch);
+    return;
+}
+
+Result<void, Error> handle(Work<void> work, Runner<Result<void, Error> |(void)|> runner) {
+    switch (work) {
+        case Do(value):
+            runner.tag;
+            return runner.callback(value);
+        case Done(marker):
+            marker;
+            return Ok;
+    }
+}
+
+i64 main() {
+    Work<void> work = Do(mark(86));
+    Runner<Result<void, Error> |(void)|> runner = { callback: |value| {
+        value;
+        mark(88);
+        return Ok;
+    } };
+    must(handle(work, runner));
+    return 0;
+}

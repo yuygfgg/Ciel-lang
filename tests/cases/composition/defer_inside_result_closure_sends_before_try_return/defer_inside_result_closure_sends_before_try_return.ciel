@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: BA
+
+import /std/lib;
+
+#c_include "stdio.h"
+
+extern "C" {
+    i32 putchar(i32 ch);
+}
+
+void mark(i32 ch) {
+    putchar(ch);
+    return;
+}
+
+Result<i64, Error> five() {
+    return Ok(5);
+}
+
+Result<i64, Error> run(Result<i64, Error> |()| callback) {
+    return callback();
+}
+
+i64 main() {
+    Result<i64, Error> |()| callback = || {
+        defer mark(65);
+        i64 value = five()?;
+        defer mark(66);
+        return Ok(value);
+    };
+    must(run(callback));
+    return 0;
+}

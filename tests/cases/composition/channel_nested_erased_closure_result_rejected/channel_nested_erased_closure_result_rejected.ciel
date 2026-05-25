@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: does not implement `clone_message`
+// expect-error: erased closure signature
+
+import /std/lib;
+
+struct Task {
+    Result<i64 |(i64)|, Error> callback;
+}
+
+i64 main() {
+    Channel<Task> tasks = must(make_channel<Task>());
+    i64 offset = 3;
+    Task task = { callback: Ok(|i64 value| value + offset) };
+    must(channel_send(&tasks, task));
+    must(channel_close(&tasks));
+    return 0;
+}

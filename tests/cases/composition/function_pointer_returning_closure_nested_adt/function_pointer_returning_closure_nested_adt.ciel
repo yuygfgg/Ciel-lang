@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 13
+
+struct Factory {
+    i64 |(i64)| fn(i64) build;
+    void tag;
+}
+
+enum FactorySlot {
+    Use(Factory),
+    Empty,
+}
+
+i64 |(i64)| make_adder(i64 base) {
+    return |i64 value| value + base;
+}
+
+i64 run(FactorySlot slot, i64 base, i64 input) {
+    switch (slot) {
+        case Use(factory):
+            factory.tag;
+            i64 |(i64)| callback = factory.build(base);
+            return callback(input);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Factory factory = { build: make_adder };
+    FactorySlot slot = Use(factory);
+    return run(slot, 9, 4);
+}

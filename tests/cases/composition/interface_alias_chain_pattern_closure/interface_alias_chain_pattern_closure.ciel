@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 19
+
+interface<T> i64 read(*T value);
+interface<T> i64 seek(*T value);
+interface<T> void reset(*T value);
+interface readable_seekable = read + seek - reset;
+interface reader_only = readable_seekable - seek;
+
+enum Packet<T> {
+    Item(T),
+    Empty,
+}
+
+struct Source {
+    i64 value;
+}
+
+impl read(*Source source) {
+    return source->value;
+}
+
+i64 fold<T: reader_only + !seek>(Packet<T> packet, i64 |(T)| callback) {
+    switch (packet) {
+        case Item(item):
+            return callback(item);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Source source = { value: 14 };
+    Packet<Source> packet = Item(source);
+    i64 bias = 5;
+    return fold(packet, |item| {
+        Source local = item;
+        return read(&local) + bias;
+    });
+}

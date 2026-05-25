@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: immutable
+
+struct Token {
+    void tag;
+    i64 value;
+}
+
+void make_tag() {
+    return;
+}
+
+i64 main() {
+    Token token = { value: 1 };
+    i64 |()| update = || {
+        token.tag = make_tag();
+        return token.value;
+    };
+    return update();
+}

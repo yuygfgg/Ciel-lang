@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 11
+
+import /std/lib;
+
+struct Marker {
+    [4]void tags;
+    i64 value;
+}
+
+enum Msg {
+    Load(Marker),
+    Flush(void),
+}
+
+i64 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    Actor<Msg> actor = must(spawn_actor<i64, Msg>(0, |i64 state, Msg msg| {
+        Channel<i64> local_out = out;
+        switch (msg) {
+            case Load(marker):
+                marker.tags[2];
+                return Ok(state + marker.value);
+            case Flush(done):
+                done;
+                channel_send(&local_out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    Marker marker = { value: 11 };
+    must(send(&actor, Load(marker)));
+    must(send(&actor, Flush));
+
+    i64 value = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    must(print("{}", [value]));
+    return 0;
+}

@@ -1,0 +1,39 @@
+// ciel-test: run
+// expect-exit: 30
+
+import /std/lib;
+
+interface<T, U, V> Result<V, Error> build(*T value, U left, V right);
+interface i64_builder = build<i64, i64>;
+
+enum Slot<T> {
+    Full(T),
+    Empty,
+}
+
+struct Builder {
+    i64 base;
+}
+
+impl build<i64, i64>(*Builder builder, i64 left, i64 right) {
+    return Ok(builder->base + left + right);
+}
+
+Result<i64, Error> visit(Slot<i64_builder> slot, Result<i64, Error> |(i64_builder)| callback) {
+    switch (slot) {
+        case Full(item):
+            return callback(item);
+        case Empty:
+            return Ok(0);
+    }
+}
+
+i64 main() {
+    Builder builder = { base: 11 };
+    Slot<i64_builder> slot = Full(&builder);
+    i64 left = 8;
+    i64 right = 11;
+    return must(visit(slot, |item| {
+        return build(item, left, right);
+    }));
+}

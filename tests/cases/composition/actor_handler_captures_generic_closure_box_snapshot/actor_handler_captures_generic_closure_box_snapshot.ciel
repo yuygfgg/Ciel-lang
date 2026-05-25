@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: erased closure signature
+
+import /std/lib;
+
+struct Tool<T> {
+    T callback;
+    void tag;
+}
+
+i64 main() {
+    i64 offset = 4;
+    Tool<i64 |(i64)|> tool = { callback: |i64 value| value + offset };
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 value| {
+        tool.tag;
+        return Ok(state + tool.callback(value));
+    }));
+    must(join(&actor));
+    return 0;
+}

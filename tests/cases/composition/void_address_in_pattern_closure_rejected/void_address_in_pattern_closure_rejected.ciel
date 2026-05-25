@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: address of a void value
+
+enum Signal {
+    Done(void),
+}
+
+i64 main() {
+    Signal signal = Done;
+    switch (signal) {
+        case Done(marker):
+            i64 |()| callback = || {
+                *void ptr = &marker;
+                ptr;
+                return 0;
+            };
+            return callback();
+    }
+}

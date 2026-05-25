@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: forbidden capability `seek`
+
+import ./stream_impl;
+
+i64 only_reader<T: reader_only + !seek>(*T value) {
+    return read(value);
+}
+
+i64 main() {
+    Stream stream = { value: 3 };
+    return only_reader(&stream);
+}

@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: cannot be used dynamically
+
+import /std/lib;
+
+interface<T, U> Result<T, Error> make(U value);
+interface maker_i64 = make<i64>;
+
+enum Slot {
+    Item(maker_i64),
+    Empty,
+}
+
+Result<i64, Error> run(Slot slot, Result<i64, Error> |(maker_i64)| callback) {
+    switch (slot) {
+        case Item(item):
+            return callback(item);
+        case Empty:
+            return Ok(0);
+    }
+}
+
+i64 main() {
+    return 0;
+}

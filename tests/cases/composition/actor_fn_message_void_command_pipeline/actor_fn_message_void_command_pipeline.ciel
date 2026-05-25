@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 16
+
+import /std/lib;
+
+enum Op {
+    Apply(i64 fn(i64), i64),
+    Flush(void),
+}
+
+i64 double(i64 value) {
+    return value * 2;
+}
+
+i64 inc(i64 value) {
+    return value + 1;
+}
+
+i64 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    Actor<Op> actor = must(spawn_actor<i64, Op>(1, |i64 state, Op op| {
+        Channel<i64> local_out = out;
+        switch (op) {
+            case Apply(callback, value):
+                return Ok(state + callback(value));
+            case Flush(marker):
+                marker;
+                channel_send(&local_out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    must(send(&actor, Apply(double, 5)));
+    must(send(&actor, Apply(inc, 4)));
+    must(send(&actor, Flush));
+
+    i64 value = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    must(print("{}", [value]));
+    return 0;
+}

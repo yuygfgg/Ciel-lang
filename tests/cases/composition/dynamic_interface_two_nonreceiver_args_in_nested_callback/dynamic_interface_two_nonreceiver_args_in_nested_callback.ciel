@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 28
+
+interface<T, U, V> V mix(*T value, U left, V right);
+interface mix_i64_i64 = mix<i64, i64>;
+
+enum Work {
+    Call(mix_i64_i64, i64, i64),
+    Empty,
+}
+
+struct Accumulator {
+    i64 base;
+}
+
+impl mix<i64, i64>(*Accumulator acc, i64 left, i64 right) {
+    return acc->base + left + right;
+}
+
+i64 apply(Work work, i64 |(mix_i64_i64, i64, i64)| callback) {
+    switch (work) {
+        case Call(item, left, right):
+            return callback(item, left, right);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    Accumulator acc = { base: 10 };
+    Work work = Call(&acc, 7, 8);
+    i64 bonus = 3;
+    return apply(work, |item, left, right| mix(item, left, right) + bonus);
+}

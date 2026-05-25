@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 13
+
+import /std/lib;
+
+enum Route<T> {
+    Deliver(Result<T, Error>),
+    Flush(void),
+}
+
+Result<void, Error> flush_value<T: Message>(*Channel<T> out, T value) {
+    return channel_send(out, value);
+}
+
+i64 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    Actor<Route<i64>> actor = must(spawn_actor<i64, Route<i64>>(0, |i64 state, Route<i64> msg| {
+        Channel<i64> local_out = out;
+        switch (msg) {
+            case Deliver(result):
+                i64 value = result?;
+                return Ok(state + value);
+            case Flush(marker):
+                marker;
+                flush_value(&local_out, state)?;
+                return Ok(state);
+        }
+    }));
+
+    must(send(&actor, Deliver(Ok(6))));
+    must(send(&actor, Deliver(Ok(7))));
+    must(send(&actor, Flush));
+
+    i64 value = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    must(print("{}", [value]));
+    return 0;
+}

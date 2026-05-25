@@ -4398,13 +4398,17 @@ impl TypeChecker {
                         &capability.args,
                         concrete,
                     ) {
-                        self.diagnostics.push(Diagnostic::new(
-                            span,
-                            format!(
-                                "generic constraint not satisfied: `{}` does not implement `{}`",
-                                concrete, capability.name
-                            ),
-                        ));
+                        let message = format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            concrete, capability.name
+                        );
+                        if self.is_builtin_clone_message_name(&capability.name)
+                            && capability.args.is_empty()
+                        {
+                            self.push_message_requirement_diagnostic(span, message, concrete);
+                        } else {
+                            self.diagnostics.push(Diagnostic::new(span, message));
+                        }
                     }
                 }
             }

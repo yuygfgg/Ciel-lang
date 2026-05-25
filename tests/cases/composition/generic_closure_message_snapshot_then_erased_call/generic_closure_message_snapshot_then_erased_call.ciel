@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 14
+
+import /std/lib;
+
+struct Box<T> {
+    T value;
+    void tag;
+}
+
+enum Slot<T> {
+    Full(Box<T>),
+    Empty,
+}
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 run(Slot<i64 |(i64)|> slot, i64 input) {
+    switch (slot) {
+        case Full(box):
+            box.tag;
+            return box.value(input);
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    i64 base = 2;
+    Box<i64 |(i64)|> box = { value: clone_value(|i64 value| value * 3 + base) };
+    base = 100;
+    Slot<i64 |(i64)|> slot = Full(box);
+    return run(slot, 4);
+}

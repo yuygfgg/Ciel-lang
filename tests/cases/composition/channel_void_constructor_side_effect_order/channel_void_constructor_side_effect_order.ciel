@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 57
+
+import /std/lib;
+
+enum Event {
+    Done(void),
+}
+
+void mark(*Channel<i64> log, i64 value) {
+    must(channel_send(log, value));
+    return;
+}
+
+i64 main() {
+    Channel<i64> log = must(make_channel<i64>());
+    Channel<Event> events = must(make_channel<Event>());
+
+    must(channel_send(&events, Done(mark(&log, 5))));
+    i64 seen = must(channel_recv(&log));
+    Event event = must(channel_recv(&events));
+    must(channel_close(&log));
+    must(channel_close(&events));
+    must(print("{}", [seen]));
+
+    switch (event) {
+        case Done(marker):
+            marker;
+            must(print("{}", [seen + 2]));
+            return 0;
+    }
+}

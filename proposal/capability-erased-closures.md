@@ -1,0 +1,230 @@
+# Capability-Erased Closure Proposal
+
+This proposal extends erased closure signature types so they can retain selected
+interface capabilities after erasure.
+
+The goal is to support homogeneous collections of callable values while keeping
+capability checks precise. A concrete closure literal can be stored behind a
+shared callable signature, and the type can still remember capabilities such as
+`Message` when those capabilities were proven at the erasure point.
+
+## Problem
+
+Every closure literal has a unique concrete closure type. That is useful for
+checking captured fields:
+
+```rust
+T clone_value<T: Message>(T value);
+
+i64 base = 5;
+i64 |(i64)| cloned = clone_value(|i64 value| value + base);
+```
+
+The generic call can first see the concrete closure type, prove `Message` from
+its captures, and then the assignment can erase it to `i64 |(i64)|`.
+
+That does not work once the closure is stored in an erased closure collection:
+
+```rust
+[2]i64 |(i64)| handlers = [
+    |i64 value| value + a,
+    |i64 value| value + b,
+];
+
+clone_value(handlers[0]); // error: i64 |(i64)| does not prove Message
+```
+
+The array element type is only the erased callable signature. The concrete
+capture layout and its derived `Message` implementation are no longer visible.
+
+## Proposed Syntax
+
+Allow a capability expression after a closure parameter list:
+
+```rust
+type Handler = []char |(i64): Message + printable|;
+```
+
+Grammar sketch:
+
+```ebnf
+ClosureSuffix      ::= "|" "(" [ TypeList ] ")" [ ":" CapabilityExpr ] "|"
+CapabilityExpr     ::= CapabilityTerm { ( "+" | "-" ) CapabilityTerm }
+CapabilityTerm     ::= [ "!" ] Identifier [ TypeArgList ]
+```
+
+The expression after `:` uses the same interface algebra surface as generic
+constraints and interface aliases. It supports direct combinations without
+requiring an alias first:
+
+```rust
+type Handler = []char |(i64): Message + printable|;
+type LocalHandler = i64 |(i64): Message + !ThreadLocal|;
+type ReadOnlyCallback = void |([]u8): readable_seekable - seek|;
+```
+
+Aliases remain useful for repeated views:
+
+```rust
+interface message_printable = Message + printable;
+type Handler = []char |(i64): message_printable|;
+```
+
+## Semantics
+
+`T |(A)|` remains the plain erased closure signature. It is callable, but it
+does not prove capabilities such as `Message`.
+
+`T |(A): C|` is an erased closure signature with a retained capability view.
+The value stores the normal closure call entry and environment plus the witness
+data required by the positive capabilities in `C`.
+
+At a concrete-to-erased conversion:
+
+1. The closure must match the callable signature.
+2. Every positive capability in the retained view must be implemented by the
+   concrete closure type.
+3. Every `!capability` term is checked as a hard rejection against the concrete
+   closure type.
+4. `- capability` masks that capability out of the retained view, matching the
+   existing interface-alias meaning.
+
+Example:
+
+```rust
+type Handler = i64 |(i64): Message|;
+
+i64 a = 1;
+i64 b = 10;
+
+[2]Handler handlers = [
+    |i64 value| value + a,
+    |i64 value| value + b,
+];
+
+Handler copy = clone_value(handlers[0]);
+```
+
+The indexed value still has type `Handler`, so it can satisfy `T: Message`.
+
+If a closure does not meet the retained capability expression, conversion fails:
+
+```rust
+type Handler = i64 |(i64): Message|;
+
+i64 local = 1;
+*i64 ptr = &local;
+
+[1]Handler handlers = [
+    |i64 value| value + *ptr, // error: capture contains raw pointer
+];
+```
+
+Plain erased closure values cannot later be upgraded:
+
+```rust
+i64 |(i64)| plain = |i64 value| value + 1;
+Handler handler = plain; // error: Message witness was not retained
+```
+
+The reverse direction can drop retained capabilities:
+
+```rust
+Handler handler = |i64 value| value + 1;
+i64 |(i64)| plain = handler; // ok
+```
+
+## Interface Calls
+
+When a retained capability is used, calls dispatch through the stored witness
+for the erased closure value.
+
+For `Message`, the retained witness is conceptually the concrete closure's
+`clone_message` operation. Cloning a `Handler` clones the closure value and its
+environment through that retained operation.
+
+For ordinary dynamic capabilities, the retained witness can use the same vtable
+shape as dynamic interface values. The receiver is the erased closure value.
+
+## Arrays And Other Aggregates
+
+Capability-erased closure types are normal value types:
+
+```rust
+struct Router {
+    []char |(i64): Message + printable| render;
+}
+
+enum EventHandler {
+    One(i64 |(Event): Message|),
+    Many([]i64 |(Event): Message|),
+}
+```
+
+Arrays, slices, structs, and enums preserve the written element or field type.
+Indexing `[N]Handler` returns `Handler`, not the plain erased callable
+signature.
+
+## Diagnostics
+
+Diagnostics should report the missing retained capability at the conversion
+site:
+
+```text
+closure cannot convert to `i64 |(i64): Message|`: Message derivation blocked at closure capture #0 (`*i64`): contains a raw pointer
+```
+
+For negative requirements:
+
+```text
+closure cannot convert to `i64 |(i64): Message + !ThreadLocal|`: concrete closure type implements forbidden capability `ThreadLocal`
+```
+
+## Compiler Work
+
+1. Extend closure type parsing to accept `: CapabilityExpr` inside the closure
+   suffix before the closing `|`.
+2. Represent erased closure signatures with an optional retained capability
+   expression.
+3. During closure-literal coercion, check callable shape plus retained
+   capability requirements before erasure.
+4. Preserve retained capabilities through aggregate element, field, payload,
+   local, parameter, and return types.
+5. Allow capability-erased closure values to satisfy generic constraints when
+   the retained view proves the requested capability.
+6. Generate retained witness data for positive capabilities. `Message` needs a
+   clone operation for the erased closure environment; other interfaces can use
+   vtable entries.
+7. Allow view narrowing from a richer retained closure type to a weaker one
+   when the target capability expression is proven by the source type.
+8. Keep plain erased closure signatures unchanged and unmessageable by default.
+
+## Standard Library And Runtime Work
+
+No new standard-library API is required for the first slice. The feature reuses
+existing interfaces such as `Message`, `printable`, `ShareHandle`, and
+`ThreadLocal`.
+
+The runtime representation of closure values may grow when retained witnesses
+are present. Plain erased closure values keep the existing compact call-entry
+and environment shape.
+
+## First Slice
+
+The first implementation should target `Message` only:
+
+```rust
+type Handler = i64 |(i64): Message|;
+```
+
+Required behavior:
+
+1. Concrete closure literals with messageable captures convert to `Handler`.
+2. Concrete closure literals with actor-local captures are rejected.
+3. `[N]Handler` indexing returns `Handler`.
+4. `Handler` satisfies `T: Message`.
+5. `Handler` can still be called like a normal closure.
+
+After that is stable, the same representation can be generalized to arbitrary
+positive interface views and negative capability checks.
+

@@ -1,0 +1,37 @@
+// ciel-test: error
+// expect-error: actor handler type
+// expect-error: does not implement `Message`
+// expect-error: dynamic interface value without a concrete message path
+
+import /std/lib;
+
+interface<T> i64 read(*T value);
+interface readable = read;
+
+struct Counter {
+    i64 value;
+}
+
+impl read(*Counter counter) {
+    return counter->value;
+}
+
+struct Envelope {
+    Result<readable, Error> payload;
+}
+
+i64 main() {
+    Counter counter = { value: 9 };
+    readable view = &counter;
+    Envelope envelope = { payload: Ok(view) };
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+        switch (envelope.payload) {
+            case Ok(item):
+                return Ok(state + msg + read(item));
+            case Err(error):
+                return Err(error);
+        }
+    }));
+    must(join(&actor));
+    return 0;
+}

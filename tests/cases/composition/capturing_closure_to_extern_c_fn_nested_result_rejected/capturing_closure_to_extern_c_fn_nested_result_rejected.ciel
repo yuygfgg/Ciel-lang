@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: extern C function pointers
+
+import /std/result;
+
+type CCallback = extern "C" i64 fn(i64);
+
+struct Box<T> {
+    T value;
+}
+
+enum LocalError {
+    Failed,
+}
+
+Result<Box<CCallback>, LocalError> make_box() {
+    i64 offset = 1;
+    Box<CCallback> box = { value: |i64 value| value + offset };
+    return Ok(box);
+}
+
+i64 main() {
+    Box<CCallback> box = must(make_box());
+    return box.value(4);
+}

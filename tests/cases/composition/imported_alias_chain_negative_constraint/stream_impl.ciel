@@ -1,0 +1,18 @@
+// ciel-test: dependency
+
+export interface<T> i64 read(*T value);
+export interface<T> i64 seek(*T value);
+export interface readable_seekable = read + seek;
+export interface reader_only = readable_seekable - seek;
+
+export struct Stream {
+    i64 value;
+}
+
+impl read(*Stream stream) {
+    return stream->value;
+}
+
+impl seek(*Stream stream) {
+    return stream->value + 1;
+}

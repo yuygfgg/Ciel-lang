@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: requires 2 non-receiver type arguments
+
+interface<T, U, V> bool relate(*T value, U left, V right);
+
+enum Bad {
+    Item(relate<i64>),
+    Empty,
+}
+
+i64 main() {
+    return 0;
+}

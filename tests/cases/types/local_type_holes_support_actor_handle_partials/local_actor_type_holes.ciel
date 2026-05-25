@@ -11,6 +11,14 @@ enum Command {
     Add(i64),
 }
 
+impl clone_message(*State value) {
+    return Ok(*value);
+}
+
+impl clone_message(*Command value) {
+    return Ok(*value);
+}
+
 Result<State, Error> handle(State state, Command command) {
     switch (command) {
         case Add(value):

@@ -1047,10 +1047,25 @@ The core mechanism remains explicit projection plus ordinary policy code. A
 future declaration-level convenience may auto-emit those wrapper impls, but it
 does not change the SOP representation.
 
-`Message` derivation is still a compiler bootstrap path. It uses the same
-struct, enum, and concrete-closure shape rules and reports field, variant
-payload, or closure capture paths when derivation fails. A later standard
-library policy can replace that hard-coded path once `/std/meta` owns cloning.
+`Message` uses this mechanism for structural user data. Ordinary structs and
+enums do not automatically implement `Message`; their owned representation can:
+
+```rust
+import /std/meta as meta;
+
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+type PacketMessage = meta::Repr<Packet>;
+```
+
+`/std/message` implements `clone_message` for owned SOP nodes such as `HNil`,
+`HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and `Payload`. If a field or
+payload leaf lacks `Message`, ordinary generic constraint checking rejects the
+representation. Code that wants the original nominal type itself to cross an
+actor or channel boundary must write an explicit `clone_message(*T)` policy.
 
 Structural metaprogramming is not a text macro system. It does not generate
 Ciel source, paste tokens, or run before name resolution. The order is:
@@ -1305,26 +1320,45 @@ does not by itself prove `Message`, because two closures with that signature can
 capture different values. Safe actor APIs therefore accept concrete callable
 values or Ciel ABI `fn` values, not arbitrary erased closure values.
 
-`Message` is implemented per concrete type. Compiler-derived `Message` is
-limited to simple value trees:
+`Message` is implemented per concrete type. `/std/message` provides ordinary
+impls for primitive values, `Error`, `Result<T, E>`, and owned `/std/meta` SOP
+nodes. Standard-library handle modules provide their own impls for actor
+handles, channels, mutexes, atomics, and other synchronized handles.
 
-1. integers, floats, `bool`, and `char`
-2. fixed-size arrays whose elements are `Message`
-3. structs whose fields are all `Message`
-4. enums whose payloads are all `Message`
+Compiler-derived `Message` no longer applies to user structs or enums. Programs
+that want structural behavior use the owned representation at the boundary:
 
-The current compiler treats `clone_message` itself as a built-in operation
-resolved through `/std/message`. `/std/message` supplies the source-visible
-interface declarations; the compiler supplies derived implementations for
-primitive values, fixed arrays, pointer-free structs and enums, Ciel ABI `fn`
-values, actor handles, and concrete closure instances. Raw pointers, slices,
-dynamic interface values, erased closure signatures, extern C function pointers,
-and opaque C handles are not derived `Message`.
+```rust
+import /std/meta as meta;
 
-The standard library provides hand-written implementations for common owned
-containers and library values such as strings, byte buffers, growable arrays,
-`Result<T, E>`, standard error values, and actor or channel handles where
-handle sharing is intended.
+struct Event {
+    i64 value;
+    bool ok;
+}
+
+type EventMessage = meta::Repr<Event>;
+
+Result<void, Error> send_event(*Channel<EventMessage> channel, Event event) {
+    return channel_send(channel, meta::into_repr(event));
+}
+```
+
+An explicit user-defined impl is still the way to make the original nominal
+type itself a message type:
+
+```rust
+impl clone_message(*Event value) {
+    return Ok(*value);
+}
+```
+
+The implementation still treats fixed-size arrays, Ciel ABI `fn` values, and
+concrete closure instances as compiler-known message leaves because the current
+type system cannot express const-generic array policies or callable-kind
+library impls. These leaves are not a structural rule for user-defined named
+data. Raw pointers, slices, dynamic interface values, erased closure signatures,
+extern C function pointers, and opaque C handles do not implement `Message`
+without an explicit policy.
 
 The current actor runtime is backed by pthreads. `spawn_actor` clones the
 initial state and handler, creates a runtime mailbox, and starts a worker thread
@@ -1421,19 +1455,18 @@ value; wrappers implement `ShareHandle` only when operations are internally
 synchronized or immutable.
 
 The compiler recognizes the standard-library concurrency marker interfaces
-`Message`, `ShareHandle`, and `ThreadLocal`. It supports structural derivation
-for `Message` on pointer-free value trees, diagnoses failed `Message`
-derivation for raw pointers, slices without an owning container implementation,
-dynamic interface values without a concrete message path, and C opaque handles
-without an explicit wrapper implementation.
+`Message`, `ShareHandle`, and `ThreadLocal`. It does not synthesize
+`clone_message` implementations for user structs or enums. Structural message
+behavior is proved through the ordinary `/std/message` impls for owned
+`/std/meta` SOP nodes, and diagnostics report the SOP path when a raw pointer,
+slice, dynamic interface value, erased closure signature, C opaque handle, or
+other non-message leaf blocks the policy.
 
 The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
 `clone_message` functions where the standard library writes those calls.
-Compiler-derived message conversions are exposed as synthetic `clone_message`
-implementations for concrete pointer-free values, closure value types, and
-compiler-created closure environment values. Whole-program coherence rejects
-conflicting explicit and derived `Message` implementations.
+Whole-program coherence rejects duplicate concrete `clone_message` impls and
+ambiguous generic marker impls.
 
 Concrete closure value layouts used by the C backend include or reference the
 generated environment clone operation when the concrete closure type implements
@@ -1612,6 +1645,7 @@ print("{} = {}", ["answer", 42 as usize]);
 ```rust
 // /std/message
 import /std/result;
+import /std/meta as meta;
 
 export interface<T> Result<T, Error> clone_message(*T value);
 export interface<T> bool share_handle_marker(*T value);

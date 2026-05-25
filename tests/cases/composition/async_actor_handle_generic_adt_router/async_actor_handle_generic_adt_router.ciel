@@ -14,6 +14,14 @@ enum RouterMsg<M> {
     Done(void),
 }
 
+impl<M: Message> clone_message(*Route<M> value) {
+    return Ok(*value);
+}
+
+impl<M: Message> clone_message(*RouterMsg<M> value) {
+    return Ok(*value);
+}
+
 Result<void, Error> accept_shared<T: ShareHandle>(T value) {
     T local = value;
     if (share_handle_marker(&local)) {

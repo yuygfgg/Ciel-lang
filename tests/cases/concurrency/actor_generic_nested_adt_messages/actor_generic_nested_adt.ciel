@@ -19,6 +19,18 @@ struct Envelope<T> {
     i64 scale;
 }
 
+impl<T: Message> clone_message(*Pair<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Command<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Envelope<T> value) {
+    return Ok(*value);
+}
+
 Envelope<T> wrap<T: Message>(T item, i64 scale) {
     return { item: item, scale: scale };
 }

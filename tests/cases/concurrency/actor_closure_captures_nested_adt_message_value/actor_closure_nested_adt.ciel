@@ -14,6 +14,14 @@ enum Maybe<T> {
     None,
 }
 
+impl<T: Message> clone_message(*Pair<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Maybe<T> value) {
+    return Ok(*value);
+}
+
 i64 main() {
     Pair<i64> pair = { left: 4, right: 5 };
     Maybe<Pair<i64>> captured = Some(pair);

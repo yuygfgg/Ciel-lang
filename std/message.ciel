@@ -1,12 +1,120 @@
 export import /std/error;
 export import /std/result;
+import /std/meta as meta;
 
-// Compiler built-in: this declaration exposes the message conversion interface.
 export interface<T> Result<T, Error> clone_message(*T value);
 export interface Message = clone_message;
 
+impl clone_message(*void value) {
+    return Ok;
+}
+
+impl clone_message(*bool value) {
+    return Ok(*value);
+}
+
+impl clone_message(*char value) {
+    return Ok(*value);
+}
+
+impl clone_message(*i8 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*i16 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*i32 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*i64 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*u8 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*u16 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*u32 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*u64 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*usize value) {
+    return Ok(*value);
+}
+
+impl clone_message(*f32 value) {
+    return Ok(*value);
+}
+
+impl clone_message(*f64 value) {
+    return Ok(*value);
+}
+
 impl clone_message(*Error value) {
     return Ok(*value);
+}
+
+impl<T: Message, E: Message> clone_message(*Result<T, E> value) {
+    switch (*value) {
+        case Ok(ok):
+            T copied = clone_message(&ok)?;
+            return Ok(Ok(copied));
+        case Err(err):
+            E copied = clone_message(&err)?;
+            return Ok(Err(copied));
+    }
+}
+
+impl clone_message(*meta::HNil value) {
+    return Ok({});
+}
+
+impl<T: Message> clone_message(*meta::Field<T> value) {
+    T copied = clone_message(&value->value)?;
+    return Ok({ name: value->name, value: copied });
+}
+
+impl<Head: Message, Tail: Message> clone_message(*meta::HCons<Head, Tail> value) {
+    Head head = clone_message(&value->head)?;
+    Tail tail = clone_message(&value->tail)?;
+    return Ok({ head: head, tail: tail });
+}
+
+impl<T: Message> clone_message(*meta::Payload<T> value) {
+    T copied = clone_message(&value->value)?;
+    return Ok({ index: value->index, value: copied });
+}
+
+impl<P: Message> clone_message(*meta::Variant<P> value) {
+    P payload = clone_message(&value->payload)?;
+    return Ok({ name: value->name, payload: payload });
+}
+
+impl clone_message(*meta::CoNil value) {
+    switch (*value) {
+    }
+}
+
+impl<Head: Message, Tail: Message> clone_message(*meta::Coproduct<Head, Tail> value) {
+    switch (*value) {
+        case meta::This(head):
+            Head copied = clone_message(&head)?;
+            return Ok(meta::This(copied));
+        case meta::Next(tail):
+            Tail copied = clone_message(&tail)?;
+            return Ok(meta::Next(copied));
+    }
 }
 
 // Reserved marker: policy is defined by explicit library/runtime implementations.

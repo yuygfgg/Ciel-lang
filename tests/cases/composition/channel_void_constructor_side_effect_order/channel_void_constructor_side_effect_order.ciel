@@ -8,6 +8,10 @@ enum Event {
     Done(void),
 }
 
+impl clone_message(*Event value) {
+    return Ok(*value);
+}
+
 void mark(*Channel<i64> log, i64 value) {
     must(channel_send(log, value));
     return;

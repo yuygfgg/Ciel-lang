@@ -27,6 +27,18 @@ struct SetLast {
 struct ReadLast {
 }
 
+impl clone_message(*Metrics value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Step<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Envelope<T> value) {
+    return Ok(*value);
+}
+
 impl update_value<i64, i64>(*SetLast updater, i64 value) {
     return Ok({
         value: updater->value,

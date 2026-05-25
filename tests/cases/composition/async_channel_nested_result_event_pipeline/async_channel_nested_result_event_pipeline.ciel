@@ -8,6 +8,10 @@ enum Event<T> {
     Ack(Result<void, Error>),
 }
 
+impl<T: Message> clone_message(*Event<T> value) {
+    return Ok(*value);
+}
+
 Result<void, Error> send_event<T: Message>(*Channel<Event<T>> channel, Event<T> event) {
     channel_send(channel, event)?;
     return Ok;

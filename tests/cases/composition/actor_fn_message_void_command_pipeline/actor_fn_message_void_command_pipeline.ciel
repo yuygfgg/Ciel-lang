@@ -9,6 +9,10 @@ enum Op {
     Flush(void),
 }
 
+impl clone_message(*Op value) {
+    return Ok(*value);
+}
+
 i64 double(i64 value) {
     return value * 2;
 }

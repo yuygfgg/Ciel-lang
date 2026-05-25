@@ -19,6 +19,18 @@ struct State<T> {
     T total;
 }
 
+impl<T: Message> clone_message(*Command<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*Event<T> value) {
+    return Ok(*value);
+}
+
+impl<T: Message> clone_message(*State<T> value) {
+    return Ok(*value);
+}
+
 i64 main() {
     Channel<Result<Event<i64>, Error>> out = must(make_channel<Result<Event<i64>, Error>>());
     State<i64> initial = { out: out, total: 0 };

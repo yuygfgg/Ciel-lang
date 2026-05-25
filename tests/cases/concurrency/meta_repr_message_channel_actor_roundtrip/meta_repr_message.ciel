@@ -1,0 +1,62 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 19
+
+import /std/lib;
+import /std/meta as meta;
+
+struct Packet {
+    i64 value;
+    bool ok;
+}
+
+struct State {
+    Channel<i64> out;
+    i64 total;
+}
+
+enum Command {
+    Add(i64),
+    Flush,
+}
+
+Result<meta::Repr<State>, Error> handle(
+    meta::Repr<State> state_message,
+    meta::Repr<Command> command_message
+) {
+    State state = meta::from_repr<State>(state_message);
+    Command command = meta::from_repr<Command>(command_message);
+    switch (command) {
+        case Add(value):
+            state.total = state.total + value;
+            return Ok(meta::into_repr(state));
+        case Flush:
+            channel_send(&state.out, state.total)?;
+            return Ok(meta::into_repr(state));
+    }
+}
+
+i64 main() {
+    Channel<meta::Repr<Packet>> packets = must(make_channel<meta::Repr<Packet>>());
+    Packet packet = { value: 4, ok: true };
+    must(channel_send(&packets, meta::into_repr(packet)));
+    Packet received = meta::from_repr<Packet>(must(channel_recv(&packets)));
+    must(channel_close(&packets));
+
+    Channel<i64> out = must(make_channel<i64>());
+    State initial = { out: out, total: received.value };
+    Actor<meta::Repr<Command>> actor = must(spawn_actor<meta::Repr<State>, meta::Repr<Command>>(
+        meta::into_repr(initial),
+        handle
+    ));
+
+    must(send(&actor, meta::into_repr(Add(6))));
+    must(send(&actor, meta::into_repr(Add(9))));
+    must(send(&actor, meta::into_repr(Flush)));
+
+    i64 total = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    must(print("{}", [total]));
+    return 0;
+}

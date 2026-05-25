@@ -11,6 +11,10 @@ struct Burst {
     i64 repeats;
 }
 
+impl clone_message(*Burst value) {
+    return Ok(*value);
+}
+
 Result<i64, Error> worker(i64 state, Burst burst) {
     Atomic<i64> counter = burst.counter;
     Atomic<i64> ready = burst.ready;

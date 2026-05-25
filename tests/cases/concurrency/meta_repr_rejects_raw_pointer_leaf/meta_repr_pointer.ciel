@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: raw pointer
+
+import /std/lib;
+import /std/meta as meta;
+
+struct Bad {
+    *i64 ptr;
+}
+
+i64 main() {
+    Channel<meta::Repr<Bad>> channel = must(make_channel<meta::Repr<Bad>>());
+    return 0;
+}

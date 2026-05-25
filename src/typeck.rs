@@ -2235,9 +2235,6 @@ impl TypeChecker {
                 else {
                     continue;
                 };
-                if self.impl_conflicts_with_derived_message(&analysis) {
-                    continue;
-                }
                 self.check_generic_marker_impl_overlap(item.span, &analysis);
                 if analysis.generics.is_empty() {
                     self.instantiate_impl_body(
@@ -2265,33 +2262,6 @@ impl TypeChecker {
                 }
             }
         }
-    }
-
-    fn impl_conflicts_with_derived_message(&mut self, analysis: &ImplAnalysis) -> bool {
-        if !analysis.generics.is_empty()
-            || !self.is_builtin_clone_message_name(&analysis.interface_name)
-            || !interface_non_receiver_args(&analysis.interface_args).is_empty()
-        {
-            return false;
-        }
-        let Some(receiver_ty) = analysis.receiver_ty.clone() else {
-            return false;
-        };
-        if !self.type_implements_builtin_message(&receiver_ty) {
-            return false;
-        }
-        self.diagnostics.push(
-            Diagnostic::new(
-                None,
-                format!(
-                    "conflicting `Message` impl for `{receiver_ty}`: compiler-derived `Message` already applies"
-                ),
-            )
-            .note(
-                "Use an explicit impl only for types that need policy-defined cloning, such as synchronized handles or owned containers.",
-            ),
-        );
-        true
     }
 
     fn check_generic_marker_impl_overlap(
@@ -6542,6 +6512,9 @@ impl TypeChecker {
                 })
             }
             Ty::Named { name, args } => {
+                if let Some(failure) = self.meta_message_derivation_failure(name, args, seen) {
+                    return Some(failure);
+                }
                 let instance_ty = Ty::Named {
                     name: name.clone(),
                     args: args.clone(),
@@ -6615,6 +6588,46 @@ impl TypeChecker {
                     .unwrap_or(MessageDerivationFailureReason::Unknown),
             }),
         }
+    }
+
+    fn meta_message_derivation_failure(
+        &mut self,
+        name: &str,
+        args: &[Ty],
+        seen: &mut HashSet<Ty>,
+    ) -> Option<MessageDerivationFailure> {
+        match name {
+            "Field" => self.message_derivation_child_failure(args.get(0), "meta field value", seen),
+            "Payload" => {
+                self.message_derivation_child_failure(args.get(0), "meta payload value", seen)
+            }
+            "Variant" => {
+                self.message_derivation_child_failure(args.get(0), "meta variant payload", seen)
+            }
+            "HCons" => self
+                .message_derivation_child_failure(args.get(0), "meta head", seen)
+                .or_else(|| self.message_derivation_child_failure(args.get(1), "meta tail", seen)),
+            "Coproduct" => self
+                .message_derivation_child_failure(args.get(0), "meta variant", seen)
+                .or_else(|| self.message_derivation_child_failure(args.get(1), "meta next", seen)),
+            "HNil" | "CoNil" => None,
+            _ => None,
+        }
+    }
+
+    fn message_derivation_child_failure(
+        &mut self,
+        ty: Option<&Ty>,
+        label: &str,
+        seen: &mut HashSet<Ty>,
+    ) -> Option<MessageDerivationFailure> {
+        ty.and_then(|ty| {
+            self.message_derivation_failure_inner(ty, seen)
+                .map(|mut failure| {
+                    failure.path.insert(0, label.to_string());
+                    failure
+                })
+        })
     }
 
     fn direct_message_block_reason(&mut self, ty: &Ty) -> Option<MessageDerivationFailureReason> {
@@ -6756,29 +6769,7 @@ impl TypeChecker {
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .all(|capture| self.type_implements_message_inner(capture, seen)),
-            Ty::Named { name, args } => {
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
-                self.ensure_struct_instance(&instance_ty);
-                self.ensure_enum_instance(&instance_ty);
-                let instance_name = enum_instance_name(name, args);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
-                    return fields
-                        .iter()
-                        .all(|(_, field_ty)| self.type_implements_message_inner(field_ty, seen));
-                }
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
-                    return enm.variants.iter().all(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .all(|payload| self.type_implements_message_inner(payload, seen))
-                    });
-                }
-                false
-            }
+            Ty::Named { .. } => false,
             Ty::Hole(_)
             | Ty::Never
             | Ty::Pointer { .. }

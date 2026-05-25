@@ -1,5 +1,5 @@
-// ciel-test: run
-// expect-exit: 4
+// ciel-test: error
+// expect-error: `Pair` does not implement `Message`
 
 import /std/lib;
 
@@ -10,9 +10,6 @@ struct Pair {
 
 i64 main() {
     Pair pair = { value: 4, enabled: true };
-    Pair cloned = must(clone_message(&pair));
-    if (cloned.enabled) {
-        return cloned.value;
-    }
-    return 1;
+    clone_message(&pair);
+    return 0;
 }

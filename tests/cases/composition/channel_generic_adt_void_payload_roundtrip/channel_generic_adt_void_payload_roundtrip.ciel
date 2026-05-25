@@ -9,6 +9,10 @@ enum Event<T> {
     Flush(void),
 }
 
+impl<T: Message> clone_message(*Event<T> value) {
+    return Ok(*value);
+}
+
 void send_event<T: Message>(*Channel<Event<T>> channel, Event<T> event) {
     must(channel_send(channel, event));
 }

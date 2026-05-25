@@ -9,6 +9,10 @@ struct Forward {
     i64 value;
 }
 
+impl clone_message(*Forward value) {
+    return Ok(*value);
+}
+
 Result<i64, Error> sink(i64 state, i64 msg) {
     print_value(msg)?;
     return Ok(state + msg);

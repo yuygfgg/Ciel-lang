@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: compiler-derived `Message` already applies
+// expect-error: conflicting impl of `clone_message`
 
 import /std/message;
 

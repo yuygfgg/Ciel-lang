@@ -249,13 +249,16 @@ currently inconsistent with the design.
       `VariantRef`, `Variant`, `PayloadRef`, and `Payload`.
 - [x] Extend structural representation to concrete closure capture
       environments once the struct path is stable.
-- [x] Keep the remaining hard-coded structural `Message` derivation path
-      documented as a bootstrap fallback until `/std/meta` policies own cloning.
+- [x] Move structural `Message` cloning for user structs and enums to ordinary
+      `/std/message` impls over owned `/std/meta` SOP nodes.
 - [x] Add diagnostics that report the original source type plus field, variant,
       or capture path when generic structural recursion fails.
 - [x] Decide whether a future declaration-level convenience should auto-emit
       wrapper impls; the core mechanism remains explicit projection plus
       ordinary policy code.
+- [ ] Move fixed-size array, Ciel ABI `fn`, and concrete-closure message leaves
+      out of compiler-known policy once the type system can express those
+      library impls.
 
 ## P1: Closures
 
@@ -307,30 +310,28 @@ currently inconsistent with the design.
       wrappers should implement `share_handle_marker`, and the compiler should
       not structurally derive it from fields.
 - [x] Treat `ThreadLocal` as an actor-local policy marker. A type with an
-      explicit or compiler-known `ThreadLocal` implementation must not receive
-      structural `Message` derivation unless it also provides an explicit,
-      policy-defined `clone_message` implementation.
+      explicit or compiler-known `ThreadLocal` implementation must not satisfy
+      `Message` unless it also provides an explicit, policy-defined
+      `clone_message` implementation.
 - [x] Mark raw pointers, actor-local slices, extern C function pointers, dynamic
       interface values without a concrete message path, and opaque C handles as
       non-derived-message/thread-local cases for constraints.
 - [x] Add richer diagnostics for raw pointers, actor-local slices, extern C
       function pointers, dynamic interface values without a concrete message
       path, and opaque C handles when they block `Message` derivation.
-- [x] Implement optional structural `Message` derivation for pointer-free value
-      trees: primitives, fixed-size arrays, structs, and enums whose contents are
-      all `Message`.
-- [x] Diagnose failed `Message` derivation for raw pointers, actor-local slices
-      without an owning container implementation, dynamic interface values
-      without a concrete message path, and C opaque handles without explicit
-      wrapper policy.
-- [x] Expose derived `Message` implementations as ordinary `clone_message`
-      targets so existing generic constraint checking handles `T: Message`
-      without actor-specific type-checking exceptions.
-- [x] Add whole-program coherence checks that prevent conflicting `Message`
-      implementations, including conflicts between explicit impls and derived
-      implementations.
+- [x] Remove compiler-derived structural `Message` for user structs and enums;
+      require either an explicit `clone_message(*T)` impl or a boundary type
+      such as `meta::Repr<T>`.
+- [x] Diagnose failed `meta::Repr<T>` `Message` policies for raw pointer,
+      actor-local slice, dynamic-interface, erased-closure, and opaque-handle
+      leaves.
+- [x] Use ordinary `/std/message` `clone_message` impls for owned `/std/meta`
+      SOP nodes so existing generic constraint checking handles
+      `meta::Repr<T>: Message` without actor-specific exceptions.
+- [x] Add whole-program coherence checks that prevent duplicate concrete
+      `clone_message` implementations.
 - [x] Extend coherence checks to reject conflicting marker policies such as
-      explicit `ThreadLocal` plus derived `Message`, duplicate concrete
+      explicit `ThreadLocal` plus explicit `Message`, duplicate concrete
       `clone_message` implementations, and ambiguous generic marker impls.
 - [x] Enforce actor boundaries through `Message` conversion for `spawn_actor`
       state/handler values and `send` payloads.
@@ -367,10 +368,10 @@ currently inconsistent with the design.
 - [x] Ensure `Result` recognition for `?` is tied to `/std/result`, not any enum
       named `Result`.
 - [x] Add `/std/message` with `clone_message`, `Message`, `ShareHandle`, and
-      `ThreadLocal` declarations. Primitive, fixed-array, struct, enum,
-      function-pointer, actor-handle, and concrete-closure `Message` support is
-      compiler-derived; owned containers and standard-error policies remain
-      pending.
+      `ThreadLocal` declarations. Primitive values, `Error`, `Result<T, E>`,
+      and owned `/std/meta` SOP nodes are ordinary library impls; actor,
+      channel, mutex, and atomic handles define explicit handle policies in
+      their own modules.
 - [x] Add `/std/actor` with `Actor<M>`,
       `spawn_actor<S: Message, M: Message, H: Message>` where `H` is callable as
       `Result<S, Error>(S, M)`, `send<T: Message>` that calls `clone_message`
@@ -406,7 +407,7 @@ currently inconsistent with the design.
       any `Message` or `ShareHandle` implementation must explicitly duplicate,
       reconnect, or prove synchronized sharing.
 - [x] Mark `/std/io::Fd` as `ThreadLocal` so file descriptors no longer receive
-      structural `Message` derivation by accident.
+      accidental `Message` policy.
 
 ## P1: C Interop And ABI
 
@@ -489,11 +490,12 @@ currently inconsistent with the design.
 - [ ] Closure rejection tests for unassigned captures, captured binding
       mutation, captured closure conversion to `fn`, closure equality, and
       closure types in C ABI declarations.
-- [ ] `Message` derivation and rejection tests for pointer-free values, raw
-      pointers, slices, dynamic interface values, and C opaque handles.
-- [ ] `clone_message` tests for derived values, explicit wrapper policies,
-      conversion error propagation, and rejection of non-`Message` values in
-      generic constraints.
+- [x] `Message` tests showing ordinary pointer-free structs no longer derive
+      automatically, while `meta::Repr<T>` is accepted when all leaves implement
+      `Message`.
+- [x] `meta::Repr<T>` rejection tests for raw pointer leaves.
+- [ ] `clone_message` tests for explicit wrapper policies, conversion error
+      propagation, and rejection of non-`Message` values in generic constraints.
 - [ ] Closure `clone_message` tests covering captured primitive values, captured
       owned containers, captured pointers that return `Err`, and actor-local
       slices that return `Err`.

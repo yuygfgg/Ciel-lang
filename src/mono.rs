@@ -3,17 +3,27 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     diagnostic::{DiagResult, Diagnostic},
     hir::{
-        ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, PrimitiveType, Type,
-        TypeAliasTarget, TypeKind, TypeNameKind, VariantDecl,
+        ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, Type, TypeAliasTarget, TypeKind,
+        TypeNameKind, VariantDecl,
+    },
+    interfaces::{
+        checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
+        impl_matches_interface_receiver, retained_closure_interface_signature,
     },
     resolve::{DefId, DefKind, ResolvedProgram},
     thir::{
-        CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterface,
-        CheckedInterfaceRef, CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr,
-        TExprKind, TForInit, TPattern, TStmt, TStmtKind,
+        CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterfaceRef,
+        CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr, TExprKind, TForInit,
+        TPattern, TStmt, TStmtKind,
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
-    types::{ConstraintBounds, ConstraintRef, Ty},
+    types::{
+        ConstraintBounds, ConstraintRef, Ty, aggregate_instance_name, contains_generic,
+        is_clone_message_capability, mangle_ty_fragment, meta_product_ty, meta_repr_marker_name,
+        meta_sum_ty, retained_closure_capabilities, retained_closure_has_capability,
+        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
+        ty_from_primitive, type_complexity,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -679,19 +689,13 @@ impl MonoContext {
         let Ty::DynamicInterface { name, args } = dyn_ty else {
             return;
         };
-        let receiver_ty = receiver_ty_from_value_ty(concrete_ty);
         for interface in self.dynamic_view_interfaces(name, args) {
             let function_def = self
                 .checked
                 .impls
                 .iter()
                 .find(|implementation| {
-                    implementation.interface_name == interface.name
-                        && implementation
-                            .receiver_ty
-                            .as_ref()
-                            .is_some_and(|receiver| receiver == &receiver_ty)
-                        && implementation.interface_args.get(1..) == Some(interface.args.as_slice())
+                    impl_matches_dynamic_interface(implementation, &interface, concrete_ty)
                 })
                 .map(|implementation| implementation.function_def);
             if let Some(function_def) = function_def {
@@ -701,23 +705,12 @@ impl MonoContext {
     }
 
     fn dynamic_view_interfaces(&self, name: &str, args: &[Ty]) -> Vec<CheckedInterfaceRef> {
-        if self
-            .checked
-            .interfaces
-            .iter()
-            .any(|interface| interface.name == name)
-        {
-            return vec![CheckedInterfaceRef {
-                name: name.to_string(),
-                args: args.to_vec(),
-            }];
-        }
-        self.checked
-            .interface_aliases
-            .iter()
-            .find(|alias| alias.name == name)
-            .map(|alias| alias.positive.clone())
-            .unwrap_or_default()
+        checked_interface_view(
+            &self.checked.interfaces,
+            &self.checked.interface_aliases,
+            name,
+            args,
+        )
     }
 
     fn mark_message_clone_impls(&mut self, ty: &Ty) {
@@ -738,13 +731,12 @@ impl MonoContext {
                 .impls
                 .iter()
                 .find(|implementation| {
-                    implementation.interface_name == capability.name
-                        && implementation
-                            .receiver_ty
-                            .as_ref()
-                            .is_some_and(|receiver| receiver == source_ty.unqualified())
-                        && implementation.interface_args.get(1..)
-                            == Some(capability.args.as_slice())
+                    impl_matches_interface_receiver(
+                        implementation,
+                        &capability.name,
+                        &capability.args,
+                        source_ty.unqualified(),
+                    )
                 })
                 .map(|implementation| implementation.function_def)
             {
@@ -1144,7 +1136,7 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::BuiltinCloneMessage { value, message_ty } => {
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
-                self.collect_ty(&message_result_ty(message_ty.clone()));
+                self.collect_ty(&std_message_result_ty(message_ty.clone()));
                 self.collect_message_clone_result_tys(message_ty);
             }
             TExprKind::MetaAsRefRepr { value, source_ty }
@@ -1168,8 +1160,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(state_ty);
                 self.collect_ty(message_ty);
                 self.collect_ty(handler_ty);
-                self.collect_ty(&message_result_ty(state_ty.clone()));
-                self.collect_ty(&message_result_ty(handler_ty.clone()));
+                self.collect_ty(&std_message_result_ty(state_ty.clone()));
+                self.collect_ty(&std_message_result_ty(handler_ty.clone()));
                 self.collect_message_clone_result_tys(state_ty);
                 self.collect_message_clone_result_tys(handler_ty);
             }
@@ -1181,7 +1173,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(actor);
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
-                self.collect_ty(&message_result_ty(message_ty.clone()));
+                self.collect_ty(&std_message_result_ty(message_ty.clone()));
                 self.collect_message_clone_result_tys(message_ty);
             }
             TExprKind::ActorStop { actor, message_ty }
@@ -1229,7 +1221,7 @@ impl<'a> AggregateCollector<'a> {
         if !seen.insert(ty.clone()) {
             return;
         }
-        self.collect_ty(&message_result_ty(ty.clone()));
+        self.collect_ty(&std_message_result_ty(ty.clone()));
         match ty {
             Ty::Const(inner) => self.collect_message_clone_result_tys_inner(inner, seen),
             Ty::Array { elem, .. } => self.collect_message_clone_result_tys_inner(elem, seen),
@@ -1366,22 +1358,14 @@ impl<'a> AggregateCollector<'a> {
         for arg in &capability.args {
             self.collect_ty(arg);
         }
-        let Some(interface) = self
-            .checked
-            .interfaces
-            .iter()
-            .find(|interface| interface.name == capability.name)
+        let Some(signature) =
+            retained_closure_interface_signature(&self.checked.interfaces, receiver_ty, capability)
         else {
             return;
         };
-        let subst = retained_closure_interface_subst(interface, receiver_ty, &capability.args);
-        let ret_ty = interface.ret.clone();
-        let params = interface.params.iter().skip(1).cloned().collect::<Vec<_>>();
-        let ret = substitute_ty(&ret_ty, &subst);
-        self.collect_ty(&ret);
-        for param in params {
-            let ty = substitute_ty(&param, &subst);
-            self.collect_ty(&ty);
+        self.collect_ty(&signature.ret);
+        for param in signature.params.iter().skip(1) {
+            self.collect_ty(param);
         }
     }
 
@@ -1608,7 +1592,10 @@ impl<'a> AggregateCollector<'a> {
                             .cloned()
                     })
                 {
-                    return meta_sum_ty(&enm.variants, borrowed);
+                    return meta_sum_ty(
+                        enm.variants.iter().map(|variant| variant.payload.clone()),
+                        borrowed,
+                    );
                 }
                 self.push_meta_unsupported_repr(span, source_ty);
                 Ty::Unknown
@@ -1830,7 +1817,8 @@ impl<'a> AggregateCollector<'a> {
                 .iter()
                 .map(|arg| self.lower_ast_type(arg, subst))
                 .collect::<Vec<_>>();
-            let view = self.interface_view(
+            let view = constraint_interface_view(
+                &self.checked.interface_aliases,
                 &name_ref_canonical(&self.checked.resolved, &term.name),
                 &args,
             );
@@ -1854,29 +1842,6 @@ impl<'a> AggregateCollector<'a> {
         }
         bounds
     }
-
-    fn interface_view(&self, name: &str, args: &[Ty]) -> Vec<ConstraintRef> {
-        self.checked
-            .interface_aliases
-            .iter()
-            .find(|alias| alias.name == name)
-            .map(|alias| {
-                alias
-                    .positive
-                    .iter()
-                    .map(|entry| ConstraintRef {
-                        name: entry.name.clone(),
-                        args: entry.args.clone(),
-                    })
-                    .collect()
-            })
-            .unwrap_or_else(|| {
-                vec![ConstraintRef {
-                    name: name.to_string(),
-                    args: args.to_vec(),
-                }]
-            })
-    }
 }
 
 fn generic_instance_name(name: &str, args: &[Ty]) -> String {
@@ -1894,315 +1859,10 @@ fn generic_instance_name(name: &str, args: &[Ty]) -> String {
     }
 }
 
-fn aggregate_instance_name(name: &str, args: &[Ty]) -> String {
-    if args.is_empty() {
-        name.to_string()
-    } else {
-        format!(
-            "{}_{}",
-            name,
-            args.iter()
-                .map(mangle_ty_fragment)
-                .collect::<Vec<_>>()
-                .join("_")
-        )
-    }
-}
-
 fn enum_c_name_from_ty(ty: &Ty) -> Option<String> {
     match ty.unqualified() {
         Ty::Named { name, args } => Some(aggregate_instance_name(name, args)),
         _ => None,
-    }
-}
-
-fn message_result_ty(ok_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Result".to_string(),
-        args: vec![
-            ok_ty,
-            Ty::Named {
-                name: "Error".to_string(),
-                args: Vec::new(),
-            },
-        ],
-    }
-}
-
-fn meta_product_ty<I>(fields: I, head_name: &str) -> Ty
-where
-    I: IntoIterator<Item = Ty>,
-    I::IntoIter: DoubleEndedIterator,
-{
-    fields
-        .into_iter()
-        .rev()
-        .fold(meta_named("HNil", Vec::new()), |tail, field_ty| {
-            let head = meta_named(head_name, vec![field_ty]);
-            meta_named("HCons", vec![head, tail])
-        })
-}
-
-fn meta_sum_ty(variants: &[CheckedVariant], borrowed: bool) -> Ty {
-    variants
-        .iter()
-        .rev()
-        .fold(meta_named("CoNil", Vec::new()), |tail, variant| {
-            let payload_head = if borrowed { "PayloadRef" } else { "Payload" };
-            let payload = meta_product_ty(variant.payload.iter().cloned(), payload_head);
-            let variant_head = if borrowed { "VariantRef" } else { "Variant" };
-            let head = meta_named(variant_head, vec![payload]);
-            meta_named("Coproduct", vec![head, tail])
-        })
-}
-
-fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
-    Ty::Named {
-        name: name.to_string(),
-        args,
-    }
-}
-
-const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
-const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
-
-fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
-    Ty::Named {
-        name: if borrowed {
-            STD_META_REF_REPR_MARKER
-        } else {
-            STD_META_REPR_MARKER
-        }
-        .to_string(),
-        args: vec![source_ty],
-    }
-}
-
-fn std_meta_repr_source_name(name: &str) -> Option<bool> {
-    match name {
-        "RefRepr" => Some(true),
-        "Repr" => Some(false),
-        _ => None,
-    }
-}
-
-fn meta_repr_marker_name(name: &str) -> Option<bool> {
-    match name {
-        STD_META_REF_REPR_MARKER => Some(true),
-        STD_META_REPR_MARKER => Some(false),
-        _ => None,
-    }
-}
-
-fn contains_generic(ty: &Ty) -> bool {
-    match ty {
-        Ty::Const(inner) => contains_generic(inner),
-        Ty::Generic(_) => true,
-        Ty::Pointer { inner, .. } => contains_generic(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_generic(elem),
-        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
-            args.iter().any(contains_generic)
-        }
-        Ty::Function { ret, params, .. } => {
-            contains_generic(ret) || params.iter().any(contains_generic)
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            contains_generic(ret)
-                || params.iter().any(contains_generic)
-                || constraint_bounds_contains_generic(constraints)
-        }
-        Ty::ClosureInstance {
-            ret,
-            params,
-            captures,
-            ..
-        } => {
-            contains_generic(ret)
-                || params.iter().any(contains_generic)
-                || captures.iter().any(contains_generic)
-        }
-        _ => false,
-    }
-}
-
-fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
-    bounds
-        .positive
-        .iter()
-        .chain(bounds.negative.iter())
-        .any(|entry| entry.args.iter().any(contains_generic))
-}
-
-fn constraint_bounds_complexity(bounds: &ConstraintBounds) -> usize {
-    bounds
-        .positive
-        .iter()
-        .chain(bounds.negative.iter())
-        .map(|entry| 1 + entry.args.iter().map(type_complexity).sum::<usize>())
-        .sum()
-}
-
-fn constraint_bounds_contains_ty(bounds: &ConstraintBounds, needle: &Ty) -> bool {
-    bounds
-        .positive
-        .iter()
-        .chain(bounds.negative.iter())
-        .any(|entry| entry.args.iter().any(|arg| ty_contains(arg, needle)))
-}
-
-fn retained_closure_capabilities(ty: &Ty) -> Vec<ConstraintRef> {
-    match ty.unqualified() {
-        Ty::Closure { constraints, .. } => constraints.positive.clone(),
-        _ => Vec::new(),
-    }
-}
-
-fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> bool {
-    let Ty::Closure { constraints, .. } = ty.unqualified() else {
-        return false;
-    };
-    constraints.positive.iter().any(|entry| entry == capability)
-}
-
-fn retained_closure_interface_subst(
-    interface: &CheckedInterface,
-    receiver_ty: &Ty,
-    args: &[Ty],
-) -> HashMap<String, Ty> {
-    let mut subst = HashMap::new();
-    if let Some(receiver) = interface.generics.first() {
-        subst.insert(receiver.clone(), receiver_ty.clone());
-    }
-    for (generic, arg) in interface.generics.iter().skip(1).zip(args.iter()) {
-        subst.insert(generic.clone(), arg.clone());
-    }
-    subst
-}
-
-fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
-    match ty {
-        Ty::Hole(id) => Ty::Hole(*id),
-        Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
-        Ty::Generic(name) => subst
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| Ty::Generic(name.clone())),
-        Ty::Pointer { nullable, inner } => Ty::Pointer {
-            nullable: *nullable,
-            inner: Box::new(substitute_ty(inner, subst)),
-        },
-        Ty::Array { len, elem } => Ty::Array {
-            len: *len,
-            elem: Box::new(substitute_ty(elem, subst)),
-        },
-        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, subst))),
-        Ty::Named { name, args } => Ty::Named {
-            name: name.clone(),
-            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
-        },
-        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
-            name: name.clone(),
-            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
-        },
-        Ty::Function { abi, ret, params } => Ty::Function {
-            abi: abi.clone(),
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-        },
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => Ty::Closure {
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-            constraints: substitute_constraint_bounds(constraints, subst),
-        },
-        Ty::ClosureInstance {
-            id,
-            ret,
-            params,
-            captures,
-        } => Ty::ClosureInstance {
-            id: *id,
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-            captures: captures
-                .iter()
-                .map(|capture| substitute_ty(capture, subst))
-                .collect(),
-        },
-        Ty::Never
-        | Ty::Void
-        | Ty::Bool
-        | Ty::Char
-        | Ty::I8
-        | Ty::I16
-        | Ty::I32
-        | Ty::I64
-        | Ty::U8
-        | Ty::U16
-        | Ty::U32
-        | Ty::U64
-        | Ty::Usize
-        | Ty::F32
-        | Ty::F64
-        | Ty::CSpelling { .. }
-        | Ty::Unknown => ty.clone(),
-    }
-}
-
-fn substitute_constraint_bounds(
-    bounds: &ConstraintBounds,
-    subst: &HashMap<String, Ty>,
-) -> ConstraintBounds {
-    ConstraintBounds {
-        positive: bounds
-            .positive
-            .iter()
-            .map(|entry| substitute_constraint_ref(entry, subst))
-            .collect(),
-        negative: bounds
-            .negative
-            .iter()
-            .map(|entry| substitute_constraint_ref(entry, subst))
-            .collect(),
-    }
-}
-
-fn substitute_constraint_ref(entry: &ConstraintRef, subst: &HashMap<String, Ty>) -> ConstraintRef {
-    ConstraintRef {
-        name: entry.name.clone(),
-        args: entry
-            .args
-            .iter()
-            .map(|arg| substitute_ty(arg, subst))
-            .collect(),
-    }
-}
-
-fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
-    capability.name == "clone_message" && capability.args.is_empty()
-}
-
-fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
-    match ty {
-        Ty::Const(inner) => receiver_ty_from_value_ty(inner),
-        Ty::Pointer { inner, .. } => (**inner).clone(),
-        other => other.clone(),
     }
 }
 
@@ -2215,332 +1875,9 @@ fn is_strict_generic_growth(previous: &[Ty], next: &[Ty]) -> bool {
             .any(|old| next.iter().any(|new| ty_contains(new, old)))
 }
 
-fn type_complexity(ty: &Ty) -> usize {
-    match ty {
-        Ty::Const(inner) => type_complexity(inner),
-        Ty::Pointer { inner, .. } => 1 + type_complexity(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => 1 + type_complexity(elem),
-        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
-            1 + args.iter().map(type_complexity).sum::<usize>()
-        }
-        Ty::Function { ret, params, .. } => {
-            1 + type_complexity(ret) + params.iter().map(type_complexity).sum::<usize>()
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            1 + type_complexity(ret)
-                + params.iter().map(type_complexity).sum::<usize>()
-                + constraint_bounds_complexity(constraints)
-        }
-        Ty::ClosureInstance {
-            ret,
-            params,
-            captures,
-            ..
-        } => {
-            1 + type_complexity(ret)
-                + params.iter().map(type_complexity).sum::<usize>()
-                + captures.iter().map(type_complexity).sum::<usize>()
-        }
-        Ty::Hole(_)
-        | Ty::Never
-        | Ty::Void
-        | Ty::Bool
-        | Ty::Char
-        | Ty::I8
-        | Ty::I16
-        | Ty::I32
-        | Ty::I64
-        | Ty::U8
-        | Ty::U16
-        | Ty::U32
-        | Ty::U64
-        | Ty::Usize
-        | Ty::F32
-        | Ty::F64
-        | Ty::CSpelling { .. }
-        | Ty::Generic(_)
-        | Ty::Unknown => 0,
-    }
-}
-
-fn ty_contains(container: &Ty, needle: &Ty) -> bool {
-    if container == needle {
-        return true;
-    }
-    match container {
-        Ty::Const(inner) => ty_contains(inner, needle),
-        Ty::Pointer { inner, .. } => ty_contains(inner, needle),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => ty_contains(elem, needle),
-        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
-            args.iter().any(|arg| ty_contains(arg, needle))
-        }
-        Ty::Function { ret, params, .. } => {
-            ty_contains(ret, needle) || params.iter().any(|param| ty_contains(param, needle))
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            ty_contains(ret, needle)
-                || params.iter().any(|param| ty_contains(param, needle))
-                || constraint_bounds_contains_ty(constraints, needle)
-        }
-        Ty::ClosureInstance {
-            ret,
-            params,
-            captures,
-            ..
-        } => {
-            ty_contains(ret, needle)
-                || params.iter().any(|param| ty_contains(param, needle))
-                || captures.iter().any(|capture| ty_contains(capture, needle))
-        }
-        Ty::Hole(_)
-        | Ty::Never
-        | Ty::Void
-        | Ty::Bool
-        | Ty::Char
-        | Ty::I8
-        | Ty::I16
-        | Ty::I32
-        | Ty::I64
-        | Ty::U8
-        | Ty::U16
-        | Ty::U32
-        | Ty::U64
-        | Ty::Usize
-        | Ty::F32
-        | Ty::F64
-        | Ty::CSpelling { .. }
-        | Ty::Generic(_)
-        | Ty::Unknown => false,
-    }
-}
-
-fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
-    match primitive {
-        PrimitiveType::Bool => Ty::Bool,
-        PrimitiveType::Char => Ty::Char,
-        PrimitiveType::I8 => Ty::I8,
-        PrimitiveType::I16 => Ty::I16,
-        PrimitiveType::I32 => Ty::I32,
-        PrimitiveType::I64 => Ty::I64,
-        PrimitiveType::U8 => Ty::U8,
-        PrimitiveType::U16 => Ty::U16,
-        PrimitiveType::U32 => Ty::U32,
-        PrimitiveType::U64 => Ty::U64,
-        PrimitiveType::Usize => Ty::Usize,
-        PrimitiveType::F32 => Ty::F32,
-        PrimitiveType::F64 => Ty::F64,
-    }
-}
-
 fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
     match name.kind {
         NameRefKind::Def(def_id) => resolved.def(def_id).name.clone(),
         _ => name.display.clone(),
-    }
-}
-
-fn mangle_ty_fragment(ty: &Ty) -> String {
-    match ty {
-        Ty::Hole(_) => "hole".to_string(),
-        Ty::Const(inner) => format!("const_{}", mangle_ty_fragment(inner)),
-        Ty::Never => "never".to_string(),
-        Ty::Void => "void".to_string(),
-        Ty::Bool => "bool".to_string(),
-        Ty::Char => "char".to_string(),
-        Ty::I8 => "i8".to_string(),
-        Ty::I16 => "i16".to_string(),
-        Ty::I32 => "i32".to_string(),
-        Ty::I64 => "i64".to_string(),
-        Ty::U8 => "u8".to_string(),
-        Ty::U16 => "u16".to_string(),
-        Ty::U32 => "u32".to_string(),
-        Ty::U64 => "u64".to_string(),
-        Ty::Usize => "usize".to_string(),
-        Ty::F32 => "f32".to_string(),
-        Ty::F64 => "f64".to_string(),
-        Ty::CSpelling { abi, spelling } => {
-            format!(
-                "c_{}_{}",
-                mangle_abi_fragment(Some(abi)),
-                sanitize_mangle_fragment(spelling)
-            )
-        }
-        Ty::Pointer { inner, nullable } => {
-            if *nullable {
-                format!("qptr_{}", mangle_ty_fragment(inner))
-            } else {
-                format!("ptr_{}", mangle_ty_fragment(inner))
-            }
-        }
-        Ty::Array { len, elem } => format!("arr{len}_{}", mangle_ty_fragment(elem)),
-        Ty::Slice(elem) => format!("slice_{}", mangle_ty_fragment(elem)),
-        Ty::Named { name, args } => aggregate_instance_name(name, args),
-        Ty::Generic(name) => format!("gen_{name}"),
-        Ty::DynamicInterface { name, args } => {
-            if args.is_empty() {
-                format!("dyn_{name}")
-            } else {
-                format!(
-                    "dyn_{}_{}",
-                    name,
-                    args.iter()
-                        .map(mangle_ty_fragment)
-                        .collect::<Vec<_>>()
-                        .join("_")
-                )
-            }
-        }
-        Ty::Function { abi, ret, params } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params
-                    .iter()
-                    .map(mangle_ty_fragment)
-                    .collect::<Vec<_>>()
-                    .join("_")
-            };
-            format!(
-                "fn_{}_ret_{}_args_{}",
-                mangle_abi_fragment(abi.as_deref()),
-                mangle_ty_fragment(ret),
-                params
-            )
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params
-                    .iter()
-                    .map(mangle_ty_fragment)
-                    .collect::<Vec<_>>()
-                    .join("_")
-            };
-            format!(
-                "closure_ret_{}_args_{}_caps_{}",
-                mangle_ty_fragment(ret),
-                params,
-                mangle_constraint_bounds(constraints)
-            )
-        }
-        Ty::ClosureInstance {
-            id,
-            ret,
-            params,
-            captures,
-        } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params
-                    .iter()
-                    .map(mangle_ty_fragment)
-                    .collect::<Vec<_>>()
-                    .join("_")
-            };
-            let captures = if captures.is_empty() {
-                "empty".to_string()
-            } else {
-                captures
-                    .iter()
-                    .map(mangle_ty_fragment)
-                    .collect::<Vec<_>>()
-                    .join("_")
-            };
-            format!(
-                "closure_inst{id}_ret_{}_args_{}_caps_{}",
-                mangle_ty_fragment(ret),
-                params,
-                captures
-            )
-        }
-        Ty::Unknown => "unknown".to_string(),
-    }
-}
-
-fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
-    if bounds.is_empty() {
-        return "none".to_string();
-    }
-    let mut parts = bounds
-        .positive
-        .iter()
-        .map(|entry| format!("pos_{}", mangle_constraint_ref(entry)))
-        .collect::<Vec<_>>();
-    parts.extend(
-        bounds
-            .negative
-            .iter()
-            .map(|entry| format!("neg_{}", mangle_constraint_ref(entry))),
-    );
-    parts.join("_")
-}
-
-fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
-    if entry.args.is_empty() {
-        sanitize_mangle_fragment(&entry.name)
-    } else {
-        format!(
-            "{}_{}",
-            sanitize_mangle_fragment(&entry.name),
-            entry
-                .args
-                .iter()
-                .map(mangle_ty_fragment)
-                .collect::<Vec<_>>()
-                .join("_")
-        )
-    }
-}
-
-fn mangle_abi_fragment(abi: Option<&str>) -> String {
-    let Some(abi) = abi else {
-        return "ciel".to_string();
-    };
-    let out = abi
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if out.is_empty() {
-        "abi".to_string()
-    } else {
-        out
-    }
-}
-
-fn sanitize_mangle_fragment(value: &str) -> String {
-    let out = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if out.is_empty() {
-        "type".to_string()
-    } else {
-        out
     }
 }

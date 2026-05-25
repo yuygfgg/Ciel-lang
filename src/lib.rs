@@ -4,6 +4,7 @@ pub mod diagnostic;
 pub mod driver;
 pub mod escape;
 pub mod hir;
+pub mod interfaces;
 pub mod lexer;
 pub mod mono;
 pub mod parser;

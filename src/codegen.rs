@@ -5,15 +5,22 @@ use crate::{
     diagnostic::{DiagResult, Diagnostic},
     escape::EscapeProgram,
     hir::LocalId,
+    interfaces::{
+        checked_interface_view, dynamic_interface_signature, impl_matches_dynamic_interface,
+        impl_matches_interface_receiver, retained_closure_interface_signature,
+    },
     mono::MonoProgram,
     resolve::DefId,
     source::SourceMap,
     thir::{
-        CheckedFunction, CheckedImpl, CheckedInterface, CheckedInterfaceRef, CheckedVariant,
-        TBlock, TClosureBody, TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt,
-        TStmtKind,
+        CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock, TClosureBody,
+        TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind,
     },
-    types::{ConstraintBounds, ConstraintRef, Ty},
+    types::{
+        ConstraintBounds, ConstraintRef, Ty, is_clone_message_capability, mangle_constraint_ref,
+        mangle_ty_fragment, meta_named, meta_sum_ty, retained_closure_capabilities,
+        retained_closure_has_capability, std_error_ty, std_result_ty,
+    },
 };
 
 const C_RUNTIME_PRELUDE: &str = include_str!("runtime_prelude.c");
@@ -152,12 +159,6 @@ struct MetaPayloadField {
     index: usize,
     ty: Ty,
     value_expr: String,
-}
-
-#[derive(Clone, Debug)]
-struct DynamicInterfaceRef {
-    name: String,
-    args: Vec<Ty>,
 }
 
 #[derive(Clone, Debug)]
@@ -724,7 +725,7 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
         span: crate::span::Span,
     ) {
-        for capability in self.retained_closure_capabilities(target_ty) {
+        for capability in retained_closure_capabilities(target_ty) {
             if matches!(source_ty.unqualified(), Ty::Closure { .. })
                 && retained_closure_has_capability(source_ty, &capability)
                 && source_ty.unqualified() == target_ty.unqualified()
@@ -3781,7 +3782,7 @@ impl<'a> CGenerator<'a> {
         let (payload_ty, payload_literal) =
             self.meta_payload_product_literal(&payloads, payload_head)?;
         let head_ty = meta_named(variant_head, vec![payload_ty]);
-        let tail_ty = self.meta_sum_ty(rest, borrowed)?;
+        let tail_ty = meta_sum_ty(rest.iter().map(|variant| variant.payload.clone()), borrowed);
         let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
         if active_idx == 0 {
             let head = format!(
@@ -3807,24 +3808,6 @@ impl<'a> CGenerator<'a> {
                 ),
             ))
         }
-    }
-
-    fn meta_sum_ty(&self, variants: &[CheckedVariant], borrowed: bool) -> DiagResult<Ty> {
-        let mut ty = meta_named("CoNil", Vec::new());
-        for variant in variants.iter().rev() {
-            let payload_head = if borrowed { "PayloadRef" } else { "Payload" };
-            let payload = variant.payload.iter().rev().fold(
-                meta_named("HNil", Vec::new()),
-                |tail, payload_ty| {
-                    let head = meta_named(payload_head, vec![payload_ty.clone()]);
-                    meta_named("HCons", vec![head, tail])
-                },
-            );
-            let variant_head = if borrowed { "VariantRef" } else { "Variant" };
-            let head = meta_named(variant_head, vec![payload]);
-            ty = meta_named("Coproduct", vec![head, ty]);
-        }
-        Ok(ty)
     }
 
     fn meta_name_slice_literal(&self, name: &str) -> String {
@@ -4133,20 +4116,6 @@ impl<'a> CGenerator<'a> {
         )
     }
 
-    fn result_ty(&self, ok_ty: Ty, err_ty: Ty) -> Ty {
-        Ty::Named {
-            name: "Result".to_string(),
-            args: vec![ok_ty, err_ty],
-        }
-    }
-
-    fn error_ty(&self) -> Ty {
-        Ty::Named {
-            name: "Error".to_string(),
-            args: Vec::new(),
-        }
-    }
-
     fn emit_clone_message_result_from_ptr(
         &mut self,
         message_ty: &Ty,
@@ -4154,7 +4123,7 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<String> {
-        let result_ty = self.result_ty(message_ty.clone(), self.error_ty());
+        let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
         let result_layout = self.result_layout(&result_ty, span)?;
         let result_temp = self.next_temp("clone_result");
         let done_label = self.next_temp("clone_done");
@@ -4221,7 +4190,7 @@ impl<'a> CGenerator<'a> {
             .clone_message_impl(ty)
             .map(|implementation| implementation.function_def)
         {
-            let clone_result_ty = self.result_ty(ty.clone(), self.error_ty());
+            let clone_result_ty = std_result_ty(ty.clone(), std_error_ty());
             let clone_layout = self.result_layout(&clone_result_ty, span)?;
             let clone_temp = self.next_temp("field_clone");
             self.line_indent(
@@ -4383,7 +4352,7 @@ impl<'a> CGenerator<'a> {
                     args: Vec::new(),
                 };
                 let field = self.retained_closure_witness_field_name(&capability);
-                let clone_result_ty = self.result_ty(ty.clone(), self.error_ty());
+                let clone_result_ty = std_result_ty(ty.clone(), std_error_ty());
                 let clone_layout = self.result_layout(&clone_result_ty, span)?;
                 let clone_temp = self.next_temp("closure_clone");
                 self.line_indent(
@@ -4534,10 +4503,8 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(state_ty, &state_box)
             ),
         );
-        let state_clone_layout = self.result_layout(
-            &self.result_ty(state_ty.clone(), self.error_ty()),
-            expr.span,
-        )?;
+        let state_clone_layout =
+            self.result_layout(&std_result_ty(state_ty.clone(), std_error_ty()), expr.span)?;
         self.line_indent(
             indent,
             &format!(
@@ -4579,7 +4546,7 @@ impl<'a> CGenerator<'a> {
             ),
         );
         let handler_clone_layout = self.result_layout(
-            &self.result_ty(handler_ty.clone(), self.error_ty()),
+            &std_result_ty(handler_ty.clone(), std_error_ty()),
             expr.span,
         )?;
         self.line_indent(
@@ -4664,7 +4631,7 @@ impl<'a> CGenerator<'a> {
             expr.span,
         )?;
         let clone_layout = self.result_layout(
-            &self.result_ty(message_ty.clone(), self.error_ty()),
+            &std_result_ty(message_ty.clone(), std_error_ty()),
             expr.span,
         )?;
         let msg_box = self.next_temp("actor_msg_box");
@@ -4723,7 +4690,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<()> {
         let clone_layout =
-            self.result_layout(&self.result_ty(cloned_ty.clone(), self.error_ty()), span)?;
+            self.result_layout(&std_result_ty(cloned_ty.clone(), std_error_ty()), span)?;
         self.line_indent(
             indent,
             &format!("if ({clone_result}.tag == {}) {{", clone_layout.err_index),
@@ -5326,7 +5293,7 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
         source_value: &str,
     ) -> Vec<String> {
-        self.retained_closure_capabilities(target_ty)
+        retained_closure_capabilities(target_ty)
             .into_iter()
             .map(|capability| {
                 let field = self.retained_closure_witness_field_name(&capability);
@@ -5447,7 +5414,7 @@ impl<'a> CGenerator<'a> {
             self.line(&format!("struct {name} {{"));
             self.line(&format!("    {};", self.closure_call_field_decl(&ty)));
             self.line("    void *env;");
-            for capability in self.retained_closure_capabilities(&ty) {
+            for capability in retained_closure_capabilities(&ty) {
                 self.line(&format!(
                     "    {};",
                     self.retained_closure_witness_field_decl(&ty, &capability)
@@ -6230,7 +6197,7 @@ impl<'a> CGenerator<'a> {
                     args: Vec::new(),
                 };
                 let field = self.retained_closure_witness_field_name(&capability);
-                let clone_result_ty = self.result_ty(witness.source_ty.clone(), self.error_ty());
+                let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
                 let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
                 let clone_temp = self.next_temp("retained_source_clone");
                 self.line_indent(
@@ -6293,7 +6260,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_actor_dispatch(&mut self, dispatch: &ActorDispatch) -> DiagResult<()> {
-        let result_ty = self.result_ty(dispatch.state_ty.clone(), self.error_ty());
+        let result_ty = std_result_ty(dispatch.state_ty.clone(), std_error_ty());
         let result_layout = self.result_layout(
             &result_ty,
             crate::span::Span::new(crate::span::FileId(0), 0, 0),
@@ -6491,13 +6458,6 @@ impl<'a> CGenerator<'a> {
         self.c_return_decl(&ret, &format!("(*call)({})", decls.join(", ")))
     }
 
-    fn retained_closure_capabilities(&self, ty: &Ty) -> Vec<ConstraintRef> {
-        match ty.unqualified() {
-            Ty::Closure { constraints, .. } => constraints.positive.clone(),
-            _ => Vec::new(),
-        }
-    }
-
     fn retained_closure_witness_field_decl(&self, ty: &Ty, capability: &ConstraintRef) -> String {
         let ret = self.retained_closure_interface_ret(ty, capability);
         let params = self.retained_closure_interface_params(ty, capability);
@@ -6519,11 +6479,13 @@ impl<'a> CGenerator<'a> {
     }
 
     fn retained_closure_interface_ret(&self, receiver_ty: &Ty, capability: &ConstraintRef) -> Ty {
-        let Some(interface) = self.interface_by_name(&capability.name) else {
-            return Ty::Unknown;
-        };
-        let subst = self.retained_closure_interface_subst(interface, receiver_ty, &capability.args);
-        substitute_ty(&interface.ret, &subst)
+        retained_closure_interface_signature(
+            &self.program.checked.interfaces,
+            receiver_ty,
+            capability,
+        )
+        .map(|signature| signature.ret)
+        .unwrap_or(Ty::Unknown)
     }
 
     fn retained_closure_interface_params(
@@ -6531,35 +6493,13 @@ impl<'a> CGenerator<'a> {
         receiver_ty: &Ty,
         capability: &ConstraintRef,
     ) -> Vec<Ty> {
-        let Some(interface) = self.interface_by_name(&capability.name) else {
-            return vec![Ty::pointer_to(Ty::Void)];
-        };
-        let subst = self.retained_closure_interface_subst(interface, receiver_ty, &capability.args);
-        let mut params = vec![Ty::pointer_to(Ty::Void)];
-        params.extend(
-            interface
-                .params
-                .iter()
-                .skip(1)
-                .map(|param| substitute_ty(param, &subst)),
-        );
-        params
-    }
-
-    fn retained_closure_interface_subst(
-        &self,
-        interface: &CheckedInterface,
-        receiver_ty: &Ty,
-        args: &[Ty],
-    ) -> HashMap<String, Ty> {
-        let mut subst = HashMap::new();
-        if let Some(receiver) = interface.generics.first() {
-            subst.insert(receiver.clone(), receiver_ty.clone());
-        }
-        for (generic, arg) in interface.generics.iter().skip(1).zip(args.iter()) {
-            subst.insert(generic.clone(), arg.clone());
-        }
-        subst
+        retained_closure_interface_signature(
+            &self.program.checked.interfaces,
+            receiver_ty,
+            capability,
+        )
+        .map(|signature| signature.params)
+        .unwrap_or_else(|| vec![Ty::pointer_to(Ty::Void)])
     }
 
     fn closure_thunk_decl(&self, closure: &ClosureDef) -> String {
@@ -6910,7 +6850,10 @@ impl<'a> CGenerator<'a> {
             format!(
                 "{}_{}",
                 name,
-                args.iter().map(mangle_type).collect::<Vec<_>>().join("_")
+                args.iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
             )
         }
     }
@@ -6953,7 +6896,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn slice_name(&self, elem: &Ty) -> String {
-        format!("CielSlice_{}", mangle_type(elem))
+        format!("CielSlice_{}", mangle_ty_fragment(elem))
     }
 
     fn dynamic_type_name(&self, ty: &Ty) -> String {
@@ -6965,7 +6908,10 @@ impl<'a> CGenerator<'a> {
                     format!(
                         "CielDyn_{}_{}",
                         name,
-                        args.iter().map(mangle_type).collect::<Vec<_>>().join("_")
+                        args.iter()
+                            .map(mangle_ty_fragment)
+                            .collect::<Vec<_>>()
+                            .join("_")
                     )
                 }
             }
@@ -6981,7 +6927,7 @@ impl<'a> CGenerator<'a> {
         format!(
             "{}__{}",
             self.dynamic_type_name(dyn_ty),
-            mangle_type(concrete_ty)
+            mangle_ty_fragment(concrete_ty)
         )
     }
 
@@ -6997,7 +6943,7 @@ impl<'a> CGenerator<'a> {
                     params: params.clone(),
                     constraints: constraints.clone(),
                 };
-                format!("CielClosure_{}", mangle_type(&sig_ty))
+                format!("CielClosure_{}", mangle_ty_fragment(&sig_ty))
             }
             Ty::ClosureInstance { ret, params, .. } => {
                 let sig_ty = Ty::Closure {
@@ -7005,7 +6951,7 @@ impl<'a> CGenerator<'a> {
                     params: params.clone(),
                     constraints: ConstraintBounds::default(),
                 };
-                format!("CielClosure_{}", mangle_type(&sig_ty))
+                format!("CielClosure_{}", mangle_ty_fragment(&sig_ty))
             }
             _ => "CielClosure_unknown".to_string(),
         }
@@ -7024,8 +6970,8 @@ impl<'a> CGenerator<'a> {
         format!(
             "ciel_retained_closure_witness_{}_{}_{}",
             mangle_constraint_ref(capability),
-            mangle_type(target_ty),
-            mangle_type(source_ty)
+            mangle_ty_fragment(target_ty),
+            mangle_ty_fragment(source_ty)
         )
     }
 
@@ -7038,49 +6984,57 @@ impl<'a> CGenerator<'a> {
     }
 
     fn function_closure_wrapper_key(&self, closure_ty: &Ty, function_ty: &Ty) -> String {
-        format!("{}__{}", mangle_type(closure_ty), mangle_type(function_ty))
+        format!(
+            "{}__{}",
+            mangle_ty_fragment(closure_ty),
+            mangle_ty_fragment(function_ty)
+        )
     }
 
     fn function_closure_env_name(&self, closure_ty: &Ty, function_ty: &Ty) -> String {
         format!(
             "CielClosureFnEnv_{}_{}",
-            mangle_type(closure_ty),
-            mangle_type(function_ty)
+            mangle_ty_fragment(closure_ty),
+            mangle_ty_fragment(function_ty)
         )
     }
 
     fn function_closure_thunk_name(&self, closure_ty: &Ty, function_ty: &Ty) -> String {
         format!(
             "ciel_function_to_closure_{}_{}",
-            mangle_type(closure_ty),
-            mangle_type(function_ty)
+            mangle_ty_fragment(closure_ty),
+            mangle_ty_fragment(function_ty)
         )
     }
 
     fn retained_closure_wrapper_key(&self, target_ty: &Ty, source_ty: &Ty) -> String {
-        format!("{}__{}", mangle_type(target_ty), mangle_type(source_ty))
+        format!(
+            "{}__{}",
+            mangle_ty_fragment(target_ty),
+            mangle_ty_fragment(source_ty)
+        )
     }
 
     fn retained_closure_env_name(&self, target_ty: &Ty, source_ty: &Ty) -> String {
         format!(
             "CielRetainedClosureEnv_{}_{}",
-            mangle_type(target_ty),
-            mangle_type(source_ty)
+            mangle_ty_fragment(target_ty),
+            mangle_ty_fragment(source_ty)
         )
     }
 
     fn retained_closure_thunk_name(&self, target_ty: &Ty, source_ty: &Ty) -> String {
         format!(
             "ciel_retained_closure_to_closure_{}_{}",
-            mangle_type(target_ty),
-            mangle_type(source_ty)
+            mangle_ty_fragment(target_ty),
+            mangle_ty_fragment(source_ty)
         )
     }
 
     fn retained_closure_needs_wrapper(&self, target_ty: &Ty, source_ty: &Ty) -> bool {
         matches!(source_ty.unqualified(), Ty::Closure { .. })
             && source_ty.unqualified() != target_ty.unqualified()
-            && !self.retained_closure_capabilities(target_ty).is_empty()
+            && !retained_closure_capabilities(target_ty).is_empty()
     }
 
     fn retained_closure_source_pointer_expr(&self, witness: &RetainedClosureWitness) -> String {
@@ -7116,9 +7070,9 @@ impl<'a> CGenerator<'a> {
     fn actor_dispatch_name(&self, state_ty: &Ty, message_ty: &Ty, handler_ty: &Ty) -> String {
         format!(
             "ciel_actor_dispatch_{}_{}_{}",
-            mangle_type(state_ty),
-            mangle_type(message_ty),
-            mangle_type(handler_ty)
+            mangle_ty_fragment(state_ty),
+            mangle_ty_fragment(message_ty),
+            mangle_ty_fragment(handler_ty)
         )
     }
 
@@ -7144,8 +7098,8 @@ impl<'a> CGenerator<'a> {
     fn dynamic_table_name(&self, dyn_ty: &Ty, concrete_ty: &Ty) -> String {
         format!(
             "ciel_vtable_{}_{}",
-            mangle_type(dyn_ty),
-            mangle_type(concrete_ty)
+            mangle_ty_fragment(dyn_ty),
+            mangle_ty_fragment(concrete_ty)
         )
     }
 
@@ -7153,60 +7107,34 @@ impl<'a> CGenerator<'a> {
         format!(
             "ciel_dyn_shim_{}_{}_{}",
             interface_name,
-            mangle_type(dyn_ty),
-            mangle_type(concrete_ty)
+            mangle_ty_fragment(dyn_ty),
+            mangle_ty_fragment(concrete_ty)
         )
     }
 
-    fn dynamic_use_interfaces(&self, dynamic_use: &DynamicImplUse) -> Vec<DynamicInterfaceRef> {
+    fn dynamic_use_interfaces(&self, dynamic_use: &DynamicImplUse) -> Vec<CheckedInterfaceRef> {
         let Ty::DynamicInterface { name, args } = &dynamic_use.dyn_ty else {
             return Vec::new();
         };
         self.dynamic_view_interfaces(name, args)
     }
 
-    fn dynamic_view_interfaces(&self, name: &str, args: &[Ty]) -> Vec<DynamicInterfaceRef> {
-        if let Some(interface) = self.interface_by_name(name) {
-            return vec![DynamicInterfaceRef {
-                name: interface.name.clone(),
-                args: args.to_vec(),
-            }];
-        }
-        self.program
-            .checked
-            .interface_aliases
-            .iter()
-            .find(|alias| alias.name == name)
-            .map(|alias| {
-                alias
-                    .positive
-                    .iter()
-                    .map(dynamic_ref_from_checked)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
-    }
-
-    fn interface_by_name(&self, name: &str) -> Option<&CheckedInterface> {
-        self.program
-            .checked
-            .interfaces
-            .iter()
-            .find(|interface| interface.name == name)
+    fn dynamic_view_interfaces(&self, name: &str, args: &[Ty]) -> Vec<CheckedInterfaceRef> {
+        checked_interface_view(
+            &self.program.checked.interfaces,
+            &self.program.checked.interface_aliases,
+            name,
+            args,
+        )
     }
 
     fn impl_for_dynamic(
         &self,
-        interface: &DynamicInterfaceRef,
+        interface: &CheckedInterfaceRef,
         concrete_ty: &Ty,
     ) -> Option<&CheckedImpl> {
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == interface.name
-                && implementation
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|receiver| receiver == &receiver_ty_from_value_ty(concrete_ty))
-                && implementation.interface_args.get(1..) == Some(interface.args.as_slice())
+            impl_matches_dynamic_interface(implementation, interface, concrete_ty)
         })
     }
 
@@ -7216,52 +7144,25 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
     ) -> Option<&CheckedImpl> {
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == capability.name
-                && implementation
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|receiver| receiver == source_ty.unqualified())
-                && implementation.interface_args.get(1..) == Some(capability.args.as_slice())
+            impl_matches_interface_receiver(
+                implementation,
+                &capability.name,
+                &capability.args,
+                source_ty.unqualified(),
+            )
         })
     }
 
-    fn dynamic_interface_ret(&self, interface_ref: &DynamicInterfaceRef) -> Ty {
-        let Some(interface) = self.interface_by_name(&interface_ref.name) else {
-            return Ty::Unknown;
-        };
-        let subst = self.dynamic_interface_subst(interface, &interface_ref.args);
-        substitute_ty(&interface.ret, &subst)
+    fn dynamic_interface_ret(&self, interface_ref: &CheckedInterfaceRef) -> Ty {
+        dynamic_interface_signature(&self.program.checked.interfaces, interface_ref)
+            .map(|signature| signature.ret)
+            .unwrap_or(Ty::Unknown)
     }
 
-    fn dynamic_interface_params(&self, interface_ref: &DynamicInterfaceRef) -> Vec<Ty> {
-        let Some(interface) = self.interface_by_name(&interface_ref.name) else {
-            return vec![Ty::pointer_to(Ty::Void)];
-        };
-        let subst = self.dynamic_interface_subst(interface, &interface_ref.args);
-        let mut params = vec![Ty::pointer_to(Ty::Void)];
-        params.extend(
-            interface
-                .params
-                .iter()
-                .skip(1)
-                .map(|param| substitute_ty(param, &subst)),
-        );
-        params
-    }
-
-    fn dynamic_interface_subst(
-        &self,
-        interface: &CheckedInterface,
-        args: &[Ty],
-    ) -> HashMap<String, Ty> {
-        let mut subst = HashMap::new();
-        if let Some(receiver) = interface.generics.first() {
-            subst.insert(receiver.clone(), Ty::pointer_to(Ty::Void));
-        }
-        for (generic, arg) in interface.generics.iter().skip(1).zip(args.iter()) {
-            subst.insert(generic.clone(), arg.clone());
-        }
-        subst
+    fn dynamic_interface_params(&self, interface_ref: &CheckedInterfaceRef) -> Vec<Ty> {
+        dynamic_interface_signature(&self.program.checked.interfaces, interface_ref)
+            .map(|signature| signature.params)
+            .unwrap_or_else(|| vec![Ty::pointer_to(Ty::Void)])
     }
 
     fn find_ciel_main(&self) -> Option<&CheckedFunction> {
@@ -7347,306 +7248,12 @@ impl<'a> CGenerator<'a> {
     }
 }
 
-fn mangle_type(ty: &Ty) -> String {
-    match ty {
-        Ty::Hole(_) => "hole".to_string(),
-        Ty::Const(inner) => format!("const_{}", mangle_type(inner)),
-        Ty::Never => "never".to_string(),
-        Ty::Void => "void".to_string(),
-        Ty::Bool => "bool".to_string(),
-        Ty::Char => "char".to_string(),
-        Ty::I8 => "i8".to_string(),
-        Ty::I16 => "i16".to_string(),
-        Ty::I32 => "i32".to_string(),
-        Ty::I64 => "i64".to_string(),
-        Ty::U8 => "u8".to_string(),
-        Ty::U16 => "u16".to_string(),
-        Ty::U32 => "u32".to_string(),
-        Ty::U64 => "u64".to_string(),
-        Ty::Usize => "usize".to_string(),
-        Ty::F32 => "f32".to_string(),
-        Ty::F64 => "f64".to_string(),
-        Ty::CSpelling { abi, spelling } => {
-            format!(
-                "c_{}_{}",
-                mangle_abi_fragment(Some(abi)),
-                sanitize_mangle_fragment(spelling)
-            )
-        }
-        Ty::Pointer { inner, nullable } => {
-            if *nullable {
-                format!("qptr_{}", mangle_type(inner))
-            } else {
-                format!("ptr_{}", mangle_type(inner))
-            }
-        }
-        Ty::Array { len, elem } => format!("arr{len}_{}", mangle_type(elem)),
-        Ty::Slice(elem) => format!("slice_{}", mangle_type(elem)),
-        Ty::Named { name, args } => {
-            if args.is_empty() {
-                name.clone()
-            } else {
-                format!(
-                    "{}_{}",
-                    name,
-                    args.iter().map(mangle_type).collect::<Vec<_>>().join("_")
-                )
-            }
-        }
-        Ty::Generic(name) => format!("gen_{name}"),
-        Ty::DynamicInterface { name, args } => {
-            if args.is_empty() {
-                format!("dyn_{name}")
-            } else {
-                format!(
-                    "dyn_{}_{}",
-                    name,
-                    args.iter().map(mangle_type).collect::<Vec<_>>().join("_")
-                )
-            }
-        }
-        Ty::Function { abi, ret, params } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params.iter().map(mangle_type).collect::<Vec<_>>().join("_")
-            };
-            format!(
-                "fn_{}_ret_{}_args_{}",
-                mangle_abi_fragment(abi.as_deref()),
-                mangle_type(ret),
-                params
-            )
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params.iter().map(mangle_type).collect::<Vec<_>>().join("_")
-            };
-            format!(
-                "closure_ret_{}_args_{}_caps_{}",
-                mangle_type(ret),
-                params,
-                mangle_constraint_bounds(constraints)
-            )
-        }
-        Ty::ClosureInstance {
-            id,
-            ret,
-            params,
-            captures,
-        } => {
-            let params = if params.is_empty() {
-                "void".to_string()
-            } else {
-                params.iter().map(mangle_type).collect::<Vec<_>>().join("_")
-            };
-            let captures = if captures.is_empty() {
-                "empty".to_string()
-            } else {
-                captures
-                    .iter()
-                    .map(mangle_type)
-                    .collect::<Vec<_>>()
-                    .join("_")
-            };
-            format!(
-                "closure_inst{id}_ret_{}_args_{}_caps_{}",
-                mangle_type(ret),
-                params,
-                captures
-            )
-        }
-        Ty::Unknown => "unknown".to_string(),
-    }
-}
-
-fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
-    if bounds.is_empty() {
-        return "none".to_string();
-    }
-    let mut parts = bounds
-        .positive
-        .iter()
-        .map(|entry| format!("pos_{}", mangle_constraint_ref(entry)))
-        .collect::<Vec<_>>();
-    parts.extend(
-        bounds
-            .negative
-            .iter()
-            .map(|entry| format!("neg_{}", mangle_constraint_ref(entry))),
-    );
-    parts.join("_")
-}
-
-fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
-    if entry.args.is_empty() {
-        sanitize_mangle_fragment(&entry.name)
-    } else {
-        format!(
-            "{}_{}",
-            sanitize_mangle_fragment(&entry.name),
-            entry
-                .args
-                .iter()
-                .map(mangle_type)
-                .collect::<Vec<_>>()
-                .join("_")
-        )
-    }
-}
-
-fn mangle_abi_fragment(abi: Option<&str>) -> String {
-    let Some(abi) = abi else {
-        return "ciel".to_string();
-    };
-    let out = abi
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if out.is_empty() {
-        "abi".to_string()
-    } else {
-        out
-    }
-}
-
-fn sanitize_mangle_fragment(value: &str) -> String {
-    let out = value
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>();
-    if out.is_empty() {
-        "type".to_string()
-    } else {
-        out
-    }
-}
-
 fn c_base_decl(base: &str, name: &str) -> String {
     if name.is_empty() {
         base.to_string()
     } else {
         format!("{base} {name}")
     }
-}
-
-fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
-    match ty {
-        Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
-        Ty::Generic(name) => subst
-            .get(name)
-            .cloned()
-            .unwrap_or_else(|| Ty::Generic(name.clone())),
-        Ty::Pointer { nullable, inner } => Ty::Pointer {
-            nullable: *nullable,
-            inner: Box::new(substitute_ty(inner, subst)),
-        },
-        Ty::Array { len, elem } => Ty::Array {
-            len: *len,
-            elem: Box::new(substitute_ty(elem, subst)),
-        },
-        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, subst))),
-        Ty::Named { name, args } => Ty::Named {
-            name: name.clone(),
-            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
-        },
-        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
-            name: name.clone(),
-            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
-        },
-        Ty::Function { abi, ret, params } => Ty::Function {
-            abi: abi.clone(),
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-        },
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => Ty::Closure {
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-            constraints: substitute_constraint_bounds(constraints, subst),
-        },
-        Ty::ClosureInstance {
-            id,
-            ret,
-            params,
-            captures,
-        } => Ty::ClosureInstance {
-            id: *id,
-            ret: Box::new(substitute_ty(ret, subst)),
-            params: params
-                .iter()
-                .map(|param| substitute_ty(param, subst))
-                .collect(),
-            captures: captures
-                .iter()
-                .map(|capture| substitute_ty(capture, subst))
-                .collect(),
-        },
-        other => other.clone(),
-    }
-}
-
-fn substitute_constraint_bounds(
-    bounds: &ConstraintBounds,
-    subst: &HashMap<String, Ty>,
-) -> ConstraintBounds {
-    ConstraintBounds {
-        positive: bounds
-            .positive
-            .iter()
-            .map(|entry| substitute_constraint_ref(entry, subst))
-            .collect(),
-        negative: bounds
-            .negative
-            .iter()
-            .map(|entry| substitute_constraint_ref(entry, subst))
-            .collect(),
-    }
-}
-
-fn substitute_constraint_ref(entry: &ConstraintRef, subst: &HashMap<String, Ty>) -> ConstraintRef {
-    ConstraintRef {
-        name: entry.name.clone(),
-        args: entry
-            .args
-            .iter()
-            .map(|arg| substitute_ty(arg, subst))
-            .collect(),
-    }
-}
-
-fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> bool {
-    let Ty::Closure { constraints, .. } = ty.unqualified() else {
-        return false;
-    };
-    constraints.positive.iter().any(|entry| entry == capability)
 }
 
 fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
@@ -7657,25 +7264,6 @@ fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
         Some((&args[0], &args[1]))
     } else {
         None
-    }
-}
-
-fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
-    capability.name == "clone_message" && capability.args.is_empty()
-}
-
-fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
-    match ty {
-        Ty::Const(inner) => receiver_ty_from_value_ty(inner),
-        Ty::Pointer { inner, .. } => (**inner).clone(),
-        other => other.clone(),
-    }
-}
-
-fn dynamic_ref_from_checked(reference: &CheckedInterfaceRef) -> DynamicInterfaceRef {
-    DynamicInterfaceRef {
-        name: reference.name.clone(),
-        args: reference.args.clone(),
     }
 }
 
@@ -7707,13 +7295,6 @@ fn string_literal_len(raw: &str) -> usize {
 
 fn span_key(span: crate::span::Span) -> (usize, usize, usize) {
     (span.file.0, span.start, span.end)
-}
-
-fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
-    Ty::Named {
-        name: name.to_string(),
-        args,
-    }
 }
 
 fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {

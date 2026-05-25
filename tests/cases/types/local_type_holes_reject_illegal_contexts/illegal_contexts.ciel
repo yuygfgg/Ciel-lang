@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: type hole is only allowed in initialized local declarations
+
+struct BadField {
+    _ value;
+}
+
+_ bad_return() {
+    return 0;
+}
+
+T id<T>(T value) {
+    return value;
+}
+
+i64 main() {
+    i64 value = id<_>(1);
+    return value;
+}

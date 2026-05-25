@@ -212,6 +212,7 @@ Type            ::= [ AbiSpec ] PrefixType { CallableSuffix }
 PrefixType      ::= { TypePrefix } PrimaryType
 TypePrefix      ::= "*" | "?*" | "const"
 PrimaryType     ::= NamedType
+                 | TypeHole
                  | "never"
                  | "void"
                  | ArrayType
@@ -219,6 +220,7 @@ PrimaryType     ::= NamedType
                  | "(" Type ")"
 
 NamedType       ::= Identifier [ TypeArgList ]
+TypeHole        ::= "_"
 TypeArgList     ::= "<" TypeList ">"
 TypeList        ::= Type { "," Type } [ "," ]
 
@@ -263,6 +265,57 @@ when a `[]T` is expected.
 `[N]void` has a length but no element storage. It is declared without an
 initializer, and indexing performs the normal bounds check before producing the
 implicit `void` value. `[]void` stores a length with a null data pointer.
+
+`_` in type grammar is a local type hole. It is valid only in initialized local
+declarations and initialized `for` declarations:
+
+```rust
+_ handler = |State<i64> state, Command<i64> command| handle(state, command);
+Actor<_> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, handler));
+Result<Actor<_>, Error> pending =
+    spawn_actor<State<i64>, Command<i64>>(initial, handler);
+[]_ values = [1, 2, 3];
+[3]_ fixed = [1, 2, 3];
+```
+
+Every hole is solved from the declaration initializer while type checking that
+declaration. The solved concrete type is stored on the local before later
+assignments, monomorphization, and code generation. Holes do not infer from
+later uses:
+
+```rust
+_ value = 1;  // i64
+value = 2;    // ok
+value = 2.0;  // error: expected i64
+
+_ ptr = null;  // error: null needs an expected nullable pointer type
+?*i64 ok = null;
+```
+
+Partial annotations provide context, but expressions that already require an
+expected type still require one:
+
+```rust
+_ point = { x: 1, y: 2 }; // error: struct literal needs a struct type
+_ empty = [];             // error: empty array literal has no element type
+
+Point point = { x: 1, y: 2 };
+[]i64 empty = [];
+```
+
+A fully typed closure can infer a concrete compiler-created closure type. An
+untyped closure still needs an expected callable type, and `_` alone does not
+infer block-bodied closure return types:
+
+```rust
+_ inc = |i64 value| value + 1;
+_ bad = |value| value + 1; // error: parameter type is not known
+```
+
+Type holes are rejected in function signatures, struct fields, enum payloads,
+interface declarations, impl signatures, type aliases, extern declarations,
+casts, and explicit generic type arguments. `_` remains the pattern wildcard in
+pattern grammar.
 
 Type aliases are transparent. They introduce a new name for an existing type;
 they do not introduce nominal identity.
@@ -446,8 +499,9 @@ ExternItem          ::= OpaqueStructDecl
 OpaqueStructDecl    ::= "opaque" "struct" Identifier ";"
 ```
 
-Local variables and function parameters must have explicit types. There is no
-`auto`.
+Local variables and function parameters are declared with type syntax. Local
+declarations may use `_` type holes only when they have an initializer. There is
+no assignment-based `auto`.
 
 Function parameters are immutable bindings: they cannot be reassigned and their
 binding address cannot be taken. Local variables and struct fields are mutable
@@ -458,10 +512,11 @@ into the left-hand side lvalue. Returning a struct, enum, or array value uses
 the same value semantics at the Ciel level; backend lowering may avoid physical
 copies.
 
-A local declaration without an initializer creates an uninitialized binding.
-The binding must be definitely assigned before any use. Assigning to the whole
-local initializes it. Aggregate construction initializes the whole local at
-once.
+A local declaration without an initializer creates an uninitialized binding,
+unless its type contains a hole. Declarations with type holes require an
+initializer. The binding must be definitely assigned before any use. Assigning
+to the whole local initializes it. Aggregate construction initializes the whole
+local at once.
 
 Definite assignment is a compile-time forward data-flow analysis:
 

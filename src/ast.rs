@@ -202,6 +202,7 @@ pub struct Type {
 
 #[derive(Clone, Debug)]
 pub enum TypeKind {
+    Hole,
     Never,
     Void,
     Primitive(PrimitiveType),

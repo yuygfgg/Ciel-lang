@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: unresolved name `actro`
+
+i64 main() {
+    _ actor = 1;
+    actro = 2;
+    return actor;
+}

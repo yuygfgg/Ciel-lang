@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 35
+
+struct Box<T> {
+    T value;
+}
+
+Box<T> make_box<T>(T value) {
+    return { value: value };
+}
+
+i64 main() {
+    _ base = 5;
+    _ add = |i64 value| value + base;
+
+    Box<_> box = { value: 7 };
+    Box<_> wrapped = make_box(9);
+    []_ values = [1, 2, 3];
+    [3]_ fixed = [4, 5, 6];
+
+    _ stable = 1;
+    stable = 2;
+
+    _ total = 0;
+    for (_ i = 0; i < 3; i = i + 1) {
+        total = total + values[i as usize];
+    }
+
+    return add(fixed[0]) + values[1] + box.value + wrapped.value + total + stable;
+}

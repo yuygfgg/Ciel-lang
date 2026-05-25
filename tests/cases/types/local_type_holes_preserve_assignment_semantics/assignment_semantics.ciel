@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: expected `i64`, got `bool`
+
+i64 main() {
+    _ value = 1;
+    value = true;
+    return value;
+}

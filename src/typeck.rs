@@ -147,6 +147,12 @@ struct Binding {
     immutable: bool,
 }
 
+struct CheckedLocalInit {
+    ty: Ty,
+    init: Option<TExpr>,
+    assigned: bool,
+}
+
 #[derive(Clone, Debug, Default)]
 struct LocalScopes {
     scopes: Vec<HashMap<LocalId, Binding>>,
@@ -417,6 +423,8 @@ struct TypeChecker {
     control_contexts: Vec<ControlContext>,
     next_synthetic_def: usize,
     next_closure_id: usize,
+    next_type_hole_id: usize,
+    type_hole_solutions: HashMap<usize, Ty>,
 }
 
 impl TypeChecker {
@@ -451,6 +459,8 @@ impl TypeChecker {
             control_contexts: Vec::new(),
             next_synthetic_def,
             next_closure_id: 0,
+            next_type_hole_id: 0,
+            type_hole_solutions: HashMap::new(),
         }
     }
 
@@ -907,14 +917,54 @@ impl TypeChecker {
 
     fn lower_type(&mut self, ty: &Type) -> Ty {
         let subst = self.current_type_subst();
-        let lowered = self.lower_type_with_subst(ty, &subst);
+        let lowered = self.lower_type_with_subst_inner(ty, &subst, false);
         self.ensure_enum_instance(&lowered);
         self.ensure_struct_instance(&lowered);
         lowered
     }
 
+    fn lower_type_allowing_holes(&mut self, ty: &Type) -> Ty {
+        let subst = self.current_type_subst();
+        let lowered = self.lower_type_with_subst_inner(ty, &subst, true);
+        if !contains_type_hole(&lowered) {
+            self.ensure_enum_instance(&lowered);
+            self.ensure_struct_instance(&lowered);
+        }
+        lowered
+    }
+
     fn lower_type_with_subst(&mut self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
+        self.lower_type_with_subst_inner(ty, subst, false)
+    }
+
+    fn lower_type_with_subst_allowing_holes(
+        &mut self,
+        ty: &Type,
+        subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        self.lower_type_with_subst_inner(ty, subst, true)
+    }
+
+    fn lower_type_with_subst_inner(
+        &mut self,
+        ty: &Type,
+        subst: &HashMap<String, Ty>,
+        allow_holes: bool,
+    ) -> Ty {
         let lowered = match &ty.kind {
+            TypeKind::Hole => {
+                if allow_holes {
+                    let id = self.next_type_hole_id;
+                    self.next_type_hole_id += 1;
+                    Ty::Hole(id)
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        ty.span,
+                        "type hole is only allowed in initialized local declarations",
+                    ));
+                    Ty::Unknown
+                }
+            }
             TypeKind::Never => Ty::Never,
             TypeKind::Void => Ty::Void,
             TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
@@ -929,7 +979,7 @@ impl TypeChecker {
                     let def_id = *def_id;
                     let def = self.resolved.def(def_id).clone();
                     if def.kind == DefKind::TypeAlias {
-                        self.expand_type_alias(ty.span, def_id, args, subst)
+                        self.expand_type_alias(ty.span, def_id, args, subst, allow_holes)
                     } else if let Some(interface) = self.interfaces.get(&def_id).cloned() {
                         let required_args = interface.generics.len().saturating_sub(1);
                         if args.len() != required_args {
@@ -954,7 +1004,9 @@ impl TypeChecker {
                             name: def.name,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .map(|arg| {
+                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                })
                                 .collect(),
                         }
                     } else if self.interface_aliases.contains_key(&def_id) {
@@ -988,7 +1040,9 @@ impl TypeChecker {
                             name: def.name,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .map(|arg| {
+                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                })
                                 .collect(),
                         }
                     } else {
@@ -996,7 +1050,9 @@ impl TypeChecker {
                             name: def.name,
                             args: args
                                 .iter()
-                                .map(|arg| self.lower_type_with_subst(arg, subst))
+                                .map(|arg| {
+                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                })
                                 .collect(),
                         }
                     }
@@ -1015,37 +1071,493 @@ impl TypeChecker {
             }
             TypeKind::Pointer { nullable, inner } => Ty::Pointer {
                 nullable: *nullable,
-                inner: Box::new(self.lower_type_with_subst(inner, subst)),
+                inner: Box::new(self.lower_type_with_subst_inner(inner, subst, allow_holes)),
             },
-            TypeKind::Const(inner) => Ty::Const(Box::new(self.lower_type_with_subst(inner, subst))),
+            TypeKind::Const(inner) => Ty::Const(Box::new(self.lower_type_with_subst_inner(
+                inner,
+                subst,
+                allow_holes,
+            ))),
             TypeKind::Array { len, elem } => Ty::Array {
                 len: *len,
-                elem: Box::new(self.lower_type_with_subst(elem, subst)),
+                elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
             },
-            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.lower_type_with_subst(elem, subst))),
+            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.lower_type_with_subst_inner(
+                elem,
+                subst,
+                allow_holes,
+            ))),
             TypeKind::Function { abi, ret, params } => Ty::Function {
                 abi: abi.clone(),
-                ret: Box::new(self.lower_type_with_subst(ret, subst)),
+                ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
                 params: params
                     .iter()
-                    .map(|param| self.lower_type_with_subst(param, subst))
+                    .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
                     .collect(),
             },
             TypeKind::Closure { ret, params } => Ty::Closure {
-                ret: Box::new(self.lower_type_with_subst(ret, subst)),
+                ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
                 params: params
                     .iter()
-                    .map(|param| self.lower_type_with_subst(param, subst))
+                    .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
                     .collect(),
             },
         };
-        self.ensure_enum_instance(&lowered);
-        self.ensure_struct_instance(&lowered);
+        if !contains_type_hole(&lowered) {
+            self.ensure_enum_instance(&lowered);
+            self.ensure_struct_instance(&lowered);
+        }
         lowered
     }
 
     fn current_type_subst(&self) -> HashMap<String, Ty> {
         self.type_subst_stack.last().cloned().unwrap_or_default()
+    }
+
+    fn resolve_type_holes(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Hole(id) => self
+                .type_hole_solutions
+                .get(id)
+                .map(|solution| self.resolve_type_holes(solution))
+                .unwrap_or(Ty::Hole(*id)),
+            Ty::Const(inner) => Ty::Const(Box::new(self.resolve_type_holes(inner))),
+            Ty::Pointer { nullable, inner } => Ty::Pointer {
+                nullable: *nullable,
+                inner: Box::new(self.resolve_type_holes(inner)),
+            },
+            Ty::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.resolve_type_holes(elem)),
+            },
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.resolve_type_holes(elem))),
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.resolve_type_holes(arg))
+                    .collect(),
+            },
+            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.resolve_type_holes(arg))
+                    .collect(),
+            },
+            Ty::Function { abi, ret, params } => Ty::Function {
+                abi: abi.clone(),
+                ret: Box::new(self.resolve_type_holes(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.resolve_type_holes(param))
+                    .collect(),
+            },
+            Ty::Closure { ret, params } => Ty::Closure {
+                ret: Box::new(self.resolve_type_holes(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.resolve_type_holes(param))
+                    .collect(),
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => Ty::ClosureInstance {
+                id: *id,
+                ret: Box::new(self.resolve_type_holes(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.resolve_type_holes(param))
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| self.resolve_type_holes(capture))
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn bind_type_hole(&mut self, id: usize, ty: &Ty) -> bool {
+        let ty = self.resolve_type_holes(ty);
+        if matches!(ty, Ty::Hole(other) if other == id) || matches!(ty, Ty::Unknown) {
+            return true;
+        }
+        if let Some(existing) = self.type_hole_solutions.get(&id).cloned() {
+            return self.unify_type_holes(&existing, &ty);
+        }
+        self.type_hole_solutions.insert(id, ty);
+        true
+    }
+
+    fn unify_type_holes(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let expected = self.resolve_type_holes(expected);
+        let actual = self.resolve_type_holes(actual);
+        match (&expected, &actual) {
+            (Ty::Hole(id), _) => self.bind_type_hole(*id, &actual),
+            (_, Ty::Hole(id)) => self.bind_type_hole(*id, &expected),
+            (Ty::Const(inner), _) => self.unify_type_holes(inner, actual.unqualified()),
+            (
+                Ty::Pointer {
+                    nullable,
+                    inner: expected_inner,
+                },
+                Ty::Pointer {
+                    nullable: actual_nullable,
+                    inner: actual_inner,
+                },
+            ) if nullable == actual_nullable => self.unify_type_holes(expected_inner, actual_inner),
+            (
+                Ty::Array {
+                    len,
+                    elem: expected_elem,
+                },
+                Ty::Array {
+                    len: actual_len,
+                    elem: actual_elem,
+                },
+            ) if len == actual_len => self.unify_type_holes(expected_elem, actual_elem),
+            (Ty::Slice(expected_elem), Ty::Slice(actual_elem)) => {
+                self.unify_type_holes(expected_elem, actual_elem)
+            }
+            (
+                Ty::Slice(expected_elem),
+                Ty::Array {
+                    elem: actual_elem, ..
+                },
+            ) => self.unify_type_holes(expected_elem, actual_elem),
+            (
+                Ty::Named { name, args },
+                Ty::Named {
+                    name: actual_name,
+                    args: actual_args,
+                },
+            ) if name == actual_name && args.len() == actual_args.len() => args
+                .iter()
+                .zip(actual_args.iter())
+                .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
+            (
+                Ty::DynamicInterface { name, args },
+                Ty::DynamicInterface {
+                    name: actual_name,
+                    args: actual_args,
+                },
+            ) if name == actual_name && args.len() == actual_args.len() => args
+                .iter()
+                .zip(actual_args.iter())
+                .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
+            (
+                Ty::Function { abi, ret, params },
+                Ty::Function {
+                    abi: actual_abi,
+                    ret: actual_ret,
+                    params: actual_params,
+                },
+            ) if abi == actual_abi && params.len() == actual_params.len() => {
+                self.unify_type_holes(ret, actual_ret)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(expected, actual)| self.unify_type_holes(expected, actual))
+            }
+            (
+                Ty::Closure { ret, params },
+                Ty::Closure {
+                    ret: actual_ret,
+                    params: actual_params,
+                },
+            )
+            | (
+                Ty::Closure { ret, params },
+                Ty::ClosureInstance {
+                    ret: actual_ret,
+                    params: actual_params,
+                    ..
+                },
+            ) if params.len() == actual_params.len() => {
+                self.unify_type_holes(ret, actual_ret)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(expected, actual)| self.unify_type_holes(expected, actual))
+            }
+            (
+                Ty::ClosureInstance {
+                    id,
+                    ret,
+                    params,
+                    captures,
+                },
+                Ty::ClosureInstance {
+                    id: actual_id,
+                    ret: actual_ret,
+                    params: actual_params,
+                    captures: actual_captures,
+                },
+            ) if id == actual_id
+                && params.len() == actual_params.len()
+                && captures.len() == actual_captures.len() =>
+            {
+                self.unify_type_holes(ret, actual_ret)
+                    && params
+                        .iter()
+                        .zip(actual_params.iter())
+                        .all(|(expected, actual)| self.unify_type_holes(expected, actual))
+                    && captures
+                        .iter()
+                        .zip(actual_captures.iter())
+                        .all(|(expected, actual)| self.unify_type_holes(expected, actual))
+            }
+            _ => expected.unqualified() == actual.unqualified(),
+        }
+    }
+
+    fn unify_ty_for_inference(
+        &mut self,
+        pattern: &Ty,
+        actual: &Ty,
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let pattern = self.resolve_type_holes(pattern);
+        let actual = self.resolve_type_holes(actual);
+        match &pattern {
+            Ty::Hole(id) => self.bind_type_hole(*id, &actual),
+            Ty::Const(inner) => self.unify_ty_for_inference(inner, actual.unqualified(), subst),
+            Ty::Generic(name) => match subst.get(name).cloned() {
+                Some(Ty::Generic(existing)) if existing == *name => {
+                    subst.insert(name.clone(), actual);
+                    true
+                }
+                Some(existing) => {
+                    let ok = self.unify_ty_for_inference(&existing, &actual, subst);
+                    if ok {
+                        subst.insert(name.clone(), self.resolve_type_holes(&existing));
+                    }
+                    ok
+                }
+                None => {
+                    subst.insert(name.clone(), actual);
+                    true
+                }
+            },
+            Ty::Pointer {
+                nullable,
+                inner: pattern_inner,
+            } => match actual.unqualified() {
+                Ty::Pointer {
+                    nullable: actual_nullable,
+                    inner: actual_inner,
+                } if nullable == actual_nullable => {
+                    self.unify_ty_for_inference(pattern_inner, actual_inner, subst)
+                }
+                _ => false,
+            },
+            Ty::Array {
+                len,
+                elem: pattern_elem,
+            } => match actual.unqualified() {
+                Ty::Array {
+                    len: actual_len,
+                    elem: actual_elem,
+                } if len == actual_len => {
+                    self.unify_ty_for_inference(pattern_elem, actual_elem, subst)
+                }
+                _ => false,
+            },
+            Ty::Slice(pattern_elem) => match actual.unqualified() {
+                Ty::Slice(actual_elem) => {
+                    self.unify_ty_for_inference(pattern_elem, actual_elem, subst)
+                }
+                Ty::Array {
+                    elem: actual_elem, ..
+                } => self.unify_ty_for_inference(pattern_elem, actual_elem, subst),
+                _ => false,
+            },
+            Ty::Named { name, args } => match actual.unqualified() {
+                Ty::Named {
+                    name: actual_name,
+                    args: actual_args,
+                } if name == actual_name && args.len() == actual_args.len() => args
+                    .iter()
+                    .zip(actual_args.iter())
+                    .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
+                _ => false,
+            },
+            Ty::DynamicInterface { name, args } => match actual.unqualified() {
+                Ty::DynamicInterface {
+                    name: actual_name,
+                    args: actual_args,
+                } if name == actual_name && args.len() == actual_args.len() => args
+                    .iter()
+                    .zip(actual_args.iter())
+                    .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
+                _ => false,
+            },
+            Ty::Function { abi, ret, params } => match actual.unqualified() {
+                Ty::Function {
+                    abi: actual_abi,
+                    ret: actual_ret,
+                    params: actual_params,
+                } if abi == actual_abi && params.len() == actual_params.len() => {
+                    self.unify_ty_for_inference(ret, actual_ret, subst)
+                        && params
+                            .iter()
+                            .zip(actual_params.iter())
+                            .all(|(pattern, actual)| {
+                                self.unify_ty_for_inference(pattern, actual, subst)
+                            })
+                }
+                _ => false,
+            },
+            Ty::Closure { ret, params } => match actual.unqualified() {
+                Ty::Closure {
+                    ret: actual_ret,
+                    params: actual_params,
+                }
+                | Ty::ClosureInstance {
+                    ret: actual_ret,
+                    params: actual_params,
+                    ..
+                } if params.len() == actual_params.len() => {
+                    self.unify_ty_for_inference(ret, actual_ret, subst)
+                        && params
+                            .iter()
+                            .zip(actual_params.iter())
+                            .all(|(pattern, actual)| {
+                                self.unify_ty_for_inference(pattern, actual, subst)
+                            })
+                }
+                _ => false,
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => match actual.unqualified() {
+                Ty::ClosureInstance {
+                    id: actual_id,
+                    ret: actual_ret,
+                    params: actual_params,
+                    captures: actual_captures,
+                } if id == actual_id
+                    && params.len() == actual_params.len()
+                    && captures.len() == actual_captures.len() =>
+                {
+                    self.unify_ty_for_inference(ret, actual_ret, subst)
+                        && params
+                            .iter()
+                            .zip(actual_params.iter())
+                            .all(|(pattern, actual)| {
+                                self.unify_ty_for_inference(pattern, actual, subst)
+                            })
+                        && captures
+                            .iter()
+                            .zip(actual_captures.iter())
+                            .all(|(pattern, actual)| {
+                                self.unify_ty_for_inference(pattern, actual, subst)
+                            })
+                }
+                _ => false,
+            },
+            other => other == actual.unqualified(),
+        }
+    }
+
+    fn check_local_decl_init(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        ty: &Type,
+        local_name: &str,
+        init: Option<&Expr>,
+    ) -> CheckedLocalInit {
+        if !hir_type_contains_hole(ty) {
+            let ty = self.lower_type(ty);
+            self.reject_invalid_plain_value_type(&ty, span, "local variable");
+            let init = if ty.is_erased_value() {
+                if init.is_some() {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        "void values are implicit and cannot be explicitly initialized",
+                    ));
+                }
+                None
+            } else {
+                init.and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
+            };
+            if let Some(init) = &init {
+                self.require_assignable(&ty, &init.ty, span);
+            }
+            return CheckedLocalInit {
+                assigned: init.is_some() || ty.is_erased_value(),
+                ty,
+                init,
+            };
+        }
+
+        let Some(init_expr) = init else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("type hole in local `{local_name}` requires an initializer"),
+            ));
+            return CheckedLocalInit {
+                ty: Ty::Unknown,
+                init: None,
+                assigned: false,
+            };
+        };
+
+        let declared_ty = self.lower_type_allowing_holes(ty);
+        let expected = (!matches!(declared_ty, Ty::Hole(_))).then_some(&declared_ty);
+        let checked_init = self.check_expr(scopes, init_expr, expected);
+        if let Some(init) = &checked_init {
+            self.unify_type_holes(&declared_ty, &init.ty);
+        }
+
+        let mut solved_ty = self.resolve_type_holes(&declared_ty);
+        if contains_type_hole(&solved_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("cannot infer type hole in local `{local_name}` from initializer"),
+            ));
+            solved_ty = Ty::Unknown;
+        } else {
+            self.ensure_enum_instance(&solved_ty);
+            self.ensure_struct_instance(&solved_ty);
+            self.reject_invalid_plain_value_type(&solved_ty, span, "local variable");
+        }
+
+        let init = checked_init.map(|init| {
+            if matches!(solved_ty, Ty::Unknown) {
+                init
+            } else {
+                self.coerce_expr_to_expected(init, Some(&solved_ty))
+            }
+        });
+        if let Some(init) = &init {
+            self.require_assignable(&solved_ty, &init.ty, span);
+        }
+        if solved_ty.is_erased_value() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "void values are implicit and cannot be explicitly initialized",
+            ));
+            return CheckedLocalInit {
+                ty: solved_ty,
+                init: None,
+                assigned: true,
+            };
+        }
+
+        CheckedLocalInit {
+            assigned: init.is_some(),
+            ty: solved_ty,
+            init,
+        }
     }
 
     fn expand_type_alias(
@@ -1054,6 +1566,7 @@ impl TypeChecker {
         def_id: DefId,
         args: &[Type],
         outer_subst: &HashMap<String, Ty>,
+        allow_holes: bool,
     ) -> Ty {
         if self.alias_expansion_stack.contains(&def_id) {
             let name = self.resolved.def(def_id).name.clone();
@@ -1085,12 +1598,12 @@ impl TypeChecker {
         }
         let mut subst = outer_subst.clone();
         for (generic, arg) in template.generics.iter().zip(args.iter()) {
-            let concrete = self.lower_type_with_subst(arg, outer_subst);
+            let concrete = self.lower_type_with_subst_inner(arg, outer_subst, allow_holes);
             subst.insert(generic.clone(), concrete);
         }
         self.alias_expansion_stack.push(def_id);
         let ty = match &template.target {
-            TypeAliasTarget::Type(ty) => self.lower_type_with_subst(ty, &subst),
+            TypeAliasTarget::Type(ty) => self.lower_type_with_subst_inner(ty, &subst, allow_holes),
             TypeAliasTarget::CSpelling { abi, spelling } => Ty::CSpelling {
                 abi: abi.clone(),
                 spelling: spelling.clone(),
@@ -2063,30 +2576,15 @@ impl TypeChecker {
                 local_id,
                 init,
             } => {
-                let ty = self.lower_type(ty);
-                self.reject_invalid_plain_value_type(&ty, stmt.span, "local variable");
-                let init = if ty.is_erased_value() {
-                    if init.is_some() {
-                        self.diagnostics.push(Diagnostic::new(
-                            stmt.span,
-                            "void values are implicit and cannot be explicitly initialized",
-                        ));
-                    }
-                    None
-                } else {
-                    init.as_ref()
-                        .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
-                };
-                if let Some(init) = &init {
-                    self.require_assignable(&ty, &init.ty, stmt.span);
-                }
+                let checked =
+                    self.check_local_decl_init(scopes, stmt.span, ty, &name.name, init.as_ref());
                 if let Err(name) = scopes.insert(
                     *local_id,
                     Binding {
                         name: name.name.clone(),
-                        ty: ty.clone(),
+                        ty: checked.ty.clone(),
                         narrowed_ty: None,
-                        assigned: init.is_some() || ty.is_erased_value(),
+                        assigned: checked.assigned,
                         immutable: false,
                     },
                 ) {
@@ -2097,10 +2595,10 @@ impl TypeChecker {
                 }
                 (
                     TStmtKind::VarDecl {
-                        ty,
+                        ty: checked.ty,
                         name: name.name.clone(),
                         local_id: *local_id,
-                        init,
+                        init: checked.init,
                     },
                     Flow::fallthrough(),
                 )
@@ -2334,33 +2832,22 @@ impl TypeChecker {
                 local_id,
                 init: initializer,
             } => {
-                let ty = self.lower_type(ty);
-                self.reject_invalid_plain_value_type(&ty, name.span, "local variable");
-                let checked_init = if ty.is_erased_value() {
-                    if initializer.is_some() {
-                        self.diagnostics.push(Diagnostic::new(
-                            name.span,
-                            "void values are implicit and cannot be explicitly initialized",
-                        ));
-                    }
-                    None
-                } else {
-                    initializer
-                        .as_ref()
-                        .and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
-                };
-                if let Some(init) = &checked_init {
-                    self.require_assignable(&ty, &init.ty, init.span);
-                }
+                let checked = self.check_local_decl_init(
+                    scopes,
+                    name.span,
+                    ty,
+                    &name.name,
+                    initializer.as_ref(),
+                );
                 let local_name = name.name.clone();
                 let local_span = name.span;
                 if let Err(duplicate) = scopes.insert(
                     *local_id,
                     Binding {
                         name: local_name.clone(),
-                        ty: ty.clone(),
+                        ty: checked.ty.clone(),
                         narrowed_ty: None,
-                        assigned: checked_init.is_some() || ty.is_erased_value(),
+                        assigned: checked.assigned,
                         immutable: false,
                     },
                 ) {
@@ -2370,10 +2857,10 @@ impl TypeChecker {
                     ));
                 }
                 Some(TForInit::VarDecl {
-                    ty,
+                    ty: checked.ty,
                     name: local_name,
                     local_id: *local_id,
-                    init: checked_init,
+                    init: checked.init,
                 })
             }
             ForInit::Assign { target, value } => {
@@ -2892,7 +3379,38 @@ impl TypeChecker {
                     return None;
                 };
                 let instance_name = enum_instance_name(type_name, args);
-                let Some(struct_fields) = self.structs.get(&instance_name).cloned() else {
+                let struct_fields = if let Some(fields) = self.structs.get(&instance_name).cloned()
+                {
+                    fields
+                } else if let Some(template) = self.struct_templates.get(type_name).cloned() {
+                    if template.generics.len() != args.len() {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            format!(
+                                "struct `{type_name}` expects {} type arguments, got {}",
+                                template.generics.len(),
+                                args.len()
+                            ),
+                        ));
+                        return None;
+                    }
+                    let subst = template
+                        .generics
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect::<HashMap<_, _>>();
+                    template
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name.name.clone(),
+                                self.lower_type_with_subst_allowing_holes(&field.ty, &subst),
+                            )
+                        })
+                        .collect()
+                } else {
                     self.diagnostics.push(Diagnostic::new(
                         expr.span,
                         format!("`{}` is not a known struct", expected.unwrap()),
@@ -2918,6 +3436,7 @@ impl TypeChecker {
                         ));
                         continue;
                     };
+                    let field_ty = self.resolve_type_holes(field_ty);
                     if field_ty.is_erased_value() {
                         self.diagnostics.push(Diagnostic::new(
                             init.name.span,
@@ -2925,8 +3444,8 @@ impl TypeChecker {
                         ));
                         continue;
                     }
-                    let value = self.check_expr(scopes, &init.expr, Some(field_ty))?;
-                    self.require_assignable(field_ty, &value.ty, init.expr.span);
+                    let value = self.check_expr(scopes, &init.expr, Some(&field_ty))?;
+                    self.require_assignable(&field_ty, &value.ty, init.expr.span);
                     checked_fields.push((init.name.name.clone(), value));
                 }
                 for (field_name, field_ty) in &struct_fields {
@@ -2937,12 +3456,22 @@ impl TypeChecker {
                         ));
                     }
                 }
+                let ty = self.resolve_type_holes(&Ty::Named {
+                    name: type_name.clone(),
+                    args: args.clone(),
+                });
+                self.ensure_struct_instance(&ty);
+                let Ty::Named {
+                    name: concrete_name,
+                    args: concrete_args,
+                } = &ty
+                else {
+                    unreachable!("struct literal expected type is named");
+                };
+                let instance_name = enum_instance_name(concrete_name, concrete_args);
                 TExpr {
                     span: expr.span,
-                    ty: Ty::Named {
-                        name: type_name.clone(),
-                        args: args.clone(),
-                    },
+                    ty,
                     kind: TExprKind::StructLiteral {
                         type_name: instance_name,
                         fields: checked_fields,
@@ -4255,7 +4784,7 @@ impl TypeChecker {
         }
         let expected_hints = if let Some(expected) = expected {
             let mut hints = subst.clone();
-            unify_ty(&sig.ret, expected, &mut hints);
+            self.unify_ty_for_inference(&sig.ret, expected, &mut hints);
             hints
         } else {
             subst.clone()
@@ -4288,7 +4817,7 @@ impl TypeChecker {
             }
             let checked =
                 self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
-            unify_ty(param_ty, &checked.ty, &mut subst);
+            self.unify_ty_for_inference(param_ty, &checked.ty, &mut subst);
         }
         for idx in deferred_closure_args {
             let Some(param_ty) = sig.params.get(idx) else {
@@ -4300,14 +4829,27 @@ impl TypeChecker {
             let (_, expected_for_arg) = inference_arg_expected(param_ty, &subst, &expected_hints);
             let checked =
                 self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
-            unify_ty(param_ty, &checked.ty, &mut subst);
+            self.unify_ty_for_inference(param_ty, &checked.ty, &mut subst);
         }
         if let Some(expected) = expected {
-            unify_ty(&sig.ret, expected, &mut subst);
+            self.unify_ty_for_inference(&sig.ret, expected, &mut subst);
         }
 
         for generic in &sig.generics {
             if !subst.contains_key(&generic.name) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "could not infer generic parameter `{}` for `{}`",
+                        generic.name, sig.name
+                    ),
+                ));
+                return None;
+            }
+            if subst
+                .get(&generic.name)
+                .is_some_and(|ty| contains_type_hole(&self.resolve_type_holes(ty)))
+            {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!(
@@ -4323,14 +4865,18 @@ impl TypeChecker {
         let instance_args = sig
             .generics
             .iter()
-            .filter_map(|generic| subst.get(&generic.name).cloned())
+            .filter_map(|generic| {
+                subst
+                    .get(&generic.name)
+                    .map(|ty| self.resolve_type_holes(ty))
+            })
             .collect::<Vec<_>>();
         let params = sig
             .params
             .iter()
-            .map(|param| substitute_ty(param, &subst))
+            .map(|param| self.resolve_type_holes(&substitute_ty(param, &subst)))
             .collect::<Vec<_>>();
-        let ret = substitute_ty(&sig.ret, &subst);
+        let ret = self.resolve_type_holes(&substitute_ty(&sig.ret, &subst));
         Some((
             FunctionSig {
                 def_id: sig.def_id,
@@ -4574,7 +5120,7 @@ impl TypeChecker {
         }
         if let Some(expected) = expected {
             let ret = self.lower_type_with_subst(&interface.ret, &subst);
-            unify_ty(&ret, expected, &mut subst);
+            self.unify_ty_for_inference(&ret, expected, &mut subst);
         }
         let mut checked_args = vec![first_arg.clone()];
         for (idx, arg) in args.iter().enumerate() {
@@ -4595,7 +5141,7 @@ impl TypeChecker {
             } else {
                 self.check_expr(scopes, arg, Some(&param_ty))?
             };
-            unify_ty(&param_ty, &checked.ty, &mut subst);
+            self.unify_ty_for_inference(&param_ty, &checked.ty, &mut subst);
             checked_args.push(checked);
         }
         if interface.params.len() != args.len() {
@@ -4609,7 +5155,11 @@ impl TypeChecker {
             ));
         }
         for generic in &interface.generics {
-            if subst.get(generic).is_none_or(contains_generic) {
+            if subst.get(generic).is_none_or(contains_generic)
+                || subst
+                    .get(generic)
+                    .is_some_and(|ty| contains_type_hole(&self.resolve_type_holes(ty)))
+            {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!("could not infer interface generic parameter `{generic}` for `{name}`"),
@@ -4620,9 +5170,11 @@ impl TypeChecker {
         let interface_args = interface
             .generics
             .iter()
-            .filter_map(|generic| subst.get(generic).cloned())
+            .filter_map(|generic| subst.get(generic).map(|ty| self.resolve_type_holes(ty)))
             .collect::<Vec<_>>();
-        let receiver_ty = subst.get(&interface.generics[0]).cloned();
+        let receiver_ty = subst
+            .get(&interface.generics[0])
+            .map(|ty| self.resolve_type_holes(ty));
         if let Some(implementation) = self.find_or_instantiate_impl_by_full_args(
             &name,
             &interface_args,
@@ -4749,32 +5301,45 @@ impl TypeChecker {
         let Some(expected) = expected else {
             return expr;
         };
-        if closure_instance_satisfies_signature(expected, &expr.ty) {
+        if contains_type_hole(expected) || contains_type_hole(&expr.ty) {
+            self.unify_type_holes(expected, &expr.ty);
+        }
+        let expected = self.resolve_type_holes(expected);
+        let expr_ty = self.resolve_type_holes(&expr.ty);
+        if closure_instance_satisfies_signature(&expected, &expr_ty) {
             return TExpr {
                 span: expr.span,
-                ty: expected.clone(),
+                ty: expected,
                 kind: expr.kind,
             };
         }
-        if expected.can_assign_from(&expr.ty)
-            || contains_generic(expected)
-            || matches!(expr.ty, Ty::Unknown)
+        if expected.can_assign_from(&expr_ty)
+            || contains_generic(&expected)
+            || matches!(expr_ty, Ty::Unknown)
         {
             if let (
                 Ty::Slice(expected_elem),
                 Ty::Array {
                     elem: actual_elem, ..
                 },
-            ) = (expected, &expr.ty)
+            ) = (&expected, &expr_ty)
                 && expected_elem == actual_elem
             {
                 return TExpr {
                     span: expr.span,
-                    ty: expected.clone(),
+                    ty: expected,
                     kind: TExprKind::ArrayToSlice(Box::new(expr)),
                 };
             }
-            return expr;
+            return TExpr {
+                span: expr.span,
+                ty: if contains_type_hole(&expr.ty) {
+                    expected
+                } else {
+                    expr.ty
+                },
+                kind: expr.kind,
+            };
         }
         if let (
             Ty::Pointer {
@@ -4785,20 +5350,20 @@ impl TypeChecker {
                 nullable: true,
                 inner: actual_inner,
             },
-        ) = (expected, &expr.ty)
+        ) = (&expected, &expr_ty)
             && expected_inner == actual_inner
             && matches!(expr.kind, TExprKind::Literal(Literal::Null))
         {
             return expr;
         }
-        if let Ty::DynamicInterface { name, args } = expected
-            && self.type_satisfies_dynamic_view(name, args, &expr.ty)
+        if let Ty::DynamicInterface { name, args } = &expected
+            && self.type_satisfies_dynamic_view(name, args, &expr_ty)
         {
             return TExpr {
                 span: expr.span,
-                ty: expected.clone(),
+                ty: expected,
                 kind: TExprKind::MakeDynamicInterface {
-                    concrete_ty: expr.ty.clone(),
+                    concrete_ty: expr_ty,
                     expr: Box::new(expr),
                 },
             };
@@ -4806,24 +5371,24 @@ impl TypeChecker {
         if let Ty::Closure {
             ret: expected_ret,
             params: expected_params,
-        } = expected
+        } = &expected
             && let Ty::Function {
                 abi: None,
                 ret: actual_ret,
                 params: actual_params,
-            } = expr.ty.unqualified()
+            } = expr_ty.unqualified()
             && expected_params == actual_params
             && expected_ret.can_assign_from(actual_ret)
         {
             return TExpr {
                 span: expr.span,
-                ty: expected.clone(),
+                ty: expected,
                 kind: TExprKind::FunctionToClosure(Box::new(expr)),
             };
         }
         self.diagnostics.push(Diagnostic::new(
             expr.span,
-            format!("expected `{expected}`, got `{}`", expr.ty),
+            format!("expected `{expected}`, got `{expr_ty}`"),
         ));
         expr
     }
@@ -5010,14 +5575,23 @@ impl TypeChecker {
                 .collect::<Vec<_>>()
         };
         for (arg, expected_ty) in payload_inputs {
-            let checked = self.check_expr(scopes, arg, Some(expected_ty))?;
-            self.require_assignable(expected_ty, &checked.ty, checked.span);
+            let expected_ty = self.resolve_type_holes(expected_ty);
+            let checked = self.check_expr(scopes, arg, Some(&expected_ty))?;
+            self.require_assignable(&expected_ty, &checked.ty, checked.span);
             if use_logical_payload || !expected_ty.is_erased_value() {
                 payload.push(checked);
             }
         }
 
+        let enum_ty = self.resolve_type_holes(&enum_ty);
         self.ensure_enum_instance(&enum_ty);
+        let Ty::Named {
+            name: enum_name,
+            args: enum_args,
+        } = &enum_ty
+        else {
+            unreachable!("variant enum type is always named");
+        };
         let type_name = enum_instance_name(enum_name, enum_args);
         Some(TExpr {
             span,
@@ -5234,10 +5808,18 @@ impl TypeChecker {
     }
 
     fn require_assignable(&mut self, expected: &Ty, actual: &Ty, span: crate::span::Span) {
-        if contains_generic(expected) || contains_generic(actual) {
+        if contains_type_hole(expected) || contains_type_hole(actual) {
+            self.unify_type_holes(expected, actual);
+        }
+        let expected = self.resolve_type_holes(expected);
+        let actual = self.resolve_type_holes(actual);
+        if contains_generic(&expected) || contains_generic(&actual) {
             return;
         }
-        if !expected.can_assign_from(actual) && !matches!(actual, Ty::Unknown) {
+        if matches!(expected, Ty::Unknown) || matches!(actual, Ty::Unknown) {
+            return;
+        }
+        if !expected.can_assign_from(&actual) {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("expected `{expected}`, got `{actual}`"),
@@ -5494,7 +6076,8 @@ impl TypeChecker {
                     reason: MessageDerivationFailureReason::Unknown,
                 })
             }
-            Ty::Never
+            Ty::Hole(_)
+            | Ty::Never
             | Ty::Void
             | Ty::Bool
             | Ty::Char
@@ -5689,7 +6272,8 @@ impl TypeChecker {
                 }
                 false
             }
-            Ty::Never
+            Ty::Hole(_)
+            | Ty::Never
             | Ty::Pointer { .. }
             | Ty::Slice(_)
             | Ty::DynamicInterface { .. }
@@ -5747,7 +6331,8 @@ impl TypeChecker {
                 }
                 false
             }
-            Ty::Never
+            Ty::Hole(_)
+            | Ty::Never
             | Ty::Void
             | Ty::Bool
             | Ty::Char
@@ -5805,7 +6390,8 @@ impl TypeChecker {
                 }
                 false
             }
-            Ty::Never
+            Ty::Hole(_)
+            | Ty::Never
             | Ty::Void
             | Ty::Bool
             | Ty::Char
@@ -6714,7 +7300,7 @@ fn collect_layout_edges_from_type(
     alias_stack: &mut Vec<DefId>,
 ) {
     match &ty.kind {
-        TypeKind::Never => {}
+        TypeKind::Hole | TypeKind::Never => {}
         TypeKind::Named(type_name, _args) => {
             let TypeNameKind::Def(def_id) = type_name.kind else {
                 return;
@@ -6808,6 +7394,7 @@ fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
 
 fn ty_from_hir_surface(ty: &Type, resolved: &ResolvedProgram) -> Ty {
     match &ty.kind {
+        TypeKind::Hole => Ty::Unknown,
         TypeKind::Never => Ty::Never,
         TypeKind::Void => Ty::Void,
         TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
@@ -6855,6 +7442,7 @@ fn ty_from_hir_surface(ty: &Type, resolved: &ResolvedProgram) -> Ty {
 
 fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
     match ty {
+        Ty::Hole(id) => Ty::Hole(*id),
         Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
         Ty::Generic(name) => subst
             .get(name)
@@ -6938,6 +7526,7 @@ fn inference_arg_expected(
 
 fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
     match pattern {
+        Ty::Hole(_) => true,
         Ty::Const(inner) => unify_ty(inner, actual.unqualified(), subst),
         Ty::Generic(name) => match subst.get(name) {
             Some(Ty::Generic(existing)) if existing == name => {
@@ -7105,6 +7694,7 @@ fn unify_receiver_param(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, T
 
 fn contains_generic(ty: &Ty) -> bool {
     match ty {
+        Ty::Hole(_) => false,
         Ty::Const(inner) => contains_generic(inner),
         Ty::Generic(_) => true,
         Ty::Pointer { inner, .. } => contains_generic(inner),
@@ -7130,6 +7720,50 @@ fn contains_generic(ty: &Ty) -> bool {
     }
 }
 
+fn contains_type_hole(ty: &Ty) -> bool {
+    match ty {
+        Ty::Hole(_) => true,
+        Ty::Const(inner) => contains_type_hole(inner),
+        Ty::Pointer { inner, .. } => contains_type_hole(inner),
+        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_type_hole(elem),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            args.iter().any(contains_type_hole)
+        }
+        Ty::Function { ret, params, .. } => {
+            contains_type_hole(ret) || params.iter().any(contains_type_hole)
+        }
+        Ty::Closure { ret, params } => {
+            contains_type_hole(ret) || params.iter().any(contains_type_hole)
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_type_hole(ret)
+                || params.iter().any(contains_type_hole)
+                || captures.iter().any(contains_type_hole)
+        }
+        _ => false,
+    }
+}
+
+fn hir_type_contains_hole(ty: &Type) -> bool {
+    match &ty.kind {
+        TypeKind::Hole => true,
+        TypeKind::Pointer { inner, .. } | TypeKind::Const(inner) | TypeKind::Slice(inner) => {
+            hir_type_contains_hole(inner)
+        }
+        TypeKind::Array { elem, .. } => hir_type_contains_hole(elem),
+        TypeKind::Named(_, args) => args.iter().any(hir_type_contains_hole),
+        TypeKind::Function { ret, params, .. } | TypeKind::Closure { ret, params } => {
+            hir_type_contains_hole(ret) || params.iter().any(hir_type_contains_hole)
+        }
+        _ => false,
+    }
+}
+
 fn type_contains_plain_never_value(ty: &Ty) -> bool {
     match ty {
         Ty::Const(inner) => type_contains_plain_never_value(inner),
@@ -7141,6 +7775,7 @@ fn type_contains_plain_never_value(ty: &Ty) -> bool {
         Ty::Pointer { .. }
         | Ty::Named { .. }
         | Ty::DynamicInterface { .. }
+        | Ty::Hole(_)
         | Ty::Generic(_)
         | Ty::Void
         | Ty::Bool
@@ -7174,6 +7809,7 @@ fn type_contains_closure(ty: &Ty) -> bool {
             type_contains_closure(ret) || params.iter().any(type_contains_closure)
         }
         Ty::Never
+        | Ty::Hole(_)
         | Ty::Void
         | Ty::Bool
         | Ty::Char
@@ -7509,13 +8145,14 @@ fn ast_type_mentions_name(ty: &Type, name: &str) -> bool {
                     .iter()
                     .any(|param| ast_type_mentions_name(param, name))
         }
-        TypeKind::Never | TypeKind::Void | TypeKind::Primitive(_) => false,
+        TypeKind::Hole | TypeKind::Never | TypeKind::Void | TypeKind::Primitive(_) => false,
     }
 }
 
 fn mangle_ty_fragment(ty: &Ty) -> String {
     match ty {
         Ty::Never => "never".to_string(),
+        Ty::Hole(_) => "hole".to_string(),
         Ty::Const(inner) => format!("const_{}", mangle_ty_fragment(inner)),
         Ty::Void => "void".to_string(),
         Ty::Bool => "bool".to_string(),

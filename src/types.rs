@@ -4,6 +4,7 @@ use crate::ast::{PrimitiveType, Type, TypeKind};
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
+    Hole(usize),
     Never,
     Void,
     Bool,
@@ -64,6 +65,7 @@ impl Ty {
     pub fn from_ast(ty: &Type) -> Self {
         match &ty.kind {
             TypeKind::Never => Ty::Never,
+            TypeKind::Hole => Ty::Unknown,
             TypeKind::Void => Ty::Void,
             TypeKind::Primitive(primitive) => match primitive {
                 PrimitiveType::Bool => Ty::Bool,
@@ -162,6 +164,10 @@ impl Ty {
     }
 
     pub fn can_assign_from(&self, source: &Ty) -> bool {
+        if matches!(self.unqualified(), Ty::Hole(_)) || matches!(source.unqualified(), Ty::Hole(_))
+        {
+            return true;
+        }
         if source.unqualified().is_never() {
             return true;
         }
@@ -231,6 +237,7 @@ impl fmt::Display for Ty {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Ty::Never => write!(f, "never"),
+            Ty::Hole(_) => write!(f, "_"),
             Ty::Void => write!(f, "void"),
             Ty::Bool => write!(f, "bool"),
             Ty::Char => write!(f, "char"),

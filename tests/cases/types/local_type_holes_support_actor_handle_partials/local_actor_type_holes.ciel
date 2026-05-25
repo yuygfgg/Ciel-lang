@@ -1,0 +1,26 @@
+// ciel-test: compile
+
+import /std/actor;
+import /std/result;
+
+struct State {
+    i64 total;
+}
+
+enum Command {
+    Add(i64),
+}
+
+Result<State, Error> handle(State state, Command command) {
+    switch (command) {
+        case Add(value):
+            return Ok({ total: state.total + value });
+    }
+}
+
+i64 main() {
+    State initial = { total: 0 };
+    _ handler = |State state, Command command| handle(state, command);
+    Actor<_> actor = must(spawn_actor<State, Command>(initial, handler));
+    return 0;
+}

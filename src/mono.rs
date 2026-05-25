@@ -710,6 +710,7 @@ impl MonoContext {
             return;
         }
         match ty {
+            Ty::Hole(_) => {}
             Ty::Const(inner) => self.mark_message_clone_impls_inner(inner, seen),
             Ty::Array { elem, .. } => self.mark_message_clone_impls_inner(elem, seen),
             Ty::ClosureInstance { captures, .. } => {
@@ -1146,7 +1147,8 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_ty(param);
                 }
             }
-            Ty::Never
+            Ty::Hole(_)
+            | Ty::Never
             | Ty::Void
             | Ty::Bool
             | Ty::Char
@@ -1271,6 +1273,7 @@ impl<'a> AggregateCollector<'a> {
 
     fn lower_ast_type(&mut self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
         match &ty.kind {
+            TypeKind::Hole => Ty::Unknown,
             TypeKind::Never => Ty::Never,
             TypeKind::Void => Ty::Void,
             TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
@@ -1467,7 +1470,8 @@ fn type_complexity(ty: &Ty) -> usize {
                 + params.iter().map(type_complexity).sum::<usize>()
                 + captures.iter().map(type_complexity).sum::<usize>()
         }
-        Ty::Never
+        Ty::Hole(_)
+        | Ty::Never
         | Ty::Void
         | Ty::Bool
         | Ty::Char
@@ -1515,7 +1519,8 @@ fn ty_contains(container: &Ty, needle: &Ty) -> bool {
                 || params.iter().any(|param| ty_contains(param, needle))
                 || captures.iter().any(|capture| ty_contains(capture, needle))
         }
-        Ty::Never
+        Ty::Hole(_)
+        | Ty::Never
         | Ty::Void
         | Ty::Bool
         | Ty::Char
@@ -1556,6 +1561,7 @@ fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
 
 fn mangle_ty_fragment(ty: &Ty) -> String {
     match ty {
+        Ty::Hole(_) => "hole".to_string(),
         Ty::Const(inner) => format!("const_{}", mangle_ty_fragment(inner)),
         Ty::Never => "never".to_string(),
         Ty::Void => "void".to_string(),

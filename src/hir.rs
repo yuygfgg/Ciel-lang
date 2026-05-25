@@ -193,6 +193,7 @@ pub struct Type {
 
 #[derive(Clone, Debug)]
 pub enum TypeKind {
+    Hole,
     Never,
     Void,
     Primitive(PrimitiveType),
@@ -778,6 +779,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
     fn lower_type(&mut self, ty: &ast::Type) -> Type {
         let kind = match &ty.kind {
             ast::TypeKind::Never => TypeKind::Never,
+            ast::TypeKind::Hole => TypeKind::Hole,
             ast::TypeKind::Void => TypeKind::Void,
             ast::TypeKind::Primitive(primitive) => TypeKind::Primitive(primitive.clone()),
             ast::TypeKind::Named(path, args) => TypeKind::Named(

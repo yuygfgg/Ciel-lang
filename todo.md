@@ -195,6 +195,37 @@ currently inconsistent with the design.
 - [x] Avoid backend fallback code after exhaustive enum switches when the type
       checker has proven all paths return.
 
+## P1: Local Type Holes
+
+- [x] Parse `_` as a type hole in type grammar while keeping pattern `_`
+      unchanged.
+- [x] Represent type holes in AST/HIR type nodes so partial annotations such as
+      `Actor<_>`, `Result<Actor<_>, Error>`, `[]_`, and `[3]_` survive until type
+      checking.
+- [x] Reject type holes outside initialized local declarations and initialized
+      `for` declarations, including function signatures, struct fields, enum
+      payloads, interface declarations, impl signatures, type aliases, extern
+      declarations, casts, and explicit generic type arguments.
+- [x] Require an initializer when a local or `for` declaration contains a type
+      hole.
+- [x] During local declaration checking, replace holes with fresh inference
+      variables and check the initializer against the partial expected type.
+- [x] Solve holes using the existing inference rules for literals, generic calls,
+      aggregate literals, array literals, nullable pointers, and closure
+      literals.
+- [x] Reject unresolved holes before the local binding reaches THIR,
+      monomorphization, or code generation.
+- [x] Preserve ordinary assignment semantics: `_ x = expr` declares a local, but
+      `x = expr` remains assignment to an existing binding and misspelled names
+      stay unknown-name errors.
+- [x] Add diagnostics for missing initializers, illegal hole contexts, unresolved
+      holes, `null` without nullable pointer context, empty array literals,
+      struct literals without an expected struct type, untyped closure
+      parameters, and block-bodied closures without expected return context.
+- [x] Add fixtures for whole-local holes, partial aggregate holes, slice and
+      fixed-array holes, concrete closure local inference, initialized `for`
+      declarations, later assignment type stability, and rejection contexts.
+
 ## P1: Closures
 
 - [x] Parse `T |(A, B)|` callable type suffixes while keeping `T fn(A, B)`

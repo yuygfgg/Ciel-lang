@@ -558,6 +558,13 @@ impl Parser {
 
     fn parse_primary_type(&mut self) -> Result<Type, Diagnostic> {
         let token = self.peek().clone();
+        if token.kind == TokenKind::Ident && token.lexeme == "_" {
+            self.advance();
+            return Ok(Type {
+                span: token.span,
+                kind: TypeKind::Hole,
+            });
+        }
         match token.kind {
             TokenKind::Never => {
                 self.advance();

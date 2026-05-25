@@ -4820,7 +4820,7 @@ impl<'a> CGenerator<'a> {
                 };
                 self.c_return_decl(ret, &format!("(*{name})({params})"))
             }
-            Ty::Generic(_) | Ty::Unknown => c_base_decl("void", name),
+            Ty::Hole(_) | Ty::Generic(_) | Ty::Unknown => c_base_decl("void", name),
         }
     }
 
@@ -4893,6 +4893,7 @@ impl<'a> CGenerator<'a> {
             | Ty::DynamicInterface { .. }
             | Ty::Closure { .. }
             | Ty::ClosureInstance { .. }
+            | Ty::Hole(_)
             | Ty::Generic(_)
             | Ty::Unknown => {
                 format!("({}){{0}}", self.c_type(ty))
@@ -5195,6 +5196,7 @@ impl<'a> CGenerator<'a> {
 
 fn mangle_type(ty: &Ty) -> String {
     match ty {
+        Ty::Hole(_) => "hole".to_string(),
         Ty::Const(inner) => format!("const_{}", mangle_type(inner)),
         Ty::Never => "never".to_string(),
         Ty::Void => "void".to_string(),

@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: type hole in local `value` requires an initializer
+
+i64 main() {
+    _ value;
+    return 0;
+}

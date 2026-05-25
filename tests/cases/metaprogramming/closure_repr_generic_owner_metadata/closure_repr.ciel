@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+C choose<C>(C left, C right, bool use_left) {
+    if (use_left) {
+        return left;
+    }
+    return right;
+}
+
+T rebuild_captured<T>(T value) {
+    _ f = || value;
+    _ owned = meta::into_repr(f);
+    _ rebuilt = choose(f, meta::from_repr(owned), false);
+    return rebuilt();
+}
+
+i64 main() {
+    bool ok = rebuild_captured<bool>(true);
+    i64 value = rebuild_captured<i64>(41);
+    if (ok) {
+        return value - 41;
+    }
+    return 1;
+}

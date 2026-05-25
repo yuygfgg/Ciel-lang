@@ -1,0 +1,60 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+enum Token {
+    Number(i64),
+    Pair(i64, bool),
+    End,
+}
+
+interface<T> i64 count_payloads(*T value);
+interface<T> i64 active_payloads(*T value);
+
+impl count_payloads(*meta::HNil value) {
+    return 0;
+}
+
+impl<V, Tail: count_payloads> count_payloads(*meta::HCons<meta::PayloadRef<V>, Tail> value) {
+    return 1 + count_payloads(&value->tail);
+}
+
+impl<P: count_payloads> active_payloads(*meta::VariantRef<P> value) {
+    return count_payloads(&value->payload);
+}
+
+impl active_payloads(*meta::CoNil value) {
+    switch (*value) {
+    }
+}
+
+impl<H: active_payloads, Tail: active_payloads> active_payloads(*meta::Coproduct<H, Tail> value) {
+    switch (*value) {
+        case meta::This(head):
+            H local = head;
+            return active_payloads(&local);
+        case meta::Next(tail):
+            Tail local = tail;
+            return active_payloads(&local);
+    }
+}
+
+i64 main() {
+    Token token = Pair(10, true);
+    meta::RefRepr<Token> refs = meta::as_ref_repr(&token);
+    meta::Repr<Token> owned = meta::into_repr(token);
+    Token copy = meta::from_repr<Token>(owned);
+    i64 payloads = active_payloads(&refs);
+    switch (copy) {
+        case Pair(value, ok):
+            if (ok) {
+                return value + payloads - 12;
+            }
+            return 1;
+        case Number(_):
+            return 2;
+        case End:
+            return 3;
+    }
+}

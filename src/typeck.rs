@@ -978,7 +978,11 @@ impl TypeChecker {
                 } else if let TypeNameKind::Def(def_id) = &name.kind {
                     let def_id = *def_id;
                     let def = self.resolved.def(def_id).clone();
-                    if def.kind == DefKind::TypeAlias {
+                    if let Some(normalized) =
+                        self.lower_std_meta_repr_type(ty.span, def_id, args, subst, allow_holes)
+                    {
+                        normalized
+                    } else if def.kind == DefKind::TypeAlias {
                         self.expand_type_alias(ty.span, def_id, args, subst, allow_holes)
                     } else if let Some(interface) = self.interfaces.get(&def_id).cloned() {
                         let required_args = interface.generics.len().saturating_sub(1);
@@ -1103,6 +1107,7 @@ impl TypeChecker {
                     .collect(),
             },
         };
+        let lowered = self.normalize_meta_repr_markers(&lowered, ty.span);
         if !contains_type_hole(&lowered) {
             self.ensure_enum_instance(&lowered);
             self.ensure_struct_instance(&lowered);
@@ -1321,7 +1326,8 @@ impl TypeChecker {
         actual: &Ty,
         subst: &mut HashMap<String, Ty>,
     ) -> bool {
-        let pattern = self.resolve_type_holes(pattern);
+        let pattern = self.substitute_ty_normalized_silent(pattern, subst);
+        let pattern = self.resolve_type_holes(&pattern);
         let actual = self.resolve_type_holes(actual);
         match &pattern {
             Ty::Hole(id) => self.bind_type_hole(*id, &actual),
@@ -1611,6 +1617,312 @@ impl TypeChecker {
         };
         self.alias_expansion_stack.pop();
         ty
+    }
+
+    fn lower_std_meta_repr_type(
+        &mut self,
+        span: crate::span::Span,
+        def_id: DefId,
+        args: &[Type],
+        subst: &HashMap<String, Ty>,
+        allow_holes: bool,
+    ) -> Option<Ty> {
+        let borrowed = if self.is_std_meta_type(def_id, "RefRepr") {
+            true
+        } else if self.is_std_meta_type(def_id, "Repr") {
+            false
+        } else {
+            return None;
+        };
+        if args.len() != 1 {
+            let name = if borrowed { "RefRepr" } else { "Repr" };
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("meta::{name} requires exactly one type argument"),
+            ));
+            return Some(Ty::Unknown);
+        }
+        let source_ty = self.lower_type_with_subst_inner(&args[0], subst, allow_holes);
+        if contains_generic(&source_ty) || contains_type_hole(&source_ty) {
+            return Some(std_meta_repr_marker_ty(borrowed, source_ty));
+        }
+        Some(self.meta_repr_ty(span, &source_ty, borrowed))
+    }
+
+    fn normalize_meta_repr_markers(
+        &mut self,
+        ty: &Ty,
+        span: impl Into<Option<crate::span::Span>>,
+    ) -> Ty {
+        self.normalize_meta_repr_markers_inner(ty, span.into(), true)
+    }
+
+    fn normalize_meta_repr_markers_silent(&mut self, ty: &Ty) -> Ty {
+        self.normalize_meta_repr_markers_inner(ty, None, false)
+    }
+
+    fn normalize_meta_repr_markers_inner(
+        &mut self,
+        ty: &Ty,
+        span: Option<crate::span::Span>,
+        emit_diagnostics: bool,
+    ) -> Ty {
+        match ty {
+            Ty::Const(inner) => Ty::Const(Box::new(self.normalize_meta_repr_markers_inner(
+                inner,
+                span,
+                emit_diagnostics,
+            ))),
+            Ty::Pointer { nullable, inner } => Ty::Pointer {
+                nullable: *nullable,
+                inner: Box::new(self.normalize_meta_repr_markers_inner(
+                    inner,
+                    span,
+                    emit_diagnostics,
+                )),
+            },
+            Ty::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.normalize_meta_repr_markers_inner(
+                    elem,
+                    span,
+                    emit_diagnostics,
+                )),
+            },
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_meta_repr_markers_inner(
+                elem,
+                span,
+                emit_diagnostics,
+            ))),
+            Ty::Named { name, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics))
+                    .collect::<Vec<_>>();
+                if let Some(borrowed) = meta_repr_marker_name(name)
+                    && args.len() == 1
+                    && !contains_generic(&args[0])
+                    && !contains_type_hole(&args[0])
+                {
+                    if emit_diagnostics {
+                        return self.meta_repr_ty(span, &args[0], borrowed);
+                    }
+                    if let Some(normalized) = self.try_meta_repr_ty(&args[0], borrowed) {
+                        return normalized;
+                    }
+                }
+                Ty::Named {
+                    name: name.clone(),
+                    args,
+                }
+            }
+            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics))
+                    .collect(),
+            },
+            Ty::Function { abi, ret, params } => Ty::Function {
+                abi: abi.clone(),
+                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
+                params: params
+                    .iter()
+                    .map(|param| {
+                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
+                    })
+                    .collect(),
+            },
+            Ty::Closure { ret, params } => Ty::Closure {
+                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
+                params: params
+                    .iter()
+                    .map(|param| {
+                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
+                    })
+                    .collect(),
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => Ty::ClosureInstance {
+                id: *id,
+                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
+                params: params
+                    .iter()
+                    .map(|param| {
+                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
+                    })
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| {
+                        self.normalize_meta_repr_markers_inner(capture, span, emit_diagnostics)
+                    })
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn substitute_ty_normalized(
+        &mut self,
+        ty: &Ty,
+        subst: &HashMap<String, Ty>,
+        span: impl Into<Option<crate::span::Span>>,
+    ) -> Ty {
+        let substituted = substitute_ty(ty, subst);
+        self.normalize_meta_repr_markers(&substituted, span)
+    }
+
+    fn substitute_ty_normalized_silent(&mut self, ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
+        let substituted = substitute_ty(ty, subst);
+        self.normalize_meta_repr_markers_silent(&substituted)
+    }
+
+    fn inference_arg_expected(
+        &mut self,
+        param_ty: &Ty,
+        subst: &HashMap<String, Ty>,
+        expected_hints: &HashMap<String, Ty>,
+    ) -> (Ty, Option<Ty>) {
+        let expected_arg = self.substitute_ty_normalized_silent(param_ty, subst);
+        if !contains_generic(&expected_arg) {
+            return (expected_arg.clone(), Some(expected_arg));
+        }
+
+        let mut hinted_subst = expected_hints.clone();
+        for (name, ty) in subst {
+            hinted_subst.insert(name.clone(), ty.clone());
+        }
+        let hinted_arg = self.substitute_ty_normalized_silent(param_ty, &hinted_subst);
+        let expected_for_arg = if contains_generic(&hinted_arg) {
+            None
+        } else {
+            Some(hinted_arg)
+        };
+        (expected_arg, expected_for_arg)
+    }
+
+    fn meta_repr_ty(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+        borrowed: bool,
+    ) -> Ty {
+        self.meta_repr_ty_inner(span.into(), source_ty, borrowed, true)
+            .unwrap_or(Ty::Unknown)
+    }
+
+    fn try_meta_repr_ty(&mut self, source_ty: &Ty, borrowed: bool) -> Option<Ty> {
+        self.meta_repr_ty_inner(None, source_ty, borrowed, false)
+    }
+
+    fn meta_repr_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        borrowed: bool,
+        emit_diagnostics: bool,
+    ) -> Option<Ty> {
+        if contains_generic(source_ty) || contains_type_hole(source_ty) {
+            return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
+        }
+        match source_ty.unqualified() {
+            Ty::Named { name, args } => {
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                self.ensure_struct_instance(&instance_ty);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    return Some(self.meta_product_ty(
+                        fields.into_iter().map(|(_, ty)| ty),
+                        if borrowed { "FieldRef" } else { "Field" },
+                    ));
+                }
+                self.ensure_enum_instance(&instance_ty);
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    return Some(self.meta_sum_ty(&enm.variants, borrowed));
+                }
+                if emit_diagnostics {
+                    self.push_meta_unsupported_repr(span, source_ty);
+                }
+                None
+            }
+            Ty::ClosureInstance { captures, .. } => Some(self.meta_product_ty(
+                captures.iter().filter(|ty| !ty.is_erased_value()).cloned(),
+                if borrowed { "FieldRef" } else { "Field" },
+            )),
+            Ty::Closure { .. } => {
+                if emit_diagnostics {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "meta structural representation requires a concrete closure value, got erased closure `{source_ty}`"
+                        ),
+                    ));
+                }
+                None
+            }
+            _ => {
+                if emit_diagnostics {
+                    self.push_meta_unsupported_repr(span, source_ty);
+                }
+                None
+            }
+        }
+    }
+
+    fn meta_product_ty<I>(&mut self, fields: I, head_name: &str) -> Ty
+    where
+        I: IntoIterator<Item = Ty>,
+        I::IntoIter: DoubleEndedIterator,
+    {
+        fields
+            .into_iter()
+            .rev()
+            .fold(meta_named("HNil", Vec::new()), |tail, field_ty| {
+                let head = meta_named(head_name, vec![field_ty]);
+                meta_named("HCons", vec![head, tail])
+            })
+    }
+
+    fn meta_sum_ty(&mut self, variants: &[CheckedVariant], borrowed: bool) -> Ty {
+        variants
+            .iter()
+            .rev()
+            .fold(meta_named("CoNil", Vec::new()), |tail, variant| {
+                let payload_head = if borrowed { "PayloadRef" } else { "Payload" };
+                let payload = self.meta_product_ty(variant.payload.iter().cloned(), payload_head);
+                let variant_head = if borrowed { "VariantRef" } else { "Variant" };
+                let head = meta_named(variant_head, vec![payload]);
+                meta_named("Coproduct", vec![head, tail])
+            })
+    }
+
+    fn push_meta_unsupported_repr(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+    ) {
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "meta structural representation supports visible structs, enums, and concrete closure values, got `{source_ty}`"
+            ),
+        ));
+    }
+
+    fn is_std_meta_type(&self, def_id: DefId, name: &str) -> bool {
+        let def = self.resolved.def(def_id);
+        def.name == name
+            && self.resolved.modules[def.module.0]
+                .path
+                .ends_with(std::path::Path::new("std/meta.ciel"))
     }
 
     fn alloc_synthetic_def(&mut self) -> DefId {
@@ -2114,13 +2426,13 @@ impl TypeChecker {
             unify_ty(&expected, impl_param, &mut inferred);
         }
         let lowered_ret = self.lower_type_with_subst(&interface.ret, &interface_lower_subst);
-        let ret = substitute_ty(&lowered_ret, &inferred);
+        let ret = self.substitute_ty_normalized(&lowered_ret, &inferred, span);
         let expected_params = interface
             .params
             .iter()
             .map(|param| {
                 let ty = self.lower_type_with_subst(&param.ty, &interface_lower_subst);
-                substitute_ty(&ty, &inferred)
+                self.substitute_ty_normalized(&ty, &inferred, param.ty.span)
             })
             .collect::<Vec<_>>();
         let placeholder_names = interface_placeholders
@@ -4189,6 +4501,188 @@ impl TypeChecker {
         })
     }
 
+    fn check_meta_repr_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        name: &str,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        match name {
+            "as_ref_repr" => self.check_meta_as_ref_repr_call(scopes, span, type_args, args),
+            "into_repr" => self.check_meta_into_repr_call(scopes, span, type_args, args),
+            "from_repr" => self.check_meta_from_repr_call(scopes, span, type_args, args, expected),
+            _ => None,
+        }
+    }
+
+    fn check_meta_as_ref_repr_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("as_ref_repr expects 1 argument, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "as_ref_repr accepts at most one type argument",
+            ));
+            return None;
+        }
+        let explicit = type_args.first().map(|ty| self.lower_type(ty));
+        let expected_arg = explicit.clone().map(Ty::pointer_to);
+        let value = self.check_expr(scopes, &args[0], expected_arg.as_ref())?;
+        let source_ty = if let Some(source_ty) = explicit {
+            source_ty
+        } else {
+            match value.ty.unqualified() {
+                Ty::Pointer {
+                    nullable: false,
+                    inner,
+                } => (**inner).clone(),
+                Ty::Pointer { nullable: true, .. } => {
+                    self.diagnostics.push(Diagnostic::new(
+                        value.span,
+                        "as_ref_repr requires a non-null pointer",
+                    ));
+                    Ty::Unknown
+                }
+                other => {
+                    self.diagnostics.push(Diagnostic::new(
+                        value.span,
+                        format!("as_ref_repr requires `*T`, got `{other}`"),
+                    ));
+                    Ty::Unknown
+                }
+            }
+        };
+        if let Some(expected_arg) = expected_arg.as_ref() {
+            self.require_assignable(expected_arg, &value.ty, value.span);
+        }
+        self.reject_meta_ref_repr_erased_fields(span, &source_ty);
+        let ret = self.meta_repr_ty(span, &source_ty, true);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::MetaAsRefRepr {
+                value: Box::new(value),
+                source_ty,
+            },
+        })
+    }
+
+    fn check_meta_into_repr_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("into_repr expects 1 argument, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "into_repr accepts at most one type argument",
+            ));
+            return None;
+        }
+        let explicit = type_args.first().map(|ty| self.lower_type(ty));
+        let value = self.check_expr(scopes, &args[0], explicit.as_ref())?;
+        if let Some(expected) = explicit.as_ref() {
+            self.require_assignable(expected, &value.ty, value.span);
+        }
+        let source_ty = explicit.unwrap_or_else(|| self.resolve_type_holes(&value.ty));
+        let ret = self.meta_repr_ty(span, &source_ty, false);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::MetaIntoRepr {
+                value: Box::new(value),
+                source_ty,
+            },
+        })
+    }
+
+    fn check_meta_from_repr_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("from_repr expects 1 argument, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "from_repr accepts at most one type argument",
+            ));
+            return None;
+        }
+        let target_ty = if let Some(ty) = type_args.first() {
+            self.lower_type(ty)
+        } else if let Some(expected) = expected {
+            expected.clone()
+        } else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "from_repr requires an explicit type argument or expected result type",
+            ));
+            Ty::Unknown
+        };
+        let repr_ty = self.meta_repr_ty(span, &target_ty, false);
+        let value = self.check_expr(scopes, &args[0], Some(&repr_ty))?;
+        self.require_assignable(&repr_ty, &value.ty, value.span);
+        Some(TExpr {
+            span,
+            ty: target_ty.clone(),
+            kind: TExprKind::MetaFromRepr {
+                value: Box::new(value),
+                target_ty,
+            },
+        })
+    }
+
+    fn reject_meta_ref_repr_erased_fields(&mut self, span: crate::span::Span, source_ty: &Ty) {
+        let Ty::Named { name, args } = source_ty.unqualified() else {
+            return;
+        };
+        let instance_name = enum_instance_name(name, args);
+        let Some(fields) = self.structs.get(&instance_name) else {
+            return;
+        };
+        for (field, ty) in fields {
+            if ty.is_erased_value() {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("as_ref_repr cannot borrow erased field `{field}` of `{source_ty}`"),
+                ));
+            }
+        }
+    }
+
     fn check_type_metadata_call(
         &mut self,
         span: crate::span::Span,
@@ -4391,6 +4885,12 @@ impl TypeChecker {
                 args,
                 ActorLifecycleOp::Join,
             );
+        }
+        if self.is_std_meta_function(&sig, "as_ref_repr")
+            || self.is_std_meta_function(&sig, "into_repr")
+            || self.is_std_meta_function(&sig, "from_repr")
+        {
+            return self.check_meta_repr_call(scopes, span, &sig.name, type_args, args, expected);
         }
         if self.is_std_meta_function(&sig, "type_size")
             || self.is_std_meta_function(&sig, "type_align")
@@ -4807,7 +5307,7 @@ impl TypeChecker {
                 continue;
             };
             let (expected_arg, expected_for_arg) =
-                inference_arg_expected(param_ty, &subst, &expected_hints);
+                self.inference_arg_expected(param_ty, &subst, &expected_hints);
             if contains_generic(&expected_arg)
                 && expected_for_arg.is_none()
                 && expr_is_closure_literal(arg)
@@ -4817,7 +5317,7 @@ impl TypeChecker {
             }
             let checked =
                 self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
-            self.unify_ty_for_inference(param_ty, &checked.ty, &mut subst);
+            self.unify_ty_for_inference(&expected_arg, &checked.ty, &mut subst);
         }
         for idx in deferred_closure_args {
             let Some(param_ty) = sig.params.get(idx) else {
@@ -4826,10 +5326,11 @@ impl TypeChecker {
             let Some(arg) = args.get(idx) else {
                 continue;
             };
-            let (_, expected_for_arg) = inference_arg_expected(param_ty, &subst, &expected_hints);
+            let (expected_arg, expected_for_arg) =
+                self.inference_arg_expected(param_ty, &subst, &expected_hints);
             let checked =
                 self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;
-            self.unify_ty_for_inference(param_ty, &checked.ty, &mut subst);
+            self.unify_ty_for_inference(&expected_arg, &checked.ty, &mut subst);
         }
         if let Some(expected) = expected {
             self.unify_ty_for_inference(&sig.ret, expected, &mut subst);
@@ -4874,9 +5375,15 @@ impl TypeChecker {
         let params = sig
             .params
             .iter()
-            .map(|param| self.resolve_type_holes(&substitute_ty(param, &subst)))
+            .map(|param| {
+                let ty = self.substitute_ty_normalized(param, &subst, span);
+                self.resolve_type_holes(&ty)
+            })
             .collect::<Vec<_>>();
-        let ret = self.resolve_type_holes(&substitute_ty(&sig.ret, &subst));
+        let ret = {
+            let ty = self.substitute_ty_normalized(&sig.ret, &subst, span);
+            self.resolve_type_holes(&ty)
+        };
         Some((
             FunctionSig {
                 def_id: sig.def_id,
@@ -6511,21 +7018,22 @@ impl TypeChecker {
                 self.diagnostics.truncate(diagnostic_count);
                 continue;
             }
+            let instance_span = span.unwrap_or(template.item_span);
             let params = template
                 .params
                 .iter()
-                .map(|ty| substitute_ty(ty, &subst))
+                .map(|ty| self.substitute_ty_normalized(ty, &subst, instance_span))
                 .collect::<Vec<_>>();
-            let ret = substitute_ty(&template.ret, &subst);
+            let ret = self.substitute_ty_normalized(&template.ret, &subst, instance_span);
             let concrete_interface_args = template
                 .interface_args
                 .iter()
-                .map(|ty| substitute_ty(ty, &subst))
+                .map(|ty| self.substitute_ty_normalized(ty, &subst, instance_span))
                 .collect::<Vec<_>>();
             let concrete_receiver = template
                 .receiver_ty
                 .as_ref()
-                .map(|ty| substitute_ty(ty, &subst));
+                .map(|ty| self.substitute_ty_normalized(ty, &subst, instance_span));
             matches.push((
                 template,
                 concrete_interface_args,
@@ -7046,7 +7554,10 @@ fn collect_expr_declared_locals(expr: &TExpr, out: &mut HashSet<LocalId>) {
                 collect_expr_declared_locals(end, out);
             }
         }
-        TExprKind::BuiltinCloneMessage { value, .. } => collect_expr_declared_locals(value, out),
+        TExprKind::BuiltinCloneMessage { value, .. }
+        | TExprKind::MetaAsRefRepr { value, .. }
+        | TExprKind::MetaIntoRepr { value, .. }
+        | TExprKind::MetaFromRepr { value, .. } => collect_expr_declared_locals(value, out),
         TExprKind::ActorSpawn {
             initial_state,
             handler,
@@ -7236,9 +7747,10 @@ fn collect_expr_local_refs(expr: &TExpr, local_ids: &HashSet<LocalId>, out: &mut
                 collect_expr_local_refs(end, local_ids, out);
             }
         }
-        TExprKind::BuiltinCloneMessage { value, .. } => {
-            collect_expr_local_refs(value, local_ids, out)
-        }
+        TExprKind::BuiltinCloneMessage { value, .. }
+        | TExprKind::MetaAsRefRepr { value, .. }
+        | TExprKind::MetaIntoRepr { value, .. }
+        | TExprKind::MetaFromRepr { value, .. } => collect_expr_local_refs(value, local_ids, out),
         TExprKind::ActorSpawn {
             initial_state,
             handler,
@@ -7499,29 +8011,6 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
         },
         other => other.clone(),
     }
-}
-
-fn inference_arg_expected(
-    param_ty: &Ty,
-    subst: &HashMap<String, Ty>,
-    expected_hints: &HashMap<String, Ty>,
-) -> (Ty, Option<Ty>) {
-    let expected_arg = substitute_ty(param_ty, subst);
-    if !contains_generic(&expected_arg) {
-        return (expected_arg.clone(), Some(expected_arg));
-    }
-
-    let mut hinted_subst = expected_hints.clone();
-    for (name, ty) in subst {
-        hinted_subst.insert(name.clone(), ty.clone());
-    }
-    let hinted_arg = substitute_ty(param_ty, &hinted_subst);
-    let expected_for_arg = if contains_generic(&hinted_arg) {
-        None
-    } else {
-        Some(hinted_arg)
-    };
-    (expected_arg, expected_for_arg)
 }
 
 fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
@@ -7885,6 +8374,36 @@ fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
         Ty::Const(inner) => receiver_ty_from_value_ty(inner),
         Ty::Pointer { inner, .. } => (**inner).clone(),
         other => other.clone(),
+    }
+}
+
+fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
+    Ty::Named {
+        name: name.to_string(),
+        args,
+    }
+}
+
+const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
+const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
+
+fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
+    Ty::Named {
+        name: if borrowed {
+            STD_META_REF_REPR_MARKER
+        } else {
+            STD_META_REPR_MARKER
+        }
+        .to_string(),
+        args: vec![source_ty],
+    }
+}
+
+fn meta_repr_marker_name(name: &str) -> Option<bool> {
+    match name {
+        STD_META_REF_REPR_MARKER => Some(true),
+        STD_META_REPR_MARKER => Some(false),
+        _ => None,
     }
 }
 

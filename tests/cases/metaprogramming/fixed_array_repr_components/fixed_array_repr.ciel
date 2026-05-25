@@ -1,0 +1,39 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+struct Box {
+    [2]i64 values;
+}
+
+enum ArrayPayload {
+    Values([2]i64),
+    Done,
+}
+
+T choose<T>(T left, T right, bool use_left) {
+    if (use_left) {
+        return left;
+    }
+    return right;
+}
+
+i64 main() {
+    Box box = { values: [7, 11] };
+    _ box_refs = meta::as_ref_repr(&box);
+    meta::Repr<Box> owned_box = meta::into_repr(box);
+    Box copy = meta::from_repr<Box>(owned_box);
+
+    ArrayPayload payload = Values([3, 4]);
+    _ payload_refs = meta::as_ref_repr(&payload);
+    meta::Repr<ArrayPayload> owned_payload = meta::into_repr(payload);
+    ArrayPayload payload_copy = meta::from_repr<ArrayPayload>(owned_payload);
+
+    [2]i64 captured = [5, 6];
+    _ f = || captured[0] + captured[1];
+    _ owned_closure = meta::into_repr(f);
+    _ rebuilt = choose(f, meta::from_repr(owned_closure), false);
+
+    return copy.values[0] + copy.values[1] + rebuilt() - 29;
+}

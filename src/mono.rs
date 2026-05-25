@@ -548,6 +548,18 @@ impl MonoContext {
                     message_ty,
                 }
             }
+            TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
+                value: Box::new(self.rewrite_expr(*value)?),
+                source_ty,
+            },
+            TExprKind::MetaIntoRepr { value, source_ty } => TExprKind::MetaIntoRepr {
+                value: Box::new(self.rewrite_expr(*value)?),
+                source_ty,
+            },
+            TExprKind::MetaFromRepr { value, target_ty } => TExprKind::MetaFromRepr {
+                value: Box::new(self.rewrite_expr(*value)?),
+                target_ty,
+            },
             TExprKind::ActorSpawn {
                 initial_state,
                 handler,
@@ -1053,6 +1065,15 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(message_ty);
                 self.collect_ty(&message_result_ty(message_ty.clone()));
             }
+            TExprKind::MetaAsRefRepr { value, source_ty }
+            | TExprKind::MetaIntoRepr { value, source_ty } => {
+                self.collect_expr(value);
+                self.collect_ty(source_ty);
+            }
+            TExprKind::MetaFromRepr { value, target_ty } => {
+                self.collect_expr(value);
+                self.collect_ty(target_ty);
+            }
             TExprKind::ActorSpawn {
                 initial_state,
                 handler,
@@ -1271,6 +1292,173 @@ impl<'a> AggregateCollector<'a> {
         });
     }
 
+    fn normalize_meta_repr_markers(&mut self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Const(inner) => Ty::Const(Box::new(self.normalize_meta_repr_markers(inner))),
+            Ty::Pointer { nullable, inner } => Ty::Pointer {
+                nullable: *nullable,
+                inner: Box::new(self.normalize_meta_repr_markers(inner)),
+            },
+            Ty::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.normalize_meta_repr_markers(elem)),
+            },
+            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_meta_repr_markers(elem))),
+            Ty::Named { name, args } => {
+                let args = args
+                    .iter()
+                    .map(|arg| self.normalize_meta_repr_markers(arg))
+                    .collect::<Vec<_>>();
+                if let Some(borrowed) = meta_repr_marker_name(name)
+                    && args.len() == 1
+                    && !contains_generic(&args[0])
+                {
+                    return self.meta_repr_ty(None, &args[0], borrowed);
+                }
+                Ty::Named {
+                    name: name.clone(),
+                    args,
+                }
+            }
+            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.normalize_meta_repr_markers(arg))
+                    .collect(),
+            },
+            Ty::Function { abi, ret, params } => Ty::Function {
+                abi: abi.clone(),
+                ret: Box::new(self.normalize_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.normalize_meta_repr_markers(param))
+                    .collect(),
+            },
+            Ty::Closure { ret, params } => Ty::Closure {
+                ret: Box::new(self.normalize_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.normalize_meta_repr_markers(param))
+                    .collect(),
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => Ty::ClosureInstance {
+                id: *id,
+                ret: Box::new(self.normalize_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.normalize_meta_repr_markers(param))
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| self.normalize_meta_repr_markers(capture))
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn meta_repr_ty(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+        borrowed: bool,
+    ) -> Ty {
+        if contains_generic(source_ty) {
+            return std_meta_repr_marker_ty(borrowed, source_ty.clone());
+        }
+        match source_ty.unqualified() {
+            Ty::Named { name, args } => {
+                let instance_name = aggregate_instance_name(name, args);
+                self.instantiate_struct(name, args);
+                if let Some(fields) = self
+                    .checked_structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .map(|strukt| strukt.fields.clone())
+                    .or_else(|| {
+                        self.checked
+                            .structs
+                            .iter()
+                            .find(|strukt| strukt.name == instance_name)
+                            .map(|strukt| strukt.fields.clone())
+                    })
+                {
+                    return meta_product_ty(
+                        fields.into_iter().map(|(_, ty)| ty),
+                        if borrowed { "FieldRef" } else { "Field" },
+                    );
+                }
+                self.instantiate_enum(name, args);
+                if let Some(enm) = self
+                    .checked_enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+                    .or_else(|| {
+                        self.checked
+                            .enums
+                            .iter()
+                            .find(|enm| enm.name == instance_name)
+                            .cloned()
+                    })
+                {
+                    return meta_sum_ty(&enm.variants, borrowed);
+                }
+                self.push_meta_unsupported_repr(span, source_ty);
+                Ty::Unknown
+            }
+            Ty::ClosureInstance { captures, .. } => meta_product_ty(
+                captures.iter().filter(|ty| !ty.is_erased_value()).cloned(),
+                if borrowed { "FieldRef" } else { "Field" },
+            ),
+            Ty::Closure { .. } => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "meta structural representation requires a concrete closure value, got erased closure `{source_ty}`"
+                    ),
+                ));
+                Ty::Unknown
+            }
+            _ => {
+                self.push_meta_unsupported_repr(span, source_ty);
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn push_meta_unsupported_repr(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+    ) {
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "meta structural representation supports visible structs, enums, and concrete closure values, got `{source_ty}`"
+            ),
+        ));
+    }
+
+    fn std_meta_repr_marker(&self, def_id: DefId, name: &str) -> Option<bool> {
+        let borrowed = std_meta_repr_source_name(name)?;
+        let def = self.checked.resolved.def(def_id);
+        if self.checked.resolved.modules[def.module.0]
+            .path
+            .ends_with(std::path::Path::new("std/meta.ciel"))
+        {
+            Some(borrowed)
+        } else {
+            None
+        }
+    }
+
     fn lower_ast_type(&mut self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
         match &ty.kind {
             TypeKind::Hole => Ty::Unknown,
@@ -1278,23 +1466,38 @@ impl<'a> AggregateCollector<'a> {
             TypeKind::Void => Ty::Void,
             TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
             TypeKind::Named(type_name, args) => {
-                let (name, def_kind) = match &type_name.kind {
+                let (name, def_kind, def_id) = match &type_name.kind {
                     TypeNameKind::Def(def_id) => {
                         let def = self.checked.resolved.def(*def_id);
-                        (def.name.clone(), Some(def.kind.clone()))
+                        (def.name.clone(), Some(def.kind.clone()), Some(*def_id))
                     }
-                    TypeNameKind::Generic(generic) => (generic.clone(), None),
+                    TypeNameKind::Generic(generic) => (generic.clone(), None, None),
                     TypeNameKind::Error => return Ty::Unknown,
                 };
                 if args.is_empty()
                     && let Some(replacement) = subst.get(&name)
                 {
-                    return replacement.clone();
+                    return self.normalize_meta_repr_markers(replacement);
                 }
                 let args = args
                     .iter()
                     .map(|arg| self.lower_ast_type(arg, subst))
                     .collect::<Vec<_>>();
+                if let Some(def_id) = def_id
+                    && let Some(borrowed) = self.std_meta_repr_marker(def_id, &name)
+                {
+                    if args.len() != 1 {
+                        self.diagnostics.push(Diagnostic::new(
+                            type_name.span,
+                            format!("meta::{name} requires exactly one type argument"),
+                        ));
+                        return Ty::Unknown;
+                    }
+                    if contains_generic(&args[0]) {
+                        return std_meta_repr_marker_ty(borrowed, args[0].clone());
+                    }
+                    return self.meta_repr_ty(type_name.span, &args[0], borrowed);
+                }
                 if matches!(def_kind, Some(DefKind::TypeAlias))
                     && let Some(alias) = self.aliases.get(&name)
                 {
@@ -1332,7 +1535,7 @@ impl<'a> AggregateCollector<'a> {
                         },
                     };
                     self.alias_stack.pop();
-                    return lowered;
+                    return self.normalize_meta_repr_markers(&lowered);
                 }
                 if self
                     .checked
@@ -1347,7 +1550,7 @@ impl<'a> AggregateCollector<'a> {
                 {
                     Ty::DynamicInterface { name, args }
                 } else {
-                    Ty::Named { name, args }
+                    self.normalize_meta_repr_markers(&Ty::Named { name, args })
                 }
             }
             TypeKind::Pointer { nullable, inner } => Ty::Pointer {
@@ -1426,6 +1629,98 @@ fn message_result_ty(ok_ty: Ty) -> Ty {
                 args: Vec::new(),
             },
         ],
+    }
+}
+
+fn meta_product_ty<I>(fields: I, head_name: &str) -> Ty
+where
+    I: IntoIterator<Item = Ty>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    fields
+        .into_iter()
+        .rev()
+        .fold(meta_named("HNil", Vec::new()), |tail, field_ty| {
+            let head = meta_named(head_name, vec![field_ty]);
+            meta_named("HCons", vec![head, tail])
+        })
+}
+
+fn meta_sum_ty(variants: &[CheckedVariant], borrowed: bool) -> Ty {
+    variants
+        .iter()
+        .rev()
+        .fold(meta_named("CoNil", Vec::new()), |tail, variant| {
+            let payload_head = if borrowed { "PayloadRef" } else { "Payload" };
+            let payload = meta_product_ty(variant.payload.iter().cloned(), payload_head);
+            let variant_head = if borrowed { "VariantRef" } else { "Variant" };
+            let head = meta_named(variant_head, vec![payload]);
+            meta_named("Coproduct", vec![head, tail])
+        })
+}
+
+fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
+    Ty::Named {
+        name: name.to_string(),
+        args,
+    }
+}
+
+const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
+const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
+
+fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
+    Ty::Named {
+        name: if borrowed {
+            STD_META_REF_REPR_MARKER
+        } else {
+            STD_META_REPR_MARKER
+        }
+        .to_string(),
+        args: vec![source_ty],
+    }
+}
+
+fn std_meta_repr_source_name(name: &str) -> Option<bool> {
+    match name {
+        "RefRepr" => Some(true),
+        "Repr" => Some(false),
+        _ => None,
+    }
+}
+
+fn meta_repr_marker_name(name: &str) -> Option<bool> {
+    match name {
+        STD_META_REF_REPR_MARKER => Some(true),
+        STD_META_REPR_MARKER => Some(false),
+        _ => None,
+    }
+}
+
+fn contains_generic(ty: &Ty) -> bool {
+    match ty {
+        Ty::Const(inner) => contains_generic(inner),
+        Ty::Generic(_) => true,
+        Ty::Pointer { inner, .. } => contains_generic(inner),
+        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_generic(elem),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            args.iter().any(contains_generic)
+        }
+        Ty::Function { ret, params, .. } => {
+            contains_generic(ret) || params.iter().any(contains_generic)
+        }
+        Ty::Closure { ret, params } => contains_generic(ret) || params.iter().any(contains_generic),
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_generic(ret)
+                || params.iter().any(contains_generic)
+                || captures.iter().any(contains_generic)
+        }
+        _ => false,
     }
 }
 

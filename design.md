@@ -955,7 +955,114 @@ program, all of its impls participate in coherence and constraint checks.
 
 If any imported file implements `seek` for `T`, then `T: !seek` fails.
 
-## 11. Enums and Pattern Matching
+## 11. Structural Metaprogramming
+
+Structural metaprogramming is exposed through `/std/meta`. The public surface is
+ordinary Ciel: generic structs, enums, interfaces, impls, `switch`, and function
+calls. The compiler only recognizes a small set of canonical `/std/meta` names
+and lowers them during semantic analysis.
+
+`/std/meta` provides product and sum vocabulary:
+
+```rust
+import /std/meta as meta;
+
+meta::HNil
+meta::HCons<meta::FieldRef<i64>, meta::HNil>
+meta::Coproduct<meta::VariantRef<meta::HNil>, meta::CoNil>
+```
+
+`meta::RefRepr<T>` is a borrowed structural view. For a visible struct it
+normalizes to an `HCons` list of `FieldRef<FieldType>` values in declaration
+order:
+
+```rust
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+meta::RefRepr<Packet>
+// meta::HCons<
+//     meta::FieldRef<i64>,
+//     meta::HCons<meta::FieldRef<bool>, meta::HNil>
+// >
+```
+
+`meta::Repr<T>` is an owned structural value with `Field<FieldType>` instead of
+`FieldRef<FieldType>`.
+
+For a visible enum it normalizes to a `Coproduct` list in variant declaration
+order. Each branch is a `VariantRef<PayloadProduct>` for `RefRepr<T>` and a
+`Variant<PayloadProduct>` for `Repr<T>`. Positional payloads use
+`PayloadRef<P>` or `Payload<P>` inside an `HCons` product:
+
+```rust
+enum Token {
+    Number(i64),
+    End,
+}
+
+meta::RefRepr<Token>
+// meta::Coproduct<
+//     meta::VariantRef<meta::HCons<meta::PayloadRef<i64>, meta::HNil>>,
+//     meta::Coproduct<meta::VariantRef<meta::HNil>, meta::CoNil>
+// >
+```
+
+For a concrete closure instance, structural representation exposes the captured
+environment as an `HCons` product in capture order. Captures are named
+`capture#0`, `capture#1`, and so on in the value-level metadata. Erased closure
+signature types do not expose captures.
+
+The compiler-lowered functions are:
+
+```rust
+meta::RefRepr<T> as_ref_repr<T>(*T value);
+meta::Repr<T> into_repr<T>(T value);
+T from_repr<T>(meta::Repr<T> value);
+```
+
+`as_ref_repr` creates ordinary pointers to visible fields, enum payloads, or
+closure captures. Its result has the same lifetime and actor-local behavior as
+those pointers. For enums, projection switches on the active variant and returns
+the corresponding `Coproduct` branch. `into_repr` copies a value into the owned
+representation. `from_repr` reconstructs a struct, enum, or concrete closure
+instance from the owned representation by structural position.
+
+Policies remain library code. A type opts into a policy by projecting itself
+and delegating to ordinary generic impls:
+
+```rust
+interface<T> u64 hash(*T value, u64 seed);
+interface hashable = hash;
+
+impl hash(*Packet value, u64 seed) {
+    meta::RefRepr<Packet> repr = meta::as_ref_repr(value);
+    return hash(&repr, seed);
+}
+```
+
+The core mechanism remains explicit projection plus ordinary policy code. A
+future declaration-level convenience may auto-emit those wrapper impls, but it
+does not change the SOP representation.
+
+`Message` derivation is still a compiler bootstrap path. It uses the same
+struct, enum, and concrete-closure shape rules and reports field, variant
+payload, or closure capture paths when derivation fails. A later standard
+library policy can replace that hard-coded path once `/std/meta` owns cloning.
+
+Structural metaprogramming is not a text macro system. It does not generate
+Ciel source, paste tokens, or run before name resolution. The order is:
+
+1. resolve imports and identify canonical `/std/meta` declarations
+2. normalize `RefRepr<T>` and `Repr<T>` while lowering types in semantic
+   analysis
+3. type-check generic constraints and impl calls against the normalized types
+4. lower `as_ref_repr`, `into_repr`, and `from_repr`
+5. run ordinary monomorphization, escape analysis, and C code generation
+
+## 12. Enums and Pattern Matching
 
 Enum variants live in the single namespace. Variant constructors are ordinary
 names. Since overloading is forbidden, two variants with the same name cannot
@@ -1012,7 +1119,7 @@ i64 pick(Outer value) {
 }
 ```
 
-## 12. Error Handling and Panic
+## 13. Error Handling and Panic
 
 The `?` operator works only on the `Result<T, E>` type exported by
 `/std/result`, or aliases of that type. The surrounding function must return
@@ -1026,7 +1133,7 @@ Panic is immediate process termination with exit status `0` and an optional
 diagnostic. It does not unwind and does not run `defer` handlers. `defer` is
 guaranteed only for normal control-flow exits.
 
-## 13. Defer
+## 14. Defer
 
 `defer` registers a single direct function call. Suffixes after that call, such
 as `?`, are invalid in a `defer` statement. Its arguments are evaluated when
@@ -1048,7 +1155,7 @@ before the loop step expression.
 
 The return value of a deferred call is ignored.
 
-## 14. Escape Analysis
+## 15. Escape Analysis
 
 Local values do not expose stack/heap placement. The compiler chooses storage
 and may promote escaping values to the GC heap.
@@ -1080,7 +1187,7 @@ Escape analysis decides storage placement. Actor isolation and `Message`
 capability checks are the concurrency safety proof; promotion alone does not
 make a local object shareable across actors.
 
-## 15. Concurrency and Actors
+## 16. Concurrency and Actors
 
 Ciel's concurrency model is actor-first. Asynchronous work is expressed through
 actor mailboxes, channels, and synchronized handles provided by the standard
@@ -1352,7 +1459,7 @@ mutable pointers. This guarantee depends on correct compiler checks, correct
 standard-library implementations, and trusted C wrappers honoring their declared
 policies.
 
-## 16. Standard Library Boundary
+## 17. Standard Library Boundary
 
 The compiler treats the standard library as ordinary Ciel source except for the
 generic `/std/meta` helpers and runtime hooks explicitly named in this
@@ -1652,7 +1759,7 @@ These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime
 hook.
 
-## 17. C Interop and ABI
+## 18. C Interop and ABI
 
 `extern "C"` declarations are C ABI declarations. C APIs require explicit
 pointer nullability and constness: users write `*T`, `?*T`, and `const T`.
@@ -1749,7 +1856,7 @@ GC pointers must use `CielRoot` or another explicit root mechanism.
 
 `ciel_thread_attach` returns `0` on success and a nonzero value on failure.
 
-## 18. Debug Information
+## 19. Debug Information
 
 A debug build emits target debug information through the generated C compiler.
 The Ciel compiler:
@@ -1763,7 +1870,7 @@ The Ciel compiler:
 The minimum debug contract is source-line mapping, readable panic locations,
 and deterministic generated names.
 
-## 19. C Backend Lowering
+## 20. C Backend Lowering
 
 Ciel keeps source-level value semantics. The generated C ABI for internal Ciel
 functions may avoid large copies:

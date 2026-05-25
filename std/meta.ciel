@@ -1,3 +1,61 @@
 // Compiler built-ins: lowered to C sizeof/alignof for the concrete type argument.
 export usize type_size<T>();
 export usize type_align<T>();
+
+// Compiler-recognized structural representation markers.
+// Type checking normalizes these markers to the ordinary SOP types below.
+export struct RefRepr<T> {}
+export struct Repr<T> {}
+
+// Product lists.
+export struct HNil {}
+
+export struct HCons<H, T> {
+    H head;
+    T tail;
+}
+
+// Named struct fields.
+export struct FieldRef<T> {
+    []char name;
+    *T value;
+}
+
+export struct Field<T> {
+    []char name;
+    T value;
+}
+
+// Positional enum payloads.
+export struct PayloadRef<T> {
+    usize index;
+    *T value;
+}
+
+export struct Payload<T> {
+    usize index;
+    T value;
+}
+
+// Sum lists.
+export enum CoNil {}
+
+export enum Coproduct<H, T> {
+    This(H),
+    Next(T),
+}
+
+export struct VariantRef<P> {
+    []char name;
+    P payload;
+}
+
+export struct Variant<P> {
+    []char name;
+    P payload;
+}
+
+// Compiler built-ins: lowered from visible type layouts.
+export RefRepr<T> as_ref_repr<T>(*T value);
+export Repr<T> into_repr<T>(T value);
+export T from_repr<T>(Repr<T> value);

@@ -264,13 +264,18 @@ impl fmt::Display for Ty {
             Ty::Array { len, elem } => write!(f, "[{len}]{elem}"),
             Ty::Slice(elem) => write!(f, "[]{elem}"),
             Ty::Named { name, args } => {
+                let display_name = match name.as_str() {
+                    "__ciel_std_meta_RefRepr" => "meta::RefRepr",
+                    "__ciel_std_meta_Repr" => "meta::Repr",
+                    _ => name,
+                };
                 if args.is_empty() {
-                    write!(f, "{name}")
+                    write!(f, "{display_name}")
                 } else {
                     write!(
                         f,
                         "{}<{}>",
-                        name,
+                        display_name,
                         args.iter()
                             .map(ToString::to_string)
                             .collect::<Vec<_>>()

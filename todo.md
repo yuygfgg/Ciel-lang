@@ -226,6 +226,37 @@ currently inconsistent with the design.
       fixed-array holes, concrete closure local inference, initialized `for`
       declarations, later assignment type stability, and rejection contexts.
 
+## P1: Structural Metaprogramming
+
+- [x] Add `/std/meta` compiler built-ins `type_size<T>()` and
+      `type_align<T>()`, lowered generically to C `sizeof(T)` and
+      `CIEL_ALIGNOF(T)`.
+- [x] Add `/std/meta` product and sum vocabulary:
+      `HNil`, `HCons`, `FieldRef`, `Field`, `CoNil`, `Coproduct`,
+      `VariantRef`, `Variant`, `PayloadRef`, and `Payload`.
+- [x] Add compiler-recognized marker forms `RefRepr<T>` and `Repr<T>`.
+- [x] Normalize `RefRepr<T>` and `Repr<T>` for visible structs during type
+      lowering, before generic constraint checking and impl lookup.
+- [x] Lower `as_ref_repr<T>(*T)` for visible structs to borrowed structural
+      values whose field pointers follow ordinary address-taking and escape
+      rules.
+- [x] Lower `into_repr<T>(T)` for visible structs to owned structural values.
+- [x] Lower `from_repr<T>(Repr<T>)` for visible structs to ordinary struct
+      construction by structural position.
+- [x] Add tests showing generic policy recursion over `HNil`, `HCons`,
+      `FieldRef`, and `Field`.
+- [x] Extend normalization and lowering to enums using `CoNil`, `Coproduct`,
+      `VariantRef`, `Variant`, `PayloadRef`, and `Payload`.
+- [x] Extend structural representation to concrete closure capture
+      environments once the struct path is stable.
+- [x] Keep the remaining hard-coded structural `Message` derivation path
+      documented as a bootstrap fallback until `/std/meta` policies own cloning.
+- [x] Add diagnostics that report the original source type plus field, variant,
+      or capture path when generic structural recursion fails.
+- [x] Decide whether a future declaration-level convenience should auto-emit
+      wrapper impls; the core mechanism remains explicit projection plus
+      ordinary policy code.
+
 ## P1: Closures
 
 - [x] Parse `T |(A, B)|` callable type suffixes while keeping `T fn(A, B)`
@@ -315,9 +346,6 @@ currently inconsistent with the design.
       `spawn_actor<S, M, H>` handler so the runtime can call `H` as
       `Result<S, Error>(S, M)` and store the next actor state. These thunks are
       runtime glue and must not introduce a separate actor type-system rule.
-- [x] Add `/std/meta` compiler built-ins `type_size<T>()` and
-      `type_align<T>()`, lowered generically to C `sizeof(T)` and
-      `CIEL_ALIGNOF(T)`.
 - [x] Use `/std/meta` from ordinary standard-library Ciel code for generic
       runtime handles that store arbitrary Ciel values, especially `Channel<T>`
       and `Mutex<T>`.

@@ -1,0 +1,32 @@
+// ciel-test: error
+// expect-error: variant `Wrap` payload #0
+// expect-error: field `ptr`
+// expect-error: closure capture #0
+// expect-error: raw pointer
+
+import /std/message;
+
+struct RawBox {
+    *i64 ptr;
+}
+
+enum Envelope {
+    Wrap(RawBox),
+    Empty,
+}
+
+T require_message<T: Message>(T value) {
+    return value;
+}
+
+i64 main() {
+    i64 value = 4;
+    RawBox box = { ptr: &value };
+    Envelope envelope = Wrap(box);
+    require_message(envelope);
+
+    *i64 ptr = &value;
+    _ f = || *ptr;
+    require_message(f);
+    return 0;
+}

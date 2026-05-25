@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+
+struct Repr<T> {
+    T value;
+}
+
+struct RefRepr<T> {
+    *T value;
+}
+
+i64 read_repr(Repr<i64> value) {
+    return value.value;
+}
+
+i64 read_ref_repr(RefRepr<i64> value) {
+    return *value.value;
+}
+
+i64 main() {
+    i64 n = 20;
+    Repr<i64> owned = { value: 22 };
+    RefRepr<i64> borrowed = { value: &n };
+    return read_repr(owned) + read_ref_repr(borrowed) - 42;
+}

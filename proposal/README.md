@@ -21,13 +21,18 @@ Current proposal order:
 ```text
 local-type-holes <= metaprogramming
 
-metaprogramming :> capability-erased-closures[structural capability proofs]
+metaprogramming < pure-library-message
+
+metaprogramming :> capability-erased-closures[structural representation]
+pure-library-message :> capability-erased-closures[message witness source]
 capability-erased-closures || metaprogramming[retained closure witness storage]
 
-metaprogramming :> error-box[derived format_error]
+metaprogramming :> error-box[structural representation]
+pure-library-message || error-box[structural formatting policy]
 error-box || metaprogramming[owned error erasure and ? propagation]
 ```
 
-The main consequence is that structural capability derivation belongs to
-`metaprogramming`. Other proposals consume ordinary capability impls or retained
-witnesses produced through that route.
+The main consequence is that SOP structural representation belongs to
+`metaprogramming`. Structural message policy and witness production belong to
+`pure-library-message`. Other proposals consume the representation or ordinary
+capability impls produced through those routes.

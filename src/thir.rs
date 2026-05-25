@@ -320,6 +320,18 @@ pub enum TExprKind {
         value: Box<TExpr>,
         message_ty: Ty,
     },
+    MetaAsRefRepr {
+        value: Box<TExpr>,
+        source_ty: Ty,
+    },
+    MetaIntoRepr {
+        value: Box<TExpr>,
+        source_ty: Ty,
+    },
+    MetaFromRepr {
+        value: Box<TExpr>,
+        target_ty: Ty,
+    },
     ActorSpawn {
         initial_state: Box<TExpr>,
         handler: Box<TExpr>,

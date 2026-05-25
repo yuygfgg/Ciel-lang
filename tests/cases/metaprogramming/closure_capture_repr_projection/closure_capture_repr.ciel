@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+interface<T> i64 count_refs(*T value);
+interface<T> i64 count_owned(*T value);
+
+impl count_refs(*meta::HNil value) {
+    return 0;
+}
+
+impl count_owned(*meta::HNil value) {
+    return 0;
+}
+
+impl<V, Tail: count_refs> count_refs(*meta::HCons<meta::FieldRef<V>, Tail> value) {
+    return 1 + count_refs(&value->tail);
+}
+
+impl<V, Tail: count_owned> count_owned(*meta::HCons<meta::Field<V>, Tail> value) {
+    return 1 + count_owned(&value->tail);
+}
+
+T choose<T>(T left, T right, bool use_left) {
+    if (use_left) {
+        return left;
+    }
+    return right;
+}
+
+i64 main() {
+    i64 base = 10;
+    i64 delta = 1;
+    _ f = |i64 x| x + base + delta;
+    _ refs = meta::as_ref_repr(&f);
+    _ owned = meta::into_repr(f);
+    _ rebuilt = choose(f, meta::from_repr(owned), false);
+    i64 projected = count_refs(&refs) + count_owned(&owned);
+    return f(5) + rebuilt(5) + projected - 36;
+}

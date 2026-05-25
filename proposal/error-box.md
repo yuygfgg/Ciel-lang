@@ -8,6 +8,21 @@ The design is intentionally close to the shape of Rust's `anyhow` crate, but it
 uses Ciel's existing interface and dynamic interface machinery instead of method
 syntax, trait objects, or a global error-code namespace.
 
+## Proposal Order
+
+```text
+metaprogramming :> error-box[derived format_error]
+error-box || metaprogramming[owned error erasure and ? propagation]
+```
+
+This proposal owns the standard erased error type, the `ErrorTrait` formatting
+capability, context helpers, and the targeted `?` propagation rule into
+`/std/error.Error`.
+
+Automatic `format_error` generation for structs or enums is a structural
+capability-derivation problem and belongs to metaprogramming. Until that exists,
+concrete error types implement `format_error` explicitly.
+
 ## Problem
 
 Today `?` requires the inner and outer `Result` error types to be exactly equal:
@@ -367,9 +382,11 @@ erasure and `?` propagation rule.
    functions once Ciel has better opaque standard-library types?
 3. Should `format_error(*Error)` return only the top-level message, while
    `error_message(*Error)` formats the whole chain?
-4. Should the standard library provide derived `format_error` for simple enums?
-5. Should erased errors be allowed in actor messages? The safe default is to
+4. Should erased errors be allowed in actor messages? The safe default is to
    require an explicit `Message` implementation for `Error`.
+
+Automatic `format_error` for simple enums is intentionally not an open question
+in this proposal. It is deferred to metaprogramming.
 
 ## Implementation Plan
 

@@ -6,6 +6,20 @@ The goal is to make local code ergonomic when the exact type is verbose,
 compiler-created, or unnameable, while keeping public APIs and assignment
 semantics explicit.
 
+## Proposal Order
+
+```text
+local-type-holes <= metaprogramming
+```
+
+Local type holes are a soft baseline for later metaprogramming work. They give
+local code a compact way to name values whose exact concrete type is verbose or
+compiler-created.
+
+Future metaprogramming proposals may assume this proposal when examples need a
+local binding for generated or compiler-created types. Reflection, type-shape
+inspection, and declaration generation belong to the metaprogramming proposal.
+
 ## Problem
 
 Local variables currently require a complete written type:

@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/lib;
+
+interface<T, U> i64 make(*T value);
+
+impl<T: Message> make<i64>(*T value) {
+    return 6;
+}
+
+void consume<U>(i64 |(): make<U>| callback) {
+    callback();
+}
+
+i64 main() {
+    i64 |(): make<i64>| callback = || 12;
+    consume(callback);
+    return callback();
+}

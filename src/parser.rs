@@ -415,19 +415,32 @@ impl Parser {
     }
 
     fn parse_constraint_expr(&mut self) -> Result<ConstraintExpr, Diagnostic> {
-        let mut terms = vec![self.parse_constraint_term()?];
-        while self.eat(TokenKind::Plus).is_some() {
-            terms.push(self.parse_constraint_term()?);
+        let mut terms = vec![self.parse_constraint_term(false)?];
+        while self.at(TokenKind::Plus) || self.at(TokenKind::Minus) {
+            let removed = if self.eat(TokenKind::Plus).is_some() {
+                false
+            } else {
+                self.expect(TokenKind::Minus, "expected capability operator")?;
+                true
+            };
+            terms.push(self.parse_constraint_term(removed)?);
         }
         Ok(ConstraintExpr { terms })
     }
 
-    fn parse_constraint_term(&mut self) -> Result<ConstraintTerm, Diagnostic> {
+    fn parse_constraint_term(&mut self, removed: bool) -> Result<ConstraintTerm, Diagnostic> {
         let negated = self.eat(TokenKind::Bang).is_some();
+        if removed && negated {
+            return Err(Diagnostic::new(
+                self.previous().span,
+                "`- !Capability` is not a valid capability expression",
+            ));
+        }
         let name = self.expect_ident("expected capability name")?;
         let args = self.parse_type_arg_list_opt()?;
         Ok(ConstraintTerm {
             negated,
+            removed,
             name,
             args,
         })
@@ -502,6 +515,11 @@ impl Parser {
                     self.parse_type_list()?
                 };
                 self.expect(TokenKind::RParen, "expected `)` after closure type params")?;
+                let constraint = if self.eat(TokenKind::Colon).is_some() {
+                    Some(self.parse_constraint_expr()?)
+                } else {
+                    None
+                };
                 let end = self.expect(TokenKind::Pipe, "expected `|` after closure type params")?;
                 let span = ty.span.merge(end.span);
                 ty = Type {
@@ -509,6 +527,7 @@ impl Parser {
                     kind: TypeKind::Closure {
                         ret: Box::new(ty),
                         params,
+                        constraint,
                     },
                 };
             }

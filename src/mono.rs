@@ -3,17 +3,17 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::{
     diagnostic::{DiagResult, Diagnostic},
     hir::{
-        FieldDecl, ItemKind, PrimitiveType, Type, TypeAliasTarget, TypeKind, TypeNameKind,
-        VariantDecl,
+        ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, PrimitiveType, Type,
+        TypeAliasTarget, TypeKind, TypeNameKind, VariantDecl,
     },
-    resolve::{DefId, DefKind},
+    resolve::{DefId, DefKind, ResolvedProgram},
     thir::{
-        CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterfaceRef,
-        CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr, TExprKind, TForInit,
-        TPattern, TStmt, TStmtKind,
+        CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterface,
+        CheckedInterfaceRef, CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr,
+        TExprKind, TForInit, TPattern, TStmt, TStmtKind,
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
-    types::Ty,
+    types::{ConstraintBounds, ConstraintRef, Ty},
 };
 
 #[derive(Clone, Debug)]
@@ -492,7 +492,18 @@ impl MonoContext {
                 body: self.rewrite_closure_body(body)?,
             },
             TExprKind::FunctionToClosure(inner) => {
+                self.mark_retained_closure_witness_impls(&expr.ty, &inner.ty);
                 TExprKind::FunctionToClosure(Box::new(self.rewrite_expr(*inner)?))
+            }
+            TExprKind::RetainClosure {
+                expr: inner,
+                source_ty,
+            } => {
+                self.mark_retained_closure_witness_impls(&expr.ty, &source_ty);
+                TExprKind::RetainClosure {
+                    expr: Box::new(self.rewrite_expr(*inner)?),
+                    source_ty,
+                }
             }
             TExprKind::ArrayToSlice(inner) => {
                 TExprKind::ArrayToSlice(Box::new(self.rewrite_expr(*inner)?))
@@ -513,6 +524,20 @@ impl MonoContext {
                 args,
             } => TExprKind::DynamicInterfaceCall {
                 interface_name,
+                receiver: Box::new(self.rewrite_expr(*receiver)?),
+                args: args
+                    .into_iter()
+                    .map(|arg| self.rewrite_expr(arg))
+                    .collect::<DiagResult<Vec<_>>>()?,
+            },
+            TExprKind::RetainedClosureInterfaceCall {
+                interface_name,
+                interface_args,
+                receiver,
+                args,
+            } => TExprKind::RetainedClosureInterfaceCall {
+                interface_name,
+                interface_args,
                 receiver: Box::new(self.rewrite_expr(*receiver)?),
                 args: args
                     .into_iter()
@@ -699,6 +724,35 @@ impl MonoContext {
         self.mark_message_clone_impls_inner(ty, &mut HashSet::new());
     }
 
+    fn mark_retained_closure_witness_impls(&mut self, target_ty: &Ty, source_ty: &Ty) {
+        for capability in retained_closure_capabilities(target_ty) {
+            if retained_closure_has_capability(source_ty, &capability) {
+                continue;
+            }
+            if is_clone_message_capability(&capability) {
+                self.mark_message_clone_impls(source_ty);
+                continue;
+            }
+            if let Some(function_def) = self
+                .checked
+                .impls
+                .iter()
+                .find(|implementation| {
+                    implementation.interface_name == capability.name
+                        && implementation
+                            .receiver_ty
+                            .as_ref()
+                            .is_some_and(|receiver| receiver == source_ty.unqualified())
+                        && implementation.interface_args.get(1..)
+                            == Some(capability.args.as_slice())
+                })
+                .map(|implementation| implementation.function_def)
+            {
+                self.mark_function(function_def);
+            }
+        }
+    }
+
     fn mark_message_clone_impls_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) {
         let ty = ty.unqualified();
         if !seen.insert(ty.clone()) {
@@ -788,6 +842,7 @@ struct AggregateCollector<'a> {
     visiting_structs: HashSet<String>,
     emitted_enums: HashSet<String>,
     visiting_enums: HashSet<String>,
+    retained_closure_interface_tys: HashSet<(Ty, ConstraintRef)>,
     checked_structs: Vec<CheckedStruct>,
     checked_enums: Vec<CheckedEnum>,
     diagnostics: Vec<Diagnostic>,
@@ -871,6 +926,7 @@ impl<'a> AggregateCollector<'a> {
             visiting_structs: HashSet::new(),
             emitted_enums: HashSet::new(),
             visiting_enums: HashSet::new(),
+            retained_closure_interface_tys: HashSet::new(),
             checked_structs: Vec::new(),
             checked_enums: Vec::new(),
             diagnostics: Vec::new(),
@@ -1032,13 +1088,38 @@ impl<'a> AggregateCollector<'a> {
                 }
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body(body),
-            TExprKind::FunctionToClosure(inner) => self.collect_expr(inner),
+            TExprKind::FunctionToClosure(inner) => {
+                self.collect_expr(inner);
+                self.collect_retained_closure_witness_tys(&expr.ty, &inner.ty);
+                if retained_closure_capabilities(&expr.ty)
+                    .iter()
+                    .any(is_clone_message_capability)
+                {
+                    self.collect_message_clone_result_tys(&expr.ty);
+                }
+            }
+            TExprKind::RetainClosure {
+                expr: inner,
+                source_ty,
+            } => {
+                self.collect_expr(inner);
+                self.collect_ty(source_ty);
+                self.collect_retained_closure_witness_tys(&expr.ty, source_ty);
+                if retained_closure_capabilities(&expr.ty)
+                    .iter()
+                    .any(is_clone_message_capability)
+                {
+                    self.collect_message_clone_result_tys(&expr.ty);
+                    self.collect_message_clone_result_tys(source_ty);
+                }
+            }
             TExprKind::ArrayToSlice(inner) => self.collect_expr(inner),
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_expr(expr);
                 self.collect_ty(concrete_ty);
             }
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr(receiver);
                 for arg in args {
                     self.collect_expr(arg);
@@ -1064,6 +1145,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
                 self.collect_ty(&message_result_ty(message_ty.clone()));
+                self.collect_message_clone_result_tys(message_ty);
             }
             TExprKind::MetaAsRefRepr { value, source_ty }
             | TExprKind::MetaIntoRepr { value, source_ty } => {
@@ -1088,6 +1170,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(handler_ty);
                 self.collect_ty(&message_result_ty(state_ty.clone()));
                 self.collect_ty(&message_result_ty(handler_ty.clone()));
+                self.collect_message_clone_result_tys(state_ty);
+                self.collect_message_clone_result_tys(handler_ty);
             }
             TExprKind::ActorSend {
                 actor,
@@ -1098,6 +1182,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
                 self.collect_ty(&message_result_ty(message_ty.clone()));
+                self.collect_message_clone_result_tys(message_ty);
             }
             TExprKind::ActorStop { actor, message_ty }
             | TExprKind::ActorJoin { actor, message_ty } => {
@@ -1135,6 +1220,56 @@ impl<'a> AggregateCollector<'a> {
         }
     }
 
+    fn collect_message_clone_result_tys(&mut self, ty: &Ty) {
+        self.collect_message_clone_result_tys_inner(ty, &mut HashSet::new());
+    }
+
+    fn collect_message_clone_result_tys_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) {
+        let ty = ty.unqualified();
+        if !seen.insert(ty.clone()) {
+            return;
+        }
+        self.collect_ty(&message_result_ty(ty.clone()));
+        match ty {
+            Ty::Const(inner) => self.collect_message_clone_result_tys_inner(inner, seen),
+            Ty::Array { elem, .. } => self.collect_message_clone_result_tys_inner(elem, seen),
+            Ty::ClosureInstance { captures, .. } => {
+                for capture in captures {
+                    self.collect_message_clone_result_tys_inner(capture, seen);
+                }
+            }
+            Ty::Named { name, args } => {
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(fields) = self
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .map(|strukt| strukt.fields.clone())
+                {
+                    for (_, field_ty) in fields {
+                        self.collect_message_clone_result_tys_inner(&field_ty, seen);
+                    }
+                    return;
+                }
+                if let Some(variants) = self
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .map(|enm| enm.variants.clone())
+                {
+                    for variant in variants {
+                        for payload in variant.payload {
+                            self.collect_message_clone_result_tys_inner(&payload, seen);
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn collect_ty(&mut self, ty: &Ty) {
         match ty {
             Ty::Const(inner) => self.collect_ty(inner),
@@ -1162,7 +1297,21 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_ty(param);
                 }
             }
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                self.collect_ty(ret);
+                for param in params {
+                    self.collect_ty(param);
+                }
+                self.collect_constraint_bounds_tys(constraints);
+                for capability in &constraints.positive {
+                    self.collect_retained_closure_interface_tys(ty, capability);
+                }
+            }
+            Ty::ClosureInstance { ret, params, .. } => {
                 self.collect_ty(ret);
                 for param in params {
                     self.collect_ty(param);
@@ -1187,6 +1336,52 @@ impl<'a> AggregateCollector<'a> {
             | Ty::CSpelling { .. }
             | Ty::Generic(_)
             | Ty::Unknown => {}
+        }
+    }
+
+    fn collect_constraint_bounds_tys(&mut self, bounds: &ConstraintBounds) {
+        for entry in bounds.positive.iter().chain(bounds.negative.iter()) {
+            for arg in &entry.args {
+                self.collect_ty(arg);
+            }
+        }
+    }
+
+    fn collect_retained_closure_witness_tys(&mut self, target_ty: &Ty, source_ty: &Ty) {
+        for capability in retained_closure_capabilities(target_ty) {
+            self.collect_retained_closure_interface_tys(target_ty, &capability);
+            self.collect_retained_closure_interface_tys(source_ty, &capability);
+        }
+    }
+
+    fn collect_retained_closure_interface_tys(
+        &mut self,
+        receiver_ty: &Ty,
+        capability: &ConstraintRef,
+    ) {
+        let key = (receiver_ty.unqualified().clone(), capability.clone());
+        if !self.retained_closure_interface_tys.insert(key) {
+            return;
+        }
+        for arg in &capability.args {
+            self.collect_ty(arg);
+        }
+        let Some(interface) = self
+            .checked
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == capability.name)
+        else {
+            return;
+        };
+        let subst = retained_closure_interface_subst(interface, receiver_ty, &capability.args);
+        let ret_ty = interface.ret.clone();
+        let params = interface.params.iter().skip(1).cloned().collect::<Vec<_>>();
+        let ret = substitute_ty(&ret_ty, &subst);
+        self.collect_ty(&ret);
+        for param in params {
+            let ty = substitute_ty(&param, &subst);
+            self.collect_ty(&ty);
         }
     }
 
@@ -1335,12 +1530,17 @@ impl<'a> AggregateCollector<'a> {
                     .map(|param| self.normalize_meta_repr_markers(param))
                     .collect(),
             },
-            Ty::Closure { ret, params } => Ty::Closure {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => Ty::Closure {
                 ret: Box::new(self.normalize_meta_repr_markers(ret)),
                 params: params
                     .iter()
                     .map(|param| self.normalize_meta_repr_markers(param))
                     .collect(),
+                constraints: self.normalize_constraint_bounds(constraints),
             },
             Ty::ClosureInstance {
                 id,
@@ -1571,14 +1771,111 @@ impl<'a> AggregateCollector<'a> {
                     .map(|param| self.lower_ast_type(param, subst))
                     .collect(),
             },
-            TypeKind::Closure { ret, params } => Ty::Closure {
+            TypeKind::Closure {
+                ret,
+                params,
+                constraint,
+            } => Ty::Closure {
                 ret: Box::new(self.lower_ast_type(ret, subst)),
                 params: params
                     .iter()
                     .map(|param| self.lower_ast_type(param, subst))
                     .collect(),
+                constraints: constraint
+                    .as_ref()
+                    .map(|constraint| self.constraint_bounds(constraint, subst))
+                    .unwrap_or_default(),
             },
         }
+    }
+
+    fn normalize_constraint_bounds(&mut self, bounds: &ConstraintBounds) -> ConstraintBounds {
+        ConstraintBounds {
+            positive: bounds
+                .positive
+                .iter()
+                .map(|entry| ConstraintRef {
+                    name: entry.name.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| self.normalize_meta_repr_markers(arg))
+                        .collect(),
+                })
+                .collect(),
+            negative: bounds
+                .negative
+                .iter()
+                .map(|entry| ConstraintRef {
+                    name: entry.name.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| self.normalize_meta_repr_markers(arg))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn constraint_bounds(
+        &mut self,
+        expr: &ConstraintExpr,
+        subst: &HashMap<String, Ty>,
+    ) -> ConstraintBounds {
+        let mut bounds = ConstraintBounds::default();
+        for term in &expr.terms {
+            let args = term
+                .args
+                .iter()
+                .map(|arg| self.lower_ast_type(arg, subst))
+                .collect::<Vec<_>>();
+            let view = self.interface_view(
+                &name_ref_canonical(&self.checked.resolved, &term.name),
+                &args,
+            );
+            if term.removed {
+                bounds
+                    .positive
+                    .retain(|entry| !view.iter().any(|removed| removed == entry));
+            } else if term.negated {
+                for entry in view {
+                    if !bounds.negative.contains(&entry) {
+                        bounds.negative.push(entry);
+                    }
+                }
+            } else {
+                for entry in view {
+                    if !bounds.positive.contains(&entry) {
+                        bounds.positive.push(entry);
+                    }
+                }
+            }
+        }
+        bounds
+    }
+
+    fn interface_view(&self, name: &str, args: &[Ty]) -> Vec<ConstraintRef> {
+        self.checked
+            .interface_aliases
+            .iter()
+            .find(|alias| alias.name == name)
+            .map(|alias| {
+                alias
+                    .positive
+                    .iter()
+                    .map(|entry| ConstraintRef {
+                        name: entry.name.clone(),
+                        args: entry.args.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_else(|| {
+                vec![ConstraintRef {
+                    name: name.to_string(),
+                    args: args.to_vec(),
+                }]
+            })
     }
 }
 
@@ -1709,7 +2006,15 @@ fn contains_generic(ty: &Ty) -> bool {
         Ty::Function { ret, params, .. } => {
             contains_generic(ret) || params.iter().any(contains_generic)
         }
-        Ty::Closure { ret, params } => contains_generic(ret) || params.iter().any(contains_generic),
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
+            contains_generic(ret)
+                || params.iter().any(contains_generic)
+                || constraint_bounds_contains_generic(constraints)
+        }
         Ty::ClosureInstance {
             ret,
             params,
@@ -1722,6 +2027,175 @@ fn contains_generic(ty: &Ty) -> bool {
         }
         _ => false,
     }
+}
+
+fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .any(|entry| entry.args.iter().any(contains_generic))
+}
+
+fn constraint_bounds_complexity(bounds: &ConstraintBounds) -> usize {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .map(|entry| 1 + entry.args.iter().map(type_complexity).sum::<usize>())
+        .sum()
+}
+
+fn constraint_bounds_contains_ty(bounds: &ConstraintBounds, needle: &Ty) -> bool {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .any(|entry| entry.args.iter().any(|arg| ty_contains(arg, needle)))
+}
+
+fn retained_closure_capabilities(ty: &Ty) -> Vec<ConstraintRef> {
+    match ty.unqualified() {
+        Ty::Closure { constraints, .. } => constraints.positive.clone(),
+        _ => Vec::new(),
+    }
+}
+
+fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> bool {
+    let Ty::Closure { constraints, .. } = ty.unqualified() else {
+        return false;
+    };
+    constraints.positive.iter().any(|entry| entry == capability)
+}
+
+fn retained_closure_interface_subst(
+    interface: &CheckedInterface,
+    receiver_ty: &Ty,
+    args: &[Ty],
+) -> HashMap<String, Ty> {
+    let mut subst = HashMap::new();
+    if let Some(receiver) = interface.generics.first() {
+        subst.insert(receiver.clone(), receiver_ty.clone());
+    }
+    for (generic, arg) in interface.generics.iter().skip(1).zip(args.iter()) {
+        subst.insert(generic.clone(), arg.clone());
+    }
+    subst
+}
+
+fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
+    match ty {
+        Ty::Hole(id) => Ty::Hole(*id),
+        Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
+        Ty::Generic(name) => subst
+            .get(name)
+            .cloned()
+            .unwrap_or_else(|| Ty::Generic(name.clone())),
+        Ty::Pointer { nullable, inner } => Ty::Pointer {
+            nullable: *nullable,
+            inner: Box::new(substitute_ty(inner, subst)),
+        },
+        Ty::Array { len, elem } => Ty::Array {
+            len: *len,
+            elem: Box::new(substitute_ty(elem, subst)),
+        },
+        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, subst))),
+        Ty::Named { name, args } => Ty::Named {
+            name: name.clone(),
+            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
+        },
+        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            name: name.clone(),
+            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
+        },
+        Ty::Function { abi, ret, params } => Ty::Function {
+            abi: abi.clone(),
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+        },
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => Ty::Closure {
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+            constraints: substitute_constraint_bounds(constraints, subst),
+        },
+        Ty::ClosureInstance {
+            id,
+            ret,
+            params,
+            captures,
+        } => Ty::ClosureInstance {
+            id: *id,
+            ret: Box::new(substitute_ty(ret, subst)),
+            params: params
+                .iter()
+                .map(|param| substitute_ty(param, subst))
+                .collect(),
+            captures: captures
+                .iter()
+                .map(|capture| substitute_ty(capture, subst))
+                .collect(),
+        },
+        Ty::Never
+        | Ty::Void
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Unknown => ty.clone(),
+    }
+}
+
+fn substitute_constraint_bounds(
+    bounds: &ConstraintBounds,
+    subst: &HashMap<String, Ty>,
+) -> ConstraintBounds {
+    ConstraintBounds {
+        positive: bounds
+            .positive
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+        negative: bounds
+            .negative
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+    }
+}
+
+fn substitute_constraint_ref(entry: &ConstraintRef, subst: &HashMap<String, Ty>) -> ConstraintRef {
+    ConstraintRef {
+        name: entry.name.clone(),
+        args: entry
+            .args
+            .iter()
+            .map(|arg| substitute_ty(arg, subst))
+            .collect(),
+    }
+}
+
+fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
+    capability.name == "clone_message" && capability.args.is_empty()
 }
 
 fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
@@ -1752,8 +2226,14 @@ fn type_complexity(ty: &Ty) -> usize {
         Ty::Function { ret, params, .. } => {
             1 + type_complexity(ret) + params.iter().map(type_complexity).sum::<usize>()
         }
-        Ty::Closure { ret, params } => {
-            1 + type_complexity(ret) + params.iter().map(type_complexity).sum::<usize>()
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
+            1 + type_complexity(ret)
+                + params.iter().map(type_complexity).sum::<usize>()
+                + constraint_bounds_complexity(constraints)
         }
         Ty::ClosureInstance {
             ret,
@@ -1801,8 +2281,14 @@ fn ty_contains(container: &Ty, needle: &Ty) -> bool {
         Ty::Function { ret, params, .. } => {
             ty_contains(ret, needle) || params.iter().any(|param| ty_contains(param, needle))
         }
-        Ty::Closure { ret, params } => {
-            ty_contains(ret, needle) || params.iter().any(|param| ty_contains(param, needle))
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
+            ty_contains(ret, needle)
+                || params.iter().any(|param| ty_contains(param, needle))
+                || constraint_bounds_contains_ty(constraints, needle)
         }
         Ty::ClosureInstance {
             ret,
@@ -1851,6 +2337,13 @@ fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
         PrimitiveType::Usize => Ty::Usize,
         PrimitiveType::F32 => Ty::F32,
         PrimitiveType::F64 => Ty::F64,
+    }
+}
+
+fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
+    match name.kind {
+        NameRefKind::Def(def_id) => resolved.def(def_id).name.clone(),
+        _ => name.display.clone(),
     }
 }
 
@@ -1922,7 +2415,11 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
                 params
             )
         }
-        Ty::Closure { ret, params } => {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
             let params = if params.is_empty() {
                 "void".to_string()
             } else {
@@ -1932,7 +2429,12 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
                     .collect::<Vec<_>>()
                     .join("_")
             };
-            format!("closure_ret_{}_args_{}", mangle_ty_fragment(ret), params)
+            format!(
+                "closure_ret_{}_args_{}_caps_{}",
+                mangle_ty_fragment(ret),
+                params,
+                mangle_constraint_bounds(constraints)
+            )
         }
         Ty::ClosureInstance {
             id,
@@ -1966,6 +2468,41 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
             )
         }
         Ty::Unknown => "unknown".to_string(),
+    }
+}
+
+fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
+    if bounds.is_empty() {
+        return "none".to_string();
+    }
+    let mut parts = bounds
+        .positive
+        .iter()
+        .map(|entry| format!("pos_{}", mangle_constraint_ref(entry)))
+        .collect::<Vec<_>>();
+    parts.extend(
+        bounds
+            .negative
+            .iter()
+            .map(|entry| format!("neg_{}", mangle_constraint_ref(entry))),
+    );
+    parts.join("_")
+}
+
+fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
+    if entry.args.is_empty() {
+        sanitize_mangle_fragment(&entry.name)
+    } else {
+        format!(
+            "{}_{}",
+            sanitize_mangle_fragment(&entry.name),
+            entry
+                .args
+                .iter()
+                .map(mangle_ty_fragment)
+                .collect::<Vec<_>>()
+                .join("_")
+        )
     }
 }
 

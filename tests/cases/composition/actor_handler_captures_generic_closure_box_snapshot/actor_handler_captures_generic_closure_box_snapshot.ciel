@@ -1,6 +1,6 @@
 // ciel-test: error
-// expect-error: actor handler type
-// expect-error: does not implement `Message`
+// expect-error: closure conversion requires
+// expect-error: implement `clone_message`
 // expect-error: erased closure signature
 
 import /std/lib;

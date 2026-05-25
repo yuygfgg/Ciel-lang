@@ -3,6 +3,10 @@
 This proposal extends erased closure signature types so they can retain selected
 interface capabilities after erasure.
 
+Status: implemented as a general retained-constraint closure type. The syntax
+reuses `ConstraintExpr`, the same interface-algebra surface used by generic
+constraints, rather than introducing a separate capability set.
+
 The goal is to support homogeneous collections of callable values while keeping
 capability checks precise. A concrete closure literal can be stored behind a
 shared callable signature, and the type can still remember capabilities such as
@@ -57,7 +61,7 @@ are no longer visible.
 
 ## Proposed Syntax
 
-Allow a capability expression after a closure parameter list:
+Allow a constraint expression after a closure parameter list:
 
 ```rust
 type Handler = []char |(i64): Message + printable|;
@@ -66,9 +70,9 @@ type Handler = []char |(i64): Message + printable|;
 Grammar sketch:
 
 ```ebnf
-ClosureSuffix      ::= "|" "(" [ TypeList ] ")" [ ":" CapabilityExpr ] "|"
-CapabilityExpr     ::= CapabilityTerm { ( "+" | "-" ) CapabilityTerm }
-CapabilityTerm     ::= [ "!" ] Identifier [ TypeArgList ]
+ClosureSuffix      ::= "|" "(" [ TypeList ] ")" [ ":" ConstraintExpr ] "|"
+ConstraintExpr     ::= ConstraintTerm { ( "+" | "-" ) ConstraintTerm }
+ConstraintTerm     ::= [ "!" ] Identifier [ TypeArgList ]
 ```
 
 The expression after `:` uses the same interface algebra surface as generic
@@ -208,10 +212,10 @@ closure cannot convert to `i64 |(i64): Message + !ThreadLocal|`: concrete closur
 
 ## Compiler Work
 
-1. Extend closure type parsing to accept `: CapabilityExpr` inside the closure
+1. Extend closure type parsing to accept `: ConstraintExpr` inside the closure
    suffix before the closing `|`.
-2. Represent erased closure signatures with an optional retained capability
-   expression.
+2. Represent erased closure signatures with resolved retained constraint
+   bounds.
 3. During closure-literal coercion, check callable shape plus retained
    capability requirements before erasure.
 4. Preserve retained capabilities through aggregate element, field, payload,
@@ -222,37 +226,34 @@ closure cannot convert to `i64 |(i64): Message + !ThreadLocal|`: concrete closur
    capability impls. `Message` needs a clone operation for the erased closure
    value; other interfaces can use vtable entries.
 7. Allow view narrowing from a richer retained closure type to a weaker one
-   when the target capability expression is proven by the source type.
+   when the target constraint expression is proven by the source type.
 8. Keep plain erased closure signatures unchanged and unmessageable by default.
 
 ## Standard Library And Runtime Work
 
-No new standard-library API is required for the first slice. The feature reuses
-existing interfaces such as `Message`, `printable`, `ShareHandle`, and
-`ThreadLocal`.
+No new standard-library API is required. The feature reuses existing interfaces
+such as `Message`, `printable`, `ShareHandle`, and `ThreadLocal`.
 
 The runtime representation of closure values may grow when retained witnesses
 are present. Plain erased closure values keep the existing compact call-entry
 and environment shape.
 
-## First Slice
+## Implemented Behavior
 
-The first implementation should target `Message` only:
+The implementation is not limited to `Message`:
 
 ```rust
 type Handler = i64 |(i64): Message|;
+type Scored = i64 |(i64): score|;
 ```
 
-Required behavior:
+Concrete closure literals and Ciel ABI `fn` values can convert to retained
+closure types when the source type proves the requested positive constraints
+and does not implement forbidden negative constraints. Retained closure values
+store generated witnesses, so `[N]Handler` indexing returns `Handler`,
+`Handler` satisfies `T: Message`, custom interface calls dispatch through the
+stored witness, and the value remains callable as a normal closure.
 
-1. Concrete closure literals with messageable captures convert to `Handler`.
-2. Concrete closure literals with actor-local captures are rejected.
-3. `[N]Handler` indexing returns `Handler`.
-4. `Handler` satisfies `T: Message`.
-5. `Handler` can still be called like a normal closure.
-
-After that is stable, the same representation can be generalized to arbitrary
-positive interface views and negative capability checks.
-
-The first slice uses whatever ordinary impls the concrete closure type already
-has.
+Plain erased closure signatures such as `i64 |(i64)|` still do not prove
+capabilities and cannot be upgraded after erasure, because no witness was
+retained at the erasure point.

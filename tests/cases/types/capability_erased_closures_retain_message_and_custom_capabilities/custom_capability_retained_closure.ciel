@@ -1,0 +1,17 @@
+// ciel-test: run
+// expect-exit: 16
+
+import /std/lib;
+
+interface<T> i64 score(*T value);
+
+impl<T: Message> score(*T value) {
+    return 9;
+}
+
+i64 main() {
+    i64 base = 3;
+    i64 |(i64): score| scored = |i64 value| value + base;
+    base = 100;
+    return scored(4) + score(&scored);
+}

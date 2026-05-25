@@ -377,16 +377,22 @@ specifier applies to the declared function; use parentheses when the return
 type itself needs an ABI-qualified function-pointer type.
 
 `T |(A, B)|` is a non-null erased closure signature type with return type `T`.
-Each closure literal first has a unique, unnameable concrete closure type whose
-fields are its captured values. The concrete closure type can be coerced to a
-matching erased closure signature when such a type is expected.
+`T |(A, B): ConstraintExpr|` has the same callable shape and additionally
+retains capability witnesses, using the same constraint expression surface as
+generic bounds. Each closure literal first has a unique, unnameable concrete
+closure type whose fields are its captured values. The concrete closure type
+can be coerced to a matching erased closure signature when such a type is
+expected.
 
 A closure value is a callable value containing a generated code pointer and an
-environment pointer. It may be implemented as a generated struct similar to:
+environment pointer. A retained-capability closure value also stores generated
+witnesses for the retained capabilities. It may be implemented as a generated
+struct similar to:
 
 ```text
 *void env;
 T fn(*void, A, B) call;
+... retained capability witnesses ...
 ```
 
 The exact layout is an implementation detail. Closure types always use the
@@ -485,7 +491,7 @@ FunctionSignature   ::= Type Identifier [ GenericParamList ]
 
 GenericParamList    ::= "<" GenericParam { "," GenericParam } [ "," ] ">"
 GenericParam        ::= Identifier [ ":" ConstraintExpr ]
-ConstraintExpr      ::= ConstraintTerm { "+" ConstraintTerm }
+ConstraintExpr      ::= ConstraintTerm { ( "+" | "-" ) ConstraintTerm }
 ConstraintTerm      ::= [ "!" ] Identifier [ TypeArgList ]
 
 ParamList           ::= Param { "," Param } [ "," ]
@@ -703,6 +709,7 @@ The `as` operator can provide the expected callable type for a closure literal:
 ```rust
 (|x| x + 1) as i64 |(i64)|;
 (|x| { return x + 1; }) as i64 |(i64)|;
+(|x| x + 1) as i64 |(i64): Message|;
 ```
 
 This use of `as` is a compile-time closure type annotation, not a runtime cast.
@@ -1233,21 +1240,21 @@ Actor state remains encapsulated by the actor runtime. It is initialized when
 the actor starts and is updated by the actor's handler. Actor state is never
 exposed as a cross-actor `*S`.
 
-Actors are spawned with an initial state value and a concrete callable handler:
+Actors are spawned with an initial state value and a retained-capability
+closure handler:
 
 ```rust
-Result<Actor<M>, Error> spawn_actor<S: Message, M: Message, H: Message>(
+Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     S initial_state,
-    H handler
+    Result<S, Error> |(S, M): Message| handler
 );
 ```
 
 Messages are checked through `Message`, actor state is handled inside the actor
 loop, and safe code cannot send a borrowed pointer to another actor's mutable
-state. `H` must be callable as `Result<S, Error>(S, M)`. Actor-handler closures
-capture by value, and the concrete closure type is `Message` only when its
-captured fields are `Message`. Passing a handler to a new actor is a cross-actor
-message conversion performed by `spawn_actor`.
+state. Actor-handler closures capture by value. Converting a concrete closure
+or Ciel ABI `fn` into the handler type retains the `Message` witness used by
+the actor runtime to clone the handler across the actor boundary.
 
 `Message` is an explicit conversion capability:
 
@@ -1290,12 +1297,12 @@ append(p, "local only"); // mutates only the sender's buffer
 `spawn_actor` follows the same rule:
 
 ```rust
-Result<Actor<M>, Error> spawn_actor<S: Message, M: Message, H: Message>(
+Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     S initial_state,
-    H handler
+    Result<S, Error> |(S, M): Message| handler
 ) {
     S state = clone_message(&initial_state)?;
-    H actor_handler = clone_message(&handler)?;
+    Result<S, Error> |(S, M): Message| actor_handler = clone_message(&handler)?;
     return runtime_spawn_actor(state, actor_handler);
 }
 ```
@@ -1315,10 +1322,10 @@ spawn_actor(0, |s, msg| s + *ptr); // compile error
 The compiler treats every closure literal as a unique concrete type. A concrete
 closure type implements `Message` only when every captured field implements
 `Message`; a noncapturing closure implements `Message` through an empty
-environment. An erased closure signature such as `Result<S, Error> |(S, M)|`
-does not by itself prove `Message`, because two closures with that signature can
-capture different values. Safe actor APIs therefore accept concrete callable
-values or Ciel ABI `fn` values, not arbitrary erased closure values.
+environment. A plain erased closure signature such as
+`Result<S, Error> |(S, M)|` does not by itself prove `Message`, because two
+closures with that signature can capture different values. A retained signature
+such as `Result<S, Error> |(S, M): Message|` carries the witness explicitly.
 
 `Message` is implemented per concrete type. `/std/message` provides ordinary
 impls for primitive values, `Error`, `Result<T, E>`, and owned `/std/meta` SOP
@@ -1355,10 +1362,11 @@ impl clone_message(*Event value) {
 The implementation still treats fixed-size arrays, Ciel ABI `fn` values, and
 concrete closure instances as compiler-known message leaves because the current
 type system cannot express const-generic array policies or callable-kind
-library impls. These leaves are not a structural rule for user-defined named
-data. Raw pointers, slices, dynamic interface values, erased closure signatures,
-extern C function pointers, and opaque C handles do not implement `Message`
-without an explicit policy.
+library impls. Capability-erased closure values do not add an actor-specific
+exception: they retain whichever capability witnesses the source type already
+proved. Raw pointers, slices, dynamic interface values, plain erased closure
+signatures, extern C function pointers, and opaque C handles do not implement
+`Message` without an explicit policy.
 
 The current actor runtime is backed by pthreads. `spawn_actor` clones the
 initial state and handler, creates a runtime mailbox, and starts a worker thread
@@ -1459,8 +1467,8 @@ The compiler recognizes the standard-library concurrency marker interfaces
 `clone_message` implementations for user structs or enums. Structural message
 behavior is proved through the ordinary `/std/message` impls for owned
 `/std/meta` SOP nodes, and diagnostics report the SOP path when a raw pointer,
-slice, dynamic interface value, erased closure signature, C opaque handle, or
-other non-message leaf blocks the policy.
+slice, dynamic interface value, plain erased closure signature, C opaque handle,
+or other non-message leaf blocks the policy.
 
 The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
@@ -1671,9 +1679,9 @@ export struct Actor<M> {
     *void handle;
 }
 
-export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message, H: Message>(
+export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     S initial_state,
-    H handler
+    Result<S, Error> |(S, M): Message| handler
 );
 export Result<void, Error> send<T: Message>(*Actor<T> actor, T value);
 ```

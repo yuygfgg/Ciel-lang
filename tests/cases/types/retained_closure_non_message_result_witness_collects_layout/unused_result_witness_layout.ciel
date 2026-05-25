@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 7
+
+import /std/lib;
+
+interface<T> Result<T, Error> duplicate_result(*T value);
+
+impl<T: Message> duplicate_result(*T value) {
+    return Ok(*value);
+}
+
+i64 main() {
+    i64 base = 5;
+    i64 |(i64): Message + duplicate_result| handler = |i64 value| value + base;
+    return handler(2);
+}

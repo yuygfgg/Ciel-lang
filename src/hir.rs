@@ -174,6 +174,7 @@ pub struct ConstraintExpr {
 #[derive(Clone, Debug)]
 pub struct ConstraintTerm {
     pub negated: bool,
+    pub removed: bool,
     pub name: NameRef,
     pub args: Vec<Type>,
 }
@@ -216,6 +217,7 @@ pub enum TypeKind {
     Closure {
         ret: Box<Type>,
         params: Vec<Type>,
+        constraint: Option<ConstraintExpr>,
     },
 }
 
@@ -721,6 +723,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 .iter()
                 .map(|term| ConstraintTerm {
                     negated: term.negated,
+                    removed: term.removed,
                     name: self.resolve_interface_name(&term.name),
                     args: term.args.iter().map(|ty| self.lower_type(ty)).collect(),
                 })
@@ -801,9 +804,16 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 ret: Box::new(self.lower_type(ret)),
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
             },
-            ast::TypeKind::Closure { ret, params } => TypeKind::Closure {
+            ast::TypeKind::Closure {
+                ret,
+                params,
+                constraint,
+            } => TypeKind::Closure {
                 ret: Box::new(self.lower_type(ret)),
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
+                constraint: constraint
+                    .as_ref()
+                    .map(|constraint| self.lower_constraint_expr(constraint)),
             },
         };
         Type {

@@ -1,6 +1,5 @@
 // ciel-test: error
-// expect-error: actor handler type
-// expect-error: does not implement `Message`
+// expect-error: spawn_actor accepts at most S and M type arguments
 
 import /std/lib;
 

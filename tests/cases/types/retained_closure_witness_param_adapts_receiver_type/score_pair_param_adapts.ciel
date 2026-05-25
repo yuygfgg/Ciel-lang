@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 15
+
+import /std/lib;
+
+interface<T> i64 score_pair(*T value, T other);
+
+impl<T: Message> score_pair(*T value, T other) {
+    return (*value)(4) + other(5);
+}
+
+i64 main() {
+    i64 base = 3;
+    i64 |(i64): Message + score_pair| handler = |i64 value| value + base;
+    return score_pair(&handler, handler);
+}

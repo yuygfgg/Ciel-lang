@@ -11,21 +11,17 @@ small ordering marks:
 - `A || B[topic]`: independence edge. `A` and `B` can proceed in either order
   for `topic`.
 
-Proposal names are the file stem under `proposal/`, for example
-`local-type-holes` for `proposal/local-type-holes.md`.
+Proposal names are the file stem under `proposal/` or `proposal/done/`, for
+example `local-type-holes` for `proposal/done/local-type-holes.md`.
 The name may also reserve a future proposal that is being used as an ordering
 anchor before its file exists.
 
-Current proposal order:
+Current active proposal order:
 
 ```text
-local-type-holes <= metaprogramming
-
-metaprogramming < pure-library-message
-
-metaprogramming :> capability-erased-closures[structural representation]
-pure-library-message :> capability-erased-closures[message witness source]
-capability-erased-closures || metaprogramming[retained closure witness storage]
+capability-erased-closures < monomorphized-c-callbacks
+pure-library-message <= monomorphized-c-callbacks
+monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]

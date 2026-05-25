@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/lib;
+
+type I = i64;
+
+interface<T, U> i64 make(*T value);
+
+impl<T: Message> make<i64>(*T value) {
+    return *value + 3;
+}
+
+i64 read<T: make<I>>(*T value) {
+    return make<I>(value);
+}
+
+i64 main() {
+    i64 value = 9;
+    return read(&value);
+}

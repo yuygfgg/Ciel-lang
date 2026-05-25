@@ -167,6 +167,7 @@ pub struct ConstraintExpr {
 #[derive(Clone, Debug)]
 pub struct ConstraintTerm {
     pub negated: bool,
+    pub removed: bool,
     pub name: Ident,
     pub args: Vec<Type>,
 }
@@ -225,6 +226,7 @@ pub enum TypeKind {
     Closure {
         ret: Box<Type>,
         params: Vec<Type>,
+        constraint: Option<ConstraintExpr>,
     },
 }
 

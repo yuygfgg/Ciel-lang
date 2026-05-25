@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 17
+
+import /std/lib;
+
+interface<T> i64 score(*T value);
+
+impl<T: Message> score(*T value) {
+    return 3;
+}
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 main() {
+    i64 base = 2;
+    i64 |(i64): Message| handler = |i64 value| value + base;
+    i64 |(i64): Message + score| scored = handler;
+    i64 |(i64): Message| narrowed = scored;
+    i64 |(i64): Message| copied = clone_value(narrowed);
+    base = 100;
+    return narrowed(5) + copied(5) + score(&scored);
+}

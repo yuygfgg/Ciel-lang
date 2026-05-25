@@ -13,7 +13,7 @@ use crate::{
         TBlock, TClosureBody, TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt,
         TStmtKind,
     },
-    types::Ty,
+    types::{ConstraintBounds, ConstraintRef, Ty},
 };
 
 const C_RUNTIME_PRELUDE: &str = include_str!("runtime_prelude.c");
@@ -34,6 +34,8 @@ pub fn generate_c(
         closure_types: BTreeMap::new(),
         closure_defs: BTreeMap::new(),
         function_closure_wrappers: BTreeMap::new(),
+        retained_closure_wrappers: BTreeMap::new(),
+        retained_closure_witnesses: BTreeMap::new(),
         actor_dispatches: BTreeMap::new(),
         string_literals: BTreeMap::new(),
         string_literal_names: HashMap::new(),
@@ -63,6 +65,8 @@ struct CGenerator<'a> {
     closure_types: BTreeMap<String, Ty>,
     closure_defs: BTreeMap<(usize, usize), ClosureDef>,
     function_closure_wrappers: BTreeMap<String, FunctionClosureWrapper>,
+    retained_closure_wrappers: BTreeMap<String, RetainedClosureWrapper>,
+    retained_closure_witnesses: BTreeMap<String, RetainedClosureWitness>,
     actor_dispatches: BTreeMap<String, ActorDispatch>,
     string_literals: BTreeMap<(usize, usize, usize), String>,
     string_literal_names: HashMap<(usize, usize, usize), String>,
@@ -99,6 +103,20 @@ struct ClosureDef {
 struct FunctionClosureWrapper {
     closure_ty: Ty,
     function_ty: Ty,
+}
+
+#[derive(Clone, Debug)]
+struct RetainedClosureWrapper {
+    target_ty: Ty,
+    source_ty: Ty,
+}
+
+#[derive(Clone, Debug)]
+struct RetainedClosureWitness {
+    target_ty: Ty,
+    source_ty: Ty,
+    capability: ConstraintRef,
+    span: crate::span::Span,
 }
 
 #[derive(Clone, Debug)]
@@ -234,9 +252,22 @@ impl<'a> CGenerator<'a> {
                 self.function_closure_env_name(&wrapper.closure_ty, &wrapper.function_ty)
             ));
         }
+        for wrapper in self
+            .retained_closure_wrappers
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "typedef struct {} {};",
+                self.retained_closure_env_name(&wrapper.target_ty, &wrapper.source_ty),
+                self.retained_closure_env_name(&wrapper.target_ty, &wrapper.source_ty)
+            ));
+        }
         if !self.closure_types.is_empty()
             || !self.closure_defs.is_empty()
             || !self.function_closure_wrappers.is_empty()
+            || !self.retained_closure_wrappers.is_empty()
         {
             self.line("");
         }
@@ -278,6 +309,7 @@ impl<'a> CGenerator<'a> {
             }
         }
         self.emit_closure_prototypes();
+        self.emit_retained_closure_witness_prototypes();
         self.emit_actor_dispatch_prototypes();
         self.emit_dynamic_shim_prototypes();
         self.line("");
@@ -288,7 +320,15 @@ impl<'a> CGenerator<'a> {
         }
 
         self.emit_closure_thunks_and_wrappers()?;
-        if !self.closure_defs.is_empty() || !self.function_closure_wrappers.is_empty() {
+        if !self.closure_defs.is_empty()
+            || !self.function_closure_wrappers.is_empty()
+            || !self.retained_closure_wrappers.is_empty()
+        {
+            self.line("");
+        }
+
+        self.emit_retained_closure_witnesses()?;
+        if !self.retained_closure_witnesses.is_empty() {
             self.line("");
         }
 
@@ -568,7 +608,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_ty_slice(param);
                 }
             }
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure { ret, params, .. } | Ty::ClosureInstance { ret, params, .. } => {
                 self.collect_ty_slice(ret);
                 for param in params {
                     self.collect_ty_slice(param);
@@ -631,7 +671,20 @@ impl<'a> CGenerator<'a> {
     fn collect_ty_closure(&mut self, ty: &Ty) {
         match ty {
             Ty::Const(inner) => self.collect_ty_closure(inner),
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                self.closure_types
+                    .insert(self.closure_type_name(ty), ty.clone());
+                self.collect_ty_closure(ret);
+                for param in params {
+                    self.collect_ty_closure(param);
+                }
+                self.collect_constraint_bounds_closures(constraints);
+            }
+            Ty::ClosureInstance { ret, params, .. } => {
                 self.closure_types
                     .insert(self.closure_type_name(ty), ty.clone());
                 self.collect_ty_closure(ret);
@@ -655,6 +708,52 @@ impl<'a> CGenerator<'a> {
             }
             _ => {}
         }
+    }
+
+    fn collect_constraint_bounds_closures(&mut self, bounds: &ConstraintBounds) {
+        for entry in bounds.positive.iter().chain(bounds.negative.iter()) {
+            for arg in &entry.args {
+                self.collect_ty_closure(arg);
+            }
+        }
+    }
+
+    fn collect_retained_closure_witnesses(
+        &mut self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        span: crate::span::Span,
+    ) {
+        for capability in self.retained_closure_capabilities(target_ty) {
+            if matches!(source_ty.unqualified(), Ty::Closure { .. })
+                && retained_closure_has_capability(source_ty, &capability)
+                && source_ty.unqualified() == target_ty.unqualified()
+            {
+                continue;
+            }
+            let key = self.retained_closure_witness_name(target_ty, source_ty, &capability);
+            self.retained_closure_witnesses
+                .entry(key)
+                .or_insert_with(|| RetainedClosureWitness {
+                    target_ty: target_ty.clone(),
+                    source_ty: source_ty.clone(),
+                    capability,
+                    span,
+                });
+        }
+    }
+
+    fn collect_retained_closure_wrapper(&mut self, target_ty: &Ty, source_ty: &Ty) {
+        if !self.retained_closure_needs_wrapper(target_ty, source_ty) {
+            return;
+        }
+        let key = self.retained_closure_wrapper_key(target_ty, source_ty);
+        self.retained_closure_wrappers
+            .entry(key)
+            .or_insert_with(|| RetainedClosureWrapper {
+                target_ty: target_ty.clone(),
+                source_ty: source_ty.clone(),
+            });
     }
 
     fn collect_block_closures(&mut self, owner: DefId, block: &TBlock) {
@@ -779,6 +878,7 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::FunctionToClosure(inner) => {
                 self.collect_expr_closures(owner, inner);
+                self.collect_retained_closure_witnesses(&expr.ty, &inner.ty, expr.span);
                 let key = self.function_closure_wrapper_key(&expr.ty, &inner.ty);
                 self.function_closure_wrappers
                     .entry(key)
@@ -786,6 +886,15 @@ impl<'a> CGenerator<'a> {
                         closure_ty: expr.ty.clone(),
                         function_ty: inner.ty.clone(),
                     });
+            }
+            TExprKind::RetainClosure {
+                expr: inner,
+                source_ty,
+            } => {
+                self.collect_ty_closure(source_ty);
+                self.collect_retained_closure_wrapper(&expr.ty, source_ty);
+                self.collect_retained_closure_witnesses(&expr.ty, source_ty, expr.span);
+                self.collect_expr_closures(owner, inner);
             }
             TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
                 self.collect_expr_closures(owner, expr)
@@ -805,7 +914,8 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_closure(concrete_ty);
                 self.collect_expr_closures(owner, expr);
             }
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_closures(owner, receiver);
                 for arg in args {
                     self.collect_expr_closures(owner, arg);
@@ -935,7 +1045,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_ty_dynamic(param);
                 }
             }
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure { ret, params, .. } | Ty::ClosureInstance { ret, params, .. } => {
                 self.collect_ty_dynamic(ret);
                 for param in params {
                     self.collect_ty_dynamic(param);
@@ -1061,7 +1171,8 @@ impl<'a> CGenerator<'a> {
                     );
                 }
             }
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_dynamic(receiver);
                 for arg in args {
                     self.collect_expr_dynamic(arg);
@@ -1082,6 +1193,10 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body_dynamic(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_dynamic(inner),
+            TExprKind::RetainClosure { expr, source_ty } => {
+                self.collect_ty_dynamic(source_ty);
+                self.collect_expr_dynamic(expr);
+            }
             TExprKind::ArrayToSlice(inner) => self.collect_expr_dynamic(inner),
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_dynamic(base)
@@ -1290,9 +1405,11 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body_locations(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_locations(inner),
+            TExprKind::RetainClosure { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::ArrayToSlice(inner) => self.collect_expr_locations(inner),
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_locations(expr),
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_locations(receiver);
                 for arg in args {
                     self.collect_expr_locations(arg);
@@ -1515,9 +1632,11 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body_string_literals(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_string_literals(inner),
+            TExprKind::RetainClosure { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::ArrayToSlice(inner) => self.collect_expr_string_literals(inner),
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_string_literals(expr),
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_string_literals(receiver);
                 for arg in args {
                     self.collect_expr_string_literals(arg);
@@ -1716,12 +1835,17 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body_slices(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_slices(inner),
+            TExprKind::RetainClosure { expr, source_ty } => {
+                self.collect_ty_slice(source_ty);
+                self.collect_expr_slices(expr);
+            }
             TExprKind::ArrayToSlice(inner) => self.collect_expr_slices(inner),
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_ty_slice(concrete_ty);
                 self.collect_expr_slices(expr);
             }
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_slices(receiver);
                 for arg in args {
                     self.collect_expr_slices(arg);
@@ -2744,6 +2868,10 @@ impl<'a> CGenerator<'a> {
             TExprKind::FunctionToClosure(inner) => {
                 self.emit_function_to_closure_value(expr, inner, stmt_indent)?
             }
+            TExprKind::RetainClosure {
+                expr: inner,
+                source_ty,
+            } => self.emit_retain_closure_value(expr, inner, source_ty, stmt_indent)?,
             TExprKind::Unary { op, expr } => {
                 let inner = self.gen_expr_with_lowering(expr, stmt_indent)?;
                 match op {
@@ -2900,6 +3028,18 @@ impl<'a> CGenerator<'a> {
                     call_args.join(", ")
                 )
             }
+            TExprKind::RetainedClosureInterfaceCall {
+                interface_name,
+                interface_args,
+                receiver,
+                args,
+            } => self.emit_retained_closure_interface_call(
+                interface_name,
+                interface_args,
+                receiver,
+                args,
+                stmt_indent,
+            )?,
             TExprKind::Field { base, field } => {
                 if expr.ty.is_erased_value() {
                     let base = self.gen_expr_with_lowering(base, stmt_indent)?;
@@ -4235,6 +4375,43 @@ impl<'a> CGenerator<'a> {
                 indent,
                 span,
             ),
+            Ty::Closure { constraints, .. }
+                if constraints.positive.iter().any(is_clone_message_capability) =>
+            {
+                let capability = ConstraintRef {
+                    name: "clone_message".to_string(),
+                    args: Vec::new(),
+                };
+                let field = self.retained_closure_witness_field_name(&capability);
+                let clone_result_ty = self.result_ty(ty.clone(), self.error_ty());
+                let clone_layout = self.result_layout(&clone_result_ty, span)?;
+                let clone_temp = self.next_temp("closure_clone");
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "{} {clone_temp} = (*({source_ptr})).{field}((void *)({source_ptr}));",
+                        clone_layout.c_type
+                    ),
+                );
+                self.line_indent(
+                    indent,
+                    &format!("if ({clone_temp}.tag == {}) {{", clone_layout.err_index),
+                );
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{result_temp} = {};",
+                        self.result_err_literal(result_layout, &clone_layout, &clone_temp)
+                    ),
+                );
+                self.line_indent(indent + 1, &format!("goto {done_label};"));
+                self.line_indent(indent, "}");
+                self.line_indent(
+                    indent,
+                    &format!("{target} = {clone_temp}.as.{}._0;", clone_layout.ok_name),
+                );
+                Ok(())
+            }
             _ => Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: cannot clone non-message type `{ty}`"),
@@ -5017,18 +5194,170 @@ impl<'a> CGenerator<'a> {
             )]);
         };
         let function_value = self.gen_expr_in_stmt(inner, indent)?;
-        let env_name = self.function_closure_env_name(&expr.ty, &inner.ty);
+        self.emit_closure_value_from_source(&expr.ty, &inner.ty, &function_value, indent)
+    }
+
+    fn emit_retain_closure_value(
+        &mut self,
+        expr: &TExpr,
+        inner: &TExpr,
+        source_ty: &Ty,
+        stmt_indent: Option<usize>,
+    ) -> DiagResult<String> {
+        let Some(indent) = stmt_indent else {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                "retained closure conversion needs statement lowering",
+            )]);
+        };
+        let source_code = self.gen_expr_in_stmt(inner, indent)?;
+        let source_temp = self.next_temp("closure_source");
+        self.line_indent(
+            indent,
+            &format!("{} = {source_code};", self.c_decl(source_ty, &source_temp)),
+        );
+        self.emit_closure_value_from_source(&expr.ty, source_ty, &source_temp, indent)
+    }
+
+    fn emit_closure_value_from_source(
+        &mut self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        if matches!(source_ty.unqualified(), Ty::Function { abi: None, .. }) {
+            return self.emit_function_closure_value_from_source(
+                target_ty,
+                source_ty,
+                source_value,
+                indent,
+            );
+        }
+        if self.retained_closure_needs_wrapper(target_ty, source_ty) {
+            return self.emit_wrapped_retained_closure_value_from_source(
+                target_ty,
+                source_ty,
+                source_value,
+                indent,
+            );
+        }
+        let mut fields = vec![
+            format!(".call = ({source_value}).call"),
+            format!(".env = ({source_value}).env"),
+        ];
+        fields.extend(self.retained_closure_witness_initializers(
+            target_ty,
+            source_ty,
+            source_value,
+        ));
+        Ok(format!(
+            "({}){{ {} }}",
+            self.c_type(target_ty),
+            fields.join(", ")
+        ))
+    }
+
+    fn emit_function_closure_value_from_source(
+        &mut self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let env_name = self.function_closure_env_name(target_ty, source_ty);
         let temp = self.next_temp("closure_fn_env");
         self.line_indent(
             indent,
             &format!("{env_name} *{temp} = ({env_name} *)ciel_alloc(sizeof({env_name}));"),
         );
-        self.line_indent(indent, &format!("{temp}->func = {function_value};"));
+        self.line_indent(indent, &format!("{temp}->func = {source_value};"));
+        let mut fields = vec![
+            format!(
+                ".call = {}",
+                self.function_closure_thunk_name(target_ty, source_ty)
+            ),
+            format!(".env = (void *){temp}"),
+        ];
+        fields.extend(self.retained_closure_witness_initializers(target_ty, source_ty, ""));
         Ok(format!(
-            "({}){{ .call = {}, .env = (void *){temp} }}",
-            self.c_type(&expr.ty),
-            self.function_closure_thunk_name(&expr.ty, &inner.ty)
+            "({}){{ {} }}",
+            self.c_type(target_ty),
+            fields.join(", ")
         ))
+    }
+
+    fn emit_wrapped_retained_closure_value_from_source(
+        &mut self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let env_name = self.retained_closure_env_name(target_ty, source_ty);
+        let temp = self.next_temp("closure_retain_env");
+        self.line_indent(
+            indent,
+            &format!("{env_name} *{temp} = ({env_name} *)ciel_alloc(sizeof({env_name}));"),
+        );
+        self.emit_value_copy(&format!("{temp}->source"), source_value, source_ty, indent);
+        let mut fields = vec![
+            format!(
+                ".call = {}",
+                self.retained_closure_thunk_name(target_ty, source_ty)
+            ),
+            format!(".env = (void *){temp}"),
+        ];
+        fields.extend(self.retained_closure_witness_initializers(
+            target_ty,
+            source_ty,
+            source_value,
+        ));
+        Ok(format!(
+            "({}){{ {} }}",
+            self.c_type(target_ty),
+            fields.join(", ")
+        ))
+    }
+
+    fn retained_closure_witness_initializers(
+        &self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        source_value: &str,
+    ) -> Vec<String> {
+        self.retained_closure_capabilities(target_ty)
+            .into_iter()
+            .map(|capability| {
+                let field = self.retained_closure_witness_field_name(&capability);
+                let value = self.retained_closure_witness_value(
+                    target_ty,
+                    source_ty,
+                    &capability,
+                    Some(source_value),
+                );
+                format!(".{field} = {value}")
+            })
+            .collect()
+    }
+
+    fn retained_closure_witness_value(
+        &self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        capability: &ConstraintRef,
+        source_value: Option<&str>,
+    ) -> String {
+        if retained_closure_has_capability(source_ty, capability)
+            && let Some(source_value) = source_value
+            && source_ty.unqualified() == target_ty.unqualified()
+        {
+            return format!(
+                "({source_value}).{}",
+                self.retained_closure_witness_field_name(capability)
+            );
+        }
+        self.retained_closure_witness_name(target_ty, source_ty, capability)
     }
 
     fn emit_closure_call(
@@ -5053,12 +5382,77 @@ impl<'a> CGenerator<'a> {
         Ok(format!("({receiver}).call({})", call_args.join(", ")))
     }
 
+    fn emit_retained_closure_interface_call(
+        &mut self,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver: &TExpr,
+        args: &[TExpr],
+        stmt_indent: Option<usize>,
+    ) -> DiagResult<String> {
+        let capability = ConstraintRef {
+            name: interface_name.to_string(),
+            args: interface_args.to_vec(),
+        };
+        let receiver_code = self.gen_expr_with_lowering(receiver, stmt_indent)?;
+        let (receiver_ref, receiver_value) = match receiver.ty.unqualified() {
+            Ty::Pointer { inner, .. } if matches!(inner.unqualified(), Ty::Closure { .. }) => {
+                let receiver_ref = if let Some(indent) = stmt_indent {
+                    let temp = self.next_temp("retained_recv_ptr");
+                    self.line_indent(
+                        indent,
+                        &format!("{} = {receiver_code};", self.c_decl(&receiver.ty, &temp)),
+                    );
+                    temp
+                } else {
+                    receiver_code
+                };
+                (receiver_ref.clone(), format!("*({receiver_ref})"))
+            }
+            Ty::Closure { .. } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        receiver.span,
+                        "retained closure interface call needs statement lowering",
+                    )]);
+                };
+                let temp = self.next_temp("retained_recv");
+                self.line_indent(
+                    indent,
+                    &format!("{} = {receiver_code};", self.c_decl(&receiver.ty, &temp)),
+                );
+                (format!("&{temp}"), temp)
+            }
+            other => {
+                return Err(vec![Diagnostic::new(
+                    receiver.span,
+                    format!(
+                        "internal error: retained closure interface receiver has type `{other}`"
+                    ),
+                )]);
+            }
+        };
+        let mut call_args = vec![format!("(void *)({receiver_ref})")];
+        call_args.extend(self.gen_call_args(args, stmt_indent)?);
+        Ok(format!(
+            "({receiver_value}).{}({})",
+            self.retained_closure_witness_field_name(&capability),
+            call_args.join(", ")
+        ))
+    }
+
     fn emit_closure_value_layouts(&mut self) {
         let closure_types = self.closure_types.clone();
         for (name, ty) in closure_types {
             self.line(&format!("struct {name} {{"));
             self.line(&format!("    {};", self.closure_call_field_decl(&ty)));
             self.line("    void *env;");
+            for capability in self.retained_closure_capabilities(&ty) {
+                self.line(&format!(
+                    "    {};",
+                    self.retained_closure_witness_field_decl(&ty, &capability)
+                ));
+            }
             self.line("};");
             self.line("");
         }
@@ -5102,6 +5496,18 @@ impl<'a> CGenerator<'a> {
             self.line("};");
             self.line("");
         }
+
+        let wrappers = self.retained_closure_wrappers.clone();
+        for wrapper in wrappers.values() {
+            let env_name = self.retained_closure_env_name(&wrapper.target_ty, &wrapper.source_ty);
+            self.line(&format!("struct {env_name} {{"));
+            self.line(&format!(
+                "    {};",
+                self.c_decl(&wrapper.source_ty, "source")
+            ));
+            self.line("};");
+            self.line("");
+        }
     }
 
     fn emit_closure_prototypes(&mut self) {
@@ -5115,6 +5521,20 @@ impl<'a> CGenerator<'a> {
                 "{};",
                 self.function_closure_thunk_decl(&wrapper.closure_ty, &wrapper.function_ty)
             ));
+        }
+        let wrappers = self.retained_closure_wrappers.clone();
+        for wrapper in wrappers.values() {
+            self.line(&format!(
+                "{};",
+                self.retained_closure_thunk_decl(&wrapper.target_ty, &wrapper.source_ty)
+            ));
+        }
+    }
+
+    fn emit_retained_closure_witness_prototypes(&mut self) {
+        let witnesses = self.retained_closure_witnesses.clone();
+        for witness in witnesses.values() {
+            self.line(&format!("{};", self.retained_closure_witness_decl(witness)));
         }
     }
 
@@ -5139,7 +5559,728 @@ impl<'a> CGenerator<'a> {
             self.emit_function_closure_wrapper(wrapper);
             self.line("");
         }
+        let wrappers = self.retained_closure_wrappers.clone();
+        for wrapper in wrappers.values() {
+            self.emit_retained_closure_wrapper(wrapper)?;
+            self.line("");
+        }
         Ok(())
+    }
+
+    fn emit_retained_closure_witnesses(&mut self) -> DiagResult<()> {
+        let witnesses = self.retained_closure_witnesses.clone();
+        for witness in witnesses.values() {
+            self.emit_retained_closure_witness(witness)?;
+            self.line("");
+        }
+        Ok(())
+    }
+
+    fn retained_closure_witness_decl(&self, witness: &RetainedClosureWitness) -> String {
+        let ret = self.retained_closure_interface_ret(&witness.target_ty, &witness.capability);
+        let params =
+            self.retained_closure_interface_params(&witness.target_ty, &witness.capability);
+        let params = params
+            .iter()
+            .filter(|ty| !ty.is_erased_value())
+            .enumerate()
+            .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.c_return_decl(
+            &ret,
+            &format!(
+                "{}({})",
+                self.retained_closure_witness_name(
+                    &witness.target_ty,
+                    &witness.source_ty,
+                    &witness.capability
+                ),
+                params
+            ),
+        )
+    }
+
+    fn emit_retained_closure_witness(
+        &mut self,
+        witness: &RetainedClosureWitness,
+    ) -> DiagResult<()> {
+        if is_clone_message_capability(&witness.capability) {
+            return self.emit_retained_closure_clone_witness(witness);
+        }
+        if matches!(witness.source_ty.unqualified(), Ty::Closure { .. })
+            && retained_closure_has_capability(&witness.source_ty, &witness.capability)
+        {
+            return self.emit_retained_closure_forwarding_witness(witness);
+        }
+        let Some(implementation) = self
+            .impl_for_retained_closure_witness(&witness.capability, &witness.source_ty)
+            .cloned()
+        else {
+            return Err(vec![Diagnostic::new(
+                None,
+                format!(
+                    "internal error: missing retained closure witness implementation for `{}` on `{}`",
+                    witness.capability.name, witness.source_ty
+                ),
+            )]);
+        };
+        let ret = self.retained_closure_interface_ret(&witness.target_ty, &witness.capability);
+        let params =
+            self.retained_closure_interface_params(&witness.target_ty, &witness.capability);
+        self.line(&format!(
+            "{} {{",
+            self.retained_closure_witness_decl(witness)
+        ));
+        let first_param = implementation
+            .params
+            .first()
+            .cloned()
+            .unwrap_or(Ty::Unknown);
+        let mut args = Vec::new();
+        if matches!(first_param, Ty::Pointer { .. }) {
+            args.push(self.retained_closure_source_pointer_expr(witness));
+        } else {
+            let source_ptr = self.retained_closure_source_pointer_expr(witness);
+            args.push(format!("*({source_ptr})"));
+        }
+        let mut physical_idx = 1;
+        for (target_param, source_param) in params
+            .iter()
+            .skip(1)
+            .zip(implementation.params.iter().skip(1))
+        {
+            if target_param.is_erased_value() {
+                continue;
+            }
+            let arg = format!("arg{physical_idx}");
+            physical_idx += 1;
+            if source_param.is_erased_value() {
+                continue;
+            }
+            let adapted = self.emit_retained_closure_adapt_value(
+                witness,
+                target_param,
+                source_param,
+                &arg,
+                1,
+            )?;
+            args.push(adapted);
+        }
+        let call = format!(
+            "{}({})",
+            self.c_name(implementation.function_def),
+            args.join(", ")
+        );
+        let source_ret = implementation.ret.clone();
+        self.emit_retained_closure_adapted_return(witness, &source_ret, &ret, &call, 1)?;
+        self.line("}");
+        Ok(())
+    }
+
+    fn emit_retained_closure_forwarding_witness(
+        &mut self,
+        witness: &RetainedClosureWitness,
+    ) -> DiagResult<()> {
+        let target_ret =
+            self.retained_closure_interface_ret(&witness.target_ty, &witness.capability);
+        let source_ret =
+            self.retained_closure_interface_ret(&witness.source_ty, &witness.capability);
+        let params =
+            self.retained_closure_interface_params(&witness.target_ty, &witness.capability);
+        self.line(&format!(
+            "{} {{",
+            self.retained_closure_witness_decl(witness)
+        ));
+        let source_ptr = self.retained_closure_source_pointer_expr(witness);
+        let mut args = vec![format!("(void *)({source_ptr})")];
+        let source_params =
+            self.retained_closure_interface_params(&witness.source_ty, &witness.capability);
+        let mut physical_idx = 1;
+        for (target_param, source_param) in params.iter().skip(1).zip(source_params.iter().skip(1))
+        {
+            if target_param.is_erased_value() {
+                continue;
+            }
+            let arg = format!("arg{physical_idx}");
+            physical_idx += 1;
+            if source_param.is_erased_value() {
+                continue;
+            }
+            let adapted = self.emit_retained_closure_adapt_value(
+                witness,
+                target_param,
+                source_param,
+                &arg,
+                1,
+            )?;
+            args.push(adapted);
+        }
+        let field = self.retained_closure_witness_field_name(&witness.capability);
+        let call = format!("(*({source_ptr})).{field}({})", args.join(", "));
+        self.emit_retained_closure_adapted_return(witness, &source_ret, &target_ret, &call, 1)?;
+        self.line("}");
+        Ok(())
+    }
+
+    fn emit_retained_closure_adapted_return(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        source_ret: &Ty,
+        target_ret: &Ty,
+        call: &str,
+        indent: usize,
+    ) -> DiagResult<()> {
+        if target_ret.is_erased_value() {
+            self.line_indent(indent, &format!("{call};"));
+            self.line_indent(indent, "return;");
+            return Ok(());
+        }
+        if source_ret == target_ret {
+            self.line_indent(indent, &format!("return {call};"));
+            return Ok(());
+        }
+        let source_temp = self.next_temp("retained_source_ret");
+        self.line_indent(
+            indent,
+            &format!("{} = {call};", self.c_decl(source_ret, &source_temp)),
+        );
+        let adapted = self.emit_retained_closure_adapt_value(
+            witness,
+            source_ret,
+            target_ret,
+            &source_temp,
+            indent,
+        )?;
+        self.line_indent(indent, &format!("return {adapted};"));
+        Ok(())
+    }
+
+    fn emit_retained_closure_adapt_value(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        if source_ty == target_ty {
+            return Ok(source_value.to_string());
+        }
+        if source_ty == &witness.source_ty && target_ty == &witness.target_ty {
+            return self.emit_closure_value_from_source(
+                &witness.target_ty,
+                &witness.source_ty,
+                source_value,
+                indent,
+            );
+        }
+        if source_ty == &witness.target_ty && target_ty == &witness.source_ty {
+            return self.emit_retained_closure_source_value_from_target(
+                witness,
+                source_value,
+                indent,
+            );
+        }
+        if let (Some((source_ok, source_err)), Some((target_ok, target_err))) =
+            (result_args(source_ty), result_args(target_ty))
+            && source_err == target_err
+        {
+            let source_layout = self.result_layout(source_ty, witness.span)?;
+            let target_layout = self.result_layout(target_ty, witness.span)?;
+            let target_temp = self.next_temp("retained_target_ret");
+            self.line_indent(
+                indent,
+                &format!("{};", self.c_decl(target_ty, &target_temp)),
+            );
+            self.line_indent(
+                indent,
+                &format!("if ({source_value}.tag == {}) {{", source_layout.err_index),
+            );
+            self.line_indent(
+                indent + 1,
+                &format!(
+                    "{target_temp} = {};",
+                    self.result_err_literal(&target_layout, &source_layout, source_value)
+                ),
+            );
+            self.line_indent(indent, "} else {");
+            if target_layout.ok_has_payload {
+                let source_ok_value = format!("{source_value}.as.{}._0", source_layout.ok_name);
+                let adapted_ok = self.emit_retained_closure_adapt_value(
+                    witness,
+                    source_ok,
+                    target_ok,
+                    &source_ok_value,
+                    indent + 1,
+                )?;
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{target_temp} = {};",
+                        self.result_ok_literal(&target_layout, Some(&adapted_ok))
+                    ),
+                );
+            } else {
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{target_temp} = {};",
+                        self.result_ok_literal(&target_layout, None)
+                    ),
+                );
+            }
+            self.line_indent(indent, "}");
+            return Ok(target_temp);
+        }
+        if let Some(adapted) = self.emit_retained_closure_adapt_struct_value(
+            witness,
+            source_ty,
+            target_ty,
+            source_value,
+            indent,
+        )? {
+            return Ok(adapted);
+        }
+        if let Some(adapted) = self.emit_retained_closure_adapt_enum_value(
+            witness,
+            source_ty,
+            target_ty,
+            source_value,
+            indent,
+        )? {
+            return Ok(adapted);
+        }
+        if let (
+            Ty::Array {
+                len: source_len,
+                elem: source_elem,
+            },
+            Ty::Array {
+                len: target_len,
+                elem: target_elem,
+            },
+        ) = (source_ty.unqualified(), target_ty.unqualified())
+            && source_len == target_len
+        {
+            let target_temp = self.next_temp("retained_target_array");
+            self.line_indent(
+                indent,
+                &format!("{};", self.c_decl(target_ty, &target_temp)),
+            );
+            let idx = self.next_temp("retained_i");
+            self.line_indent(
+                indent,
+                &format!("for (size_t {idx} = 0; {idx} < {target_len}; {idx}++) {{"),
+            );
+            let source_item = format!("({source_value})[{idx}]");
+            let adapted_item = self.emit_retained_closure_adapt_value(
+                witness,
+                source_elem,
+                target_elem,
+                &source_item,
+                indent + 1,
+            )?;
+            self.line_indent(
+                indent + 1,
+                &format!("({target_temp})[{idx}] = {adapted_item};"),
+            );
+            self.line_indent(indent, "}");
+            return Ok(target_temp);
+        }
+        if let (Ty::Slice(source_elem), Ty::Slice(target_elem)) =
+            (source_ty.unqualified(), target_ty.unqualified())
+        {
+            let target_temp = self.next_temp("retained_target_slice");
+            self.line_indent(
+                indent,
+                &format!("{};", self.c_decl(target_ty, &target_temp)),
+            );
+            self.line_indent(
+                indent,
+                &format!("{target_temp}.len = ({source_value}).len;"),
+            );
+            if target_elem.is_erased_value() {
+                self.line_indent(indent, &format!("{target_temp}.ptr = NULL;"));
+                return Ok(target_temp);
+            }
+            self.line_indent(
+                indent,
+                &format!(
+                    "{target_temp}.ptr = ({})ciel_alloc_array(sizeof({}), ({source_value}).len);",
+                    self.c_pointer_type(target_elem),
+                    self.c_sizeof_type(target_elem)
+                ),
+            );
+            let idx = self.next_temp("retained_i");
+            self.line_indent(
+                indent,
+                &format!("for (size_t {idx} = 0; {idx} < ({source_value}).len; {idx}++) {{"),
+            );
+            let source_item = format!("({source_value}).ptr[{idx}]");
+            let adapted_item = self.emit_retained_closure_adapt_value(
+                witness,
+                source_elem,
+                target_elem,
+                &source_item,
+                indent + 1,
+            )?;
+            self.line_indent(
+                indent + 1,
+                &format!("{target_temp}.ptr[{idx}] = {adapted_item};"),
+            );
+            self.line_indent(indent, "}");
+            return Ok(target_temp);
+        }
+        Err(vec![Diagnostic::new(
+            witness.span,
+            format!(
+                "internal error: cannot adapt retained closure witness return `{source_ty}` to `{target_ty}`"
+            ),
+        )])
+    }
+
+    fn emit_retained_closure_source_value_from_target(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        target_value: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let target_temp = self.next_temp("retained_target_value");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = {target_value};",
+                self.c_decl(&witness.target_ty, &target_temp)
+            ),
+        );
+        let target_ptr = format!("&{target_temp}");
+        let source_ptr =
+            self.retained_closure_source_pointer_expr_from_target_ptr(witness, &target_ptr);
+        let source_temp = self.next_temp("retained_source_value");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = *({source_ptr});",
+                self.c_decl(&witness.source_ty, &source_temp)
+            ),
+        );
+        Ok(source_temp)
+    }
+
+    fn emit_retained_closure_adapt_struct_value(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<Option<String>> {
+        let (
+            Ty::Named {
+                name: source_name,
+                args: source_args,
+            },
+            Ty::Named {
+                name: target_name,
+                args: target_args,
+            },
+        ) = (source_ty.unqualified(), target_ty.unqualified())
+        else {
+            return Ok(None);
+        };
+        if source_name != target_name || source_args.len() != target_args.len() {
+            return Ok(None);
+        }
+        let source_instance = self.c_named_type(source_name, source_args);
+        let target_instance = self.c_named_type(target_name, target_args);
+        let Some(source_fields) = self
+            .program
+            .checked
+            .structs
+            .iter()
+            .find(|strukt| strukt.name == source_instance)
+            .map(|strukt| strukt.fields.clone())
+        else {
+            return Ok(None);
+        };
+        let Some(target_fields) = self
+            .program
+            .checked
+            .structs
+            .iter()
+            .find(|strukt| strukt.name == target_instance)
+            .map(|strukt| strukt.fields.clone())
+        else {
+            return Ok(None);
+        };
+        if source_fields.len() != target_fields.len() {
+            return Ok(None);
+        }
+        let target_temp = self.next_temp("retained_target_struct");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = {};",
+                self.c_decl(target_ty, &target_temp),
+                self.zero_value(target_ty)
+            ),
+        );
+        for ((source_field, source_field_ty), (target_field, target_field_ty)) in
+            source_fields.iter().zip(target_fields.iter())
+        {
+            if source_field != target_field {
+                return Ok(None);
+            }
+            if target_field_ty.is_erased_value() {
+                continue;
+            }
+            if source_field_ty.is_erased_value() {
+                return Ok(None);
+            }
+            let source_field_value = format!("({source_value}).{source_field}");
+            let adapted = self.emit_retained_closure_adapt_value(
+                witness,
+                source_field_ty,
+                target_field_ty,
+                &source_field_value,
+                indent,
+            )?;
+            self.line_indent(
+                indent,
+                &format!("{target_temp}.{target_field} = {adapted};"),
+            );
+        }
+        Ok(Some(target_temp))
+    }
+
+    fn emit_retained_closure_adapt_enum_value(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_value: &str,
+        indent: usize,
+    ) -> DiagResult<Option<String>> {
+        let (
+            Ty::Named {
+                name: source_name,
+                args: source_args,
+            },
+            Ty::Named {
+                name: target_name,
+                args: target_args,
+            },
+        ) = (source_ty.unqualified(), target_ty.unqualified())
+        else {
+            return Ok(None);
+        };
+        if source_name != target_name || source_args.len() != target_args.len() {
+            return Ok(None);
+        }
+        let source_instance = self.c_named_type(source_name, source_args);
+        let target_instance = self.c_named_type(target_name, target_args);
+        let Some(source_variants) = self
+            .program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == source_instance)
+            .map(|enm| enm.variants.clone())
+        else {
+            return Ok(None);
+        };
+        let Some(target_variants) = self
+            .program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == target_instance)
+            .map(|enm| enm.variants.clone())
+        else {
+            return Ok(None);
+        };
+        if source_variants.len() != target_variants.len() {
+            return Ok(None);
+        }
+        let target_temp = self.next_temp("retained_target_enum");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = {};",
+                self.c_decl(target_ty, &target_temp),
+                self.zero_value(target_ty)
+            ),
+        );
+        self.line_indent(indent, &format!("switch (({source_value}).tag) {{"));
+        for (idx, (source_variant, target_variant)) in source_variants
+            .iter()
+            .zip(target_variants.iter())
+            .enumerate()
+        {
+            if source_variant.name != target_variant.name {
+                return Ok(None);
+            }
+            if source_variant.payload.len() != target_variant.payload.len() {
+                return Ok(None);
+            }
+            self.line_indent(indent, &format!("case {idx}:"));
+            self.line_indent(indent + 1, &format!("{target_temp}.tag = {idx};"));
+            for (payload_idx, (source_payload, target_payload)) in source_variant
+                .payload
+                .iter()
+                .zip(target_variant.payload.iter())
+                .enumerate()
+            {
+                let source_payload_value =
+                    format!("({source_value}).as.{}._{payload_idx}", source_variant.name);
+                let adapted = self.emit_retained_closure_adapt_value(
+                    witness,
+                    source_payload,
+                    target_payload,
+                    &source_payload_value,
+                    indent + 1,
+                )?;
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{target_temp}.as.{}._{payload_idx} = {adapted};",
+                        target_variant.name
+                    ),
+                );
+            }
+            self.line_indent(indent + 1, "break;");
+        }
+        self.line_indent(indent, "}");
+        Ok(Some(target_temp))
+    }
+
+    fn emit_retained_closure_clone_witness(
+        &mut self,
+        witness: &RetainedClosureWitness,
+    ) -> DiagResult<()> {
+        let result_ty =
+            self.retained_closure_interface_ret(&witness.target_ty, &witness.capability);
+        let result_layout = self.result_layout(&result_ty, witness.span)?;
+        let result_temp = self.next_temp("retained_clone_result");
+        let done_label = self.next_temp("retained_clone_done");
+        self.line(&format!(
+            "{} {{",
+            self.retained_closure_witness_decl(witness)
+        ));
+        self.line_indent(1, &format!("{};", self.c_decl(&result_ty, &result_temp)));
+        if result_layout.ok_has_payload {
+            let target = format!("{result_temp}.as.{}._0", result_layout.ok_name);
+            let source_clone = self.emit_retained_closure_clone_source_value(
+                witness,
+                &result_temp,
+                &result_layout,
+                &done_label,
+                1,
+            )?;
+            let target_value = self.emit_closure_value_from_source(
+                &witness.target_ty,
+                &witness.source_ty,
+                &source_clone,
+                1,
+            )?;
+            self.line_indent(1, &format!("{target} = {target_value};"));
+            self.line_indent(
+                1,
+                &format!("{result_temp}.tag = {};", result_layout.ok_index),
+            );
+        } else {
+            self.line_indent(
+                1,
+                &format!(
+                    "{result_temp} = {};",
+                    self.result_ok_literal(&result_layout, None)
+                ),
+            );
+        }
+        self.line_indent(1, &format!("{done_label}:;"));
+        self.line_indent(1, &format!("return {result_temp};"));
+        self.line("}");
+        Ok(())
+    }
+
+    fn emit_retained_closure_clone_source_value(
+        &mut self,
+        witness: &RetainedClosureWitness,
+        result_temp: &str,
+        result_layout: &ResultLayout,
+        done_label: &str,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let source_ptr = self.retained_closure_source_pointer_expr(witness);
+        let source_temp = self.next_temp("retained_clone_source");
+        self.line_indent(
+            indent,
+            &format!("{};", self.c_decl(&witness.source_ty, &source_temp)),
+        );
+        match witness.source_ty.unqualified() {
+            Ty::Function { abi: None, .. } => {
+                self.line_indent(indent, &format!("{source_temp} = *({source_ptr});"));
+            }
+            Ty::Closure { constraints, .. }
+                if constraints.positive.iter().any(is_clone_message_capability) =>
+            {
+                let capability = ConstraintRef {
+                    name: "clone_message".to_string(),
+                    args: Vec::new(),
+                };
+                let field = self.retained_closure_witness_field_name(&capability);
+                let clone_result_ty = self.result_ty(witness.source_ty.clone(), self.error_ty());
+                let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
+                let clone_temp = self.next_temp("retained_source_clone");
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "{} {clone_temp} = (*({source_ptr})).{field}((void *)({source_ptr}));",
+                        clone_layout.c_type
+                    ),
+                );
+                self.line_indent(
+                    indent,
+                    &format!("if ({clone_temp}.tag == {}) {{", clone_layout.err_index),
+                );
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{result_temp} = {};",
+                        self.result_err_literal(result_layout, &clone_layout, &clone_temp)
+                    ),
+                );
+                self.line_indent(indent + 1, &format!("goto {done_label};"));
+                self.line_indent(indent, "}");
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "{source_temp} = {clone_temp}.as.{}._0;",
+                        clone_layout.ok_name
+                    ),
+                );
+            }
+            Ty::ClosureInstance { .. } => {
+                self.emit_clone_closure_value_into(
+                    &witness.source_ty,
+                    &source_ptr,
+                    &source_temp,
+                    result_temp,
+                    result_layout,
+                    done_label,
+                    indent,
+                    witness.span,
+                )?;
+            }
+            other => {
+                return Err(vec![Diagnostic::new(
+                    witness.span,
+                    format!("internal error: cannot clone retained closure source type `{other}`"),
+                )]);
+            }
+        }
+        Ok(source_temp)
     }
 
     fn emit_actor_dispatches(&mut self) -> DiagResult<()> {
@@ -5305,6 +6446,36 @@ impl<'a> CGenerator<'a> {
         self.line("}");
     }
 
+    fn emit_retained_closure_wrapper(
+        &mut self,
+        wrapper: &RetainedClosureWrapper,
+    ) -> DiagResult<()> {
+        let (ret, params) = self.callable_ret_params(&wrapper.target_ty)?;
+        self.line(&format!(
+            "{} {{",
+            self.retained_closure_thunk_decl(&wrapper.target_ty, &wrapper.source_ty)
+        ));
+        let env_name = self.retained_closure_env_name(&wrapper.target_ty, &wrapper.source_ty);
+        self.line_indent(1, &format!("{env_name} *env = ({env_name} *)env_raw;"));
+        let args = (0..params.iter().filter(|ty| !ty.is_erased_value()).count())
+            .map(|idx| format!("arg{idx}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let call_args = if args.is_empty() {
+            "env->source.env".to_string()
+        } else {
+            format!("env->source.env, {args}")
+        };
+        if ret.is_erased_value() {
+            self.line_indent(1, &format!("env->source.call({call_args});"));
+            self.line_indent(1, "return;");
+        } else {
+            self.line_indent(1, &format!("return env->source.call({call_args});"));
+        }
+        self.line("}");
+        Ok(())
+    }
+
     fn closure_call_field_decl(&self, ty: &Ty) -> String {
         let (ret, params) = self
             .callable_ret_params(ty)
@@ -5318,6 +6489,77 @@ impl<'a> CGenerator<'a> {
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
         self.c_return_decl(&ret, &format!("(*call)({})", decls.join(", ")))
+    }
+
+    fn retained_closure_capabilities(&self, ty: &Ty) -> Vec<ConstraintRef> {
+        match ty.unqualified() {
+            Ty::Closure { constraints, .. } => constraints.positive.clone(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn retained_closure_witness_field_decl(&self, ty: &Ty, capability: &ConstraintRef) -> String {
+        let ret = self.retained_closure_interface_ret(ty, capability);
+        let params = self.retained_closure_interface_params(ty, capability);
+        let params = params
+            .iter()
+            .filter(|ty| !ty.is_erased_value())
+            .enumerate()
+            .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        self.c_return_decl(
+            &ret,
+            &format!(
+                "(*{})({})",
+                self.retained_closure_witness_field_name(capability),
+                params
+            ),
+        )
+    }
+
+    fn retained_closure_interface_ret(&self, receiver_ty: &Ty, capability: &ConstraintRef) -> Ty {
+        let Some(interface) = self.interface_by_name(&capability.name) else {
+            return Ty::Unknown;
+        };
+        let subst = self.retained_closure_interface_subst(interface, receiver_ty, &capability.args);
+        substitute_ty(&interface.ret, &subst)
+    }
+
+    fn retained_closure_interface_params(
+        &self,
+        receiver_ty: &Ty,
+        capability: &ConstraintRef,
+    ) -> Vec<Ty> {
+        let Some(interface) = self.interface_by_name(&capability.name) else {
+            return vec![Ty::pointer_to(Ty::Void)];
+        };
+        let subst = self.retained_closure_interface_subst(interface, receiver_ty, &capability.args);
+        let mut params = vec![Ty::pointer_to(Ty::Void)];
+        params.extend(
+            interface
+                .params
+                .iter()
+                .skip(1)
+                .map(|param| substitute_ty(param, &subst)),
+        );
+        params
+    }
+
+    fn retained_closure_interface_subst(
+        &self,
+        interface: &CheckedInterface,
+        receiver_ty: &Ty,
+        args: &[Ty],
+    ) -> HashMap<String, Ty> {
+        let mut subst = HashMap::new();
+        if let Some(receiver) = interface.generics.first() {
+            subst.insert(receiver.clone(), receiver_ty.clone());
+        }
+        for (generic, arg) in interface.generics.iter().skip(1).zip(args.iter()) {
+            subst.insert(generic.clone(), arg.clone());
+        }
+        subst
     }
 
     fn closure_thunk_decl(&self, closure: &ClosureDef) -> String {
@@ -5371,9 +6613,31 @@ impl<'a> CGenerator<'a> {
         )
     }
 
+    fn retained_closure_thunk_decl(&self, target_ty: &Ty, source_ty: &Ty) -> String {
+        let (ret, params) = self
+            .callable_ret_params(target_ty)
+            .expect("retained wrapper closure type is callable");
+        let mut decls = vec!["void *env_raw".to_string()];
+        decls.extend(
+            params
+                .iter()
+                .filter(|ty| !ty.is_erased_value())
+                .enumerate()
+                .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
+        );
+        self.c_return_decl(
+            &ret,
+            &format!(
+                "{}({})",
+                self.retained_closure_thunk_name(target_ty, source_ty),
+                decls.join(", ")
+            ),
+        )
+    }
+
     fn callable_ret_params(&self, ty: &Ty) -> DiagResult<(Ty, Vec<Ty>)> {
         match ty.unqualified() {
-            Ty::Closure { ret, params }
+            Ty::Closure { ret, params, .. }
             | Ty::ClosureInstance { ret, params, .. }
             | Ty::Function { ret, params, .. } => Ok(((**ret).clone(), params.clone())),
             other => Err(vec![Diagnostic::new(
@@ -5723,15 +6987,46 @@ impl<'a> CGenerator<'a> {
 
     fn closure_type_name(&self, ty: &Ty) -> String {
         match ty {
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
                 let sig_ty = Ty::Closure {
                     ret: ret.clone(),
                     params: params.clone(),
+                    constraints: constraints.clone(),
+                };
+                format!("CielClosure_{}", mangle_type(&sig_ty))
+            }
+            Ty::ClosureInstance { ret, params, .. } => {
+                let sig_ty = Ty::Closure {
+                    ret: ret.clone(),
+                    params: params.clone(),
+                    constraints: ConstraintBounds::default(),
                 };
                 format!("CielClosure_{}", mangle_type(&sig_ty))
             }
             _ => "CielClosure_unknown".to_string(),
         }
+    }
+
+    fn retained_closure_witness_field_name(&self, capability: &ConstraintRef) -> String {
+        format!("cap_{}", mangle_constraint_ref(capability))
+    }
+
+    fn retained_closure_witness_name(
+        &self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        capability: &ConstraintRef,
+    ) -> String {
+        format!(
+            "ciel_retained_closure_witness_{}_{}_{}",
+            mangle_constraint_ref(capability),
+            mangle_type(target_ty),
+            mangle_type(source_ty)
+        )
     }
 
     fn closure_env_name(&self, owner: DefId, id: usize) -> String {
@@ -5760,6 +7055,62 @@ impl<'a> CGenerator<'a> {
             mangle_type(closure_ty),
             mangle_type(function_ty)
         )
+    }
+
+    fn retained_closure_wrapper_key(&self, target_ty: &Ty, source_ty: &Ty) -> String {
+        format!("{}__{}", mangle_type(target_ty), mangle_type(source_ty))
+    }
+
+    fn retained_closure_env_name(&self, target_ty: &Ty, source_ty: &Ty) -> String {
+        format!(
+            "CielRetainedClosureEnv_{}_{}",
+            mangle_type(target_ty),
+            mangle_type(source_ty)
+        )
+    }
+
+    fn retained_closure_thunk_name(&self, target_ty: &Ty, source_ty: &Ty) -> String {
+        format!(
+            "ciel_retained_closure_to_closure_{}_{}",
+            mangle_type(target_ty),
+            mangle_type(source_ty)
+        )
+    }
+
+    fn retained_closure_needs_wrapper(&self, target_ty: &Ty, source_ty: &Ty) -> bool {
+        matches!(source_ty.unqualified(), Ty::Closure { .. })
+            && source_ty.unqualified() != target_ty.unqualified()
+            && !self.retained_closure_capabilities(target_ty).is_empty()
+    }
+
+    fn retained_closure_source_pointer_expr(&self, witness: &RetainedClosureWitness) -> String {
+        let target_ptr = format!("({})arg0", self.c_pointer_type(&witness.target_ty));
+        self.retained_closure_source_pointer_expr_from_target_ptr(witness, &target_ptr)
+    }
+
+    fn retained_closure_source_pointer_expr_from_target_ptr(
+        &self,
+        witness: &RetainedClosureWitness,
+        target_ptr: &str,
+    ) -> String {
+        match witness.source_ty.unqualified() {
+            Ty::Function { abi: None, .. } => {
+                let env_name =
+                    self.function_closure_env_name(&witness.target_ty, &witness.source_ty);
+                format!("&((({env_name} *)(({target_ptr})->env))->func)")
+            }
+            Ty::Closure { .. }
+                if self.retained_closure_needs_wrapper(&witness.target_ty, &witness.source_ty) =>
+            {
+                let env_name =
+                    self.retained_closure_env_name(&witness.target_ty, &witness.source_ty);
+                format!("&((({env_name} *)(({target_ptr})->env))->source)")
+            }
+            _ => format!(
+                "({})({target_ptr})",
+                self.c_pointer_type(&witness.source_ty)
+            ),
+        }
     }
 
     fn actor_dispatch_name(&self, state_ty: &Ty, message_ty: &Ty, handler_ty: &Ty) -> String {
@@ -5856,6 +7207,21 @@ impl<'a> CGenerator<'a> {
                     .as_ref()
                     .is_some_and(|receiver| receiver == &receiver_ty_from_value_ty(concrete_ty))
                 && implementation.interface_args.get(1..) == Some(interface.args.as_slice())
+        })
+    }
+
+    fn impl_for_retained_closure_witness(
+        &self,
+        capability: &ConstraintRef,
+        source_ty: &Ty,
+    ) -> Option<&CheckedImpl> {
+        self.program.checked.impls.iter().find(|implementation| {
+            implementation.interface_name == capability.name
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| receiver == source_ty.unqualified())
+                && implementation.interface_args.get(1..) == Some(capability.args.as_slice())
         })
     }
 
@@ -6052,13 +7418,22 @@ fn mangle_type(ty: &Ty) -> String {
                 params
             )
         }
-        Ty::Closure { ret, params } => {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
             let params = if params.is_empty() {
                 "void".to_string()
             } else {
                 params.iter().map(mangle_type).collect::<Vec<_>>().join("_")
             };
-            format!("closure_ret_{}_args_{}", mangle_type(ret), params)
+            format!(
+                "closure_ret_{}_args_{}_caps_{}",
+                mangle_type(ret),
+                params,
+                mangle_constraint_bounds(constraints)
+            )
         }
         Ty::ClosureInstance {
             id,
@@ -6088,6 +7463,41 @@ fn mangle_type(ty: &Ty) -> String {
             )
         }
         Ty::Unknown => "unknown".to_string(),
+    }
+}
+
+fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
+    if bounds.is_empty() {
+        return "none".to_string();
+    }
+    let mut parts = bounds
+        .positive
+        .iter()
+        .map(|entry| format!("pos_{}", mangle_constraint_ref(entry)))
+        .collect::<Vec<_>>();
+    parts.extend(
+        bounds
+            .negative
+            .iter()
+            .map(|entry| format!("neg_{}", mangle_constraint_ref(entry))),
+    );
+    parts.join("_")
+}
+
+fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
+    if entry.args.is_empty() {
+        sanitize_mangle_fragment(&entry.name)
+    } else {
+        format!(
+            "{}_{}",
+            sanitize_mangle_fragment(&entry.name),
+            entry
+                .args
+                .iter()
+                .map(mangle_type)
+                .collect::<Vec<_>>()
+                .join("_")
+        )
     }
 }
 
@@ -6170,12 +7580,17 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
                 .map(|param| substitute_ty(param, subst))
                 .collect(),
         },
-        Ty::Closure { ret, params } => Ty::Closure {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => Ty::Closure {
             ret: Box::new(substitute_ty(ret, subst)),
             params: params
                 .iter()
                 .map(|param| substitute_ty(param, subst))
                 .collect(),
+            constraints: substitute_constraint_bounds(constraints, subst),
         },
         Ty::ClosureInstance {
             id,
@@ -6196,6 +7611,57 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
         },
         other => other.clone(),
     }
+}
+
+fn substitute_constraint_bounds(
+    bounds: &ConstraintBounds,
+    subst: &HashMap<String, Ty>,
+) -> ConstraintBounds {
+    ConstraintBounds {
+        positive: bounds
+            .positive
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+        negative: bounds
+            .negative
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+    }
+}
+
+fn substitute_constraint_ref(entry: &ConstraintRef, subst: &HashMap<String, Ty>) -> ConstraintRef {
+    ConstraintRef {
+        name: entry.name.clone(),
+        args: entry
+            .args
+            .iter()
+            .map(|arg| substitute_ty(arg, subst))
+            .collect(),
+    }
+}
+
+fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> bool {
+    let Ty::Closure { constraints, .. } = ty.unqualified() else {
+        return false;
+    };
+    constraints.positive.iter().any(|entry| entry == capability)
+}
+
+fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
+    let Ty::Named { name, args } = ty.unqualified() else {
+        return None;
+    };
+    if name == "Result" && args.len() == 2 {
+        Some((&args[0], &args[1]))
+    } else {
+        None
+    }
+}
+
+fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
+    capability.name == "clone_message" && capability.args.is_empty()
 }
 
 fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
@@ -6263,7 +7729,8 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::ActorSend { .. }
         | TExprKind::ActorStop { .. }
         | TExprKind::ActorJoin { .. }
-        | TExprKind::FunctionToClosure(_) => true,
+        | TExprKind::FunctionToClosure(_)
+        | TExprKind::RetainClosure { .. } => true,
         TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
             expr_needs_stmt_lowering(expr)
         }
@@ -6278,7 +7745,8 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         }
         TExprKind::Closure { captures, .. } => !captures.is_empty(),
         TExprKind::ArrayToSlice(inner) => expr_needs_stmt_lowering(inner),
-        TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+        TExprKind::DynamicInterfaceCall { receiver, args, .. }
+        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
             expr_needs_stmt_lowering(receiver)
                 || args
                     .iter()

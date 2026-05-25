@@ -2,6 +2,35 @@ use std::fmt;
 
 use crate::ast::{PrimitiveType, Type, TypeKind};
 
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct ConstraintBounds {
+    pub positive: Vec<ConstraintRef>,
+    pub negative: Vec<ConstraintRef>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ConstraintRef {
+    pub name: String,
+    pub args: Vec<Ty>,
+}
+
+impl ConstraintBounds {
+    pub fn is_empty(&self) -> bool {
+        self.positive.is_empty() && self.negative.is_empty()
+    }
+
+    pub fn proves_all(&self, required: &ConstraintBounds) -> bool {
+        required
+            .positive
+            .iter()
+            .all(|capability| self.positive.contains(capability))
+            && required
+                .negative
+                .iter()
+                .all(|capability| self.negative.contains(capability))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Ty {
     Hole(usize),
@@ -51,6 +80,7 @@ pub enum Ty {
     Closure {
         ret: Box<Ty>,
         params: Vec<Ty>,
+        constraints: ConstraintBounds,
     },
     ClosureInstance {
         id: usize,
@@ -104,9 +134,10 @@ impl Ty {
                 ret: Box::new(Ty::from_ast(ret)),
                 params: params.iter().map(Ty::from_ast).collect(),
             },
-            TypeKind::Closure { ret, params } => Ty::Closure {
+            TypeKind::Closure { ret, params, .. } => Ty::Closure {
                 ret: Box::new(Ty::from_ast(ret)),
                 params: params.iter().map(Ty::from_ast).collect(),
+                constraints: ConstraintBounds::default(),
             },
         }
     }
@@ -210,25 +241,32 @@ impl Ty {
                 Ty::Closure {
                     ret: expected_ret,
                     params: expected_params,
+                    constraints: expected_constraints,
                 },
                 Ty::Closure {
                     ret: actual_ret,
                     params: actual_params,
+                    constraints: actual_constraints,
                 },
-            ) if expected_params == actual_params && expected_ret.can_assign_from(actual_ret)
+            ) if expected_params == actual_params
+                && expected_ret.can_assign_from(actual_ret)
+                && actual_constraints.proves_all(expected_constraints)
         ) || matches!(
             (self.unqualified(), source.unqualified()),
             (
                 Ty::Closure {
                     ret: expected_ret,
                     params: expected_params,
+                    constraints: expected_constraints,
                 },
                 Ty::ClosureInstance {
                     ret: actual_ret,
                     params: actual_params,
                     ..
                 },
-            ) if expected_params == actual_params && expected_ret.can_assign_from(actual_ret)
+            ) if expected_constraints.is_empty()
+                && expected_params == actual_params
+                && expected_ret.can_assign_from(actual_ret)
         )
     }
 }
@@ -314,16 +352,22 @@ impl fmt::Display for Ty {
                         .join(", ")
                 )
             }
-            Ty::Closure { ret, params } => {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                let capability_suffix = closure_constraint_suffix(constraints);
                 write!(
                     f,
-                    "{} |({})|",
+                    "{} |({}){}|",
                     ret,
                     params
                         .iter()
                         .map(ToString::to_string)
                         .collect::<Vec<_>>()
-                        .join(", ")
+                        .join(", "),
+                    capability_suffix
                 )
             }
             Ty::ClosureInstance {
@@ -342,5 +386,40 @@ impl fmt::Display for Ty {
             }
             Ty::Unknown => write!(f, "<unknown>"),
         }
+    }
+}
+
+fn closure_constraint_suffix(constraints: &ConstraintBounds) -> String {
+    if constraints.is_empty() {
+        return String::new();
+    }
+    let mut parts = constraints
+        .positive
+        .iter()
+        .map(display_constraint_ref)
+        .collect::<Vec<_>>();
+    parts.extend(
+        constraints
+            .negative
+            .iter()
+            .map(|capability| format!("!{}", display_constraint_ref(capability))),
+    );
+    format!(": {}", parts.join(" + "))
+}
+
+fn display_constraint_ref(capability: &ConstraintRef) -> String {
+    if capability.args.is_empty() {
+        capability.name.clone()
+    } else {
+        format!(
+            "{}<{}>",
+            capability.name,
+            capability
+                .args
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
     }
 }

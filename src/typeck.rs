@@ -5,7 +5,7 @@ use crate::{
     hir::*,
     resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
     thir::*,
-    types::Ty,
+    types::{ConstraintBounds, ConstraintRef, Ty},
 };
 
 #[derive(Clone, Debug)]
@@ -68,11 +68,7 @@ struct InterfaceSig {
     params: Vec<Param>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-struct InterfaceRefTy {
-    name: String,
-    args: Vec<Ty>,
-}
+type InterfaceRefTy = ConstraintRef;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct InterfaceView {
@@ -1099,12 +1095,20 @@ impl TypeChecker {
                     .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
                     .collect(),
             },
-            TypeKind::Closure { ret, params } => Ty::Closure {
+            TypeKind::Closure {
+                ret,
+                params,
+                constraint,
+            } => Ty::Closure {
                 ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
                 params: params
                     .iter()
                     .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
                     .collect(),
+                constraints: constraint
+                    .as_ref()
+                    .map(|constraint| self.constraint_bounds(constraint, subst))
+                    .unwrap_or_default(),
             },
         };
         let lowered = self.normalize_meta_repr_markers(&lowered, ty.span);
@@ -1158,12 +1162,17 @@ impl TypeChecker {
                     .map(|param| self.resolve_type_holes(param))
                     .collect(),
             },
-            Ty::Closure { ret, params } => Ty::Closure {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => Ty::Closure {
                 ret: Box::new(self.resolve_type_holes(ret)),
                 params: params
                     .iter()
                     .map(|param| self.resolve_type_holes(param))
                     .collect(),
+                constraints: self.resolve_constraint_bounds_type_holes(constraints),
             },
             Ty::ClosureInstance {
                 id,
@@ -1269,14 +1278,15 @@ impl TypeChecker {
                         .all(|(expected, actual)| self.unify_type_holes(expected, actual))
             }
             (
-                Ty::Closure { ret, params },
+                Ty::Closure { ret, params, .. },
                 Ty::Closure {
                     ret: actual_ret,
                     params: actual_params,
+                    ..
                 },
             )
             | (
-                Ty::Closure { ret, params },
+                Ty::Closure { ret, params, .. },
                 Ty::ClosureInstance {
                     ret: actual_ret,
                     params: actual_params,
@@ -1418,16 +1428,34 @@ impl TypeChecker {
                 }
                 _ => false,
             },
-            Ty::Closure { ret, params } => match actual.unqualified() {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => match actual.unqualified() {
                 Ty::Closure {
                     ret: actual_ret,
                     params: actual_params,
+                    constraints: actual_constraints,
+                } if params.len() == actual_params.len() => {
+                    self.unify_ty_for_inference(ret, actual_ret, subst)
+                        && params
+                            .iter()
+                            .zip(actual_params.iter())
+                            .all(|(pattern, actual)| {
+                                self.unify_ty_for_inference(pattern, actual, subst)
+                            })
+                        && self.unify_constraint_bounds_for_inference(
+                            constraints,
+                            actual_constraints,
+                            subst,
+                        )
                 }
-                | Ty::ClosureInstance {
+                Ty::ClosureInstance {
                     ret: actual_ret,
                     params: actual_params,
                     ..
-                } if params.len() == actual_params.len() => {
+                } if constraints.is_empty() && params.len() == actual_params.len() => {
                     self.unify_ty_for_inference(ret, actual_ret, subst)
                         && params
                             .iter()
@@ -1471,6 +1499,63 @@ impl TypeChecker {
             },
             other => other == actual.unqualified(),
         }
+    }
+
+    fn unify_constraint_bounds_for_inference(
+        &mut self,
+        pattern: &ConstraintBounds,
+        actual: &ConstraintBounds,
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let mut trial = subst.clone();
+        if !self.unify_constraint_refs_for_inference(
+            &pattern.positive,
+            &actual.positive,
+            &mut trial,
+        ) {
+            return false;
+        }
+        if !self.unify_constraint_refs_for_inference(
+            &pattern.negative,
+            &actual.negative,
+            &mut trial,
+        ) {
+            return false;
+        }
+        *subst = trial;
+        true
+    }
+
+    fn unify_constraint_refs_for_inference(
+        &mut self,
+        pattern: &[ConstraintRef],
+        actual: &[ConstraintRef],
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let Some((first, rest)) = pattern.split_first() else {
+            return true;
+        };
+        for candidate in actual {
+            if first.name != candidate.name || first.args.len() != candidate.args.len() {
+                continue;
+            }
+            let mut trial = subst.clone();
+            if !first
+                .args
+                .iter()
+                .zip(candidate.args.iter())
+                .all(|(pattern_arg, actual_arg)| {
+                    self.unify_ty_for_inference(pattern_arg, actual_arg, &mut trial)
+                })
+            {
+                continue;
+            }
+            if self.unify_constraint_refs_for_inference(rest, actual, &mut trial) {
+                *subst = trial;
+                return true;
+            }
+        }
+        false
     }
 
     fn check_local_decl_init(
@@ -1733,7 +1818,11 @@ impl TypeChecker {
                     })
                     .collect(),
             },
-            Ty::Closure { ret, params } => Ty::Closure {
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => Ty::Closure {
                 ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
                 params: params
                     .iter()
@@ -1741,6 +1830,7 @@ impl TypeChecker {
                         self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
                     })
                     .collect(),
+                constraints: constraints.clone(),
             },
             Ty::ClosureInstance {
                 id,
@@ -1998,7 +2088,7 @@ impl TypeChecker {
                     self.ensure_enum_instance(param);
                 }
             }
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure { ret, params, .. } | Ty::ClosureInstance { ret, params, .. } => {
                 self.ensure_enum_instance(ret);
                 for param in params {
                     self.ensure_enum_instance(param);
@@ -2063,7 +2153,7 @@ impl TypeChecker {
                     self.ensure_struct_instance(param);
                 }
             }
-            Ty::Closure { ret, params } | Ty::ClosureInstance { ret, params, .. } => {
+            Ty::Closure { ret, params, .. } | Ty::ClosureInstance { ret, params, .. } => {
                 self.ensure_struct_instance(ret);
                 for param in params {
                     self.ensure_struct_instance(param);
@@ -3983,12 +4073,13 @@ impl TypeChecker {
                 let target = self.lower_type(ty);
                 if let ExprKind::Closure { params, body } = &inner.kind {
                     self.check_closure_cast_allowed(&target, expr.span);
-                    return self
-                        .check_closure_expr(scopes, inner.span, params, body, Some(&target))
-                        .map(|checked| TExpr {
-                            span: expr.span,
-                            ..checked
-                        });
+                    let checked =
+                        self.check_closure_expr(scopes, inner.span, params, body, Some(&target))?;
+                    let checked = TExpr {
+                        span: expr.span,
+                        ..checked
+                    };
+                    return Some(self.coerce_expr_to_expected(checked, Some(&target)));
                 }
                 let inner = self.check_expr(scopes, inner, None)?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
@@ -4046,7 +4137,7 @@ impl TypeChecker {
                 let callee = self.check_expr(scopes, callee, None)?;
                 let (ret, params) = match callee.ty.unqualified() {
                     Ty::Function { ret, params, .. }
-                    | Ty::Closure { ret, params }
+                    | Ty::Closure { ret, params, .. }
                     | Ty::ClosureInstance { ret, params, .. } => ((**ret).clone(), params.clone()),
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
@@ -4258,17 +4349,16 @@ impl TypeChecker {
             .iter()
             .map(|arg| self.lower_type(arg))
             .collect::<Vec<_>>();
-        if explicit_args.len() > 3 {
+        if explicit_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                "spawn_actor accepts at most S, M, and H type arguments",
+                "spawn_actor accepts at most S and M type arguments",
             ));
             return None;
         }
 
         let explicit_state_ty = explicit_args.first().cloned();
         let explicit_message_ty = explicit_args.get(1).cloned();
-        let explicit_handler_ty = explicit_args.get(2).cloned();
 
         let initial_state = self.check_expr(scopes, &args[0], explicit_state_ty.as_ref())?;
         let state_ty = explicit_state_ty.unwrap_or_else(|| initial_state.ty.clone());
@@ -4280,7 +4370,7 @@ impl TypeChecker {
             .or_else(|| self.actor_message_ty_from_spawn_expected(expected))
             .or_else(|| self.actor_message_ty_from_closure_literal(&args[1]));
         if message_ty.is_none() && !expr_is_closure_literal(&args[1]) {
-            let handler = self.check_expr(scopes, &args[1], explicit_handler_ty.as_ref())?;
+            let handler = self.check_expr(scopes, &args[1], None)?;
             message_ty =
                 callable_ret_params_ty(&handler.ty).and_then(|(_, params)| params.get(1).cloned());
             prechecked_handler = Some(handler);
@@ -4297,25 +4387,24 @@ impl TypeChecker {
         let expected_handler_ty = Ty::Closure {
             ret: Box::new(handler_ret.clone()),
             params: vec![state_ty.clone(), message_ty.clone()],
+            constraints: ConstraintBounds {
+                positive: self.interface_view("Message", &[]).positive,
+                negative: Vec::new(),
+            },
         };
         let handler = if let Some(handler) = prechecked_handler {
-            handler
+            self.coerce_expr_to_expected(handler, Some(&expected_handler_ty))
         } else if let ExprKind::Closure { params, body } = &args[1].kind {
-            self.check_closure_expr(
+            let handler = self.check_closure_expr(
                 scopes,
                 args[1].span,
                 params,
                 body,
                 Some(&expected_handler_ty),
-            )?
+            )?;
+            self.coerce_expr_to_expected(handler, Some(&expected_handler_ty))
         } else {
-            self.check_expr(scopes, &args[1], explicit_handler_ty.as_ref())?
-        };
-        let handler_message_ty = if let Some(explicit_handler_ty) = &explicit_handler_ty {
-            self.require_assignable(explicit_handler_ty, &handler.ty, handler.span);
-            explicit_handler_ty
-        } else {
-            &handler.ty
+            self.check_expr(scopes, &args[1], Some(&expected_handler_ty))?
         };
         self.require_actor_handler_callable(
             &handler.ty,
@@ -4339,18 +4428,6 @@ impl TypeChecker {
                 &message_ty,
             );
         }
-        if !self.type_implements_message(handler_message_ty) {
-            self.push_message_requirement_diagnostic(
-                handler.span,
-                format!(
-                    "actor handler type `{}` does not implement `Message`",
-                    handler_message_ty
-                ),
-                handler_message_ty,
-            );
-            self.push_actor_handler_capture_diagnostics(&handler);
-        }
-
         let ret = self.result_ty(self.actor_ty(message_ty.clone()), self.error_ty());
         self.ensure_struct_instance(&ret);
         self.ensure_enum_instance(&ret);
@@ -4936,7 +5013,8 @@ impl TypeChecker {
             _ => None,
         };
         let expected_sig = match expected.map(Ty::unqualified) {
-            Some(Ty::Closure { ret, params }) | Some(Ty::ClosureInstance { ret, params, .. }) => {
+            Some(Ty::Closure { ret, params, .. })
+            | Some(Ty::ClosureInstance { ret, params, .. }) => {
                 Some(((**ret).clone(), params.clone(), false))
             }
             Some(Ty::Function {
@@ -5221,11 +5299,13 @@ impl TypeChecker {
                 };
                 let target = self.lower_type(ty);
                 self.check_closure_cast_allowed(&target, arg.span);
-                self.check_closure_expr(scopes, expr.span, params, body, Some(&target))
-                    .map(|checked| TExpr {
-                        span: arg.span,
-                        ..checked
-                    })
+                let checked =
+                    self.check_closure_expr(scopes, expr.span, params, body, Some(&target))?;
+                let checked = TExpr {
+                    span: arg.span,
+                    ..checked
+                };
+                Some(self.coerce_expr_to_expected(checked, Some(&target)))
             }
             _ => self.check_expr(scopes, arg, expected),
         }
@@ -5393,46 +5473,31 @@ impl TypeChecker {
             let Some(constraint) = &generic.constraint else {
                 continue;
             };
-            for term in &constraint.terms {
-                let args = term
-                    .args
-                    .iter()
-                    .map(|arg| self.lower_type_with_subst(arg, subst))
-                    .collect::<Vec<_>>();
-                let view =
-                    self.interface_view(&name_ref_canonical(&self.resolved, &term.name), &args);
-                for capability in view.positive {
-                    if term.negated {
-                        if self.type_implements_capability(
-                            &capability.name,
-                            &capability.args,
-                            concrete,
-                        ) {
-                            self.diagnostics.push(Diagnostic::new(
-                                span,
-                                format!(
-                                    "generic constraint not satisfied: `{}` has forbidden capability `{}`",
-                                    concrete, capability.name
-                                ),
-                            ));
-                        }
-                    } else if !self.type_implements_capability(
-                        &capability.name,
-                        &capability.args,
-                        concrete,
-                    ) {
-                        let message = format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            concrete, capability.name
-                        );
-                        if self.is_builtin_clone_message_name(&capability.name)
-                            && capability.args.is_empty()
-                        {
-                            self.push_message_requirement_diagnostic(span, message, concrete);
-                        } else {
-                            self.diagnostics.push(Diagnostic::new(span, message));
-                        }
+            let bounds = self.constraint_bounds(constraint, subst);
+            for capability in bounds.positive {
+                if !self.type_implements_capability(&capability.name, &capability.args, concrete) {
+                    let message = format!(
+                        "generic constraint not satisfied: `{}` does not implement `{}`",
+                        concrete, capability.name
+                    );
+                    if self.is_builtin_clone_message_name(&capability.name)
+                        && capability.args.is_empty()
+                    {
+                        self.push_message_requirement_diagnostic(span, message, concrete);
+                    } else {
+                        self.diagnostics.push(Diagnostic::new(span, message));
                     }
+                }
+            }
+            for capability in bounds.negative {
+                if self.type_implements_capability(&capability.name, &capability.args, concrete) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "generic constraint not satisfied: `{}` has forbidden capability `{}`",
+                            concrete, capability.name
+                        ),
+                    ));
                 }
             }
         }
@@ -5652,6 +5717,22 @@ impl TypeChecker {
         let receiver_ty = subst
             .get(&interface.generics[0])
             .map(|ty| self.resolve_type_holes(ty));
+        let non_receiver_args = interface_non_receiver_args(&interface_args);
+        if let Some(receiver_ty) = receiver_ty.as_ref()
+            && self.retained_closure_proves_capability(receiver_ty, &name, &non_receiver_args)
+        {
+            let ret = self.lower_type_with_subst(&interface.ret, &subst);
+            return Some(TExpr {
+                span,
+                ty: ret,
+                kind: TExprKind::RetainedClosureInterfaceCall {
+                    interface_name: name.clone(),
+                    interface_args: non_receiver_args.to_vec(),
+                    receiver: Box::new(checked_args.remove(0)),
+                    args: checked_args,
+                },
+            });
+        }
         if let Some(implementation) = self.find_or_instantiate_impl_by_full_args(
             &name,
             &interface_args,
@@ -5783,6 +5864,45 @@ impl TypeChecker {
         }
         let expected = self.resolve_type_holes(expected);
         let expr_ty = self.resolve_type_holes(&expr.ty);
+        if let Ty::Closure {
+            ret: expected_ret,
+            params: expected_params,
+            constraints: expected_constraints,
+        } = expected.unqualified()
+            && closure_shape_satisfies(expected_ret, expected_params, &expr_ty)
+        {
+            if self.closure_constraints_satisfied_by_ty(
+                expected_constraints,
+                &expr_ty,
+                expr.span,
+                true,
+            ) {
+                let needs_retain = match expr_ty.unqualified() {
+                    Ty::Closure {
+                        constraints: actual_constraints,
+                        ..
+                    } => actual_constraints != expected_constraints,
+                    Ty::ClosureInstance { .. } => !expected_constraints.is_empty(),
+                    _ => false,
+                };
+                if needs_retain {
+                    return TExpr {
+                        span: expr.span,
+                        ty: expected,
+                        kind: TExprKind::RetainClosure {
+                            expr: Box::new(expr),
+                            source_ty: expr_ty,
+                        },
+                    };
+                }
+                return TExpr {
+                    span: expr.span,
+                    ty: expected,
+                    kind: expr.kind,
+                };
+            }
+            return expr;
+        }
         if closure_instance_satisfies_signature(&expected, &expr_ty) {
             return TExpr {
                 span: expr.span,
@@ -5848,6 +5968,7 @@ impl TypeChecker {
         if let Ty::Closure {
             ret: expected_ret,
             params: expected_params,
+            constraints: expected_constraints,
         } = &expected
             && let Ty::Function {
                 abi: None,
@@ -5856,6 +5977,12 @@ impl TypeChecker {
             } = expr_ty.unqualified()
             && expected_params == actual_params
             && expected_ret.can_assign_from(actual_ret)
+            && self.closure_constraints_satisfied_by_ty(
+                expected_constraints,
+                &expr_ty,
+                expr.span,
+                true,
+            )
         {
             return TExpr {
                 span: expr.span,
@@ -6296,6 +6423,16 @@ impl TypeChecker {
         if matches!(expected, Ty::Unknown) || matches!(actual, Ty::Unknown) {
             return;
         }
+        if let Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } = expected.unqualified()
+            && closure_shape_satisfies(ret, params, &actual)
+        {
+            self.closure_constraints_satisfied_by_ty(constraints, &actual, span, false);
+            return;
+        }
         if !expected.can_assign_from(&actual) {
             self.diagnostics.push(Diagnostic::new(
                 span,
@@ -6435,6 +6572,9 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        if self.retained_closure_proves_capability(receiver_ty, interface_name, args) {
+            return true;
+        }
         self.find_impl(interface_name, args, receiver_ty).is_some()
             || self
                 .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
@@ -6448,6 +6588,94 @@ impl TypeChecker {
             || (self.is_builtin_thread_local_name(interface_name)
                 && args.is_empty()
                 && self.type_implements_thread_local(receiver_ty))
+    }
+
+    fn type_has_capability_impl(
+        &mut self,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        self.find_impl(interface_name, args, receiver_ty).is_some()
+            || self
+                .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
+                .is_some()
+    }
+
+    fn retained_closure_proves_capability(
+        &self,
+        receiver_ty: &Ty,
+        interface_name: &str,
+        args: &[Ty],
+    ) -> bool {
+        let Ty::Closure { constraints, .. } = receiver_ty.unqualified() else {
+            return false;
+        };
+        constraints
+            .positive
+            .iter()
+            .any(|entry| entry.name == interface_name && entry.args == args)
+    }
+
+    fn closure_constraints_satisfied_by_ty(
+        &mut self,
+        constraints: &ConstraintBounds,
+        source_ty: &Ty,
+        span: crate::span::Span,
+        emit_diagnostics: bool,
+    ) -> bool {
+        let mut ok = true;
+        for capability in &constraints.positive {
+            let has_capability =
+                self.type_implements_capability(&capability.name, &capability.args, source_ty);
+            let lacks_retained_witness = self.is_builtin_thread_local_name(&capability.name)
+                && capability.args.is_empty()
+                && has_capability
+                && !self.retained_closure_proves_capability(
+                    source_ty,
+                    &capability.name,
+                    &capability.args,
+                )
+                && !self.type_has_capability_impl(&capability.name, &capability.args, source_ty);
+            if !has_capability || lacks_retained_witness {
+                ok = false;
+                if emit_diagnostics {
+                    let message = if lacks_retained_witness {
+                        format!(
+                            "closure conversion requires `{}` to provide an explicit `ThreadLocal` witness",
+                            source_ty
+                        )
+                    } else {
+                        format!(
+                            "closure conversion requires `{}` to implement `{}`",
+                            source_ty, capability.name
+                        )
+                    };
+                    if self.is_builtin_clone_message_name(&capability.name)
+                        && capability.args.is_empty()
+                    {
+                        self.push_message_requirement_diagnostic(span, message, source_ty);
+                    } else {
+                        self.diagnostics.push(Diagnostic::new(span, message));
+                    }
+                }
+            }
+        }
+        for capability in &constraints.negative {
+            if self.type_implements_capability(&capability.name, &capability.args, source_ty) {
+                ok = false;
+                if emit_diagnostics {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "closure conversion forbids `{}` from implementing `{}`",
+                            source_ty, capability.name
+                        ),
+                    ));
+                }
+            }
+        }
+        ok
     }
 
     fn type_implements_message(&mut self, ty: &Ty) -> bool {
@@ -6647,7 +6875,11 @@ impl TypeChecker {
             Ty::Function { abi: Some(_), .. } => {
                 Some(MessageDerivationFailureReason::ExternCFunctionPointer)
             }
-            Ty::Closure { .. } => Some(MessageDerivationFailureReason::ErasedClosure),
+            Ty::Closure { .. }
+                if !self.retained_closure_proves_capability(ty, "clone_message", &[]) =>
+            {
+                Some(MessageDerivationFailureReason::ErasedClosure)
+            }
             Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name) => {
                 Some(MessageDerivationFailureReason::OpaqueCHandle)
             }
@@ -6693,32 +6925,6 @@ impl TypeChecker {
         format!("Message derivation blocked at {location}: {reason}.")
     }
 
-    fn push_actor_handler_capture_diagnostics(&mut self, handler: &TExpr) {
-        let TExprKind::Closure { captures, .. } = &handler.kind else {
-            return;
-        };
-        for capture in captures {
-            let Some(failure) = self.message_derivation_failure(&capture.ty) else {
-                continue;
-            };
-            self.diagnostics.push(
-                Diagnostic::new(
-                    handler.span,
-                    format!(
-                        "actor handler captures actor-local `{}` as `{}`; {}",
-                        capture.ty,
-                        capture.name,
-                        self.format_message_derivation_failure(&failure)
-                    ),
-                )
-                .note(format!(
-                    "Cross-actor handler movement requires every captured value to implement `Message`; {}",
-                    self.format_message_derivation_failure(&failure)
-                )),
-            );
-        }
-    }
-
     fn type_implements_builtin_message(&mut self, ty: &Ty) -> bool {
         if self.type_has_direct_thread_local_policy(ty) {
             return false;
@@ -6727,6 +6933,9 @@ impl TypeChecker {
     }
 
     fn type_implements_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
+        if self.retained_closure_proves_capability(ty, "clone_message", &[]) {
+            return true;
+        }
         if self.find_impl("clone_message", &[], ty).is_some() {
             return true;
         }
@@ -6745,6 +6954,9 @@ impl TypeChecker {
     fn type_implements_builtin_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
         let ty = ty.unqualified();
         if !seen.insert(ty.clone()) {
+            return true;
+        }
+        if self.retained_closure_proves_capability(ty, "clone_message", &[]) {
             return true;
         }
         match ty {
@@ -6880,8 +7092,13 @@ impl TypeChecker {
             Ty::Pointer { .. }
             | Ty::Slice(_)
             | Ty::DynamicInterface { .. }
-            | Ty::Function { abi: Some(_), .. }
-            | Ty::Closure { .. } => true,
+            | Ty::Function { abi: Some(_), .. } => true,
+            Ty::Closure { constraints, .. } => {
+                constraints.is_empty()
+                    || constraints.positive.iter().any(|entry| {
+                        self.is_builtin_thread_local_name(&entry.name) && entry.args.is_empty()
+                    })
+            }
             Ty::Named { name, args } => {
                 if args.is_empty() && self.opaque_structs.contains(name) {
                     return true;
@@ -7118,6 +7335,204 @@ impl TypeChecker {
         self.interface_view_inner(name, args, &mut HashSet::new())
     }
 
+    fn constraint_bounds(
+        &mut self,
+        expr: &ConstraintExpr,
+        subst: &HashMap<String, Ty>,
+    ) -> ConstraintBounds {
+        let mut bounds = ConstraintBounds::default();
+        for term in &expr.terms {
+            let args = term
+                .args
+                .iter()
+                .map(|arg| self.lower_type_with_subst(arg, subst))
+                .collect::<Vec<_>>();
+            let view = self.interface_view(&name_ref_canonical(&self.resolved, &term.name), &args);
+            if term.removed {
+                bounds
+                    .positive
+                    .retain(|entry| !view.positive.contains(entry));
+            } else if term.negated {
+                for entry in view.positive {
+                    if !bounds.negative.contains(&entry) {
+                        bounds.negative.push(entry);
+                    }
+                }
+            } else {
+                for entry in view.positive {
+                    if !bounds.positive.contains(&entry) {
+                        bounds.positive.push(entry);
+                    }
+                }
+            }
+        }
+        bounds
+    }
+
+    fn surface_constraint_bounds(
+        &self,
+        expr: &ConstraintExpr,
+        subst: &HashMap<String, Ty>,
+    ) -> ConstraintBounds {
+        let mut bounds = ConstraintBounds::default();
+        for term in &expr.terms {
+            let args = term
+                .args
+                .iter()
+                .map(|arg| self.ty_from_hir_surface(arg, subst))
+                .collect::<Vec<_>>();
+            let view = self.interface_view(&name_ref_canonical(&self.resolved, &term.name), &args);
+            if term.removed {
+                bounds
+                    .positive
+                    .retain(|entry| !view.positive.contains(entry));
+            } else if term.negated {
+                for entry in view.positive {
+                    if !bounds.negative.contains(&entry) {
+                        bounds.negative.push(entry);
+                    }
+                }
+            } else {
+                for entry in view.positive {
+                    if !bounds.positive.contains(&entry) {
+                        bounds.positive.push(entry);
+                    }
+                }
+            }
+        }
+        bounds
+    }
+
+    fn resolve_constraint_bounds_type_holes(&self, bounds: &ConstraintBounds) -> ConstraintBounds {
+        ConstraintBounds {
+            positive: bounds
+                .positive
+                .iter()
+                .map(|entry| ConstraintRef {
+                    name: entry.name.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| self.resolve_type_holes(arg))
+                        .collect(),
+                })
+                .collect(),
+            negative: bounds
+                .negative
+                .iter()
+                .map(|entry| ConstraintRef {
+                    name: entry.name.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| self.resolve_type_holes(arg))
+                        .collect(),
+                })
+                .collect(),
+        }
+    }
+
+    fn ty_from_hir_surface(&self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
+        self.ty_from_hir_surface_inner(ty, subst, &mut Vec::new())
+    }
+
+    fn ty_from_hir_surface_inner(
+        &self,
+        ty: &Type,
+        subst: &HashMap<String, Ty>,
+        alias_stack: &mut Vec<DefId>,
+    ) -> Ty {
+        match &ty.kind {
+            TypeKind::Hole => Ty::Unknown,
+            TypeKind::Never => Ty::Never,
+            TypeKind::Void => Ty::Void,
+            TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
+            TypeKind::Named(name, args) => match &name.kind {
+                TypeNameKind::Generic(generic) => subst
+                    .get(generic)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Generic(generic.clone())),
+                TypeNameKind::Def(def_id) => {
+                    let def = self.resolved.def(*def_id);
+                    if def.kind == DefKind::TypeAlias
+                        && let Some(template) = self.type_aliases.get(def_id)
+                    {
+                        if template.generics.len() != args.len() || alias_stack.contains(def_id) {
+                            return Ty::Unknown;
+                        }
+                        let mut alias_subst = subst.clone();
+                        for (generic, arg) in template.generics.iter().zip(args.iter()) {
+                            let concrete = self.ty_from_hir_surface_inner(arg, subst, alias_stack);
+                            alias_subst.insert(generic.clone(), concrete);
+                        }
+                        alias_stack.push(*def_id);
+                        let result = match &template.target {
+                            TypeAliasTarget::Type(target) => {
+                                self.ty_from_hir_surface_inner(target, &alias_subst, alias_stack)
+                            }
+                            TypeAliasTarget::CSpelling { abi, spelling } => Ty::CSpelling {
+                                abi: abi.clone(),
+                                spelling: spelling.clone(),
+                            },
+                        };
+                        alias_stack.pop();
+                        result
+                    } else {
+                        Ty::Named {
+                            name: def.name.clone(),
+                            args: args
+                                .iter()
+                                .map(|arg| self.ty_from_hir_surface_inner(arg, subst, alias_stack))
+                                .collect(),
+                        }
+                    }
+                }
+                TypeNameKind::Error => Ty::Unknown,
+            },
+            TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+                nullable: *nullable,
+                inner: Box::new(self.ty_from_hir_surface_inner(inner, subst, alias_stack)),
+            },
+            TypeKind::Const(inner) => Ty::Const(Box::new(self.ty_from_hir_surface_inner(
+                inner,
+                subst,
+                alias_stack,
+            ))),
+            TypeKind::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.ty_from_hir_surface_inner(elem, subst, alias_stack)),
+            },
+            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.ty_from_hir_surface_inner(
+                elem,
+                subst,
+                alias_stack,
+            ))),
+            TypeKind::Function { abi, ret, params } => Ty::Function {
+                abi: abi.clone(),
+                ret: Box::new(self.ty_from_hir_surface_inner(ret, subst, alias_stack)),
+                params: params
+                    .iter()
+                    .map(|param| self.ty_from_hir_surface_inner(param, subst, alias_stack))
+                    .collect(),
+            },
+            TypeKind::Closure {
+                ret,
+                params,
+                constraint,
+            } => Ty::Closure {
+                ret: Box::new(self.ty_from_hir_surface_inner(ret, subst, alias_stack)),
+                params: params
+                    .iter()
+                    .map(|param| self.ty_from_hir_surface_inner(param, subst, alias_stack))
+                    .collect(),
+                constraints: constraint
+                    .as_ref()
+                    .map(|constraint| self.surface_constraint_bounds(constraint, subst))
+                    .unwrap_or_default(),
+            },
+        }
+    }
+
     fn interface_view_inner(
         &self,
         name: &str,
@@ -7184,10 +7599,11 @@ impl TypeChecker {
         expanding: &mut HashSet<String>,
     ) -> InterfaceView {
         let name = name_ref_canonical(&self.resolved, &term.name);
+        let subst = HashMap::new();
         let args = term
             .args
             .iter()
-            .map(|ty| ty_from_hir_surface(ty, &self.resolved))
+            .map(|ty| self.ty_from_hir_surface(ty, &subst))
             .collect::<Vec<_>>();
         self.interface_view_inner(&name, &args, expanding)
     }
@@ -7508,6 +7924,7 @@ fn collect_expr_declared_locals(expr: &TExpr, out: &mut HashSet<LocalId>) {
             collect_closure_body_declared_locals(body, out);
         }
         TExprKind::FunctionToClosure(inner)
+        | TExprKind::RetainClosure { expr: inner, .. }
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
         | TExprKind::Try(inner)
@@ -7523,7 +7940,8 @@ fn collect_expr_declared_locals(expr: &TExpr, out: &mut HashSet<LocalId>) {
             }
         }
         TExprKind::MakeDynamicInterface { expr, .. } => collect_expr_declared_locals(expr, out),
-        TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+        TExprKind::DynamicInterfaceCall { receiver, args, .. }
+        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
             collect_expr_declared_locals(receiver, out);
             for arg in args {
                 collect_expr_declared_locals(arg, out);
@@ -7699,6 +8117,7 @@ fn collect_expr_local_refs(expr: &TExpr, local_ids: &HashSet<LocalId>, out: &mut
         }
         TExprKind::Closure { body, .. } => collect_closure_body_local_refs(body, local_ids, out),
         TExprKind::FunctionToClosure(inner)
+        | TExprKind::RetainClosure { expr: inner, .. }
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
         | TExprKind::Try(inner)
@@ -7716,7 +8135,8 @@ fn collect_expr_local_refs(expr: &TExpr, local_ids: &HashSet<LocalId>, out: &mut
         TExprKind::MakeDynamicInterface { expr, .. } => {
             collect_expr_local_refs(expr, local_ids, out)
         }
-        TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+        TExprKind::DynamicInterfaceCall { receiver, args, .. }
+        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
             collect_expr_local_refs(receiver, local_ids, out);
             for arg in args {
                 collect_expr_local_refs(arg, local_ids, out);
@@ -7895,54 +8315,6 @@ fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
     }
 }
 
-fn ty_from_hir_surface(ty: &Type, resolved: &ResolvedProgram) -> Ty {
-    match &ty.kind {
-        TypeKind::Hole => Ty::Unknown,
-        TypeKind::Never => Ty::Never,
-        TypeKind::Void => Ty::Void,
-        TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
-        TypeKind::Named(name, args) => match &name.kind {
-            TypeNameKind::Generic(generic) => Ty::Generic(generic.clone()),
-            TypeNameKind::Def(_) => Ty::Named {
-                name: match &name.kind {
-                    TypeNameKind::Def(def_id) => resolved.def(*def_id).name.clone(),
-                    _ => name.display.clone(),
-                },
-                args: args
-                    .iter()
-                    .map(|arg| ty_from_hir_surface(arg, resolved))
-                    .collect(),
-            },
-            TypeNameKind::Error => Ty::Unknown,
-        },
-        TypeKind::Pointer { nullable, inner } => Ty::Pointer {
-            nullable: *nullable,
-            inner: Box::new(ty_from_hir_surface(inner, resolved)),
-        },
-        TypeKind::Const(inner) => Ty::Const(Box::new(ty_from_hir_surface(inner, resolved))),
-        TypeKind::Array { len, elem } => Ty::Array {
-            len: *len,
-            elem: Box::new(ty_from_hir_surface(elem, resolved)),
-        },
-        TypeKind::Slice(elem) => Ty::Slice(Box::new(ty_from_hir_surface(elem, resolved))),
-        TypeKind::Function { abi, ret, params } => Ty::Function {
-            abi: abi.clone(),
-            ret: Box::new(ty_from_hir_surface(ret, resolved)),
-            params: params
-                .iter()
-                .map(|param| ty_from_hir_surface(param, resolved))
-                .collect(),
-        },
-        TypeKind::Closure { ret, params } => Ty::Closure {
-            ret: Box::new(ty_from_hir_surface(ret, resolved)),
-            params: params
-                .iter()
-                .map(|param| ty_from_hir_surface(param, resolved))
-                .collect(),
-        },
-    }
-}
-
 fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
     match ty {
         Ty::Hole(id) => Ty::Hole(*id),
@@ -7976,12 +8348,17 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
                 .map(|param| substitute_ty(param, subst))
                 .collect(),
         },
-        Ty::Closure { ret, params } => Ty::Closure {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => Ty::Closure {
             ret: Box::new(substitute_ty(ret, subst)),
             params: params
                 .iter()
                 .map(|param| substitute_ty(param, subst))
                 .collect(),
+            constraints: substitute_constraint_bounds(constraints, subst),
         },
         Ty::ClosureInstance {
             id,
@@ -8001,6 +8378,35 @@ fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
                 .collect(),
         },
         other => other.clone(),
+    }
+}
+
+fn substitute_constraint_bounds(
+    bounds: &ConstraintBounds,
+    subst: &HashMap<String, Ty>,
+) -> ConstraintBounds {
+    ConstraintBounds {
+        positive: bounds
+            .positive
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+        negative: bounds
+            .negative
+            .iter()
+            .map(|entry| substitute_constraint_ref(entry, subst))
+            .collect(),
+    }
+}
+
+fn substitute_constraint_ref(entry: &ConstraintRef, subst: &HashMap<String, Ty>) -> ConstraintRef {
+    ConstraintRef {
+        name: entry.name.clone(),
+        args: entry
+            .args
+            .iter()
+            .map(|arg| substitute_ty(arg, subst))
+            .collect(),
     }
 }
 
@@ -8077,22 +8483,28 @@ fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool 
             }
             _ => false,
         },
-        Ty::Closure { ret, params } => match actual.unqualified() {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => match actual.unqualified() {
             Ty::Closure {
                 ret: actual_ret,
                 params: actual_params,
+                constraints: actual_constraints,
             } if params.len() == actual_params.len() => {
                 unify_ty(ret, actual_ret, subst)
                     && params
                         .iter()
                         .zip(actual_params.iter())
                         .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+                    && unify_constraint_bounds(constraints, actual_constraints, subst)
             }
             Ty::ClosureInstance {
                 ret: actual_ret,
                 params: actual_params,
                 ..
-            } if params.len() == actual_params.len() => {
+            } if constraints.is_empty() && params.len() == actual_params.len() => {
                 unify_ty(ret, actual_ret, subst)
                     && params
                         .iter()
@@ -8132,19 +8544,85 @@ fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool 
     }
 }
 
+fn unify_constraint_bounds(
+    pattern: &ConstraintBounds,
+    actual: &ConstraintBounds,
+    subst: &mut HashMap<String, Ty>,
+) -> bool {
+    let mut trial = subst.clone();
+    if !unify_constraint_refs(&pattern.positive, &actual.positive, &mut trial) {
+        return false;
+    }
+    if !unify_constraint_refs(&pattern.negative, &actual.negative, &mut trial) {
+        return false;
+    }
+    *subst = trial;
+    true
+}
+
+fn unify_constraint_refs(
+    pattern: &[ConstraintRef],
+    actual: &[ConstraintRef],
+    subst: &mut HashMap<String, Ty>,
+) -> bool {
+    let Some((first, rest)) = pattern.split_first() else {
+        return true;
+    };
+    for candidate in actual {
+        if first.name != candidate.name || first.args.len() != candidate.args.len() {
+            continue;
+        }
+        let mut trial = subst.clone();
+        if !first
+            .args
+            .iter()
+            .zip(candidate.args.iter())
+            .all(|(pattern_arg, actual_arg)| unify_ty(pattern_arg, actual_arg, &mut trial))
+        {
+            continue;
+        }
+        if unify_constraint_refs(rest, actual, &mut trial) {
+            *subst = trial;
+            return true;
+        }
+    }
+    false
+}
+
 fn closure_instance_satisfies_signature(expected: &Ty, actual: &Ty) -> bool {
     match (expected.unqualified(), actual.unqualified()) {
         (
             Ty::Closure {
                 ret: expected_ret,
                 params: expected_params,
+                constraints: expected_constraints,
             },
             Ty::ClosureInstance {
                 ret: actual_ret,
                 params: actual_params,
                 ..
             },
-        ) => expected_params == actual_params && expected_ret.can_assign_from(actual_ret),
+        ) => {
+            expected_constraints.is_empty()
+                && expected_params == actual_params
+                && expected_ret.can_assign_from(actual_ret)
+        }
+        _ => false,
+    }
+}
+
+fn closure_shape_satisfies(expected_ret: &Ty, expected_params: &[Ty], actual: &Ty) -> bool {
+    match actual.unqualified() {
+        Ty::Closure {
+            ret: actual_ret,
+            params: actual_params,
+            ..
+        }
+        | Ty::ClosureInstance {
+            ret: actual_ret,
+            params: actual_params,
+            ..
+        } => expected_params == actual_params && expected_ret.can_assign_from(actual_ret),
         _ => false,
     }
 }
@@ -8152,7 +8630,7 @@ fn closure_instance_satisfies_signature(expected: &Ty, actual: &Ty) -> bool {
 fn callable_ret_params_ty(ty: &Ty) -> Option<(Ty, Vec<Ty>)> {
     match ty.unqualified() {
         Ty::Function { ret, params, .. }
-        | Ty::Closure { ret, params }
+        | Ty::Closure { ret, params, .. }
         | Ty::ClosureInstance { ret, params, .. } => Some(((**ret).clone(), params.clone())),
         _ => None,
     }
@@ -8185,7 +8663,15 @@ fn contains_generic(ty: &Ty) -> bool {
         Ty::Function { ret, params, .. } => {
             contains_generic(ret) || params.iter().any(contains_generic)
         }
-        Ty::Closure { ret, params } => contains_generic(ret) || params.iter().any(contains_generic),
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
+            contains_generic(ret)
+                || params.iter().any(contains_generic)
+                || constraint_bounds_contains_generic(constraints)
+        }
         Ty::ClosureInstance {
             ret,
             params,
@@ -8200,6 +8686,14 @@ fn contains_generic(ty: &Ty) -> bool {
     }
 }
 
+fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .any(|entry| entry.args.iter().any(contains_generic))
+}
+
 fn contains_type_hole(ty: &Ty) -> bool {
     match ty {
         Ty::Hole(_) => true,
@@ -8212,8 +8706,14 @@ fn contains_type_hole(ty: &Ty) -> bool {
         Ty::Function { ret, params, .. } => {
             contains_type_hole(ret) || params.iter().any(contains_type_hole)
         }
-        Ty::Closure { ret, params } => {
-            contains_type_hole(ret) || params.iter().any(contains_type_hole)
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
+            contains_type_hole(ret)
+                || params.iter().any(contains_type_hole)
+                || constraint_bounds_contains_type_hole(constraints)
         }
         Ty::ClosureInstance {
             ret,
@@ -8229,6 +8729,14 @@ fn contains_type_hole(ty: &Ty) -> bool {
     }
 }
 
+fn constraint_bounds_contains_type_hole(bounds: &ConstraintBounds) -> bool {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .any(|entry| entry.args.iter().any(contains_type_hole))
+}
+
 fn hir_type_contains_hole(ty: &Type) -> bool {
     match &ty.kind {
         TypeKind::Hole => true,
@@ -8237,7 +8745,7 @@ fn hir_type_contains_hole(ty: &Type) -> bool {
         }
         TypeKind::Array { elem, .. } => hir_type_contains_hole(elem),
         TypeKind::Named(_, args) => args.iter().any(hir_type_contains_hole),
-        TypeKind::Function { ret, params, .. } | TypeKind::Closure { ret, params } => {
+        TypeKind::Function { ret, params, .. } | TypeKind::Closure { ret, params, .. } => {
             hir_type_contains_hole(ret) || params.iter().any(hir_type_contains_hole)
         }
         _ => false,
@@ -8534,10 +9042,12 @@ fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
             Ty::Closure {
                 ret: left_ret,
                 params: left_params,
+                ..
             },
             Ty::Closure {
                 ret: right_ret,
                 params: right_params,
+                ..
             },
         ) => {
             left_params.len() == right_params.len()
@@ -8593,11 +9103,16 @@ fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
                     .iter()
                     .any(|param| contains_any_generic_name(param, names))
         }
-        Ty::Closure { ret, params } => {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
             contains_any_generic_name(ret, names)
                 || params
                     .iter()
                     .any(|param| contains_any_generic_name(param, names))
+                || constraint_bounds_contains_any_generic_name(constraints, names)
         }
         Ty::ClosureInstance {
             ret,
@@ -8622,6 +9137,22 @@ fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
         NameRefKind::Def(def_id) => resolved.def(def_id).name.clone(),
         _ => name.display.clone(),
     }
+}
+
+fn constraint_bounds_contains_any_generic_name(
+    bounds: &ConstraintBounds,
+    names: &HashSet<String>,
+) -> bool {
+    bounds
+        .positive
+        .iter()
+        .chain(bounds.negative.iter())
+        .any(|entry| {
+            entry
+                .args
+                .iter()
+                .any(|arg| contains_any_generic_name(arg, names))
+        })
 }
 
 fn interface_receiver_is_input(interface: &InterfaceSig) -> bool {
@@ -8649,14 +9180,29 @@ fn ast_type_mentions_name(ty: &Type, name: &str) -> bool {
                     .iter()
                     .any(|param| ast_type_mentions_name(param, name))
         }
-        TypeKind::Closure { ret, params } => {
+        TypeKind::Closure {
+            ret,
+            params,
+            constraint,
+        } => {
             ast_type_mentions_name(ret, name)
                 || params
                     .iter()
                     .any(|param| ast_type_mentions_name(param, name))
+                || constraint
+                    .as_ref()
+                    .is_some_and(|constraint| constraint_expr_mentions_name(constraint, name))
         }
         TypeKind::Hole | TypeKind::Never | TypeKind::Void | TypeKind::Primitive(_) => false,
     }
+}
+
+fn constraint_expr_mentions_name(expr: &ConstraintExpr, name: &str) -> bool {
+    expr.terms.iter().any(|term| {
+        term.args
+            .iter()
+            .any(|arg| ast_type_mentions_name(arg, name))
+    })
 }
 
 fn mangle_ty_fragment(ty: &Ty) -> String {
@@ -8727,7 +9273,11 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
                 params
             )
         }
-        Ty::Closure { ret, params } => {
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => {
             let params = if params.is_empty() {
                 "void".to_string()
             } else {
@@ -8737,7 +9287,12 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
                     .collect::<Vec<_>>()
                     .join("_")
             };
-            format!("closure_ret_{}_args_{}", mangle_ty_fragment(ret), params)
+            format!(
+                "closure_ret_{}_args_{}_caps_{}",
+                mangle_ty_fragment(ret),
+                params,
+                mangle_constraint_bounds(constraints)
+            )
         }
         Ty::ClosureInstance {
             id,
@@ -8771,6 +9326,41 @@ fn mangle_ty_fragment(ty: &Ty) -> String {
             )
         }
         Ty::Unknown => "unknown".to_string(),
+    }
+}
+
+fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
+    if bounds.is_empty() {
+        return "none".to_string();
+    }
+    let mut parts = bounds
+        .positive
+        .iter()
+        .map(|entry| format!("pos_{}", mangle_constraint_ref(entry)))
+        .collect::<Vec<_>>();
+    parts.extend(
+        bounds
+            .negative
+            .iter()
+            .map(|entry| format!("neg_{}", mangle_constraint_ref(entry))),
+    );
+    parts.join("_")
+}
+
+fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
+    if entry.args.is_empty() {
+        sanitize_mangle_fragment(&entry.name)
+    } else {
+        format!(
+            "{}_{}",
+            sanitize_mangle_fragment(&entry.name),
+            entry
+                .args
+                .iter()
+                .map(mangle_ty_fragment)
+                .collect::<Vec<_>>()
+                .join("_")
+        )
     }
 }
 

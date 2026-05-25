@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 7
+
+import /std/lib;
+
+type Op = i64 fn(i64);
+
+interface<T> i64 run_receiver(*T value, i64 input);
+
+impl run_receiver(*Op value, i64 input) {
+    Op op = *value;
+    return op(input);
+}
+
+i64 add_two(i64 value) {
+    return value + 2;
+}
+
+i64 main() {
+    i64 |(i64): run_receiver| op = add_two;
+    return run_receiver(&op, 5);
+}

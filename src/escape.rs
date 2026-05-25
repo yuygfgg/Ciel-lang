@@ -279,13 +279,16 @@ impl<'a> FunctionAnalyzer<'a> {
                 }
                 self.scan_closure_body(body);
             }
-            TExprKind::FunctionToClosure(inner) => self.scan_expr(inner),
+            TExprKind::FunctionToClosure(inner) | TExprKind::RetainClosure { expr: inner, .. } => {
+                self.scan_expr(inner)
+            }
             TExprKind::ArrayToSlice(expr) => self.scan_expr(expr),
             TExprKind::MakeDynamicInterface { expr, .. } => {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
             }
-            TExprKind::DynamicInterfaceCall { receiver, args, .. } => {
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.scan_expr(receiver);
                 self.escape_sources(receiver);
                 for arg in args {
@@ -486,7 +489,9 @@ impl<'a> FunctionAnalyzer<'a> {
                     }
                 }
             }
-            TExprKind::FunctionToClosure(expr) => self.collect_storage_sources(expr, out),
+            TExprKind::FunctionToClosure(expr) | TExprKind::RetainClosure { expr, .. } => {
+                self.collect_storage_sources(expr, out)
+            }
             TExprKind::ArrayLiteral(elements) => {
                 for element in elements {
                     self.collect_storage_sources(element, out);
@@ -530,6 +535,7 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::Call { .. }
             | TExprKind::MakeDynamicInterface { .. }
             | TExprKind::DynamicInterfaceCall { .. }
+            | TExprKind::RetainedClosureInterfaceCall { .. }
             | TExprKind::Field { .. }
             | TExprKind::Arrow { .. }
             | TExprKind::Index { .. }

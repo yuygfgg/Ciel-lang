@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 9
+
+import /std/lib;
+
+struct Box<T> {
+    T value;
+}
+
+interface<T> Box<T> box_it(*T value);
+
+impl<T: Message> box_it(*T value) {
+    return { value: *value };
+}
+
+i64 main() {
+    i64 base = 4;
+    i64 |(i64): Message + box_it| handler = |i64 value| value + base;
+    Box<i64 |(i64): Message + box_it|> boxed = box_it(&handler);
+    base = 100;
+    return boxed.value(5);
+}

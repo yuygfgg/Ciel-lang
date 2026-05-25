@@ -337,16 +337,17 @@ currently inconsistent with the design.
       state/handler values and `send` payloads.
 - [x] Add escape-analysis diagnostics that explain actor-local pointer/slice
       captures in terms of cross-actor movement.
-- [x] Generate message clone thunks for concrete closure environments and carry
-      the clone operation in closure values. Concrete closure instances implement
-      `Message` only when every captured field is `Message`; erased closure
-      signature types are not `Message` by default.
+- [x] Generate retained-capability closure values. Concrete closure instances
+      implement `Message` only when every captured field is `Message`; plain
+      erased closure signature types are not `Message` by default, while
+      `T |(...): ConstraintExpr|` carries retained witnesses explicitly.
 - [x] Add runtime mailbox support for actor allocation, enqueue, dequeue,
       wakeup, dispatch, shutdown, and worker-thread GC attachment.
-- [x] Generate actor dispatch thunks for each concrete
-      `spawn_actor<S, M, H>` handler so the runtime can call `H` as
-      `Result<S, Error>(S, M)` and store the next actor state. These thunks are
-      runtime glue and must not introduce a separate actor type-system rule.
+- [x] Generate actor dispatch thunks for each retained
+      `spawn_actor<S, M>` handler so the runtime can call
+      `Result<S, Error> |(S, M): Message|` and store the next actor state. These
+      thunks are runtime glue and do not introduce a separate actor
+      type-system rule.
 - [x] Use `/std/meta` from ordinary standard-library Ciel code for generic
       runtime handles that store arbitrary Ciel values, especially `Channel<T>`
       and `Mutex<T>`.
@@ -373,9 +374,10 @@ currently inconsistent with the design.
       channel, mutex, and atomic handles define explicit handle policies in
       their own modules.
 - [x] Add `/std/actor` with `Actor<M>`,
-      `spawn_actor<S: Message, M: Message, H: Message>` where `H` is callable as
-      `Result<S, Error>(S, M)`, `send<T: Message>` that calls `clone_message`
-      for each payload, actor lifecycle helpers, and mailbox close errors.
+      `spawn_actor<S: Message, M: Message>` taking
+      `Result<S, Error> |(S, M): Message|`, `send<T: Message>` that calls
+      `clone_message` for each payload, actor lifecycle helpers, and mailbox
+      close errors.
 - [ ] Add typed mailbox/backpressure error surfaces beyond `Error::Code`.
 - [x] Add `/std/channel` as ordinary Ciel code built on the same explicit
       `clone_message` conversion rules.

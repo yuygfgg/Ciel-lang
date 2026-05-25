@@ -271,6 +271,10 @@ pub enum TExprKind {
         body: TClosureBody,
     },
     FunctionToClosure(Box<TExpr>),
+    RetainClosure {
+        expr: Box<TExpr>,
+        source_ty: Ty,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<TExpr>,
@@ -295,6 +299,12 @@ pub enum TExprKind {
     },
     DynamicInterfaceCall {
         interface_name: String,
+        receiver: Box<TExpr>,
+        args: Vec<TExpr>,
+    },
+    RetainedClosureInterfaceCall {
+        interface_name: String,
+        interface_args: Vec<Ty>,
         receiver: Box<TExpr>,
         args: Vec<TExpr>,
     },

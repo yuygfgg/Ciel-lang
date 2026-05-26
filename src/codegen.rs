@@ -151,9 +151,11 @@ struct ResultLayout {
     ok_index: usize,
     ok_name: String,
     ok_has_payload: bool,
+    ok_payload_ty: Option<Ty>,
     err_name: String,
     err_index: usize,
     err_has_payload: bool,
+    err_payload_ty: Option<Ty>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2011,82 +2013,16 @@ impl<'a> CGenerator<'a> {
                             self.c_sizeof_type(ty)
                         ),
                     );
-                    if let Some(init) = init
-                        && let Ty::Array { .. } = ty
-                        && let TExprKind::ArrayLiteral(elements) = &init.kind
-                    {
-                        self.emit_heap_array_init(&cname, elements, indent)?;
-                        return Ok(true);
-                    }
-                    if let Some(init) = init
-                        && let Ty::Array { elem, .. } = ty
-                        && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                    {
-                        self.emit_array_repeat_init(
-                            &format!("(*{cname})"),
-                            elem,
-                            element,
-                            *len,
-                            indent,
-                        )?;
-                        return Ok(true);
-                    }
-                    if let Some(init) = init
-                        && let Ty::Slice(_) = ty
-                        && let TExprKind::ArrayLiteral(elements) = &init.kind
-                    {
-                        let value = self.emit_slice_literal_temp(ty, elements, indent)?;
-                        self.line_indent(indent, &format!("*{cname} = {value};"));
-                        return Ok(true);
-                    }
-                    if let Some(init) = init
-                        && let Ty::Slice(_) = ty
-                        && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                    {
-                        let value = self.emit_slice_repeat_temp(ty, element, *len, indent)?;
-                        self.line_indent(indent, &format!("*{cname} = {value};"));
-                        return Ok(true);
-                    }
                     if let Some(init) = init {
-                        let value = self.gen_expr_in_stmt(init, indent)?;
-                        self.line_indent(indent, &format!("*{cname} = {value};"));
+                        self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
                     }
                     return Ok(true);
                 }
-                if let Some(init) = init
-                    && let Ty::Slice(_) = ty
-                    && let TExprKind::ArrayLiteral(elements) = &init.kind
-                {
-                    let value = self.emit_slice_literal_temp(ty, elements, indent)?;
-                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
-                    return Ok(true);
-                }
-                if let Some(init) = init
-                    && let Ty::Array { elem, .. } = ty
-                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                {
-                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
-                    self.emit_array_repeat_init(&cname, elem, element, *len, indent)?;
-                    return Ok(true);
-                }
-                if let Some(init) = init
-                    && let Ty::Slice(_) = ty
-                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                {
-                    let value = self.emit_slice_repeat_temp(ty, element, *len, indent)?;
-                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
-                    return Ok(true);
-                }
-                let code = if let Some(init) = init {
-                    format!(
-                        "{} = {};",
-                        self.c_decl(ty, &cname),
-                        self.gen_expr_in_stmt(init, indent)?
-                    )
+                if let Some(init) = init {
+                    self.emit_local_decl_with_init(ty, &cname, init, indent)?;
                 } else {
-                    format!("{};", self.c_decl(ty, &cname))
-                };
-                self.line_indent(indent, &code);
+                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
+                }
                 Ok(true)
             }
             TStmtKind::Assign { target, value } => {
@@ -2098,28 +2034,7 @@ impl<'a> CGenerator<'a> {
                     return Ok(true);
                 }
                 let target = self.gen_expr_in_stmt(target, indent)?;
-                if let Ty::Slice(_) = value.ty
-                    && let TExprKind::ArrayLiteral(elements) = &value.kind
-                {
-                    let value = self.emit_slice_literal_temp(&value.ty, elements, indent)?;
-                    self.line_indent(indent, &format!("{target} = {value};"));
-                    return Ok(true);
-                }
-                if let Ty::Slice(_) = value.ty
-                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
-                {
-                    let value = self.emit_slice_repeat_temp(&value.ty, element, *len, indent)?;
-                    self.line_indent(indent, &format!("{target} = {value};"));
-                    return Ok(true);
-                }
-                if let Ty::Array { elem, .. } = &value.ty
-                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
-                {
-                    self.emit_array_repeat_init(&target, elem, element, *len, indent)?;
-                    return Ok(true);
-                }
-                let value = self.gen_expr_in_stmt(value, indent)?;
-                self.line_indent(indent, &format!("{target} = {value};"));
+                self.emit_expr_store(&target, value, indent)?;
                 Ok(true)
             }
             TStmtKind::If {
@@ -2294,38 +2209,7 @@ impl<'a> CGenerator<'a> {
                         self.line_indent(indent, "return;");
                         return Ok(false);
                     }
-                    if let Ty::Slice(_) = expr.ty
-                        && let TExprKind::ArrayLiteral(elements) = &expr.kind
-                    {
-                        let value = self.emit_slice_literal_temp(&expr.ty, elements, indent)?;
-                        let temp = self.next_temp("return");
-                        self.line_indent(
-                            indent,
-                            &format!("{} = {value};", self.c_decl(&expr.ty, &temp)),
-                        );
-                        self.emit_all_defers(indent);
-                        self.line_indent(indent, &format!("return {temp};"));
-                        return Ok(false);
-                    }
-                    if let Ty::Slice(_) = expr.ty
-                        && let TExprKind::ArrayRepeat { element, len } = &expr.kind
-                    {
-                        let value = self.emit_slice_repeat_temp(&expr.ty, element, *len, indent)?;
-                        let temp = self.next_temp("return");
-                        self.line_indent(
-                            indent,
-                            &format!("{} = {value};", self.c_decl(&expr.ty, &temp)),
-                        );
-                        self.emit_all_defers(indent);
-                        self.line_indent(indent, &format!("return {temp};"));
-                        return Ok(false);
-                    }
-                    let value = self.gen_expr_in_stmt(expr, indent)?;
-                    let temp = self.next_temp("return");
-                    self.line_indent(
-                        indent,
-                        &format!("{} = {value};", self.c_decl(&expr.ty, &temp)),
-                    );
+                    let temp = self.emit_temp_value("return", expr, indent)?;
                     self.emit_all_defers(indent);
                     self.line_indent(indent, &format!("return {temp};"));
                 } else {
@@ -2541,33 +2425,8 @@ impl<'a> CGenerator<'a> {
                 if self.local_is_heap(*local_id) {
                     return self.gen_heap_local_decl(ty, name, *local_id, init.as_ref(), indent);
                 }
-                if let Some(init) = init
-                    && let Ty::Slice(_) = ty
-                    && let TExprKind::ArrayLiteral(elements) = &init.kind
-                {
-                    let value = self.emit_slice_literal_temp(ty, elements, indent)?;
-                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
-                    return Ok(());
-                }
-                if let Some(init) = init
-                    && let Ty::Array { elem, .. } = ty
-                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                {
-                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
-                    self.emit_array_repeat_init(&cname, elem, element, *len, indent)?;
-                    return Ok(());
-                }
-                if let Some(init) = init
-                    && let Ty::Slice(_) = ty
-                    && let TExprKind::ArrayRepeat { element, len } = &init.kind
-                {
-                    let value = self.emit_slice_repeat_temp(ty, element, *len, indent)?;
-                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
-                    return Ok(());
-                }
                 if let Some(init) = init {
-                    let value = self.gen_expr_in_stmt(init, indent)?;
-                    self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, &cname)));
+                    self.emit_local_decl_with_init(ty, &cname, init, indent)?;
                 } else {
                     self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
                 }
@@ -2582,28 +2441,7 @@ impl<'a> CGenerator<'a> {
                     return Ok(());
                 }
                 let target = self.gen_expr_in_stmt(target, indent)?;
-                if let Ty::Slice(_) = value.ty
-                    && let TExprKind::ArrayLiteral(elements) = &value.kind
-                {
-                    let value = self.emit_slice_literal_temp(&value.ty, elements, indent)?;
-                    self.line_indent(indent, &format!("{target} = {value};"));
-                    return Ok(());
-                }
-                if let Ty::Slice(_) = value.ty
-                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
-                {
-                    let value = self.emit_slice_repeat_temp(&value.ty, element, *len, indent)?;
-                    self.line_indent(indent, &format!("{target} = {value};"));
-                    return Ok(());
-                }
-                if let Ty::Array { elem, .. } = &value.ty
-                    && let TExprKind::ArrayRepeat { element, len } = &value.kind
-                {
-                    self.emit_array_repeat_init(&target, elem, element, *len, indent)?;
-                    return Ok(());
-                }
-                let value = self.gen_expr_in_stmt(value, indent)?;
-                self.line_indent(indent, &format!("{target} = {value};"));
+                self.emit_expr_store(&target, value, indent)?;
                 Ok(())
             }
             TForInit::Expr(expr) => {
@@ -2632,31 +2470,8 @@ impl<'a> CGenerator<'a> {
                 self.c_sizeof_type(ty)
             ),
         );
-        if let Some(init) = init
-            && let Ty::Array { .. } = ty
-            && let TExprKind::ArrayLiteral(elements) = &init.kind
-        {
-            self.emit_heap_array_init(&cname, elements, indent)?;
-            return Ok(());
-        }
-        if let Some(init) = init
-            && let Ty::Array { elem, .. } = ty
-            && let TExprKind::ArrayRepeat { element, len } = &init.kind
-        {
-            self.emit_array_repeat_init(&format!("(*{cname})"), elem, element, *len, indent)?;
-            return Ok(());
-        }
-        if let Some(init) = init
-            && let Ty::Slice(_) = ty
-            && let TExprKind::ArrayRepeat { element, len } = &init.kind
-        {
-            let value = self.emit_slice_repeat_temp(ty, element, *len, indent)?;
-            self.line_indent(indent, &format!("*{cname} = {value};"));
-            return Ok(());
-        }
         if let Some(init) = init {
-            let value = self.gen_expr_in_stmt(init, indent)?;
-            self.line_indent(indent, &format!("*{cname} = {value};"));
+            self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
         }
         Ok(())
     }
@@ -2689,11 +2504,7 @@ impl<'a> CGenerator<'a> {
                 if arg.ty.is_erased_value() {
                     self.line_indent(indent, &format!("(void)({value});"));
                 } else {
-                    let temp = self.next_temp("call_arg");
-                    self.line_indent(
-                        indent,
-                        &format!("{} = {value};", self.c_decl(&arg.ty, &temp)),
-                    );
+                    let temp = self.emit_temp_value("call_arg", arg, indent)?;
                     out.push(temp);
                 }
             }
@@ -2747,7 +2558,7 @@ impl<'a> CGenerator<'a> {
             TExprKind::StructLiteral { type_name, fields } => {
                 let mut emitted_fields = Vec::new();
                 for (name, value) in fields {
-                    let value_code = self.gen_expr_with_lowering(value, stmt_indent)?;
+                    let value_code = self.value_initializer_for_checked_expr(value, stmt_indent)?;
                     if value.ty.is_erased_value() {
                         if let Some(indent) = stmt_indent {
                             self.line_indent(indent, &format!("(void)({value_code});"));
@@ -2770,7 +2581,7 @@ impl<'a> CGenerator<'a> {
             } => {
                 let mut payload_fields = Vec::new();
                 for value in payload {
-                    let value_code = self.gen_expr_with_lowering(value, stmt_indent)?;
+                    let value_code = self.value_initializer_for_checked_expr(value, stmt_indent)?;
                     if value.ty.is_erased_value() {
                         if let Some(indent) = stmt_indent {
                             self.line_indent(indent, &format!("(void)({value_code});"));
@@ -2832,13 +2643,10 @@ impl<'a> CGenerator<'a> {
                     }
                     return Ok("((void)0)".to_string());
                 }
-                if let Ty::Array { elem, .. } = &expr.ty
+                if let Ty::Array { .. } = &expr.ty
                     && let Some(indent) = stmt_indent
                 {
-                    let temp = self.next_temp("array_repeat");
-                    self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &temp)));
-                    self.emit_array_repeat_init(&temp, elem, element, *len, indent)?;
-                    temp
+                    self.emit_temp_value("array_repeat", expr, indent)?
                 } else {
                     return Err(vec![Diagnostic::new(
                         expr.span,
@@ -3108,12 +2916,7 @@ impl<'a> CGenerator<'a> {
                         "clone_message needs statement lowering in this context",
                     )]);
                 };
-                let value_code = self.gen_expr_in_stmt(value, indent)?;
-                let value_temp = self.next_temp("message_src");
-                self.line_indent(
-                    indent,
-                    &format!("{} = {value_code};", self.c_decl(&value.ty, &value_temp)),
-                );
+                let value_temp = self.emit_temp_value("message_src", value, indent)?;
                 self.emit_clone_message_result_from_ptr(message_ty, &value_temp, indent, expr.span)?
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => {
@@ -3222,12 +3025,7 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let value_code = self.gen_expr_in_stmt(value, indent)?;
-        let value_temp = self.next_temp("meta_ref_src");
-        self.line_indent(
-            indent,
-            &format!("{} = {value_code};", self.c_decl(&value.ty, &value_temp)),
-        );
+        let value_temp = self.emit_temp_value("meta_ref_src", value, indent)?;
         if let Ok(fields) = self.struct_fields_for_ty(expr.span, source_ty) {
             let fields = fields
                 .into_iter()
@@ -3259,12 +3057,7 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let value_code = self.gen_expr_in_stmt(value, indent)?;
-        let value_temp = self.next_temp("meta_owned_src");
-        self.line_indent(
-            indent,
-            &format!("{} = {value_code};", self.c_decl(&value.ty, &value_temp)),
-        );
+        let value_temp = self.emit_temp_value("meta_owned_src", value, indent)?;
         if let Ok(fields) = self.struct_fields_for_ty(expr.span, source_ty) {
             let fields = fields
                 .into_iter()
@@ -3296,12 +3089,7 @@ impl<'a> CGenerator<'a> {
         target_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let value_code = self.gen_expr_in_stmt(value, indent)?;
-        let value_temp = self.next_temp("meta_repr_src");
-        self.line_indent(
-            indent,
-            &format!("{} = {value_code};", self.c_decl(&value.ty, &value_temp)),
-        );
+        let value_temp = self.emit_temp_value("meta_repr_src", value, indent)?;
         if let Ok(fields) = self.struct_fields_for_ty(expr.span, target_ty) {
             return Ok(self.meta_struct_from_repr_literal(target_ty, &fields, &value_temp));
         }
@@ -3341,6 +3129,75 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn value_or_initializer_from_expr(&self, ty: &Ty, expr: &str) -> String {
+        if matches!(ty.unqualified(), Ty::Array { .. }) {
+            self.value_initializer_from_expr(ty, expr)
+        } else {
+            expr.to_string()
+        }
+    }
+
+    fn value_initializer_for_checked_expr(
+        &mut self,
+        expr: &TExpr,
+        stmt_indent: Option<usize>,
+    ) -> DiagResult<String> {
+        let value = self.gen_expr_with_lowering(expr, stmt_indent)?;
+        if matches!(expr.ty.unqualified(), Ty::Array { .. })
+            && !matches!(expr.kind, TExprKind::ArrayLiteral(_))
+        {
+            Ok(self.value_initializer_from_expr(&expr.ty, &value))
+        } else {
+            Ok(value)
+        }
+    }
+
+    fn emit_expr_store(&mut self, target: &str, value: &TExpr, indent: usize) -> DiagResult<()> {
+        if value.ty.is_erased_value() {
+            let value = self.gen_expr_in_stmt(value, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+            return Ok(());
+        }
+        if let Ty::Array { .. } = &value.ty
+            && let TExprKind::ArrayLiteral(elements) = &value.kind
+        {
+            self.emit_array_literal_init(target, elements, indent)?;
+            return Ok(());
+        }
+        if let Ty::Array { elem, .. } = &value.ty
+            && let TExprKind::ArrayRepeat { element, len } = &value.kind
+        {
+            self.emit_array_repeat_init(target, elem, element, *len, indent)?;
+            return Ok(());
+        }
+        let source = self.gen_expr_in_stmt(value, indent)?;
+        self.emit_value_copy(target, &source, &value.ty, indent);
+        Ok(())
+    }
+
+    fn emit_local_decl_with_init(
+        &mut self,
+        ty: &Ty,
+        name: &str,
+        init: &TExpr,
+        indent: usize,
+    ) -> DiagResult<()> {
+        if matches!(ty.unqualified(), Ty::Array { .. }) {
+            self.line_indent(indent, &format!("{};", self.c_decl(ty, name)));
+            self.emit_expr_store(name, init, indent)?;
+            return Ok(());
+        }
+        let value = self.gen_expr_in_stmt(init, indent)?;
+        self.line_indent(indent, &format!("{} = {value};", self.c_decl(ty, name)));
+        Ok(())
+    }
+
+    fn emit_temp_value(&mut self, prefix: &str, expr: &TExpr, indent: usize) -> DiagResult<String> {
+        let temp = self.next_temp(prefix);
+        self.emit_local_decl_with_init(&expr.ty, &temp, expr, indent)?;
+        Ok(temp)
+    }
+
     fn meta_struct_from_repr_literal(
         &self,
         target_ty: &Ty,
@@ -3355,7 +3212,7 @@ impl<'a> CGenerator<'a> {
             if !ty.is_erased_value() {
                 emitted.push(format!(
                     ".{field} = {}",
-                    self.value_initializer_from_expr(ty, &format!("{head}.value"))
+                    self.value_or_initializer_from_expr(ty, &format!("{head}.value"))
                 ));
             }
             cursor = format!("({cursor}).tail");
@@ -3501,7 +3358,10 @@ impl<'a> CGenerator<'a> {
             if !ty.is_erased_value() {
                 payload_fields.push(format!(
                     "._{idx} = {}",
-                    self.value_initializer_from_expr(ty, &format!("({payload_cursor}).head.value"))
+                    self.value_or_initializer_from_expr(
+                        ty,
+                        &format!("({payload_cursor}).head.value")
+                    )
                 ));
             }
             payload_cursor = format!("({payload_cursor}).tail");
@@ -3649,7 +3509,7 @@ impl<'a> CGenerator<'a> {
             let value = if head_name == "FieldRef" {
                 field.value_expr.clone()
             } else {
-                self.value_initializer_from_expr(&field.ty, &field.value_expr)
+                self.value_or_initializer_from_expr(&field.ty, &field.value_expr)
             };
             head_fields.push(format!(".value = {}", value));
         }
@@ -3679,7 +3539,7 @@ impl<'a> CGenerator<'a> {
         let value = if head_name == "PayloadRef" {
             field.value_expr.clone()
         } else {
-            self.value_initializer_from_expr(&field.ty, &field.value_expr)
+            self.value_or_initializer_from_expr(&field.ty, &field.value_expr)
         };
         let head = format!(
             "({}){{ .index = {}, .value = {} }}",
@@ -4027,9 +3887,11 @@ impl<'a> CGenerator<'a> {
             ok_index,
             ok_name: ok_variant.name.clone(),
             ok_has_payload: !ok_variant.payload.is_empty(),
+            ok_payload_ty: ok_variant.payload.first().cloned(),
             err_name: err_variant.name.clone(),
             err_index,
             err_has_payload: !err_variant.payload.is_empty(),
+            err_payload_ty: err_variant.payload.first().cloned(),
         })
     }
 
@@ -4040,12 +3902,19 @@ impl<'a> CGenerator<'a> {
         temp: &str,
     ) -> String {
         if return_layout.err_has_payload {
+            let payload = self.value_or_initializer_from_expr(
+                return_layout
+                    .err_payload_ty
+                    .as_ref()
+                    .expect("result err payload type is present"),
+                &format!("{temp}.as.{}._0", inner_layout.err_name),
+            );
             format!(
-                "({}){{ .tag = {}, .as.{} = {{ ._0 = {temp}.as.{}._0 }} }}",
+                "({}){{ .tag = {}, .as.{} = {{ ._0 = {} }} }}",
                 return_layout.c_type,
                 return_layout.err_index,
                 return_layout.err_name,
-                inner_layout.err_name
+                payload
             )
         } else {
             format!(
@@ -4057,12 +3926,19 @@ impl<'a> CGenerator<'a> {
 
     fn result_ok_literal(&self, layout: &ResultLayout, value: Option<&str>) -> String {
         if layout.ok_has_payload {
+            let payload = self.value_or_initializer_from_expr(
+                layout
+                    .ok_payload_ty
+                    .as_ref()
+                    .expect("result ok payload type is present"),
+                value.unwrap_or("0"),
+            );
             format!(
                 "({}){{ .tag = {}, .as.{} = {{ ._0 = {} }} }}",
                 layout.c_type,
                 layout.ok_index,
                 layout.ok_name,
-                value.unwrap_or("0")
+                payload
             )
         } else {
             format!("({}){{ .tag = {} }}", layout.c_type, layout.ok_index)
@@ -4459,12 +4335,7 @@ impl<'a> CGenerator<'a> {
         let done_label = self.next_temp("actor_spawn_done");
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
 
-        let state_value = self.gen_expr_in_stmt(initial_state, indent)?;
-        let state_src = self.next_temp("actor_state_src");
-        self.line_indent(
-            indent,
-            &format!("{} = {state_value};", self.c_decl(state_ty, &state_src)),
-        );
+        let state_src = self.emit_temp_value("actor_state_src", initial_state, indent)?;
         let state_clone = self.emit_clone_message_result_from_ptr(
             state_ty,
             &format!("&{state_src}"),
@@ -4490,23 +4361,14 @@ impl<'a> CGenerator<'a> {
         );
         let state_clone_layout =
             self.result_layout(&std_result_ty(state_ty.clone(), std_error_ty()), expr.span)?;
-        self.line_indent(
+        self.emit_value_copy(
+            &format!("(*{state_box})"),
+            &format!("{state_clone}.as.{}._0", state_clone_layout.ok_name),
+            state_ty,
             indent,
-            &format!(
-                "*{state_box} = {state_clone}.as.{}._0;",
-                state_clone_layout.ok_name
-            ),
         );
 
-        let handler_value = self.gen_expr_in_stmt(handler, indent)?;
-        let handler_src = self.next_temp("actor_handler_src");
-        self.line_indent(
-            indent,
-            &format!(
-                "{} = {handler_value};",
-                self.c_decl(handler_ty, &handler_src)
-            ),
-        );
+        let handler_src = self.emit_temp_value("actor_handler_src", handler, indent)?;
         let handler_clone = self.emit_clone_message_result_from_ptr(
             handler_ty,
             &format!("&{handler_src}"),
@@ -4534,12 +4396,11 @@ impl<'a> CGenerator<'a> {
             &std_result_ty(handler_ty.clone(), std_error_ty()),
             expr.span,
         )?;
-        self.line_indent(
+        self.emit_value_copy(
+            &format!("(*{handler_box})"),
+            &format!("{handler_clone}.as.{}._0", handler_clone_layout.ok_name),
+            handler_ty,
             indent,
-            &format!(
-                "*{handler_box} = {handler_clone}.as.{}._0;",
-                handler_clone_layout.ok_name
-            ),
         );
 
         let raw_actor = self.next_temp("actor_raw");
@@ -4594,12 +4455,7 @@ impl<'a> CGenerator<'a> {
         let done_label = self.next_temp("actor_send_done");
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
 
-        let value_code = self.gen_expr_in_stmt(value, indent)?;
-        let value_src = self.next_temp("actor_msg_src");
-        self.line_indent(
-            indent,
-            &format!("{} = {value_code};", self.c_decl(message_ty, &value_src)),
-        );
+        let value_src = self.emit_temp_value("actor_msg_src", value, indent)?;
         let clone_result = self.emit_clone_message_result_from_ptr(
             message_ty,
             &format!("&{value_src}"),
@@ -4627,12 +4483,11 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(message_ty, &msg_box)
             ),
         );
-        self.line_indent(
+        self.emit_value_copy(
+            &format!("(*{msg_box})"),
+            &format!("{clone_result}.as.{}._0", clone_layout.ok_name),
+            message_ty,
             indent,
-            &format!(
-                "*{msg_box} = {clone_result}.as.{}._0;",
-                clone_layout.ok_name
-            ),
         );
         let handle = self.emit_actor_handle(actor, indent)?;
         let rc = self.next_temp("actor_send_rc");
@@ -4720,12 +4575,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_actor_handle(&mut self, actor: &TExpr, indent: usize) -> DiagResult<String> {
-        let actor_code = self.gen_expr_in_stmt(actor, indent)?;
-        let actor_temp = self.next_temp("actor_ref");
-        self.line_indent(
-            indent,
-            &format!("{} = {actor_code};", self.c_decl(&actor.ty, &actor_temp)),
-        );
+        let actor_temp = self.emit_temp_value("actor_ref", actor, indent)?;
         Ok(format!("(CielActor *)({actor_temp}->handle)"))
     }
 
@@ -4741,11 +4591,7 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, &format!("(void)({value});"));
                 continue;
             }
-            let temp = self.next_temp("defer_arg");
-            self.line_indent(
-                indent,
-                &format!("{} = {value};", self.c_decl(&arg.ty, &temp)),
-            );
+            let temp = self.emit_temp_value("defer_arg", arg, indent)?;
             temp_args.push(temp);
         }
         Ok(format!("{callee}({})", temp_args.join(", ")))
@@ -4947,19 +4793,14 @@ impl<'a> CGenerator<'a> {
         Ok(slice_temp)
     }
 
-    fn emit_heap_array_init(
+    fn emit_array_literal_init(
         &mut self,
-        cname: &str,
+        target: &str,
         elements: &[TExpr],
         indent: usize,
     ) -> DiagResult<()> {
         for (idx, element) in elements.iter().enumerate() {
-            let value = self.gen_expr_in_stmt(element, indent)?;
-            if element.ty.is_erased_value() {
-                self.line_indent(indent, &format!("(void)({value});"));
-                continue;
-            }
-            self.line_indent(indent, &format!("(*{cname})[{idx}] = {value};"));
+            self.emit_expr_store(&format!("({target})[{idx}]"), element, indent)?;
         }
         Ok(())
     }
@@ -4977,20 +4818,17 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, &format!("(void)({value});"));
             return Ok(());
         }
-        let value_temp = self.next_temp("repeat_value");
+        let value_temp = self.emit_temp_value("repeat_value", element, indent)?;
         let index_temp = self.next_temp("repeat_i");
-        let value = self.gen_expr_in_stmt(element, indent)?;
-        self.line_indent(
-            indent,
-            &format!("{} = {value};", self.c_decl(elem_ty, &value_temp)),
-        );
         self.line_indent(
             indent,
             &format!("for (size_t {index_temp} = 0; {index_temp} < {len}; {index_temp}++) {{"),
         );
-        self.line_indent(
+        self.emit_value_copy(
+            &format!("({target})[{index_temp}]"),
+            &value_temp,
+            elem_ty,
             indent + 1,
-            &format!("{target}[{index_temp}] = {value_temp};"),
         );
         self.line_indent(indent, "}");
         Ok(())
@@ -5995,9 +5833,11 @@ impl<'a> CGenerator<'a> {
                 &source_field_value,
                 indent,
             )?;
-            self.line_indent(
+            self.emit_value_copy(
+                &format!("{target_temp}.{target_field}"),
+                &adapted,
+                target_field_ty,
                 indent,
-                &format!("{target_temp}.{target_field} = {adapted};"),
             );
         }
         Ok(Some(target_temp))
@@ -6090,12 +5930,11 @@ impl<'a> CGenerator<'a> {
                     &source_payload_value,
                     indent + 1,
                 )?;
-                self.line_indent(
+                self.emit_value_copy(
+                    &format!("{target_temp}.as.{}._{payload_idx}", target_variant.name),
+                    &adapted,
+                    target_payload,
                     indent + 1,
-                    &format!(
-                        "{target_temp}.as.{}._{payload_idx} = {adapted};",
-                        target_variant.name
-                    ),
                 );
             }
             self.line_indent(indent + 1, "break;");

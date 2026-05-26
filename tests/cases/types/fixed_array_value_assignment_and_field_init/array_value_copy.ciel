@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+
+struct Box {
+    [2]i64 values;
+}
+
+i64 main() {
+    [2]i64 first = [1, 2];
+    [2]i64 second;
+    second = first;
+
+    Box box = { values: second };
+    box.values = first;
+
+    [2]i64 copy = box.values;
+    return copy[0] + copy[1] - 3;
+}

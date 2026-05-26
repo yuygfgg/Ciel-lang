@@ -6,11 +6,15 @@ use crate::{
         ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, Type, TypeAliasTarget, TypeKind,
         TypeNameKind, VariantDecl,
     },
+    retained::{
+        retained_closure_has_clone_message_capability, retained_closure_missing_capabilities,
+    },
     interfaces::{
         checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
         impl_matches_interface_receiver, retained_closure_interface_signature,
     },
     resolve::{DefId, DefKind, ResolvedProgram},
+    std_id,
     thir::{
         CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterfaceRef,
         CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr, TExprKind, TForInit,
@@ -20,9 +24,9 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, Ty, aggregate_instance_name, contains_generic,
         is_clone_message_capability, mangle_ty_fragment, meta_product_ty, meta_repr_marker_name,
-        meta_sum_ty, retained_closure_capabilities, retained_closure_has_capability,
-        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
-        ty_from_primitive, type_complexity,
+        meta_sum_ty, retained_closure_capabilities, std_message_result_ty,
+        std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains, ty_from_primitive,
+        type_complexity,
     },
 };
 
@@ -718,10 +722,7 @@ impl MonoContext {
     }
 
     fn mark_retained_closure_witness_impls(&mut self, target_ty: &Ty, source_ty: &Ty) {
-        for capability in retained_closure_capabilities(target_ty) {
-            if retained_closure_has_capability(source_ty, &capability) {
-                continue;
-            }
+        for capability in retained_closure_missing_capabilities(target_ty, source_ty) {
             if is_clone_message_capability(&capability) {
                 self.mark_message_clone_impls(source_ty);
                 continue;
@@ -1083,10 +1084,7 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::FunctionToClosure(inner) => {
                 self.collect_expr(inner);
                 self.collect_retained_closure_witness_tys(&expr.ty, &inner.ty);
-                if retained_closure_capabilities(&expr.ty)
-                    .iter()
-                    .any(is_clone_message_capability)
-                {
+                if retained_closure_has_clone_message_capability(&expr.ty) {
                     self.collect_message_clone_result_tys(&expr.ty);
                 }
             }
@@ -1097,10 +1095,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(inner);
                 self.collect_ty(source_ty);
                 self.collect_retained_closure_witness_tys(&expr.ty, source_ty);
-                if retained_closure_capabilities(&expr.ty)
-                    .iter()
-                    .any(is_clone_message_capability)
-                {
+                if retained_closure_has_clone_message_capability(&expr.ty) {
                     self.collect_message_clone_result_tys(&expr.ty);
                     self.collect_message_clone_result_tys(source_ty);
                 }
@@ -1635,11 +1630,7 @@ impl<'a> AggregateCollector<'a> {
 
     fn std_meta_repr_marker(&self, def_id: DefId, name: &str) -> Option<bool> {
         let borrowed = std_meta_repr_source_name(name)?;
-        let def = self.checked.resolved.def(def_id);
-        if self.checked.resolved.modules[def.module.0]
-            .path
-            .ends_with(std::path::Path::new("std/meta.ciel"))
-        {
+        if std_id::is_std_meta_type(&self.checked.resolved, def_id, name) {
             Some(borrowed)
         } else {
             None

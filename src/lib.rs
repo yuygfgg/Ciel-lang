@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod capture;
 pub mod codegen;
 pub mod diagnostic;
 pub mod driver;
@@ -8,9 +9,11 @@ pub mod interfaces;
 pub mod lexer;
 pub mod mono;
 pub mod parser;
+pub mod retained;
 pub mod resolve;
 pub mod source;
 pub mod span;
+pub mod std_id;
 pub mod thir;
 pub mod typeck;
 pub mod types;

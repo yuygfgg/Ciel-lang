@@ -1,9 +1,11 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::{
+    capture::collect_closure_capture_ids,
     diagnostic::{DiagResult, Diagnostic},
     hir::*,
     resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
+    std_id,
     thir::*,
     types::{
         ConstraintBounds, ConstraintRef, Ty, aggregate_instance_name, callable_ret_params_ty,
@@ -1719,9 +1721,9 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         allow_holes: bool,
     ) -> Option<Ty> {
-        let borrowed = if self.is_std_meta_type(def_id, "RefRepr") {
+        let borrowed = if std_id::is_std_meta_type(&self.resolved, def_id, "RefRepr") {
             true
-        } else if self.is_std_meta_type(def_id, "Repr") {
+        } else if std_id::is_std_meta_type(&self.resolved, def_id, "Repr") {
             false
         } else {
             return None;
@@ -1988,14 +1990,6 @@ impl TypeChecker {
                 "meta structural representation supports visible structs, enums, and concrete closure values, got `{source_ty}`"
             ),
         ));
-    }
-
-    fn is_std_meta_type(&self, def_id: DefId, name: &str) -> bool {
-        let def = self.resolved.def(def_id);
-        def.name == name
-            && self.resolved.modules[def.module.0]
-                .path
-                .ends_with(std::path::Path::new("std/meta.ciel"))
     }
 
     fn alloc_synthetic_def(&mut self) -> DefId {
@@ -4881,13 +4875,13 @@ impl TypeChecker {
         args: &[Expr],
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
-        if self.is_std_actor_function(&sig, "spawn_actor") {
+        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "spawn_actor") {
             return self.check_actor_spawn_call(scopes, span, type_args, args, expected);
         }
-        if self.is_std_actor_function(&sig, "send") {
+        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "send") {
             return self.check_actor_send_call(scopes, span, type_args, args);
         }
-        if self.is_std_actor_function(&sig, "stop") {
+        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "stop") {
             return self.check_actor_lifecycle_call(
                 scopes,
                 span,
@@ -4896,7 +4890,7 @@ impl TypeChecker {
                 ActorLifecycleOp::Stop,
             );
         }
-        if self.is_std_actor_function(&sig, "join") {
+        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "join") {
             return self.check_actor_lifecycle_call(
                 scopes,
                 span,
@@ -4905,14 +4899,14 @@ impl TypeChecker {
                 ActorLifecycleOp::Join,
             );
         }
-        if self.is_std_meta_function(&sig, "as_ref_repr")
-            || self.is_std_meta_function(&sig, "into_repr")
-            || self.is_std_meta_function(&sig, "from_repr")
+        if std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "as_ref_repr")
+            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "into_repr")
+            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "from_repr")
         {
             return self.check_meta_repr_call(scopes, span, &sig.name, type_args, args, expected);
         }
-        if self.is_std_meta_function(&sig, "type_size")
-            || self.is_std_meta_function(&sig, "type_align")
+        if std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "type_size")
+            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "type_align")
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }
@@ -5122,13 +5116,7 @@ impl TypeChecker {
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
 
-        let mut local_ids = HashSet::new();
-        for (local_id, _, _) in &checked_params {
-            local_ids.insert(*local_id);
-        }
-        collect_closure_body_declared_locals(&checked_body, &mut local_ids);
-        let mut capture_ids = Vec::new();
-        collect_closure_body_local_refs(&checked_body, &local_ids, &mut capture_ids);
+        let capture_ids = collect_closure_capture_ids(&checked_params, &checked_body);
         let mut captures = Vec::new();
         for local_id in capture_ids {
             let Some(binding) = scopes.get(local_id) else {
@@ -5730,7 +5718,7 @@ impl TypeChecker {
             });
         }
 
-        if self.is_std_clone_message_interface(def_id)
+        if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
             && interface_non_receiver_args(&interface_args).is_empty()
             && let Some(message_ty) = receiver_ty.clone()
             && self.type_implements_builtin_message(&message_ty)
@@ -5746,7 +5734,8 @@ impl TypeChecker {
             });
         }
 
-        let message = if self.is_std_clone_message_interface(def_id) {
+        let message = if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
+        {
             receiver_ty
                 .as_ref()
                 .map(|ty| format!("`{ty}` does not implement `Message`"))
@@ -5754,7 +5743,7 @@ impl TypeChecker {
         } else {
             format!("no impl of `{name}` for this call")
         };
-        if self.is_std_clone_message_interface(def_id)
+        if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
             && let Some(ty) = receiver_ty.as_ref()
         {
             self.push_message_requirement_diagnostic(span, message, ty);
@@ -7436,7 +7425,7 @@ impl TypeChecker {
         if name != "Result" || args.len() != 2 {
             return None;
         }
-        if !self.current_module_can_see_std_result() {
+        if !std_id::module_can_see_std_result(&self.resolved, self.current_module) {
             return None;
         }
         let template = self.enum_templates.get(name)?;
@@ -7451,35 +7440,14 @@ impl TypeChecker {
         Some((args[0].clone(), args[1].clone()))
     }
 
-    fn current_module_can_see_std_result(&self) -> bool {
-        if self.resolved.modules[self.current_module.0]
-            .path
-            .ends_with(std::path::Path::new("std/result.ciel"))
-        {
-            return true;
-        }
-        matches!(
-            self.resolved
-                .lookup_bare(self.current_module, "Result", &[DefKind::Enum]),
-            Ok(Some(def_id)) if self.is_std_result_enum(def_id)
-        )
-    }
-
-    fn is_std_result_enum(&self, def_id: DefId) -> bool {
-        let def = self.resolved.def(def_id);
-        def.name == "Result"
-            && def.kind == DefKind::Enum
-            && self.resolved.modules[def.module.0]
-                .path
-                .ends_with(std::path::Path::new("std/result.ciel"))
-    }
-
     fn is_builtin_clone_message_name(&self, name: &str) -> bool {
         name == "clone_message"
             && self
                 .interface_names
                 .get(name)
-                .is_some_and(|def_id| self.is_std_clone_message_interface(*def_id))
+                .is_some_and(|def_id| {
+                    std_id::is_std_message_interface(&self.resolved, *def_id, "clone_message")
+                })
     }
 
     fn is_builtin_share_handle_name(&self, name: &str) -> bool {
@@ -7487,7 +7455,13 @@ impl TypeChecker {
             && self
                 .interface_names
                 .get(name)
-                .is_some_and(|def_id| self.is_std_share_handle_interface(*def_id))
+                .is_some_and(|def_id| {
+                    std_id::is_std_message_interface(
+                        &self.resolved,
+                        *def_id,
+                        "share_handle_marker",
+                    )
+                })
     }
 
     fn is_builtin_thread_local_name(&self, name: &str) -> bool {
@@ -7495,47 +7469,19 @@ impl TypeChecker {
             && self
                 .interface_names
                 .get(name)
-                .is_some_and(|def_id| self.is_std_thread_local_interface(*def_id))
+                .is_some_and(|def_id| {
+                    std_id::is_std_message_interface(
+                        &self.resolved,
+                        *def_id,
+                        "thread_local_marker",
+                    )
+                })
     }
 
     fn is_builtin_marker_interface_name(&self, name: &str) -> bool {
         self.is_builtin_clone_message_name(name)
             || self.is_builtin_share_handle_name(name)
             || self.is_builtin_thread_local_name(name)
-    }
-
-    fn is_std_clone_message_interface(&self, def_id: DefId) -> bool {
-        self.is_std_message_interface(def_id, "clone_message")
-    }
-
-    fn is_std_share_handle_interface(&self, def_id: DefId) -> bool {
-        self.is_std_message_interface(def_id, "share_handle_marker")
-    }
-
-    fn is_std_thread_local_interface(&self, def_id: DefId) -> bool {
-        self.is_std_message_interface(def_id, "thread_local_marker")
-    }
-
-    fn is_std_message_interface(&self, def_id: DefId, name: &str) -> bool {
-        let def = self.resolved.def(def_id);
-        def.name == name
-            && self.resolved.modules[def.module.0]
-                .path
-                .ends_with(std::path::Path::new("std/message.ciel"))
-    }
-
-    fn is_std_actor_function(&self, sig: &FunctionSig, name: &str) -> bool {
-        sig.name == name
-            && self.resolved.modules[sig.module.0]
-                .path
-                .ends_with(std::path::Path::new("std/actor.ciel"))
-    }
-
-    fn is_std_meta_function(&self, sig: &FunctionSig, name: &str) -> bool {
-        sig.name == name
-            && self.resolved.modules[sig.module.0]
-                .path
-                .ends_with(std::path::Path::new("std/meta.ciel"))
     }
 
     fn apply_condition_narrowing(&mut self, scopes: &mut LocalScopes, cond: &TExpr, truth: bool) {
@@ -7618,406 +7564,6 @@ fn lvalue_root_local(expr: &TExpr) -> Option<(LocalId, &str)> {
         TExprKind::Local(local_id, name) => Some((*local_id, name.as_str())),
         TExprKind::Field { base, .. } | TExprKind::Index { base, .. } => lvalue_root_local(base),
         _ => None,
-    }
-}
-
-fn collect_closure_body_declared_locals(body: &TClosureBody, out: &mut HashSet<LocalId>) {
-    match body {
-        TClosureBody::Expr(expr) => collect_expr_declared_locals(expr, out),
-        TClosureBody::Block(block) => collect_block_declared_locals(block, out),
-    }
-}
-
-fn collect_block_declared_locals(block: &TBlock, out: &mut HashSet<LocalId>) {
-    for stmt in &block.statements {
-        collect_stmt_declared_locals(stmt, out);
-    }
-}
-
-fn collect_stmt_declared_locals(stmt: &TStmt, out: &mut HashSet<LocalId>) {
-    match &stmt.kind {
-        TStmtKind::Block(block) => collect_block_declared_locals(block, out),
-        TStmtKind::VarDecl { local_id, init, .. } => {
-            out.insert(*local_id);
-            if let Some(init) = init {
-                collect_expr_declared_locals(init, out);
-            }
-        }
-        TStmtKind::Assign { target, value } => {
-            collect_expr_declared_locals(target, out);
-            collect_expr_declared_locals(value, out);
-        }
-        TStmtKind::If {
-            cond,
-            then_block,
-            else_branch,
-        } => {
-            collect_expr_declared_locals(cond, out);
-            collect_block_declared_locals(then_block, out);
-            if let Some(else_branch) = else_branch {
-                collect_stmt_declared_locals(else_branch, out);
-            }
-        }
-        TStmtKind::While { cond, body } => {
-            collect_expr_declared_locals(cond, out);
-            collect_block_declared_locals(body, out);
-        }
-        TStmtKind::For {
-            init,
-            cond,
-            step,
-            body,
-        } => {
-            if let Some(init) = init {
-                collect_for_declared_locals(init, out);
-            }
-            if let Some(cond) = cond {
-                collect_expr_declared_locals(cond, out);
-            }
-            if let Some(step) = step {
-                collect_for_declared_locals(step, out);
-            }
-            collect_block_declared_locals(body, out);
-        }
-        TStmtKind::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            collect_expr_declared_locals(expr, out);
-            for case in cases {
-                collect_pattern_declared_locals(&case.pattern, out);
-                for stmt in &case.statements {
-                    collect_stmt_declared_locals(stmt, out);
-                }
-            }
-            for stmt in default {
-                collect_stmt_declared_locals(stmt, out);
-            }
-        }
-        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-            collect_expr_declared_locals(expr, out);
-        }
-        TStmtKind::Return(None)
-        | TStmtKind::Break
-        | TStmtKind::Continue
-        | TStmtKind::Unsupported => {}
-    }
-}
-
-fn collect_for_declared_locals(init: &TForInit, out: &mut HashSet<LocalId>) {
-    match init {
-        TForInit::VarDecl { local_id, init, .. } => {
-            out.insert(*local_id);
-            if let Some(init) = init {
-                collect_expr_declared_locals(init, out);
-            }
-        }
-        TForInit::Assign { target, value } => {
-            collect_expr_declared_locals(target, out);
-            collect_expr_declared_locals(value, out);
-        }
-        TForInit::Expr(expr) => collect_expr_declared_locals(expr, out),
-    }
-}
-
-fn collect_pattern_declared_locals(pattern: &TPattern, out: &mut HashSet<LocalId>) {
-    match pattern {
-        TPattern::Binding { local_id, .. } => {
-            out.insert(*local_id);
-        }
-        TPattern::Variant { payload, .. } => {
-            for pattern in payload {
-                collect_pattern_declared_locals(pattern, out);
-            }
-        }
-        TPattern::Wildcard { .. } => {}
-    }
-}
-
-fn collect_expr_declared_locals(expr: &TExpr, out: &mut HashSet<LocalId>) {
-    match &expr.kind {
-        TExprKind::Closure { params, body, .. } => {
-            for (local_id, _, _) in params {
-                out.insert(*local_id);
-            }
-            collect_closure_body_declared_locals(body, out);
-        }
-        TExprKind::FunctionToClosure(inner)
-        | TExprKind::RetainClosure { expr: inner, .. }
-        | TExprKind::Unary { expr: inner, .. }
-        | TExprKind::Cast { expr: inner, .. }
-        | TExprKind::Try(inner)
-        | TExprKind::ArrayToSlice(inner) => collect_expr_declared_locals(inner, out),
-        TExprKind::Binary { left, right, .. } => {
-            collect_expr_declared_locals(left, out);
-            collect_expr_declared_locals(right, out);
-        }
-        TExprKind::Call { callee, args } => {
-            collect_expr_declared_locals(callee, out);
-            for arg in args {
-                collect_expr_declared_locals(arg, out);
-            }
-        }
-        TExprKind::MakeDynamicInterface { expr, .. } => collect_expr_declared_locals(expr, out),
-        TExprKind::DynamicInterfaceCall { receiver, args, .. }
-        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
-            collect_expr_declared_locals(receiver, out);
-            for arg in args {
-                collect_expr_declared_locals(arg, out);
-            }
-        }
-        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
-            collect_expr_declared_locals(base, out);
-        }
-        TExprKind::Index { base, index } => {
-            collect_expr_declared_locals(base, out);
-            collect_expr_declared_locals(index, out);
-        }
-        TExprKind::Slice { base, start, end } => {
-            collect_expr_declared_locals(base, out);
-            if let Some(start) = start {
-                collect_expr_declared_locals(start, out);
-            }
-            if let Some(end) = end {
-                collect_expr_declared_locals(end, out);
-            }
-        }
-        TExprKind::BuiltinCloneMessage { value, .. }
-        | TExprKind::MetaAsRefRepr { value, .. }
-        | TExprKind::MetaIntoRepr { value, .. }
-        | TExprKind::MetaFromRepr { value, .. } => collect_expr_declared_locals(value, out),
-        TExprKind::ActorSpawn {
-            initial_state,
-            handler,
-            ..
-        } => {
-            collect_expr_declared_locals(initial_state, out);
-            collect_expr_declared_locals(handler, out);
-        }
-        TExprKind::ActorSend { actor, value, .. } => {
-            collect_expr_declared_locals(actor, out);
-            collect_expr_declared_locals(value, out);
-        }
-        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
-            collect_expr_declared_locals(actor, out);
-        }
-        TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
-        TExprKind::StructLiteral { fields, .. } => {
-            for (_, value) in fields {
-                collect_expr_declared_locals(value, out);
-            }
-        }
-        TExprKind::EnumLiteral { payload, .. } => {
-            for value in payload {
-                collect_expr_declared_locals(value, out);
-            }
-        }
-        TExprKind::ArrayLiteral(elements) => {
-            for element in elements {
-                collect_expr_declared_locals(element, out);
-            }
-        }
-        TExprKind::ArrayRepeat { element, .. } => collect_expr_declared_locals(element, out),
-        TExprKind::Local(..)
-        | TExprKind::Function(_, _)
-        | TExprKind::GenericFunction { .. }
-        | TExprKind::Literal(_) => {}
-    }
-}
-
-fn collect_closure_body_local_refs(
-    body: &TClosureBody,
-    local_ids: &HashSet<LocalId>,
-    out: &mut Vec<LocalId>,
-) {
-    match body {
-        TClosureBody::Expr(expr) => collect_expr_local_refs(expr, local_ids, out),
-        TClosureBody::Block(block) => collect_block_local_refs(block, local_ids, out),
-    }
-}
-
-fn collect_block_local_refs(block: &TBlock, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
-    for stmt in &block.statements {
-        collect_stmt_local_refs(stmt, local_ids, out);
-    }
-}
-
-fn collect_stmt_local_refs(stmt: &TStmt, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
-    match &stmt.kind {
-        TStmtKind::Block(block) => collect_block_local_refs(block, local_ids, out),
-        TStmtKind::VarDecl { init, .. } => {
-            if let Some(init) = init {
-                collect_expr_local_refs(init, local_ids, out);
-            }
-        }
-        TStmtKind::Assign { target, value } => {
-            collect_expr_local_refs(target, local_ids, out);
-            collect_expr_local_refs(value, local_ids, out);
-        }
-        TStmtKind::If {
-            cond,
-            then_block,
-            else_branch,
-        } => {
-            collect_expr_local_refs(cond, local_ids, out);
-            collect_block_local_refs(then_block, local_ids, out);
-            if let Some(else_branch) = else_branch {
-                collect_stmt_local_refs(else_branch, local_ids, out);
-            }
-        }
-        TStmtKind::While { cond, body } => {
-            collect_expr_local_refs(cond, local_ids, out);
-            collect_block_local_refs(body, local_ids, out);
-        }
-        TStmtKind::For {
-            init,
-            cond,
-            step,
-            body,
-        } => {
-            if let Some(init) = init {
-                collect_for_local_refs(init, local_ids, out);
-            }
-            if let Some(cond) = cond {
-                collect_expr_local_refs(cond, local_ids, out);
-            }
-            if let Some(step) = step {
-                collect_for_local_refs(step, local_ids, out);
-            }
-            collect_block_local_refs(body, local_ids, out);
-        }
-        TStmtKind::Switch {
-            expr,
-            cases,
-            default,
-            ..
-        } => {
-            collect_expr_local_refs(expr, local_ids, out);
-            for case in cases {
-                for stmt in &case.statements {
-                    collect_stmt_local_refs(stmt, local_ids, out);
-                }
-            }
-            for stmt in default {
-                collect_stmt_local_refs(stmt, local_ids, out);
-            }
-        }
-        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-            collect_expr_local_refs(expr, local_ids, out);
-        }
-        TStmtKind::Return(None)
-        | TStmtKind::Break
-        | TStmtKind::Continue
-        | TStmtKind::Unsupported => {}
-    }
-}
-
-fn collect_for_local_refs(init: &TForInit, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
-    match init {
-        TForInit::VarDecl { init, .. } => {
-            if let Some(init) = init {
-                collect_expr_local_refs(init, local_ids, out);
-            }
-        }
-        TForInit::Assign { target, value } => {
-            collect_expr_local_refs(target, local_ids, out);
-            collect_expr_local_refs(value, local_ids, out);
-        }
-        TForInit::Expr(expr) => collect_expr_local_refs(expr, local_ids, out),
-    }
-}
-
-fn collect_expr_local_refs(expr: &TExpr, local_ids: &HashSet<LocalId>, out: &mut Vec<LocalId>) {
-    match &expr.kind {
-        TExprKind::Local(local_id, _) => {
-            if !local_ids.contains(local_id) && !out.contains(local_id) {
-                out.push(*local_id);
-            }
-        }
-        TExprKind::Closure { body, .. } => collect_closure_body_local_refs(body, local_ids, out),
-        TExprKind::FunctionToClosure(inner)
-        | TExprKind::RetainClosure { expr: inner, .. }
-        | TExprKind::Unary { expr: inner, .. }
-        | TExprKind::Cast { expr: inner, .. }
-        | TExprKind::Try(inner)
-        | TExprKind::ArrayToSlice(inner) => collect_expr_local_refs(inner, local_ids, out),
-        TExprKind::Binary { left, right, .. } => {
-            collect_expr_local_refs(left, local_ids, out);
-            collect_expr_local_refs(right, local_ids, out);
-        }
-        TExprKind::Call { callee, args } => {
-            collect_expr_local_refs(callee, local_ids, out);
-            for arg in args {
-                collect_expr_local_refs(arg, local_ids, out);
-            }
-        }
-        TExprKind::MakeDynamicInterface { expr, .. } => {
-            collect_expr_local_refs(expr, local_ids, out)
-        }
-        TExprKind::DynamicInterfaceCall { receiver, args, .. }
-        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
-            collect_expr_local_refs(receiver, local_ids, out);
-            for arg in args {
-                collect_expr_local_refs(arg, local_ids, out);
-            }
-        }
-        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
-            collect_expr_local_refs(base, local_ids, out);
-        }
-        TExprKind::Index { base, index } => {
-            collect_expr_local_refs(base, local_ids, out);
-            collect_expr_local_refs(index, local_ids, out);
-        }
-        TExprKind::Slice { base, start, end } => {
-            collect_expr_local_refs(base, local_ids, out);
-            if let Some(start) = start {
-                collect_expr_local_refs(start, local_ids, out);
-            }
-            if let Some(end) = end {
-                collect_expr_local_refs(end, local_ids, out);
-            }
-        }
-        TExprKind::BuiltinCloneMessage { value, .. }
-        | TExprKind::MetaAsRefRepr { value, .. }
-        | TExprKind::MetaIntoRepr { value, .. }
-        | TExprKind::MetaFromRepr { value, .. } => collect_expr_local_refs(value, local_ids, out),
-        TExprKind::ActorSpawn {
-            initial_state,
-            handler,
-            ..
-        } => {
-            collect_expr_local_refs(initial_state, local_ids, out);
-            collect_expr_local_refs(handler, local_ids, out);
-        }
-        TExprKind::ActorSend { actor, value, .. } => {
-            collect_expr_local_refs(actor, local_ids, out);
-            collect_expr_local_refs(value, local_ids, out);
-        }
-        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
-            collect_expr_local_refs(actor, local_ids, out);
-        }
-        TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
-        TExprKind::StructLiteral { fields, .. } => {
-            for (_, value) in fields {
-                collect_expr_local_refs(value, local_ids, out);
-            }
-        }
-        TExprKind::EnumLiteral { payload, .. } => {
-            for value in payload {
-                collect_expr_local_refs(value, local_ids, out);
-            }
-        }
-        TExprKind::ArrayLiteral(elements) => {
-            for element in elements {
-                collect_expr_local_refs(element, local_ids, out);
-            }
-        }
-        TExprKind::ArrayRepeat { element, .. } => {
-            collect_expr_local_refs(element, local_ids, out);
-        }
-        TExprKind::Function(_, _) | TExprKind::GenericFunction { .. } | TExprKind::Literal(_) => {}
     }
 }
 

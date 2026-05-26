@@ -382,3 +382,234 @@ pub enum TClosureBody {
     Expr(Box<TExpr>),
     Block(TBlock),
 }
+
+pub trait ThirVisitor {
+    fn visit_block(&mut self, block: &TBlock) {
+        walk_block(self, block);
+    }
+
+    fn visit_stmt(&mut self, stmt: &TStmt) {
+        walk_stmt(self, stmt);
+    }
+
+    fn visit_for_init(&mut self, init: &TForInit) {
+        walk_for_init(self, init);
+    }
+
+    fn visit_case(&mut self, case: &TCase) {
+        walk_case(self, case);
+    }
+
+    fn visit_pattern(&mut self, pattern: &TPattern) {
+        walk_pattern(self, pattern);
+    }
+
+    fn visit_expr(&mut self, expr: &TExpr) {
+        walk_expr(self, expr);
+    }
+
+    fn visit_closure_body(&mut self, body: &TClosureBody) {
+        walk_closure_body(self, body);
+    }
+}
+
+pub fn walk_block<V: ThirVisitor + ?Sized>(visitor: &mut V, block: &TBlock) {
+    for stmt in &block.statements {
+        visitor.visit_stmt(stmt);
+    }
+}
+
+pub fn walk_stmt<V: ThirVisitor + ?Sized>(visitor: &mut V, stmt: &TStmt) {
+    match &stmt.kind {
+        TStmtKind::Block(block) => visitor.visit_block(block),
+        TStmtKind::VarDecl { init, .. } => {
+            if let Some(init) = init {
+                visitor.visit_expr(init);
+            }
+        }
+        TStmtKind::Assign { target, value } => {
+            visitor.visit_expr(target);
+            visitor.visit_expr(value);
+        }
+        TStmtKind::If {
+            cond,
+            then_block,
+            else_branch,
+        } => {
+            visitor.visit_expr(cond);
+            visitor.visit_block(then_block);
+            if let Some(else_branch) = else_branch {
+                visitor.visit_stmt(else_branch);
+            }
+        }
+        TStmtKind::While { cond, body } => {
+            visitor.visit_expr(cond);
+            visitor.visit_block(body);
+        }
+        TStmtKind::For {
+            init,
+            cond,
+            step,
+            body,
+        } => {
+            if let Some(init) = init {
+                visitor.visit_for_init(init);
+            }
+            if let Some(cond) = cond {
+                visitor.visit_expr(cond);
+            }
+            if let Some(step) = step {
+                visitor.visit_for_init(step);
+            }
+            visitor.visit_block(body);
+        }
+        TStmtKind::Switch {
+            expr,
+            cases,
+            default,
+            ..
+        } => {
+            visitor.visit_expr(expr);
+            for case in cases {
+                visitor.visit_case(case);
+            }
+            for stmt in default {
+                visitor.visit_stmt(stmt);
+            }
+        }
+        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            visitor.visit_expr(expr);
+        }
+        TStmtKind::Return(None)
+        | TStmtKind::Break
+        | TStmtKind::Continue
+        | TStmtKind::Unsupported => {}
+    }
+}
+
+pub fn walk_for_init<V: ThirVisitor + ?Sized>(visitor: &mut V, init: &TForInit) {
+    match init {
+        TForInit::VarDecl { init, .. } => {
+            if let Some(init) = init {
+                visitor.visit_expr(init);
+            }
+        }
+        TForInit::Assign { target, value } => {
+            visitor.visit_expr(target);
+            visitor.visit_expr(value);
+        }
+        TForInit::Expr(expr) => visitor.visit_expr(expr),
+    }
+}
+
+pub fn walk_case<V: ThirVisitor + ?Sized>(visitor: &mut V, case: &TCase) {
+    visitor.visit_pattern(&case.pattern);
+    for stmt in &case.statements {
+        visitor.visit_stmt(stmt);
+    }
+}
+
+pub fn walk_pattern<V: ThirVisitor + ?Sized>(visitor: &mut V, pattern: &TPattern) {
+    match pattern {
+        TPattern::Wildcard { .. } | TPattern::Binding { .. } => {}
+        TPattern::Variant { payload, .. } => {
+            for pattern in payload {
+                visitor.visit_pattern(pattern);
+            }
+        }
+    }
+}
+
+pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
+    match &expr.kind {
+        TExprKind::Local(..)
+        | TExprKind::Function(..)
+        | TExprKind::GenericFunction { .. }
+        | TExprKind::Literal(_)
+        | TExprKind::TypeSize { .. }
+        | TExprKind::TypeAlign { .. } => {}
+        TExprKind::StructLiteral { fields, .. } => {
+            for (_, value) in fields {
+                visitor.visit_expr(value);
+            }
+        }
+        TExprKind::EnumLiteral { payload, .. } => {
+            for value in payload {
+                visitor.visit_expr(value);
+            }
+        }
+        TExprKind::ArrayLiteral(elements) => {
+            for element in elements {
+                visitor.visit_expr(element);
+            }
+        }
+        TExprKind::ArrayRepeat { element, .. } => visitor.visit_expr(element),
+        TExprKind::Closure { body, .. } => visitor.visit_closure_body(body),
+        TExprKind::FunctionToClosure(inner)
+        | TExprKind::RetainClosure { expr: inner, .. }
+        | TExprKind::Unary { expr: inner, .. }
+        | TExprKind::Cast { expr: inner, .. }
+        | TExprKind::Try(inner)
+        | TExprKind::ArrayToSlice(inner)
+        | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        TExprKind::Binary { left, right, .. } => {
+            visitor.visit_expr(left);
+            visitor.visit_expr(right);
+        }
+        TExprKind::Call { callee, args } => {
+            visitor.visit_expr(callee);
+            for arg in args {
+                visitor.visit_expr(arg);
+            }
+        }
+        TExprKind::DynamicInterfaceCall { receiver, args, .. }
+        | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
+            visitor.visit_expr(receiver);
+            for arg in args {
+                visitor.visit_expr(arg);
+            }
+        }
+        TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
+            visitor.visit_expr(base);
+        }
+        TExprKind::Index { base, index } => {
+            visitor.visit_expr(base);
+            visitor.visit_expr(index);
+        }
+        TExprKind::Slice { base, start, end } => {
+            visitor.visit_expr(base);
+            if let Some(start) = start {
+                visitor.visit_expr(start);
+            }
+            if let Some(end) = end {
+                visitor.visit_expr(end);
+            }
+        }
+        TExprKind::BuiltinCloneMessage { value, .. }
+        | TExprKind::MetaAsRefRepr { value, .. }
+        | TExprKind::MetaIntoRepr { value, .. }
+        | TExprKind::MetaFromRepr { value, .. } => visitor.visit_expr(value),
+        TExprKind::ActorSpawn {
+            initial_state,
+            handler,
+            ..
+        } => {
+            visitor.visit_expr(initial_state);
+            visitor.visit_expr(handler);
+        }
+        TExprKind::ActorSend { actor, value, .. } => {
+            visitor.visit_expr(actor);
+            visitor.visit_expr(value);
+        }
+        TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
+            visitor.visit_expr(actor);
+        }
+    }
+}
+
+pub fn walk_closure_body<V: ThirVisitor + ?Sized>(visitor: &mut V, body: &TClosureBody) {
+    match body {
+        TClosureBody::Expr(expr) => visitor.visit_expr(expr),
+        TClosureBody::Block(block) => visitor.visit_block(block),
+    }
+}

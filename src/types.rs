@@ -1013,6 +1013,30 @@ pub fn meta_repr_borrowed_array_leaf_ty(ty: &Ty) -> Ty {
     ty.unqualified().clone()
 }
 
+pub fn meta_repr_borrowed_array_item_ty(ty: &Ty) -> Ty {
+    Ty::pointer_to(ty.unqualified().clone())
+}
+
+pub fn meta_ref_array_repr_ty(len: usize, elem: &Ty) -> Ty {
+    if len == 0 {
+        return meta_named("ArrayNil", Vec::new());
+    }
+    if len <= META_ARRAY_CHUNK_SIZE {
+        return meta_named(
+            &format!("ArrayChunk{len}"),
+            vec![meta_repr_borrowed_array_item_ty(elem)],
+        );
+    }
+    let split = meta_array_split_len(len);
+    meta_named(
+        "ArrayCat",
+        vec![
+            meta_ref_array_repr_ty(split, elem),
+            meta_ref_array_repr_ty(len - split, elem),
+        ],
+    )
+}
+
 pub fn meta_array_repr_ty(len: usize, elem: &Ty, borrowed: bool) -> Ty {
     meta_array_repr_ty_with_leaf(len, elem, borrowed, &mut meta_repr_owned_leaf_ty)
 }

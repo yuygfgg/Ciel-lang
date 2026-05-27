@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+enum Inner {
+    Pair(i64, i64),
+    Empty,
+}
+
+enum Outer {
+    Wrap(Inner),
+    Done,
+}
+
+i64 main() {
+    Outer outer = Wrap(Pair(17, 25));
+    meta::Repr<Outer> repr = meta::into_repr(outer);
+    Outer copy = meta::from_repr<Outer>(repr);
+
+    switch (copy) {
+        case Wrap(inner):
+            switch (inner) {
+                case Pair(left, right):
+                    return left + right - 42;
+                case Empty:
+                    return 1;
+            }
+        case Done:
+            return 2;
+    }
+}

@@ -1023,7 +1023,9 @@ normalizes to `ArrayNil`, `Repr<[1]T>` through `Repr<[16]T>` normalize to
 balanced `ArrayCat<L, R>` tree of bounded chunks. Nested fixed arrays are
 expanded recursively in owned leaves, including struct fields, enum payloads,
 and closure captures. Borrowed representation leaves arrays as borrowed array
-leaves such as `FieldRef<[N]T>`.
+leaves such as `FieldRef<[N]T>` inside named products and sums. A root
+`RefRepr<[N]T>` has no field or payload wrapper, so it normalizes to the same
+bounded `ArrayChunk` / `ArrayCat` shape with non-null element pointer leaves.
 
 Array representation expansion is budgeted. Very large static arrays are bulk
 storage rather than record-shaped structural data; using `meta::Repr<[N]T>` past

@@ -11,10 +11,10 @@ use crate::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_MESSAGE_CLONE_INTERFACE,
         Ty, aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
         closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
-        mangle_ty_fragment, meta_named, meta_product_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_sum_ty, receiver_ty_from_value_ty,
-        retained_closure_proves_capability, std_actor_ty, std_error_ty, std_meta_repr_marker_ty,
-        std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
+        mangle_ty_fragment, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
+        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty, std_error_ty,
+        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -1941,7 +1941,7 @@ impl TypeChecker {
             Ty::Array { len, elem } => {
                 self.check_meta_array_budget(span, source_ty, *len, elem, emit_diagnostics)?;
                 Some(if borrowed {
-                    meta_repr_borrowed_array_leaf_ty(source_ty)
+                    meta_ref_array_repr_ty(*len, elem)
                 } else {
                     self.meta_array_repr_ty_inner(
                         span,

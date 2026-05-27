@@ -24,9 +24,10 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, aggregate_instance_name,
         contains_generic, is_clone_message_capability, mangle_ty_fragment, meta_array_split_len,
-        meta_named, meta_product_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
-        meta_sum_ty, retained_closure_capabilities, std_message_result_ty, std_meta_repr_marker_ty,
-        std_meta_repr_source_name, ty_contains, ty_from_primitive, type_complexity,
+        meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
+        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_message_result_ty,
+        std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains, ty_from_primitive,
+        type_complexity,
     },
 };
 
@@ -1464,7 +1465,10 @@ impl<'a> AggregateCollector<'a> {
         match source_ty.unqualified() {
             Ty::Array { .. } => {
                 if borrowed {
-                    meta_repr_borrowed_array_leaf_ty(source_ty)
+                    let Ty::Array { len, elem } = source_ty.unqualified() else {
+                        unreachable!();
+                    };
+                    meta_ref_array_repr_ty(*len, elem)
                 } else {
                     let Ty::Array { len, elem } = source_ty.unqualified() else {
                         unreachable!();

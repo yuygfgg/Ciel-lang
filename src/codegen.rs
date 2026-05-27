@@ -24,7 +24,7 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, clone_message_capability,
         is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
-        meta_array_split_len, meta_named, meta_product_ty, meta_sum_ty,
+        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_sum_ty,
         retained_closure_capabilities, std_error_ty, std_result_ty,
     },
 };
@@ -3031,6 +3031,10 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_ref_src", value, indent)?;
+        if let Ty::Array { len, elem } = source_ty.unqualified() {
+            let (_, literal) = self.emit_meta_array_ref_repr_literal(*len, elem, &value_temp, 0)?;
+            return Ok(literal);
+        }
         if let Ok(fields) = self.struct_fields_for_ty(expr.span, source_ty) {
             let fields = fields
                 .into_iter()
@@ -3324,6 +3328,44 @@ impl<'a> CGenerator<'a> {
         ))
     }
 
+    fn emit_meta_array_ref_repr_literal(
+        &self,
+        len: usize,
+        elem: &Ty,
+        source_ptr: &str,
+        base_index: usize,
+    ) -> DiagResult<(Ty, String)> {
+        let repr_ty = meta_ref_array_repr_ty(len, elem);
+        if len == 0 {
+            return Ok((repr_ty.clone(), format!("({}){{0}}", self.c_type(&repr_ty))));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let fields = (0..len)
+                .map(|idx| format!(".item{idx} = &((*({source_ptr}))[{}])", base_index + idx))
+                .collect::<Vec<_>>();
+            return Ok((
+                repr_ty.clone(),
+                format!("({}){{ {} }}", self.c_type(&repr_ty), fields.join(", ")),
+            ));
+        }
+        let split = meta_array_split_len(len);
+        let (_, left) =
+            self.emit_meta_array_ref_repr_literal(split, elem, source_ptr, base_index)?;
+        let (_, right) = self.emit_meta_array_ref_repr_literal(
+            len - split,
+            elem,
+            source_ptr,
+            base_index + split,
+        )?;
+        Ok((
+            repr_ty.clone(),
+            format!(
+                "({}){{ .left = {left}, .right = {right} }}",
+                self.c_type(&repr_ty)
+            ),
+        ))
+    }
+
     fn meta_owned_leaf_repr_ty(
         &self,
         span: crate::span::Span,
@@ -3575,11 +3617,18 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("{};", self.c_decl(repr_ty, &result)));
         self.line_indent(indent, &format!("switch (({source_value}).tag) {{"));
         for idx in 0..variants.len() {
-            let (_, literal) =
-                self.meta_owned_sum_branch_literal(span, variants, idx, source_value, root_ty)?;
-            self.line_indent(indent + 1, &format!("case {idx}:"));
+            self.line_indent(indent + 1, &format!("case {idx}: {{"));
+            let (_, literal) = self.meta_owned_sum_branch_literal(
+                span,
+                variants,
+                idx,
+                source_value,
+                root_ty,
+                indent + 2,
+            )?;
             self.line_indent(indent + 2, &format!("{result} = {literal};"));
             self.line_indent(indent + 2, "break;");
+            self.line_indent(indent + 1, "}");
         }
         self.line_indent(indent + 1, "default:");
         self.line_indent(indent + 2, "ciel_panic(NULL, 0);");
@@ -3906,6 +3955,7 @@ impl<'a> CGenerator<'a> {
         active_idx: usize,
         source_value: &str,
         root_ty: &Ty,
+        indent: usize,
     ) -> DiagResult<(Ty, String)> {
         let Some((variant, rest)) = variants.split_first() else {
             return Err(vec![Diagnostic::new(
@@ -3913,27 +3963,33 @@ impl<'a> CGenerator<'a> {
                 "internal error: cannot construct meta CoNil branch",
             )]);
         };
-        let mut payloads = Vec::new();
-        for (idx, ty) in variant.payload.iter().enumerate() {
-            let (payload_ty, value_expr) = self.emit_meta_owned_leaf_repr_expr(
-                span,
-                ty,
-                &format!("({source_value}).as.{}._{idx}", variant.name),
-                root_ty,
-                0,
-            )?;
-            payloads.push(MetaPayloadField {
-                index: idx,
-                ty: payload_ty,
-                value_expr,
-            });
-        }
-        let (payload_ty, payload_literal) =
-            self.meta_payload_product_literal(&payloads, "Payload")?;
+        let payload_ty = meta_product_ty(
+            variant.payload.iter().map(|payload| {
+                self.meta_owned_leaf_repr_ty(span, payload, root_ty)
+                    .unwrap_or(Ty::Unknown)
+            }),
+            "Payload",
+        );
         let head_ty = meta_named("Variant", vec![payload_ty]);
         let tail_ty = self.meta_owned_sum_ty(span, rest, root_ty)?;
         let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
         if active_idx == 0 {
+            let mut payloads = Vec::new();
+            for (idx, ty) in variant.payload.iter().enumerate() {
+                let (payload_ty, value_expr) = self.emit_meta_owned_leaf_repr_expr(
+                    span,
+                    ty,
+                    &format!("({source_value}).as.{}._{idx}", variant.name),
+                    root_ty,
+                    indent,
+                )?;
+                payloads.push(MetaPayloadField {
+                    index: idx,
+                    ty: payload_ty,
+                    value_expr,
+                });
+            }
+            let (_, payload_literal) = self.meta_payload_product_literal(&payloads, "Payload")?;
             let head = format!(
                 "({}){{ .name = {}, .payload = {payload_literal} }}",
                 self.c_type(&head_ty),
@@ -3953,6 +4009,7 @@ impl<'a> CGenerator<'a> {
                 active_idx - 1,
                 source_value,
                 root_ty,
+                indent,
             )?;
             Ok((
                 ty.clone(),

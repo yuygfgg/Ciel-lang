@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+i64 small_array_refs() {
+    [3]i64 values = [2, 5, 7];
+    meta::RefRepr<[3]i64> refs = meta::as_ref_repr(&values);
+    *refs.item1 = 11;
+    return values[1] + *refs.item0 + *refs.item2 - 20;
+}
+
+i64 chunked_array_refs() {
+    [20]i64 values = [
+        1, 2, 3, 4, 5,
+        6, 7, 8, 9, 10,
+        11, 12, 13, 14, 15,
+        16, 17, 18, 19, 20,
+    ];
+    meta::RefRepr<[20]i64> refs = meta::as_ref_repr(&values);
+    *refs.right.item3 = 31;
+    return values[19] + *refs.left.item0 + *refs.right.item0 - 49;
+}
+
+i64 main() {
+    return small_array_refs() + chunked_array_refs();
+}

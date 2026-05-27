@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: expands too many structural array nodes
+// expect-error: explicit Message wrapper or an owned buffer type
+
+import /std/meta as meta;
+
+i64 main() {
+    meta::Repr<[5000]u8> repr;
+    return 0;
+}

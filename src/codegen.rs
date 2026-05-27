@@ -10,21 +10,22 @@ use crate::{
         impl_matches_interface_receiver, retained_closure_interface_signature,
     },
     mono::MonoProgram,
+    resolve::DefId,
     retained::{
         retained_closure_can_forward_source_witness,
         retained_closure_can_reuse_source_witness_field, retained_closure_needs_wrapper,
         retained_closure_required_witnesses,
     },
-    resolve::DefId,
     source::SourceMap,
     thir::{
         CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock, TClosureBody,
         TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind,
     },
     types::{
-        ConstraintBounds, ConstraintRef, Ty, is_clone_message_capability, mangle_constraint_ref,
-        mangle_ty_fragment, meta_named, meta_sum_ty, retained_closure_capabilities, std_error_ty,
-        std_result_ty,
+        ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, clone_message_capability,
+        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
+        meta_array_split_len, meta_named, meta_product_ty, meta_sum_ty,
+        retained_closure_capabilities, std_error_ty, std_result_ty,
     },
 };
 
@@ -552,7 +553,12 @@ impl<'a> CGenerator<'a> {
         self.line(
             "typedef struct CielSourceLocation { char *file; size_t line; } CielSourceLocation;",
         );
-        let locations = self.plan.source_locations.values().cloned().collect::<Vec<_>>();
+        let locations = self
+            .plan
+            .source_locations
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
         for location in locations {
             self.line(&format!(
                 "static CIEL_MAYBE_UNUSED const CielSourceLocation {} = {{ \"{}\", {} }};",
@@ -588,7 +594,8 @@ impl<'a> CGenerator<'a> {
         match ty {
             Ty::Const(inner) => self.collect_ty_slice(inner),
             Ty::Slice(elem) => {
-                self.plan.slice_types
+                self.plan
+                    .slice_types
                     .insert(self.slice_name(elem), (**elem).clone());
                 self.collect_ty_slice(elem);
             }
@@ -667,7 +674,8 @@ impl<'a> CGenerator<'a> {
                 params,
                 constraints,
             } => {
-                self.plan.closure_types
+                self.plan
+                    .closure_types
                     .insert(self.closure_type_name(ty), ty.clone());
                 self.collect_ty_closure(ret);
                 for param in params {
@@ -676,7 +684,8 @@ impl<'a> CGenerator<'a> {
                 self.collect_constraint_bounds_closures(constraints);
             }
             Ty::ClosureInstance { ret, params, .. } => {
-                self.plan.closure_types
+                self.plan
+                    .closure_types
                     .insert(self.closure_type_name(ty), ty.clone());
                 self.collect_ty_closure(ret);
                 for param in params {
@@ -717,7 +726,8 @@ impl<'a> CGenerator<'a> {
     ) {
         for capability in retained_closure_required_witnesses(target_ty, source_ty) {
             let key = self.retained_closure_witness_name(target_ty, source_ty, &capability);
-            self.plan.retained_closure_witnesses
+            self.plan
+                .retained_closure_witnesses
                 .entry(key)
                 .or_insert_with(|| RetainedClosureWitness {
                     target_ty: target_ty.clone(),
@@ -733,7 +743,8 @@ impl<'a> CGenerator<'a> {
             return;
         }
         let key = self.retained_closure_wrapper_key(target_ty, source_ty);
-        self.plan.retained_closure_wrappers
+        self.plan
+            .retained_closure_wrappers
             .entry(key)
             .or_insert_with(|| RetainedClosureWrapper {
                 target_ty: target_ty.clone(),
@@ -843,7 +854,8 @@ impl<'a> CGenerator<'a> {
                 captures,
                 body,
             } => {
-                self.plan.closure_defs
+                self.plan
+                    .closure_defs
                     .entry((owner.0, *id))
                     .or_insert_with(|| ClosureDef {
                         id: *id,
@@ -865,7 +877,8 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_closures(owner, inner);
                 self.collect_retained_closure_witnesses(&expr.ty, &inner.ty, expr.span);
                 let key = self.function_closure_wrapper_key(&expr.ty, &inner.ty);
-                self.plan.function_closure_wrappers
+                self.plan
+                    .function_closure_wrappers
                     .entry(key)
                     .or_insert_with(|| FunctionClosureWrapper {
                         closure_ty: expr.ty.clone(),
@@ -922,10 +935,6 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_closures(owner, end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, message_ty } => {
-                self.collect_ty_closure(message_ty);
-                self.collect_expr_closures(owner, value);
-            }
             TExprKind::MetaAsRefRepr { value, source_ty }
             | TExprKind::MetaIntoRepr { value, source_ty } => {
                 self.collect_ty_closure(source_ty);
@@ -948,7 +957,8 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_closures(owner, initial_state);
                 self.collect_expr_closures(owner, handler);
                 let name = self.actor_dispatch_name(state_ty, message_ty, handler_ty);
-                self.plan.actor_dispatches
+                self.plan
+                    .actor_dispatches
                     .entry(name.clone())
                     .or_insert_with(|| ActorDispatch {
                         name,
@@ -1199,8 +1209,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_dynamic(end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, .. }
-            | TExprKind::MetaAsRefRepr { value, .. }
+            TExprKind::MetaAsRefRepr { value, .. }
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_dynamic(value),
             TExprKind::ActorSpawn {
@@ -1256,9 +1265,15 @@ impl<'a> CGenerator<'a> {
                 self.collect_block_string_literals(body);
             }
         }
-        let keys = self.plan.string_literals.keys().copied().collect::<Vec<_>>();
+        let keys = self
+            .plan
+            .string_literals
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for (idx, key) in keys.into_iter().enumerate() {
-            self.plan.string_literal_names
+            self.plan
+                .string_literal_names
                 .insert(key, format!("ciel_str_{idx}"));
         }
     }
@@ -1270,7 +1285,12 @@ impl<'a> CGenerator<'a> {
                 self.collect_block_locations(body);
             }
         }
-        let keys = self.plan.source_locations.keys().copied().collect::<Vec<_>>();
+        let keys = self
+            .plan
+            .source_locations
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
         for (idx, key) in keys.into_iter().enumerate() {
             if let Some(location) = self.plan.source_locations.get_mut(&key) {
                 location.name = format!("ciel_loc_{idx}");
@@ -1416,8 +1436,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_locations(end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, .. }
-            | TExprKind::MetaAsRefRepr { value, .. }
+            TExprKind::MetaAsRefRepr { value, .. }
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_locations(value),
             TExprKind::ActorSpawn {
@@ -1598,7 +1617,8 @@ impl<'a> CGenerator<'a> {
 
     fn collect_expr_string_literals(&mut self, expr: &TExpr) {
         if let TExprKind::Literal(crate::ast::Literal::String(raw)) = &expr.kind {
-            self.plan.string_literals
+            self.plan
+                .string_literals
                 .insert(span_key(expr.span), raw.clone());
         }
         match &expr.kind {
@@ -1643,8 +1663,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_string_literals(end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, .. }
-            | TExprKind::MetaAsRefRepr { value, .. }
+            TExprKind::MetaAsRefRepr { value, .. }
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_string_literals(value),
             TExprKind::ActorSpawn {
@@ -1852,10 +1871,6 @@ impl<'a> CGenerator<'a> {
                 if let Some(end) = end {
                     self.collect_expr_slices(end);
                 }
-            }
-            TExprKind::BuiltinCloneMessage { value, message_ty } => {
-                self.collect_ty_slice(message_ty);
-                self.collect_expr_slices(value);
             }
             TExprKind::MetaAsRefRepr { value, source_ty }
             | TExprKind::MetaIntoRepr { value, source_ty } => {
@@ -2909,16 +2924,6 @@ impl<'a> CGenerator<'a> {
                 };
                 self.emit_try_expr(expr, inner, indent)?
             }
-            TExprKind::BuiltinCloneMessage { value, message_ty } => {
-                let Some(indent) = stmt_indent else {
-                    return Err(vec![Diagnostic::new(
-                        expr.span,
-                        "clone_message needs statement lowering in this context",
-                    )]);
-                };
-                let value_temp = self.emit_temp_value("message_src", value, indent)?;
-                self.emit_clone_message_result_from_ptr(message_ty, &value_temp, indent, expr.span)?
-            }
             TExprKind::MetaAsRefRepr { value, source_ty } => {
                 let Some(indent) = stmt_indent else {
                     return Err(vec![Diagnostic::new(
@@ -3058,23 +3063,18 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_owned_src", value, indent)?;
-        if let Ok(fields) = self.struct_fields_for_ty(expr.span, source_ty) {
-            let fields = fields
-                .into_iter()
-                .map(|(name, ty)| MetaProductField {
-                    value_expr: format!("({value_temp}).{name}"),
-                    name,
-                    ty,
-                })
-                .collect::<Vec<_>>();
-            let (_, literal) = self.meta_named_product_literal(&fields, "Field")?;
+        if matches!(
+            source_ty.unqualified(),
+            Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
+        ) {
+            let (_, literal) = self.emit_meta_owned_leaf_repr_expr(
+                expr.span,
+                source_ty,
+                &value_temp,
+                source_ty,
+                indent,
+            )?;
             return Ok(literal);
-        }
-        if let Ok(variants) = self.enum_variants_for_ty(expr.span, source_ty) {
-            return self.emit_meta_enum_owned_repr(expr, &value_temp, &variants, indent);
-        }
-        if matches!(source_ty.unqualified(), Ty::ClosureInstance { .. }) {
-            return self.emit_meta_closure_owned_repr(expr, &value_temp, source_ty, indent);
         }
         Err(vec![Diagnostic::new(
             expr.span,
@@ -3090,14 +3090,21 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_repr_src", value, indent)?;
-        if let Ok(fields) = self.struct_fields_for_ty(expr.span, target_ty) {
-            return Ok(self.meta_struct_from_repr_literal(target_ty, &fields, &value_temp));
-        }
-        if let Ok(variants) = self.enum_variants_for_ty(expr.span, target_ty) {
-            return self.emit_meta_enum_from_repr(target_ty, &variants, &value_temp, indent);
-        }
-        if matches!(target_ty.unqualified(), Ty::ClosureInstance { .. }) {
-            return self.emit_meta_closure_from_repr(expr, target_ty, &value_temp, indent);
+        if matches!(
+            target_ty.unqualified(),
+            Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
+        ) {
+            let result = self.next_temp("meta_value");
+            self.line_indent(indent, &format!("{};", self.c_decl(target_ty, &result)));
+            self.emit_meta_value_from_repr_into(
+                expr.span,
+                &result,
+                target_ty,
+                &value_temp,
+                target_ty,
+                indent,
+            )?;
+            return Ok(result);
         }
         Err(vec![Diagnostic::new(
             expr.span,
@@ -3198,30 +3205,334 @@ impl<'a> CGenerator<'a> {
         Ok(temp)
     }
 
-    fn meta_struct_from_repr_literal(
-        &self,
-        target_ty: &Ty,
-        fields: &[(String, Ty)],
-        value_temp: &str,
-    ) -> String {
-        let struct_name = self.c_type(target_ty);
-        let mut emitted = Vec::new();
-        let mut cursor = value_temp.to_string();
-        for (field, ty) in fields {
-            let head = format!("({cursor}).head");
-            if !ty.is_erased_value() {
-                emitted.push(format!(
-                    ".{field} = {}",
-                    self.value_or_initializer_from_expr(ty, &format!("{head}.value"))
-                ));
+    fn emit_meta_owned_leaf_repr_expr(
+        &mut self,
+        span: crate::span::Span,
+        ty: &Ty,
+        value_expr: &str,
+        root_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<(Ty, String)> {
+        if self.is_owned_meta_policy_leaf(ty, root_ty) {
+            return Ok((
+                ty.unqualified().clone(),
+                self.value_or_initializer_from_expr(ty, value_expr),
+            ));
+        }
+        match ty.unqualified() {
+            Ty::Array { len, elem } => {
+                self.emit_meta_array_repr_literal(span, *len, elem, value_expr, root_ty, indent)
             }
-            cursor = format!("({cursor}).tail");
+            Ty::Named { .. } => {
+                if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
+                    let mut repr_fields = Vec::new();
+                    for (name, field_ty) in fields {
+                        let (repr_ty, repr_expr) = self.emit_meta_owned_leaf_repr_expr(
+                            span,
+                            &field_ty,
+                            &format!("({value_expr}).{name}"),
+                            root_ty,
+                            indent,
+                        )?;
+                        repr_fields.push(MetaProductField {
+                            value_expr: repr_expr,
+                            name,
+                            ty: repr_ty,
+                        });
+                    }
+                    let (repr_ty, literal) =
+                        self.meta_named_product_literal(&repr_fields, "Field")?;
+                    return Ok((repr_ty, literal));
+                }
+                if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
+                    let repr_ty = self.meta_owned_sum_ty(span, &variants, root_ty)?;
+                    let literal = self.emit_meta_enum_owned_repr_value(
+                        span, &repr_ty, value_expr, &variants, root_ty, indent,
+                    )?;
+                    return Ok((repr_ty, literal));
+                }
+                Err(vec![Diagnostic::new(
+                    span,
+                    format!("internal error: unsupported owned meta leaf `{ty}`"),
+                )])
+            }
+            Ty::ClosureInstance { .. } => {
+                let repr_ty = self.meta_owned_closure_repr_ty(span, ty, root_ty)?;
+                let literal =
+                    self.emit_meta_closure_owned_repr_value(span, ty, value_expr, root_ty, indent)?;
+                Ok((repr_ty, literal))
+            }
+            other => Ok((
+                other.clone(),
+                self.value_or_initializer_from_expr(ty, value_expr),
+            )),
         }
-        if emitted.is_empty() {
-            format!("({struct_name}){{0}}")
+    }
+
+    fn emit_meta_array_repr_literal(
+        &mut self,
+        span: crate::span::Span,
+        len: usize,
+        elem: &Ty,
+        source_expr: &str,
+        root_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<(Ty, String)> {
+        let repr_ty = self.meta_owned_array_repr_ty(span, len, elem, root_ty)?;
+        if len == 0 {
+            return Ok((repr_ty.clone(), format!("({}){{0}}", self.c_type(&repr_ty))));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let mut fields = Vec::new();
+            for idx in 0..len {
+                if elem.is_erased_value() {
+                    continue;
+                }
+                let (_, item) = self.emit_meta_owned_leaf_repr_expr(
+                    span,
+                    elem,
+                    &format!("({source_expr})[{idx}]"),
+                    root_ty,
+                    indent,
+                )?;
+                fields.push(format!(".item{idx} = {item}"));
+            }
+            let literal = if fields.is_empty() {
+                format!("({}){{0}}", self.c_type(&repr_ty))
+            } else {
+                format!("({}){{ {} }}", self.c_type(&repr_ty), fields.join(", "))
+            };
+            return Ok((repr_ty, literal));
+        }
+        let split = meta_array_split_len(len);
+        let (_, left) =
+            self.emit_meta_array_repr_literal(span, split, elem, source_expr, root_ty, indent)?;
+        let (_, right) = self.emit_meta_array_repr_literal(
+            span,
+            len - split,
+            elem,
+            &format!("({source_expr}) + {split}"),
+            root_ty,
+            indent,
+        )?;
+        Ok((
+            repr_ty.clone(),
+            format!(
+                "({}){{ .left = {left}, .right = {right} }}",
+                self.c_type(&repr_ty)
+            ),
+        ))
+    }
+
+    fn meta_owned_leaf_repr_ty(
+        &self,
+        span: crate::span::Span,
+        ty: &Ty,
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        if self.is_owned_meta_policy_leaf(ty, root_ty) {
+            return Ok(ty.unqualified().clone());
+        }
+        match ty.unqualified() {
+            Ty::Array { len, elem } => self.meta_owned_array_repr_ty(span, *len, elem, root_ty),
+            Ty::Named { .. } => {
+                if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
+                    return Ok(meta_product_ty(
+                        fields
+                            .iter()
+                            .map(|(_, field_ty)| {
+                                self.meta_owned_leaf_repr_ty(span, field_ty, root_ty)
+                                    .unwrap_or(Ty::Unknown)
+                            })
+                            .collect::<Vec<_>>(),
+                        "Field",
+                    ));
+                }
+                if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
+                    return self.meta_owned_sum_ty(span, &variants, root_ty);
+                }
+                Err(vec![Diagnostic::new(
+                    span,
+                    format!("internal error: unsupported owned meta leaf `{ty}`"),
+                )])
+            }
+            Ty::ClosureInstance { .. } => self.meta_owned_closure_repr_ty(span, ty, root_ty),
+            other => Ok(other.clone()),
+        }
+    }
+
+    fn meta_owned_array_repr_ty(
+        &self,
+        span: crate::span::Span,
+        len: usize,
+        elem: &Ty,
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        if len == 0 {
+            return Ok(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            return Ok(meta_named(
+                &format!("ArrayChunk{len}"),
+                vec![self.meta_owned_leaf_repr_ty(span, elem, root_ty)?],
+            ));
+        }
+        let split = meta_array_split_len(len);
+        Ok(meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_owned_array_repr_ty(span, split, elem, root_ty)?,
+                self.meta_owned_array_repr_ty(span, len - split, elem, root_ty)?,
+            ],
+        ))
+    }
+
+    fn meta_owned_sum_ty(
+        &self,
+        span: crate::span::Span,
+        variants: &[CheckedVariant],
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        if variants.is_empty() {
+            return Ok(meta_named("CoNil", Vec::new()));
+        }
+        let variant_tys = variants
+            .iter()
+            .map(|variant| {
+                variant
+                    .payload
+                    .iter()
+                    .map(|payload| {
+                        self.meta_owned_leaf_repr_ty(span, payload, root_ty)
+                            .unwrap_or(Ty::Unknown)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        Ok(meta_sum_ty(variant_tys, false))
+    }
+
+    fn meta_owned_closure_repr_ty(
+        &self,
+        span: crate::span::Span,
+        ty: &Ty,
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        let captures = self.meta_capture_fields_for_ty(span, ty)?;
+        Ok(meta_product_ty(
+            captures
+                .iter()
+                .map(|capture| {
+                    self.meta_owned_leaf_repr_ty(span, &capture.ty, root_ty)
+                        .unwrap_or(Ty::Unknown)
+                })
+                .collect::<Vec<_>>(),
+            "Field",
+        ))
+    }
+
+    fn meta_array_repr_item_expr(
+        &self,
+        len: usize,
+        elem: &Ty,
+        repr_expr: &str,
+        index: usize,
+    ) -> String {
+        debug_assert!(index < len);
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            return format!("({repr_expr}).item{index}");
+        }
+        let split = meta_array_split_len(len);
+        if index < split {
+            self.meta_array_repr_item_expr(split, elem, &format!("({repr_expr}).left"), index)
         } else {
-            format!("({struct_name}){{ {} }}", emitted.join(", "))
+            self.meta_array_repr_item_expr(
+                len - split,
+                elem,
+                &format!("({repr_expr}).right"),
+                index - split,
+            )
         }
+    }
+
+    fn emit_meta_value_from_repr_into(
+        &mut self,
+        span: crate::span::Span,
+        target: &str,
+        ty: &Ty,
+        repr_expr: &str,
+        root_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<()> {
+        if self.is_owned_meta_policy_leaf(ty, root_ty) {
+            self.emit_value_copy(target, repr_expr, ty, indent);
+            return Ok(());
+        }
+        match ty.unqualified() {
+            Ty::Array { len, elem } => {
+                for idx in 0..*len {
+                    if elem.is_erased_value() {
+                        continue;
+                    }
+                    let item = self.meta_array_repr_item_expr(*len, elem, repr_expr, idx);
+                    self.emit_meta_value_from_repr_into(
+                        span,
+                        &format!("({target})[{idx}]"),
+                        elem,
+                        &item,
+                        root_ty,
+                        indent,
+                    )?;
+                }
+                Ok(())
+            }
+            Ty::Named { .. } => {
+                if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
+                    let mut cursor = repr_expr.to_string();
+                    for (field, field_ty) in fields {
+                        let head = format!("({cursor}).head");
+                        if !field_ty.is_erased_value() {
+                            self.emit_meta_value_from_repr_into(
+                                span,
+                                &format!("({target}).{field}"),
+                                &field_ty,
+                                &format!("{head}.value"),
+                                root_ty,
+                                indent,
+                            )?;
+                        }
+                        cursor = format!("({cursor}).tail");
+                    }
+                    return Ok(());
+                }
+                if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
+                    return self.emit_meta_enum_from_repr_into(
+                        span, &variants, 0, repr_expr, ty, target, root_ty, indent,
+                    );
+                }
+                Err(vec![Diagnostic::new(
+                    span,
+                    format!("internal error: unsupported owned meta target `{ty}`"),
+                )])
+            }
+            Ty::ClosureInstance { .. } => {
+                let value =
+                    self.emit_meta_closure_from_repr_value(span, ty, repr_expr, root_ty, indent)?;
+                self.emit_value_copy(target, &value, ty, indent);
+                Ok(())
+            }
+            _ => {
+                self.emit_value_copy(target, repr_expr, ty, indent);
+                Ok(())
+            }
+        }
+    }
+
+    fn is_owned_meta_policy_leaf(&self, ty: &Ty, root_ty: &Ty) -> bool {
+        if ty.unqualified() == root_ty.unqualified() {
+            return false;
+        }
+        matches!(ty.unqualified(), Ty::Named { .. }) && self.clone_message_impl(ty).is_some()
     }
 
     fn emit_meta_enum_ref_repr(
@@ -3251,18 +3562,21 @@ impl<'a> CGenerator<'a> {
         Ok(result)
     }
 
-    fn emit_meta_enum_owned_repr(
+    fn emit_meta_enum_owned_repr_value(
         &mut self,
-        expr: &TExpr,
+        span: crate::span::Span,
+        repr_ty: &Ty,
         source_value: &str,
         variants: &[CheckedVariant],
+        root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
         let result = self.next_temp("meta_owned_repr");
-        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result)));
+        self.line_indent(indent, &format!("{};", self.c_decl(repr_ty, &result)));
         self.line_indent(indent, &format!("switch (({source_value}).tag) {{"));
         for idx in 0..variants.len() {
-            let (_, literal) = self.meta_owned_sum_branch_literal(variants, idx, source_value)?;
+            let (_, literal) =
+                self.meta_owned_sum_branch_literal(span, variants, idx, source_value, root_ty)?;
             self.line_indent(indent + 1, &format!("case {idx}:"));
             self.line_indent(indent + 2, &format!("{result} = {literal};"));
             self.line_indent(indent + 2, "break;");
@@ -3271,33 +3585,23 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent + 2, "ciel_panic(NULL, 0);");
         self.line_indent(
             indent + 2,
-            &format!("{result} = {};", self.zero_value(&expr.ty)),
+            &format!("{result} = {};", self.zero_value(repr_ty)),
         );
         self.line_indent(indent + 2, "break;");
         self.line_indent(indent, "}");
         Ok(result)
     }
 
-    fn emit_meta_enum_from_repr(
+    #[allow(clippy::too_many_arguments)]
+    fn emit_meta_enum_from_repr_into(
         &mut self,
-        target_ty: &Ty,
-        variants: &[CheckedVariant],
-        value_temp: &str,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let result = self.next_temp("meta_enum_value");
-        self.line_indent(indent, &format!("{};", self.c_decl(target_ty, &result)));
-        self.emit_meta_enum_from_repr_cases(variants, 0, value_temp, target_ty, &result, indent)?;
-        Ok(result)
-    }
-
-    fn emit_meta_enum_from_repr_cases(
-        &mut self,
+        span: crate::span::Span,
         variants: &[CheckedVariant],
         variant_offset: usize,
         cursor: &str,
         target_ty: &Ty,
         result: &str,
+        root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<()> {
         if variants.is_empty() {
@@ -3310,9 +3614,16 @@ impl<'a> CGenerator<'a> {
         }
         self.line_indent(indent, &format!("switch (({cursor}).tag) {{"));
         self.line_indent(indent + 1, "case 0:");
-        let literal =
-            self.meta_enum_value_from_variant_repr(target_ty, &variants[0], variant_offset, cursor);
-        self.line_indent(indent + 2, &format!("{result} = {literal};"));
+        self.emit_meta_enum_variant_from_repr_into(
+            span,
+            target_ty,
+            &variants[0],
+            variant_offset,
+            cursor,
+            result,
+            root_ty,
+            indent + 2,
+        )?;
         self.line_indent(indent + 2, "break;");
         self.line_indent(indent + 1, "case 1:");
         if variants.len() == 1 {
@@ -3323,12 +3634,14 @@ impl<'a> CGenerator<'a> {
             );
         } else {
             let tail = format!("({cursor}).as.Next._0");
-            self.emit_meta_enum_from_repr_cases(
+            self.emit_meta_enum_from_repr_into(
+                span,
                 &variants[1..],
                 variant_offset + 1,
                 &tail,
                 target_ty,
                 result,
+                root_ty,
                 indent + 2,
             )?;
         }
@@ -3344,37 +3657,34 @@ impl<'a> CGenerator<'a> {
         Ok(())
     }
 
-    fn meta_enum_value_from_variant_repr(
-        &self,
-        target_ty: &Ty,
+    #[allow(clippy::too_many_arguments)]
+    fn emit_meta_enum_variant_from_repr_into(
+        &mut self,
+        span: crate::span::Span,
+        _target_ty: &Ty,
         variant: &CheckedVariant,
         variant_index: usize,
         cursor: &str,
-    ) -> String {
-        let target_name = self.c_type(target_ty);
-        let mut payload_fields = Vec::new();
+        target: &str,
+        root_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<()> {
+        self.line_indent(indent, &format!("({target}).tag = {variant_index};"));
         let mut payload_cursor = format!("(({cursor}).as.This._0).payload");
         for (idx, ty) in variant.payload.iter().enumerate() {
             if !ty.is_erased_value() {
-                payload_fields.push(format!(
-                    "._{idx} = {}",
-                    self.value_or_initializer_from_expr(
-                        ty,
-                        &format!("({payload_cursor}).head.value")
-                    )
-                ));
+                self.emit_meta_value_from_repr_into(
+                    span,
+                    &format!("({target}).as.{}._{idx}", variant.name),
+                    ty,
+                    &format!("({payload_cursor}).head.value"),
+                    root_ty,
+                    indent,
+                )?;
             }
             payload_cursor = format!("({payload_cursor}).tail");
         }
-        if payload_fields.is_empty() {
-            format!("({target_name}){{ .tag = {variant_index} }}")
-        } else {
-            format!(
-                "({target_name}){{ .tag = {variant_index}, .as.{} = {{ {} }} }}",
-                variant.name,
-                payload_fields.join(", ")
-            )
-        }
+        Ok(())
     }
 
     fn emit_meta_closure_ref_repr(
@@ -3408,46 +3718,55 @@ impl<'a> CGenerator<'a> {
         Ok(literal)
     }
 
-    fn emit_meta_closure_owned_repr(
+    fn emit_meta_closure_owned_repr_value(
         &mut self,
-        expr: &TExpr,
-        source_value: &str,
+        span: crate::span::Span,
         source_ty: &Ty,
+        source_value: &str,
+        root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let captures = self.meta_capture_fields_for_ty(expr.span, source_ty)?;
+        let captures = self.meta_capture_fields_for_ty(span, source_ty)?;
         if captures.is_empty() {
             let (_, literal) = self.meta_named_product_literal(&[], "Field")?;
             return Ok(literal);
         }
-        let (owner, id) = self.closure_instance_owner_id(expr.span, source_ty)?;
+        let (owner, id) = self.closure_instance_owner_id(span, source_ty)?;
         let env_name = self.closure_env_name(owner, id);
         let env_temp = self.next_temp("meta_owned_env");
         self.line_indent(
             indent,
             &format!("{env_name} *{env_temp} = ({env_name} *)({source_value}).env;"),
         );
-        let fields = captures
-            .into_iter()
-            .map(|capture| MetaProductField {
+        let mut fields = Vec::new();
+        for capture in captures {
+            let (ty, value_expr) = self.emit_meta_owned_leaf_repr_expr(
+                span,
+                &capture.ty,
+                &format!("({env_temp})->cap{}", capture.index),
+                root_ty,
+                indent,
+            )?;
+            fields.push(MetaProductField {
                 name: format!("capture#{}", capture.index),
-                ty: capture.ty,
-                value_expr: format!("({env_temp})->cap{}", capture.index),
-            })
-            .collect::<Vec<_>>();
+                ty,
+                value_expr,
+            });
+        }
         let (_, literal) = self.meta_named_product_literal(&fields, "Field")?;
         Ok(literal)
     }
 
-    fn emit_meta_closure_from_repr(
+    fn emit_meta_closure_from_repr_value(
         &mut self,
-        expr: &TExpr,
+        span: crate::span::Span,
         target_ty: &Ty,
         value_temp: &str,
+        root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let captures = self.meta_capture_fields_for_ty(expr.span, target_ty)?;
-        let (owner, id) = self.closure_instance_owner_id(expr.span, target_ty)?;
+        let captures = self.meta_capture_fields_for_ty(span, target_ty)?;
+        let (owner, id) = self.closure_instance_owner_id(span, target_ty)?;
         if captures.is_empty() {
             return Ok(format!(
                 "({}){{ .call = {}, .env = NULL }}",
@@ -3463,12 +3782,14 @@ impl<'a> CGenerator<'a> {
         );
         let mut cursor = value_temp.to_string();
         for capture in captures {
-            self.emit_value_copy(
+            self.emit_meta_value_from_repr_into(
+                span,
                 &format!("{env_temp}->cap{}", capture.index),
-                &format!("({cursor}).head.value"),
                 &capture.ty,
+                &format!("({cursor}).head.value"),
+                root_ty,
                 indent,
-            );
+            )?;
             cursor = format!("({cursor}).tail");
         }
         Ok(format!(
@@ -3509,7 +3830,7 @@ impl<'a> CGenerator<'a> {
             let value = if head_name == "FieldRef" {
                 field.value_expr.clone()
             } else {
-                self.value_or_initializer_from_expr(&field.ty, &field.value_expr)
+                field.value_expr.clone()
             };
             head_fields.push(format!(".value = {}", value));
         }
@@ -3539,7 +3860,7 @@ impl<'a> CGenerator<'a> {
         let value = if head_name == "PayloadRef" {
             field.value_expr.clone()
         } else {
-            self.value_or_initializer_from_expr(&field.ty, &field.value_expr)
+            field.value_expr.clone()
         };
         let head = format!(
             "({}){{ .index = {}, .value = {} }}",
@@ -3579,28 +3900,68 @@ impl<'a> CGenerator<'a> {
     }
 
     fn meta_owned_sum_branch_literal(
-        &self,
+        &mut self,
+        span: crate::span::Span,
         variants: &[CheckedVariant],
         active_idx: usize,
         source_value: &str,
+        root_ty: &Ty,
     ) -> DiagResult<(Ty, String)> {
-        self.meta_sum_branch_literal(
-            variants,
-            active_idx,
-            |variant| {
-                variant
-                    .payload
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, ty)| MetaPayloadField {
-                        index: idx,
-                        ty: ty.clone(),
-                        value_expr: format!("({source_value}).as.{}._{idx}", variant.name),
-                    })
-                    .collect::<Vec<_>>()
-            },
-            false,
-        )
+        let Some((variant, rest)) = variants.split_first() else {
+            return Err(vec![Diagnostic::new(
+                None,
+                "internal error: cannot construct meta CoNil branch",
+            )]);
+        };
+        let mut payloads = Vec::new();
+        for (idx, ty) in variant.payload.iter().enumerate() {
+            let (payload_ty, value_expr) = self.emit_meta_owned_leaf_repr_expr(
+                span,
+                ty,
+                &format!("({source_value}).as.{}._{idx}", variant.name),
+                root_ty,
+                0,
+            )?;
+            payloads.push(MetaPayloadField {
+                index: idx,
+                ty: payload_ty,
+                value_expr,
+            });
+        }
+        let (payload_ty, payload_literal) =
+            self.meta_payload_product_literal(&payloads, "Payload")?;
+        let head_ty = meta_named("Variant", vec![payload_ty]);
+        let tail_ty = self.meta_owned_sum_ty(span, rest, root_ty)?;
+        let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
+        if active_idx == 0 {
+            let head = format!(
+                "({}){{ .name = {}, .payload = {payload_literal} }}",
+                self.c_type(&head_ty),
+                self.meta_name_slice_literal(&variant.name)
+            );
+            Ok((
+                ty.clone(),
+                format!(
+                    "({}){{ .tag = 0, .as.This = {{ ._0 = {head} }} }}",
+                    self.c_type(&ty)
+                ),
+            ))
+        } else {
+            let (_, tail_literal) = self.meta_owned_sum_branch_literal(
+                span,
+                rest,
+                active_idx - 1,
+                source_value,
+                root_ty,
+            )?;
+            Ok((
+                ty.clone(),
+                format!(
+                    "({}){{ .tag = 1, .as.Next = {{ ._0 = {tail_literal} }} }}",
+                    self.c_type(&ty)
+                ),
+            ))
+        }
     }
 
     fn meta_sum_branch_literal<F>(
@@ -3625,7 +3986,11 @@ impl<'a> CGenerator<'a> {
         let (payload_ty, payload_literal) =
             self.meta_payload_product_literal(&payloads, payload_head)?;
         let head_ty = meta_named(variant_head, vec![payload_ty]);
-        let tail_ty = meta_sum_ty(rest.iter().map(|variant| variant.payload.clone()), borrowed);
+        let tail_ty = meta_sum_ty(
+            rest.iter()
+                .map(|variant| variant.payload.iter().cloned().collect::<Vec<_>>()),
+            borrowed,
+        );
         let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
         if active_idx == 0 {
             let head = format!(
@@ -3911,10 +4276,7 @@ impl<'a> CGenerator<'a> {
             );
             format!(
                 "({}){{ .tag = {}, .as.{} = {{ ._0 = {} }} }}",
-                return_layout.c_type,
-                return_layout.err_index,
-                return_layout.err_name,
-                payload
+                return_layout.c_type, return_layout.err_index, return_layout.err_name, payload
             )
         } else {
             format!(
@@ -3935,10 +4297,7 @@ impl<'a> CGenerator<'a> {
             );
             format!(
                 "({}){{ .tag = {}, .as.{} = {{ ._0 = {} }} }}",
-                layout.c_type,
-                layout.ok_index,
-                layout.ok_name,
-                payload
+                layout.c_type, layout.ok_index, layout.ok_name, payload
             )
         } else {
             format!("({}){{ .tag = {} }}", layout.c_type, layout.ok_index)
@@ -3985,9 +4344,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<String> {
         let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
-        let result_layout = self.result_layout(&result_ty, span)?;
         let result_temp = self.next_temp("clone_result");
-        let done_label = self.next_temp("clone_done");
         self.line_indent(
             indent,
             &format!("{};", self.c_decl(&result_ty, &result_temp)),
@@ -4005,312 +4362,26 @@ impl<'a> CGenerator<'a> {
             );
             return Ok(result_temp);
         }
-        if result_layout.ok_has_payload {
-            let target = format!("{result_temp}.as.{}._0", result_layout.ok_name);
-            self.emit_clone_value_into(
-                message_ty,
-                source_ptr,
-                &target,
-                &result_temp,
-                &result_layout,
-                &done_label,
-                indent,
-                span,
-            )?;
-            self.line_indent(
-                indent,
-                &format!("{result_temp}.tag = {};", result_layout.ok_index),
-            );
-        } else {
-            self.line_indent(
-                indent,
-                &format!(
-                    "{result_temp} = {};",
-                    self.result_ok_literal(&result_layout, None)
-                ),
-            );
-        }
-        self.line_indent(indent, &format!("{done_label}:;"));
-        Ok(result_temp)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn emit_clone_value_into(
-        &mut self,
-        ty: &Ty,
-        source_ptr: &str,
-        target: &str,
-        result_temp: &str,
-        result_layout: &ResultLayout,
-        done_label: &str,
-        indent: usize,
-        span: crate::span::Span,
-    ) -> DiagResult<()> {
-        let ty = ty.unqualified();
-        if let Some(function_def) = self
-            .clone_message_impl(ty)
-            .map(|implementation| implementation.function_def)
+        if let Ty::Closure { constraints, .. } = message_ty.unqualified()
+            && constraints.positive.iter().any(is_clone_message_capability)
         {
-            let clone_result_ty = std_result_ty(ty.clone(), std_error_ty());
-            let clone_layout = self.result_layout(&clone_result_ty, span)?;
-            let clone_temp = self.next_temp("field_clone");
+            let capability = clone_message_capability();
+            let field = self.retained_closure_witness_field_name(&capability);
             self.line_indent(
                 indent,
-                &format!(
-                    "{} {clone_temp} = {}({source_ptr});",
-                    clone_layout.c_type,
-                    self.c_name(function_def)
-                ),
+                &format!("{result_temp} = (*({source_ptr})).{field}((void *)({source_ptr}));"),
             );
-            self.line_indent(
-                indent,
-                &format!("if ({clone_temp}.tag == {}) {{", clone_layout.err_index),
-            );
-            self.line_indent(
-                indent + 1,
-                &format!(
-                    "{result_temp} = {};",
-                    self.result_err_literal(result_layout, &clone_layout, &clone_temp)
-                ),
-            );
-            self.line_indent(indent + 1, &format!("goto {done_label};"));
-            self.line_indent(indent, "}");
-            self.line_indent(
-                indent,
-                &format!("{target} = {clone_temp}.as.{}._0;", clone_layout.ok_name),
-            );
-            return Ok(());
+            return Ok(result_temp);
         }
-
-        match ty {
-            Ty::Const(inner) => self.emit_clone_value_into(
-                inner,
-                source_ptr,
-                target,
-                result_temp,
-                result_layout,
-                done_label,
-                indent,
-                span,
-            ),
-            Ty::Void => Ok(()),
-            Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Function { abi: None, .. } => {
-                self.line_indent(indent, &format!("{target} = (*({source_ptr}));"));
-                Ok(())
-            }
-            Ty::Array { len, elem } => {
-                let idx = self.next_temp("clone_i");
-                self.line_indent(
-                    indent,
-                    &format!("for (size_t {idx} = 0; {idx} < {len}; {idx}++) {{"),
-                );
-                let source = format!("&((*({source_ptr}))[{idx}])");
-                let target = format!("({target})[{idx}]");
-                self.emit_clone_value_into(
-                    elem,
-                    &source,
-                    &target,
-                    result_temp,
-                    result_layout,
-                    done_label,
-                    indent + 1,
-                    span,
-                )?;
-                self.line_indent(indent, "}");
-                Ok(())
-            }
-            Ty::Named { name, args } => {
-                let instance_name = self.c_named_type(name, args);
-                if let Some(fields) = self
-                    .program
-                    .checked
-                    .structs
-                    .iter()
-                    .find(|strukt| strukt.name == instance_name)
-                    .map(|strukt| strukt.fields.clone())
-                {
-                    for (field, field_ty) in fields {
-                        let source = format!("&((*({source_ptr})).{field})");
-                        let target = format!("({target}).{field}");
-                        self.emit_clone_value_into(
-                            &field_ty,
-                            &source,
-                            &target,
-                            result_temp,
-                            result_layout,
-                            done_label,
-                            indent,
-                            span,
-                        )?;
-                    }
-                    return Ok(());
-                }
-                if let Some(enm) = self
-                    .program
-                    .checked
-                    .enums
-                    .iter()
-                    .find(|enm| enm.name == instance_name)
-                    .cloned()
-                {
-                    self.line_indent(indent, &format!("({target}).tag = (*({source_ptr})).tag;"));
-                    self.line_indent(indent, &format!("switch ((*({source_ptr})).tag) {{"));
-                    for (variant_index, variant) in enm.variants.iter().enumerate() {
-                        self.line_indent(indent, &format!("case {variant_index}:"));
-                        for (idx, payload_ty) in variant.payload.iter().enumerate() {
-                            let source = format!("&((*({source_ptr})).as.{}._{idx})", variant.name);
-                            let target = format!("({target}).as.{}._{idx}", variant.name);
-                            self.emit_clone_value_into(
-                                payload_ty,
-                                &source,
-                                &target,
-                                result_temp,
-                                result_layout,
-                                done_label,
-                                indent + 1,
-                                span,
-                            )?;
-                        }
-                        self.line_indent(indent + 1, "break;");
-                    }
-                    self.line_indent(indent, "}");
-                    return Ok(());
-                }
-                Err(vec![Diagnostic::new(
-                    span,
-                    format!("internal error: cannot clone message type `{ty}`"),
-                )])
-            }
-            Ty::ClosureInstance { .. } => self.emit_clone_closure_value_into(
-                ty,
-                source_ptr,
-                target,
-                result_temp,
-                result_layout,
-                done_label,
-                indent,
-                span,
-            ),
-            Ty::Closure { constraints, .. }
-                if constraints.positive.iter().any(is_clone_message_capability) =>
-            {
-                let capability = ConstraintRef {
-                    name: "clone_message".to_string(),
-                    args: Vec::new(),
-                };
-                let field = self.retained_closure_witness_field_name(&capability);
-                let clone_result_ty = std_result_ty(ty.clone(), std_error_ty());
-                let clone_layout = self.result_layout(&clone_result_ty, span)?;
-                let clone_temp = self.next_temp("closure_clone");
-                self.line_indent(
-                    indent,
-                    &format!(
-                        "{} {clone_temp} = (*({source_ptr})).{field}((void *)({source_ptr}));",
-                        clone_layout.c_type
-                    ),
-                );
-                self.line_indent(
-                    indent,
-                    &format!("if ({clone_temp}.tag == {}) {{", clone_layout.err_index),
-                );
-                self.line_indent(
-                    indent + 1,
-                    &format!(
-                        "{result_temp} = {};",
-                        self.result_err_literal(result_layout, &clone_layout, &clone_temp)
-                    ),
-                );
-                self.line_indent(indent + 1, &format!("goto {done_label};"));
-                self.line_indent(indent, "}");
-                self.line_indent(
-                    indent,
-                    &format!("{target} = {clone_temp}.as.{}._0;", clone_layout.ok_name),
-                );
-                Ok(())
-            }
-            _ => Err(vec![Diagnostic::new(
-                span,
-                format!("internal error: cannot clone non-message type `{ty}`"),
-            )]),
-        }
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn emit_clone_closure_value_into(
-        &mut self,
-        closure_ty: &Ty,
-        source_ptr: &str,
-        target: &str,
-        result_temp: &str,
-        result_layout: &ResultLayout,
-        done_label: &str,
-        indent: usize,
-        span: crate::span::Span,
-    ) -> DiagResult<()> {
-        self.line_indent(
-            indent,
-            &format!("({target}).call = (*({source_ptr})).call;"),
-        );
-        let Ty::ClosureInstance {
-            id: _, captures, ..
-        } = closure_ty.unqualified()
-        else {
-            return Err(vec![Diagnostic::new(
-                span,
-                format!("internal error: expected concrete closure type, got `{closure_ty}`"),
-            )]);
-        };
-        if captures.is_empty() {
-            self.line_indent(indent, &format!("({target}).env = NULL;"));
-            return Ok(());
-        }
-        let (owner, closure_id) = self.closure_instance_owner_id(span, closure_ty)?;
-        let env_name = self.closure_env_name(owner, closure_id);
-        let old_env = self.next_temp("closure_env_old");
-        let new_env = self.next_temp("closure_env_new");
-        self.line_indent(
-            indent,
-            &format!("{env_name} *{old_env} = ({env_name} *)(*({source_ptr})).env;"),
-        );
-        self.line_indent(
-            indent,
-            &format!("{env_name} *{new_env} = ({env_name} *)ciel_alloc(sizeof({env_name}));"),
-        );
-        for (idx, capture_ty) in captures.iter().enumerate() {
-            let source = format!("&({old_env}->cap{idx})");
-            let target = format!("{new_env}->cap{idx}");
-            self.emit_clone_value_into(
-                capture_ty,
-                &source,
-                &target,
-                result_temp,
-                result_layout,
-                done_label,
-                indent,
-                span,
-            )?;
-        }
-        self.line_indent(indent, &format!("({target}).env = (void *){new_env};"));
-        Ok(())
+        Err(vec![Diagnostic::new(
+            span,
+            format!("internal error: missing clone_message implementation for `{message_ty}`"),
+        )])
     }
 
     fn clone_message_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == "clone_message"
+            implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
                 && implementation
                     .receiver_ty
                     .as_ref()
@@ -6013,10 +6084,7 @@ impl<'a> CGenerator<'a> {
             Ty::Closure { constraints, .. }
                 if constraints.positive.iter().any(is_clone_message_capability) =>
             {
-                let capability = ConstraintRef {
-                    name: "clone_message".to_string(),
-                    args: Vec::new(),
-                };
+                let capability = clone_message_capability();
                 let field = self.retained_closure_witness_field_name(&capability);
                 let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
                 let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
@@ -6050,16 +6118,49 @@ impl<'a> CGenerator<'a> {
                 );
             }
             Ty::ClosureInstance { .. } => {
-                self.emit_clone_closure_value_into(
-                    &witness.source_ty,
-                    &source_ptr,
-                    &source_temp,
-                    result_temp,
-                    result_layout,
-                    done_label,
+                let Some(function_def) = self
+                    .clone_message_impl(&witness.source_ty)
+                    .map(|implementation| implementation.function_def)
+                else {
+                    return Err(vec![Diagnostic::new(
+                        witness.span,
+                        format!(
+                            "internal error: missing clone_message implementation for `{}`",
+                            witness.source_ty
+                        ),
+                    )]);
+                };
+                let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
+                let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
+                let clone_temp = self.next_temp("retained_source_clone");
+                self.line_indent(
                     indent,
-                    witness.span,
-                )?;
+                    &format!(
+                        "{} {clone_temp} = {}({source_ptr});",
+                        clone_layout.c_type,
+                        self.c_name(function_def)
+                    ),
+                );
+                self.line_indent(
+                    indent,
+                    &format!("if ({clone_temp}.tag == {}) {{", clone_layout.err_index),
+                );
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{result_temp} = {};",
+                        self.result_err_literal(result_layout, &clone_layout, &clone_temp)
+                    ),
+                );
+                self.line_indent(indent + 1, &format!("goto {done_label};"));
+                self.line_indent(indent, "}");
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "{source_temp} = {clone_temp}.as.{}._0;",
+                        clone_layout.ok_name
+                    ),
+                );
             }
             other => {
                 return Err(vec![Diagnostic::new(
@@ -6567,7 +6668,8 @@ impl<'a> CGenerator<'a> {
     }
 
     fn c_name(&self, def_id: DefId) -> String {
-        self.plan.name_map
+        self.plan
+            .name_map
             .get(&def_id)
             .cloned()
             .unwrap_or_else(|| format!("ciel_missing_{}", def_id.0))
@@ -7117,7 +7219,6 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         TExprKind::Try(_)
         | TExprKind::Slice { .. }
         | TExprKind::MakeDynamicInterface { .. }
-        | TExprKind::BuiltinCloneMessage { .. }
         | TExprKind::MetaAsRefRepr { .. }
         | TExprKind::MetaIntoRepr { .. }
         | TExprKind::MetaFromRepr { .. }

@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
+use crate::types::STD_MESSAGE_CLONE_INTERFACE;
 
 const STD_RESULT_PATH: &str = "std/result.ciel";
 const STD_MESSAGE_PATH: &str = "std/message.ciel";
@@ -50,6 +51,10 @@ pub fn is_std_message_interface(
     )
 }
 
+pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    is_std_message_interface(resolved, def_id, STD_MESSAGE_CLONE_INTERFACE)
+}
+
 pub fn is_std_actor_function(
     resolved: &ResolvedProgram,
     module: ModuleId,
@@ -68,11 +73,7 @@ pub fn is_std_meta_function(
     name == expected_name && module_path_matches(resolved, module, STD_META_PATH)
 }
 
-pub fn is_std_meta_type(
-    resolved: &ResolvedProgram,
-    def_id: DefId,
-    expected_name: &str,
-) -> bool {
+pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name: &str) -> bool {
     def_matches(
         resolved,
         def_id,
@@ -83,6 +84,20 @@ pub fn is_std_meta_type(
         resolved,
         def_id,
         DefKind::TypeAlias,
+        expected_name,
+        STD_META_PATH,
+    )
+}
+
+pub fn is_std_meta_interface(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
         expected_name,
         STD_META_PATH,
     )

@@ -4,11 +4,15 @@
 import /std/lib;
 import /std/meta as meta;
 
-struct Bad {
+struct Inner {
     *i64 ptr;
 }
 
+struct Outer {
+    Inner inner;
+}
+
 i64 main() {
-    Channel<meta::Repr<Bad>> channel = must(make_channel<meta::Repr<Bad>>());
+    Channel<meta::Repr<Outer>> channel = must(make_channel<meta::Repr<Outer>>());
     return 0;
 }

@@ -1,5 +1,6 @@
 export import /std/error;
 export import /std/result;
+import /std/meta;
 import /std/meta as meta;
 
 export interface<T> Result<T, Error> clone_message(*T value);
@@ -76,6 +77,16 @@ impl<T: Message, E: Message> clone_message(*Result<T, E> value) {
     }
 }
 
+impl<F: CielFnValue> clone_message(*F value) {
+    return Ok(*value);
+}
+
+impl<C: ClosureValue> clone_message(*C value) {
+    meta::Repr<C> repr = meta::into_repr(*value);
+    meta::Repr<C> copied = clone_message(&repr)?;
+    return Ok(meta::from_repr<C>(copied));
+}
+
 impl clone_message(*meta::HNil value) {
     return Ok({});
 }
@@ -115,6 +126,216 @@ impl<Head: Message, Tail: Message> clone_message(*meta::Coproduct<Head, Tail> va
             Tail copied = clone_message(&tail)?;
             return Ok(meta::Next(copied));
     }
+}
+
+impl clone_message(*meta::ArrayNil value) {
+    return Ok({});
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk1<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    return Ok({ item0: item0 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk2<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    return Ok({ item0: item0, item1: item1 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk3<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    return Ok({ item0: item0, item1: item1, item2: item2 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk4<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk5<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk6<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk7<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk8<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk9<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk10<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk11<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk12<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    T item11 = clone_message(&value->item11)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk13<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    T item11 = clone_message(&value->item11)?;
+    T item12 = clone_message(&value->item12)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk14<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    T item11 = clone_message(&value->item11)?;
+    T item12 = clone_message(&value->item12)?;
+    T item13 = clone_message(&value->item13)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk15<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    T item11 = clone_message(&value->item11)?;
+    T item12 = clone_message(&value->item12)?;
+    T item13 = clone_message(&value->item13)?;
+    T item14 = clone_message(&value->item14)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13, item14: item14 });
+}
+
+impl<T: Message> clone_message(*meta::ArrayChunk16<T> value) {
+    T item0 = clone_message(&value->item0)?;
+    T item1 = clone_message(&value->item1)?;
+    T item2 = clone_message(&value->item2)?;
+    T item3 = clone_message(&value->item3)?;
+    T item4 = clone_message(&value->item4)?;
+    T item5 = clone_message(&value->item5)?;
+    T item6 = clone_message(&value->item6)?;
+    T item7 = clone_message(&value->item7)?;
+    T item8 = clone_message(&value->item8)?;
+    T item9 = clone_message(&value->item9)?;
+    T item10 = clone_message(&value->item10)?;
+    T item11 = clone_message(&value->item11)?;
+    T item12 = clone_message(&value->item12)?;
+    T item13 = clone_message(&value->item13)?;
+    T item14 = clone_message(&value->item14)?;
+    T item15 = clone_message(&value->item15)?;
+    return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13, item14: item14, item15: item15 });
+}
+
+impl<L: Message, R: Message> clone_message(*meta::ArrayCat<L, R> value) {
+    L left = clone_message(&value->left)?;
+    R right = clone_message(&value->right)?;
+    return Ok({ left: left, right: right });
 }
 
 // Reserved marker: policy is defined by explicit library/runtime implementations.

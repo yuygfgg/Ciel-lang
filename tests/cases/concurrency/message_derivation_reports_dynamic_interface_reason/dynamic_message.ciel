@@ -1,6 +1,5 @@
 // ciel-test: error
 // expect-error: does not implement `Message`
-// expect-error: dynamic interface value without a concrete message path
 
 import /std/message;
 

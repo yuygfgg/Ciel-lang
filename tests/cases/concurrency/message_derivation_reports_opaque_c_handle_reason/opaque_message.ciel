@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: opaque C handle without an explicit wrapper policy
+// expect-error: does not implement `Message`
 
 import /std/message;
 

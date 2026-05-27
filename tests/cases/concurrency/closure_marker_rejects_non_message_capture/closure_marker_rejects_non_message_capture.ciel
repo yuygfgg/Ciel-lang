@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: does not implement `clone_message`
+
+import /std/lib;
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 main() {
+    [2]i64 backing = [1, 2];
+    []i64 view = backing;
+    _ closure = || view[0];
+    _ copied = clone_value(closure);
+    return copied();
+}

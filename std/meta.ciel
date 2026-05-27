@@ -7,6 +7,15 @@ export usize type_align<T>();
 export struct RefRepr<T> {}
 export struct Repr<T> {}
 
+// Compiler-provided marker facts. User code cannot implement these interfaces;
+// the compiler only proves them for Ciel ABI function pointers and concrete
+// closure instance values respectively.
+export interface<T> bool ciel_fn_value_marker(*T value);
+export interface CielFnValue = ciel_fn_value_marker;
+
+export interface<T> bool closure_value_marker(*T value);
+export interface ClosureValue = closure_value_marker;
+
 // Product lists.
 export struct HNil {}
 
@@ -53,6 +62,199 @@ export struct VariantRef<P> {
 export struct Variant<P> {
     []char name;
     P payload;
+}
+
+// Fixed-size array representation nodes. Array chunks are intentionally
+// bounded so large arrays build a shallow ArrayCat tree instead of a long list.
+export struct ArrayNil {}
+
+export struct ArrayChunk1<T> {
+    T item0;
+}
+
+export struct ArrayChunk2<T> {
+    T item0;
+    T item1;
+}
+
+export struct ArrayChunk3<T> {
+    T item0;
+    T item1;
+    T item2;
+}
+
+export struct ArrayChunk4<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+}
+
+export struct ArrayChunk5<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+}
+
+export struct ArrayChunk6<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+}
+
+export struct ArrayChunk7<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+}
+
+export struct ArrayChunk8<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+}
+
+export struct ArrayChunk9<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+}
+
+export struct ArrayChunk10<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+}
+
+export struct ArrayChunk11<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+}
+
+export struct ArrayChunk12<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+    T item11;
+}
+
+export struct ArrayChunk13<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+    T item11;
+    T item12;
+}
+
+export struct ArrayChunk14<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+    T item11;
+    T item12;
+    T item13;
+}
+
+export struct ArrayChunk15<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+    T item11;
+    T item12;
+    T item13;
+    T item14;
+}
+
+export struct ArrayChunk16<T> {
+    T item0;
+    T item1;
+    T item2;
+    T item3;
+    T item4;
+    T item5;
+    T item6;
+    T item7;
+    T item8;
+    T item9;
+    T item10;
+    T item11;
+    T item12;
+    T item13;
+    T item14;
+    T item15;
+}
+
+export struct ArrayCat<L, R> {
+    L left;
+    R right;
 }
 
 // Compiler built-ins: lowered from visible type layouts.

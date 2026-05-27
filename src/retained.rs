@@ -33,10 +33,7 @@ pub fn retained_closure_can_reuse_source_witness_field(
         && source_ty.unqualified() == target_ty.unqualified()
 }
 
-pub fn retained_closure_required_witnesses(
-    target_ty: &Ty,
-    source_ty: &Ty,
-) -> Vec<ConstraintRef> {
+pub fn retained_closure_required_witnesses(target_ty: &Ty, source_ty: &Ty) -> Vec<ConstraintRef> {
     retained_closure_capabilities(target_ty)
         .into_iter()
         .filter(|capability| {

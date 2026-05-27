@@ -312,9 +312,9 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.scan_expr(end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, .. }
-            | TExprKind::MetaIntoRepr { value, .. }
-            | TExprKind::MetaFromRepr { value, .. } => self.scan_expr(value),
+            TExprKind::MetaIntoRepr { value, .. } | TExprKind::MetaFromRepr { value, .. } => {
+                self.scan_expr(value)
+            }
             TExprKind::MetaAsRefRepr { value, .. } => {
                 self.scan_expr(value);
                 self.escape_sources(value);
@@ -510,8 +510,7 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.collect_storage_sources(left, out);
                 self.collect_storage_sources(right, out);
             }
-            TExprKind::BuiltinCloneMessage { value, .. }
-            | TExprKind::MetaAsRefRepr { value, .. }
+            TExprKind::MetaAsRefRepr { value, .. }
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => {
                 self.collect_storage_sources(value, out);

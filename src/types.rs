@@ -17,6 +17,15 @@ pub struct ConstraintRef {
     pub args: Vec<Ty>,
 }
 
+pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
+
+pub fn clone_message_capability() -> ConstraintRef {
+    ConstraintRef {
+        name: STD_MESSAGE_CLONE_INTERFACE.to_string(),
+        args: Vec::new(),
+    }
+}
+
 impl ConstraintBounds {
     pub fn is_empty(&self) -> bool {
         self.positive.is_empty() && self.negative.is_empty()
@@ -912,7 +921,7 @@ pub fn retained_closure_proves_capability(ty: &Ty, interface_name: &str, args: &
 }
 
 pub fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
-    capability.name == "clone_message" && capability.args.is_empty()
+    capability.name == STD_MESSAGE_CLONE_INTERFACE && capability.args.is_empty()
 }
 
 pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
@@ -950,6 +959,8 @@ pub fn std_actor_ty(message_ty: Ty) -> Ty {
 
 pub const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
 pub const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
+pub const META_ARRAY_CHUNK_SIZE: usize = 16;
+pub const META_ARRAY_EXPANSION_BUDGET: usize = 4096;
 
 pub fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
     Ty::Named {
@@ -989,6 +1000,77 @@ where
             let head = meta_named(variant_head, vec![payload]);
             meta_named("Coproduct", vec![head, tail])
         })
+}
+
+pub fn meta_repr_owned_leaf_ty(ty: &Ty) -> Ty {
+    match ty.unqualified() {
+        Ty::Array { len, elem } => meta_array_repr_ty(*len, elem, false),
+        other => other.clone(),
+    }
+}
+
+pub fn meta_repr_borrowed_array_leaf_ty(ty: &Ty) -> Ty {
+    ty.unqualified().clone()
+}
+
+pub fn meta_array_repr_ty(len: usize, elem: &Ty, borrowed: bool) -> Ty {
+    meta_array_repr_ty_with_leaf(len, elem, borrowed, &mut meta_repr_owned_leaf_ty)
+}
+
+pub fn meta_array_repr_ty_with_leaf<F>(
+    len: usize,
+    elem: &Ty,
+    borrowed: bool,
+    owned_leaf: &mut F,
+) -> Ty
+where
+    F: FnMut(&Ty) -> Ty,
+{
+    if len == 0 {
+        return meta_named("ArrayNil", Vec::new());
+    }
+    if len <= META_ARRAY_CHUNK_SIZE {
+        let elem_ty = if borrowed {
+            meta_repr_borrowed_array_leaf_ty(elem)
+        } else {
+            owned_leaf(elem)
+        };
+        return meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]);
+    }
+    let split = meta_array_split_len(len);
+    meta_named(
+        "ArrayCat",
+        vec![
+            meta_array_repr_ty_with_leaf(split, elem, borrowed, owned_leaf),
+            meta_array_repr_ty_with_leaf(len - split, elem, borrowed, owned_leaf),
+        ],
+    )
+}
+
+pub fn meta_array_split_len(len: usize) -> usize {
+    if len <= META_ARRAY_CHUNK_SIZE {
+        return len;
+    }
+    let chunks = len.div_ceil(META_ARRAY_CHUNK_SIZE);
+    let left_chunks = chunks / 2;
+    (left_chunks * META_ARRAY_CHUNK_SIZE).min(len - 1).max(1)
+}
+
+pub fn meta_array_expansion_cost(len: usize, elem: &Ty) -> Option<usize> {
+    let elem_cost = match elem.unqualified() {
+        Ty::Array {
+            len: elem_len,
+            elem: inner,
+        } => meta_array_expansion_cost(*elem_len, inner)?,
+        _ => 1,
+    };
+    let element_cost = len.checked_mul(elem_cost)?;
+    if len == 0 {
+        return Some(1);
+    }
+    let chunks = len.div_ceil(META_ARRAY_CHUNK_SIZE);
+    let cats = chunks.saturating_sub(1);
+    element_cost.checked_add(chunks)?.checked_add(cats)
 }
 
 pub fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {

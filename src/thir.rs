@@ -326,10 +326,6 @@ pub enum TExprKind {
         end: Option<Box<TExpr>>,
     },
     Try(Box<TExpr>),
-    BuiltinCloneMessage {
-        value: Box<TExpr>,
-        message_ty: Ty,
-    },
     MetaAsRefRepr {
         value: Box<TExpr>,
         source_ty: Ty,
@@ -585,8 +581,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
                 visitor.visit_expr(end);
             }
         }
-        TExprKind::BuiltinCloneMessage { value, .. }
-        | TExprKind::MetaAsRefRepr { value, .. }
+        TExprKind::MetaAsRefRepr { value, .. }
         | TExprKind::MetaIntoRepr { value, .. }
         | TExprKind::MetaFromRepr { value, .. } => visitor.visit_expr(value),
         TExprKind::ActorSpawn {

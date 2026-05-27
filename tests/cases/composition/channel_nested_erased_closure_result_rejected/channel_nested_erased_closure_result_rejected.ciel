@@ -1,6 +1,5 @@
 // ciel-test: error
 // expect-error: does not implement `clone_message`
-// expect-error: erased closure signature
 
 import /std/lib;
 

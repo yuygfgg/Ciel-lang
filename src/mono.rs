@@ -6,14 +6,14 @@ use crate::{
         ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, Type, TypeAliasTarget, TypeKind,
         TypeNameKind, VariantDecl,
     },
-    retained::{
-        retained_closure_has_clone_message_capability, retained_closure_missing_capabilities,
-    },
     interfaces::{
         checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
         impl_matches_interface_receiver, retained_closure_interface_signature,
     },
     resolve::{DefId, DefKind, ResolvedProgram},
+    retained::{
+        retained_closure_has_clone_message_capability, retained_closure_missing_capabilities,
+    },
     std_id,
     thir::{
         CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterfaceRef,
@@ -22,11 +22,11 @@ use crate::{
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
-        ConstraintBounds, ConstraintRef, Ty, aggregate_instance_name, contains_generic,
-        is_clone_message_capability, mangle_ty_fragment, meta_product_ty, meta_repr_marker_name,
-        meta_sum_ty, retained_closure_capabilities, std_message_result_ty,
-        std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains, ty_from_primitive,
-        type_complexity,
+        ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, aggregate_instance_name,
+        contains_generic, is_clone_message_capability, mangle_ty_fragment, meta_array_split_len,
+        meta_named, meta_product_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
+        meta_sum_ty, retained_closure_capabilities, std_message_result_ty, std_meta_repr_marker_ty,
+        std_meta_repr_source_name, ty_contains, ty_from_primitive, type_complexity,
     },
 };
 
@@ -580,13 +580,6 @@ impl MonoContext {
                     .transpose()?,
             },
             TExprKind::Try(inner) => TExprKind::Try(Box::new(self.rewrite_expr(*inner)?)),
-            TExprKind::BuiltinCloneMessage { value, message_ty } => {
-                self.mark_message_clone_impls(&message_ty);
-                TExprKind::BuiltinCloneMessage {
-                    value: Box::new(self.rewrite_expr(*value)?),
-                    message_ty,
-                }
-            }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
                 source_ty,
@@ -718,7 +711,9 @@ impl MonoContext {
     }
 
     fn mark_message_clone_impls(&mut self, ty: &Ty) {
-        self.mark_message_clone_impls_inner(ty, &mut HashSet::new());
+        if let Some(function_def) = self.clone_message_impl_def(ty) {
+            self.mark_function(function_def);
+        }
     }
 
     fn mark_retained_closure_witness_impls(&mut self, target_ty: &Ty, source_ty: &Ty) {
@@ -746,17 +741,13 @@ impl MonoContext {
         }
     }
 
-    fn mark_message_clone_impls_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) {
+    fn clone_message_impl_def(&self, ty: &Ty) -> Option<DefId> {
         let ty = ty.unqualified();
-        if !seen.insert(ty.clone()) {
-            return;
-        }
-        if let Some(function_def) = self
-            .checked
+        self.checked
             .impls
             .iter()
             .find(|implementation| {
-                implementation.interface_name == "clone_message"
+                implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
                     && implementation
                         .receiver_ty
                         .as_ref()
@@ -764,49 +755,6 @@ impl MonoContext {
                     && implementation.interface_args.get(1..) == Some(&[][..])
             })
             .map(|implementation| implementation.function_def)
-        {
-            self.mark_function(function_def);
-            return;
-        }
-        match ty {
-            Ty::Hole(_) => {}
-            Ty::Const(inner) => self.mark_message_clone_impls_inner(inner, seen),
-            Ty::Array { elem, .. } => self.mark_message_clone_impls_inner(elem, seen),
-            Ty::ClosureInstance { captures, .. } => {
-                for capture in captures {
-                    self.mark_message_clone_impls_inner(capture, seen);
-                }
-            }
-            Ty::Named { name, args } => {
-                let instance_name = aggregate_instance_name(name, args);
-                if let Some(fields) = self
-                    .checked
-                    .structs
-                    .iter()
-                    .find(|strukt| strukt.name == instance_name)
-                    .map(|strukt| strukt.fields.clone())
-                {
-                    for (_, field_ty) in fields {
-                        self.mark_message_clone_impls_inner(&field_ty, seen);
-                    }
-                    return;
-                }
-                if let Some(variants) = self
-                    .checked
-                    .enums
-                    .iter()
-                    .find(|enm| enm.name == instance_name)
-                    .map(|enm| enm.variants.clone())
-                {
-                    for variant in variants {
-                        for payload in variant.payload {
-                            self.mark_message_clone_impls_inner(&payload, seen);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1128,12 +1076,6 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_expr(end);
                 }
             }
-            TExprKind::BuiltinCloneMessage { value, message_ty } => {
-                self.collect_expr(value);
-                self.collect_ty(message_ty);
-                self.collect_ty(&std_message_result_ty(message_ty.clone()));
-                self.collect_message_clone_result_tys(message_ty);
-            }
             TExprKind::MetaAsRefRepr { value, source_ty }
             | TExprKind::MetaIntoRepr { value, source_ty } => {
                 self.collect_expr(value);
@@ -1208,53 +1150,7 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn collect_message_clone_result_tys(&mut self, ty: &Ty) {
-        self.collect_message_clone_result_tys_inner(ty, &mut HashSet::new());
-    }
-
-    fn collect_message_clone_result_tys_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) {
-        let ty = ty.unqualified();
-        if !seen.insert(ty.clone()) {
-            return;
-        }
-        self.collect_ty(&std_message_result_ty(ty.clone()));
-        match ty {
-            Ty::Const(inner) => self.collect_message_clone_result_tys_inner(inner, seen),
-            Ty::Array { elem, .. } => self.collect_message_clone_result_tys_inner(elem, seen),
-            Ty::ClosureInstance { captures, .. } => {
-                for capture in captures {
-                    self.collect_message_clone_result_tys_inner(capture, seen);
-                }
-            }
-            Ty::Named { name, args } => {
-                let instance_name = aggregate_instance_name(name, args);
-                if let Some(fields) = self
-                    .checked
-                    .structs
-                    .iter()
-                    .find(|strukt| strukt.name == instance_name)
-                    .map(|strukt| strukt.fields.clone())
-                {
-                    for (_, field_ty) in fields {
-                        self.collect_message_clone_result_tys_inner(&field_ty, seen);
-                    }
-                    return;
-                }
-                if let Some(variants) = self
-                    .checked
-                    .enums
-                    .iter()
-                    .find(|enm| enm.name == instance_name)
-                    .map(|enm| enm.variants.clone())
-                {
-                    for variant in variants {
-                        for payload in variant.payload {
-                            self.collect_message_clone_result_tys_inner(&payload, seen);
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
+        self.collect_ty(&std_message_result_ty(ty.unqualified().clone()));
     }
 
     fn collect_ty(&mut self, ty: &Ty) {
@@ -1548,11 +1444,48 @@ impl<'a> AggregateCollector<'a> {
         source_ty: &Ty,
         borrowed: bool,
     ) -> Ty {
+        let span = span.into();
+        let root = (!borrowed).then(|| source_ty.unqualified().clone());
+        let mut expanding = HashSet::new();
+        self.meta_repr_ty_rec(span, source_ty, borrowed, root.as_ref(), &mut expanding)
+    }
+
+    fn meta_repr_ty_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        borrowed: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
         if contains_generic(source_ty) {
             return std_meta_repr_marker_ty(borrowed, source_ty.clone());
         }
         match source_ty.unqualified() {
+            Ty::Array { .. } => {
+                if borrowed {
+                    meta_repr_borrowed_array_leaf_ty(source_ty)
+                } else {
+                    let Ty::Array { len, elem } = source_ty.unqualified() else {
+                        unreachable!();
+                    };
+                    self.meta_array_repr_ty_rec(*len, elem, false, root, expanding)
+                }
+            }
             Ty::Named { name, args } => {
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !expanding.insert(instance_ty.clone()) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "meta structural representation is recursive through `{source_ty}`"
+                        ),
+                    ));
+                    return Ty::Unknown;
+                }
                 let instance_name = aggregate_instance_name(name, args);
                 self.instantiate_struct(name, args);
                 if let Some(fields) = self
@@ -1568,10 +1501,12 @@ impl<'a> AggregateCollector<'a> {
                             .map(|strukt| strukt.fields.clone())
                     })
                 {
-                    return meta_product_ty(
-                        fields.into_iter().map(|(_, ty)| ty),
-                        if borrowed { "FieldRef" } else { "Field" },
-                    );
+                    let fields = fields.into_iter().map(|(_, ty)| {
+                        self.meta_repr_field_ty(span, &ty, borrowed, root, expanding)
+                    });
+                    let ty = meta_product_ty(fields, if borrowed { "FieldRef" } else { "Field" });
+                    expanding.remove(&instance_ty);
+                    return ty;
                 }
                 self.instantiate_enum(name, args);
                 if let Some(enm) = self
@@ -1587,16 +1522,32 @@ impl<'a> AggregateCollector<'a> {
                             .cloned()
                     })
                 {
-                    return meta_sum_ty(
-                        enm.variants.iter().map(|variant| variant.payload.clone()),
+                    let ty = meta_sum_ty(
+                        enm.variants.iter().map(|variant| {
+                            variant
+                                .payload
+                                .iter()
+                                .map(|payload| {
+                                    self.meta_repr_field_ty(
+                                        span, payload, borrowed, root, expanding,
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                        }),
                         borrowed,
                     );
+                    expanding.remove(&instance_ty);
+                    return ty;
                 }
+                expanding.remove(&instance_ty);
                 self.push_meta_unsupported_repr(span, source_ty);
                 Ty::Unknown
             }
             Ty::ClosureInstance { captures, .. } => meta_product_ty(
-                captures.iter().filter(|ty| !ty.is_erased_value()).cloned(),
+                captures
+                    .iter()
+                    .filter(|ty| !ty.is_erased_value())
+                    .map(|ty| self.meta_repr_field_ty(span, ty, borrowed, root, expanding)),
                 if borrowed { "FieldRef" } else { "Field" },
             ),
             Ty::Closure { .. } => {
@@ -1613,6 +1564,85 @@ impl<'a> AggregateCollector<'a> {
                 Ty::Unknown
             }
         }
+    }
+
+    fn meta_repr_field_ty(
+        &mut self,
+        span: Option<crate::span::Span>,
+        ty: &Ty,
+        borrowed: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
+        if borrowed {
+            return meta_repr_borrowed_array_leaf_ty(ty);
+        }
+        self.meta_repr_owned_leaf_ty_rec(span, ty, root, expanding)
+    }
+
+    fn meta_repr_owned_leaf_ty_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        ty: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
+        if self.is_owned_meta_policy_leaf(ty, root) {
+            return ty.unqualified().clone();
+        }
+        match ty.unqualified() {
+            Ty::Array { len, elem } => {
+                self.meta_array_repr_ty_rec(*len, elem, false, root, expanding)
+            }
+            Ty::Named { .. } | Ty::ClosureInstance { .. } => {
+                self.meta_repr_ty_rec(span, ty, false, root, expanding)
+            }
+            other => other.clone(),
+        }
+    }
+
+    fn is_owned_meta_policy_leaf(&self, ty: &Ty, root: Option<&Ty>) -> bool {
+        if root.is_some_and(|root| ty.unqualified() == root) || contains_generic(ty) {
+            return false;
+        }
+        matches!(ty.unqualified(), Ty::Named { .. })
+            && self.checked.impls.iter().any(|implementation| {
+                implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
+                    && implementation
+                        .receiver_ty
+                        .as_ref()
+                        .is_some_and(|receiver| receiver == ty.unqualified())
+                    && implementation.interface_args.get(1..) == Some(&[][..])
+            })
+    }
+
+    fn meta_array_repr_ty_rec(
+        &mut self,
+        len: usize,
+        elem: &Ty,
+        borrowed: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
+        if len == 0 {
+            return meta_named("ArrayNil", Vec::new());
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let elem_ty = if borrowed {
+                meta_repr_borrowed_array_leaf_ty(elem)
+            } else {
+                self.meta_repr_owned_leaf_ty_rec(None, elem, root, expanding)
+            };
+            return meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]);
+        }
+        let split = meta_array_split_len(len);
+        meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_array_repr_ty_rec(split, elem, borrowed, root, expanding),
+                self.meta_array_repr_ty_rec(len - split, elem, borrowed, root, expanding),
+            ],
+        )
     }
 
     fn push_meta_unsupported_repr(

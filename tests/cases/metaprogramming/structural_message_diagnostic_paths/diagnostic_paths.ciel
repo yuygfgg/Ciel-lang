@@ -1,8 +1,7 @@
 // ciel-test: error
-// expect-error: variant `Wrap` payload #0
-// expect-error: field `ptr`
-// expect-error: closure capture #0
-// expect-error: raw pointer
+// expect-error: generic constraint not satisfied
+// expect-error: `Envelope` does not implement `clone_message`
+// expect-error: `closure#0<i64 |()|>` does not implement `clone_message`
 
 import /std/message;
 

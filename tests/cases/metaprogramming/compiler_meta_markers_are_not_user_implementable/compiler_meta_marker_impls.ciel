@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: compiler-provided marker
+// expect-error: cannot be implemented in source
+
+import /std/meta;
+
+impl ciel_fn_value_marker(*i64 value) {
+    return true;
+}
+
+impl closure_value_marker(*bool value) {
+    return true;
+}

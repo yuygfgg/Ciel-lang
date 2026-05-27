@@ -1,5 +1,6 @@
 // ciel-test: error
-// expect-error: explicit `ThreadLocal` witness
+// expect-error: closure conversion requires
+// expect-error: implement `thread_local_marker`
 
 import /std/lib;
 

@@ -8,9 +8,10 @@ use crate::{
     std_id,
     thir::*,
     types::{
-        ConstraintBounds, ConstraintRef, Ty, aggregate_instance_name, callable_ret_params_ty,
-        closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
-        contains_generic, contains_type_hole, mangle_ty_fragment, meta_product_ty,
+        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_MESSAGE_CLONE_INTERFACE,
+        Ty, aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
+        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
+        mangle_ty_fragment, meta_named, meta_product_ty, meta_repr_borrowed_array_leaf_ty,
         meta_repr_marker_name, meta_sum_ty, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_error_ty, std_meta_repr_marker_ty,
         std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
@@ -117,24 +118,10 @@ struct ImplAnalysis {
     params: Vec<Ty>,
 }
 
-#[derive(Clone, Debug)]
-struct MessageDerivationFailure {
-    path: Vec<String>,
-    ty: Ty,
-    reason: MessageDerivationFailureReason,
-}
-
-#[derive(Clone, Debug)]
-enum MessageDerivationFailureReason {
-    ExplicitThreadLocal,
-    RawPointer,
-    ActorLocalSlice,
-    DynamicInterface,
-    ExternCFunctionPointer,
-    ErasedClosure,
-    OpaqueCHandle,
-    Generic,
-    Unknown,
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CompilerMarkerDomain {
+    CielFnValue,
+    ClosureValue,
 }
 
 #[derive(Clone, Debug)]
@@ -1926,39 +1913,126 @@ impl TypeChecker {
         borrowed: bool,
         emit_diagnostics: bool,
     ) -> Option<Ty> {
+        let root = (!borrowed).then(|| source_ty.unqualified().clone());
+        let mut expanding = HashSet::new();
+        self.meta_repr_ty_inner_rec(
+            span,
+            source_ty,
+            borrowed,
+            emit_diagnostics,
+            root.as_ref(),
+            &mut expanding,
+        )
+    }
+
+    fn meta_repr_ty_inner_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        borrowed: bool,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
             return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
         }
         match source_ty.unqualified() {
+            Ty::Array { len, elem } => {
+                self.check_meta_array_budget(span, source_ty, *len, elem, emit_diagnostics)?;
+                Some(if borrowed {
+                    meta_repr_borrowed_array_leaf_ty(source_ty)
+                } else {
+                    self.meta_array_repr_ty_inner(
+                        span,
+                        *len,
+                        elem,
+                        false,
+                        emit_diagnostics,
+                        root,
+                        expanding,
+                    )?
+                })
+            }
             Ty::Named { name, args } => {
                 let instance_ty = Ty::Named {
                     name: name.clone(),
                     args: args.clone(),
                 };
+                if !expanding.insert(instance_ty.clone()) {
+                    if emit_diagnostics {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "meta structural representation is recursive through `{source_ty}`"
+                            ),
+                        ));
+                    }
+                    return None;
+                }
                 self.ensure_struct_instance(&instance_ty);
                 let instance_name = enum_instance_name(name, args);
                 if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    let mut field_tys = Vec::new();
+                    for (_, ty) in fields {
+                        field_tys.push(self.meta_repr_field_ty(
+                            span,
+                            &ty,
+                            borrowed,
+                            emit_diagnostics,
+                            root,
+                            expanding,
+                        )?);
+                    }
+                    expanding.remove(&instance_ty);
                     return Some(meta_product_ty(
-                        fields.into_iter().map(|(_, ty)| ty),
+                        field_tys,
                         if borrowed { "FieldRef" } else { "Field" },
                     ));
                 }
                 self.ensure_enum_instance(&instance_ty);
                 if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
-                    return Some(meta_sum_ty(
-                        enm.variants.iter().map(|variant| variant.payload.clone()),
-                        borrowed,
-                    ));
+                    let mut variants = Vec::new();
+                    for variant in enm.variants {
+                        let mut payloads = Vec::new();
+                        for payload in variant.payload {
+                            payloads.push(self.meta_repr_field_ty(
+                                span,
+                                &payload,
+                                borrowed,
+                                emit_diagnostics,
+                                root,
+                                expanding,
+                            )?);
+                        }
+                        variants.push(payloads);
+                    }
+                    expanding.remove(&instance_ty);
+                    return Some(meta_sum_ty(variants, borrowed));
                 }
+                expanding.remove(&instance_ty);
                 if emit_diagnostics {
                     self.push_meta_unsupported_repr(span, source_ty);
                 }
                 None
             }
-            Ty::ClosureInstance { captures, .. } => Some(meta_product_ty(
-                captures.iter().filter(|ty| !ty.is_erased_value()).cloned(),
-                if borrowed { "FieldRef" } else { "Field" },
-            )),
+            Ty::ClosureInstance { captures, .. } => {
+                let mut capture_tys = Vec::new();
+                for ty in captures.iter().filter(|ty| !ty.is_erased_value()) {
+                    capture_tys.push(self.meta_repr_field_ty(
+                        span,
+                        ty,
+                        borrowed,
+                        emit_diagnostics,
+                        root,
+                        expanding,
+                    )?);
+                }
+                Some(meta_product_ty(
+                    capture_tys,
+                    if borrowed { "FieldRef" } else { "Field" },
+                ))
+            }
             Ty::Closure { .. } => {
                 if emit_diagnostics {
                     self.diagnostics.push(Diagnostic::new(
@@ -1977,6 +2051,132 @@ impl TypeChecker {
                 None
             }
         }
+    }
+
+    fn meta_repr_field_ty(
+        &mut self,
+        span: Option<crate::span::Span>,
+        ty: &Ty,
+        borrowed: bool,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if borrowed {
+            return Some(meta_repr_borrowed_array_leaf_ty(ty));
+        }
+        self.meta_repr_owned_leaf_ty_inner(span, ty, emit_diagnostics, root, expanding)
+    }
+
+    fn meta_repr_owned_leaf_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        ty: &Ty,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if self.is_owned_meta_policy_leaf(ty, root) {
+            return Some(ty.unqualified().clone());
+        }
+        match ty.unqualified() {
+            Ty::Array { len, elem } => {
+                self.check_meta_array_budget(span, ty, *len, elem, emit_diagnostics)?;
+                self.meta_array_repr_ty_inner(
+                    span,
+                    *len,
+                    elem,
+                    false,
+                    emit_diagnostics,
+                    root,
+                    expanding,
+                )
+            }
+            Ty::Named { .. } | Ty::ClosureInstance { .. } => {
+                self.meta_repr_ty_inner_rec(span, ty, false, emit_diagnostics, root, expanding)
+            }
+            other => Some(other.clone()),
+        }
+    }
+
+    fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
+        if root.is_some_and(|root| ty.unqualified() == root)
+            || contains_generic(ty)
+            || contains_type_hole(ty)
+        {
+            return false;
+        }
+        matches!(ty.unqualified(), Ty::Named { .. }) && self.type_implements_message(ty)
+    }
+
+    fn meta_array_repr_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        len: usize,
+        elem: &Ty,
+        borrowed: bool,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if len == 0 {
+            return Some(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let elem_ty = if borrowed {
+                meta_repr_borrowed_array_leaf_ty(elem)
+            } else {
+                self.meta_repr_owned_leaf_ty_inner(span, elem, emit_diagnostics, root, expanding)?
+            };
+            return Some(meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]));
+        }
+        let split = crate::types::meta_array_split_len(len);
+        Some(meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_array_repr_ty_inner(
+                    span,
+                    split,
+                    elem,
+                    borrowed,
+                    emit_diagnostics,
+                    root,
+                    expanding,
+                )?,
+                self.meta_array_repr_ty_inner(
+                    span,
+                    len - split,
+                    elem,
+                    borrowed,
+                    emit_diagnostics,
+                    root,
+                    expanding,
+                )?,
+            ],
+        ))
+    }
+
+    fn check_meta_array_budget(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        len: usize,
+        elem: &Ty,
+        emit_diagnostics: bool,
+    ) -> Option<()> {
+        let cost = crate::types::meta_array_expansion_cost(len, elem)?;
+        if cost <= META_ARRAY_EXPANSION_BUDGET {
+            return Some(());
+        }
+        if emit_diagnostics {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "meta::Repr<{source_ty}> expands too many structural array nodes; use an explicit Message wrapper or an owned buffer type"
+                ),
+            ));
+        }
+        None
     }
 
     fn push_meta_unsupported_repr(
@@ -2297,6 +2497,16 @@ impl TypeChecker {
                 let Some(interface) = self.interfaces.get(&interface_def).cloned() else {
                     continue;
                 };
+                if self.is_compiler_provided_meta_marker_def(interface_def) {
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!(
+                            "`{}` is a compiler-provided marker and cannot be implemented in source",
+                            interface.name
+                        ),
+                    ));
+                    continue;
+                }
 
                 let Some(analysis) = self.analyze_impl_signature(item.span, decl, &interface)
                 else {
@@ -2304,7 +2514,7 @@ impl TypeChecker {
                 };
                 self.check_generic_marker_impl_overlap(item.span, &analysis);
                 if analysis.generics.is_empty() {
-                    self.instantiate_impl_body(
+                    let _ = self.instantiate_impl_body(
                         module.id,
                         decl,
                         &analysis.interface_name,
@@ -2337,12 +2547,25 @@ impl TypeChecker {
         analysis: &ImplAnalysis,
     ) {
         if analysis.generics.is_empty()
-            || !self.is_builtin_marker_interface_name(&analysis.interface_name)
+            || !self.is_std_message_capability_interface_name(&analysis.interface_name)
         {
             return;
         }
-        for template in &self.generic_impls {
+        let current_domain =
+            self.compiler_marker_domain_for_impl(&analysis.generics, analysis.receiver_ty.as_ref());
+        let templates = self.generic_impls.clone();
+        for template in &templates {
             if template.interface_name != analysis.interface_name {
+                continue;
+            }
+            let template_domain = self
+                .compiler_marker_domain_for_impl(&template.generics, template.receiver_ty.as_ref());
+            if marker_impl_domains_disjoint(
+                current_domain,
+                analysis.receiver_ty.as_ref(),
+                template_domain,
+                template.receiver_ty.as_ref(),
+            ) {
                 continue;
             }
             if marker_impl_patterns_overlap(
@@ -2365,6 +2588,14 @@ impl TypeChecker {
             if existing.interface_name != analysis.interface_name {
                 continue;
             }
+            if marker_impl_domains_disjoint(
+                current_domain,
+                analysis.receiver_ty.as_ref(),
+                None,
+                existing.receiver_ty.as_ref(),
+            ) {
+                continue;
+            }
             if marker_impl_patterns_overlap(
                 &existing.interface_args,
                 existing.receiver_ty.as_ref(),
@@ -2380,6 +2611,36 @@ impl TypeChecker {
                 ));
                 return;
             }
+        }
+    }
+
+    fn compiler_marker_domain_for_impl(
+        &mut self,
+        generics: &[GenericInfo],
+        receiver_ty: Option<&Ty>,
+    ) -> Option<CompilerMarkerDomain> {
+        let Ty::Generic(receiver_name) = receiver_ty?.unqualified() else {
+            return None;
+        };
+        let generic = generics
+            .iter()
+            .find(|generic| generic.name == *receiver_name)?;
+        let constraint = generic.constraint.as_ref()?;
+        let subst = generics
+            .iter()
+            .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
+            .collect::<HashMap<_, _>>();
+        let bounds = self.constraint_bounds(constraint, &subst);
+        let has_ciel_fn = bounds.positive.iter().any(|entry| {
+            self.is_std_meta_ciel_fn_value_marker_name(&entry.name) && entry.args.is_empty()
+        });
+        let has_closure = bounds.positive.iter().any(|entry| {
+            self.is_std_meta_closure_value_marker_name(&entry.name) && entry.args.is_empty()
+        });
+        match (has_ciel_fn, has_closure) {
+            (true, false) => Some(CompilerMarkerDomain::CielFnValue),
+            (false, true) => Some(CompilerMarkerDomain::ClosureValue),
+            _ => None,
         }
     }
 
@@ -2536,7 +2797,7 @@ impl TypeChecker {
         ret: Ty,
         params_ty: Vec<Ty>,
         subst: &HashMap<String, Ty>,
-    ) -> ImplSig {
+    ) -> Option<ImplSig> {
         if let Some(existing) =
             self.find_impl_by_full_args(interface_name, &interface_args, receiver_ty.as_ref())
         {
@@ -2546,8 +2807,12 @@ impl TypeChecker {
                     format!("conflicting impl of `{interface_name}` for this receiver"),
                 ));
             }
-            return existing;
+            return Some(existing);
         }
+        let diagnostic_start = self.diagnostics.len();
+        let generated_start = self.generated_functions.len();
+        let impl_start = self.impls.len();
+        let synthetic_start = self.next_synthetic_def;
         let function_def = self.alloc_synthetic_def();
         let function_name = impl_function_name(interface_name, &params_ty);
         let sig = FunctionSig {
@@ -2582,7 +2847,19 @@ impl TypeChecker {
         let previous_module = self.current_module;
         self.current_module = module;
         self.type_subst_stack.push(subst.clone());
-        if let Some(body) = self.check_function_body(&sig, &body_params, &decl.body) {
+        let body = self.check_function_body(&sig, &body_params, &decl.body);
+        self.type_subst_stack.pop();
+        self.current_module = previous_module;
+        if !subst.is_empty() && self.diagnostics.len() != diagnostic_start {
+            self.diagnostics.truncate(diagnostic_start);
+            self.generated_functions.truncate(generated_start);
+            self.impls.truncate(impl_start);
+            self.functions_by_def.remove(&function_def);
+            self.functions_by_def
+                .retain(|def_id, _| def_id.0 < synthetic_start);
+            return None;
+        }
+        if let Some(body) = body {
             self.generated_functions.push(CheckedFunction {
                 def_id: function_def,
                 name: function_name,
@@ -2594,8 +2871,6 @@ impl TypeChecker {
                 body: Some(body),
             });
         }
-        self.type_subst_stack.pop();
-        self.current_module = previous_module;
         let implementation = ImplSig {
             interface_name: interface_name.to_string(),
             interface_args,
@@ -2605,7 +2880,7 @@ impl TypeChecker {
             params: params_ty,
         };
         self.impls.push(implementation.clone());
-        implementation
+        Some(implementation)
     }
 
     fn insert_function_sig(
@@ -4402,18 +4677,16 @@ impl TypeChecker {
         );
 
         if !self.type_implements_message(&state_ty) {
-            self.push_message_requirement_diagnostic(
+            self.diagnostics.push(Diagnostic::new(
                 initial_state.span,
                 format!("actor state type `{state_ty}` does not implement `Message`"),
-                &state_ty,
-            );
+            ));
         }
         if !self.type_implements_message(&message_ty) {
-            self.push_message_requirement_diagnostic(
+            self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("actor message type `{message_ty}` does not implement `Message`"),
-                &message_ty,
-            );
+            ));
         }
         let ret = std_result_ty(std_actor_ty(message_ty.clone()), std_error_ty());
         self.ensure_struct_instance(&ret);
@@ -4466,11 +4739,10 @@ impl TypeChecker {
         let value = self.check_expr(scopes, &args[1], Some(&message_ty))?;
         self.require_assignable(&message_ty, &value.ty, value.span);
         if !self.type_implements_message(&message_ty) {
-            self.push_message_requirement_diagnostic(
+            self.diagnostics.push(Diagnostic::new(
                 value.span,
                 format!("actor message type `{message_ty}` does not implement `Message`"),
-                &message_ty,
-            );
+            ));
         }
         let ret = std_result_ty(Ty::Void, std_error_ty());
         self.ensure_enum_instance(&ret);
@@ -5436,17 +5708,13 @@ impl TypeChecker {
             let bounds = self.constraint_bounds(constraint, subst);
             for capability in bounds.positive {
                 if !self.type_implements_capability(&capability.name, &capability.args, concrete) {
-                    let message = format!(
-                        "generic constraint not satisfied: `{}` does not implement `{}`",
-                        concrete, capability.name
-                    );
-                    if self.is_builtin_clone_message_name(&capability.name)
-                        && capability.args.is_empty()
-                    {
-                        self.push_message_requirement_diagnostic(span, message, concrete);
-                    } else {
-                        self.diagnostics.push(Diagnostic::new(span, message));
-                    }
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            concrete, capability.name
+                        ),
+                    ));
                 }
             }
             for capability in bounds.negative {
@@ -5718,24 +5986,7 @@ impl TypeChecker {
             });
         }
 
-        if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
-            && interface_non_receiver_args(&interface_args).is_empty()
-            && let Some(message_ty) = receiver_ty.clone()
-            && self.type_implements_builtin_message(&message_ty)
-        {
-            let ret = self.lower_type_with_subst(&interface.ret, &subst);
-            return Some(TExpr {
-                span,
-                ty: ret,
-                kind: TExprKind::BuiltinCloneMessage {
-                    value: Box::new(checked_args.remove(0)),
-                    message_ty,
-                },
-            });
-        }
-
-        let message = if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
-        {
+        let message = if std_id::is_std_message_clone_interface(&self.resolved, def_id) {
             receiver_ty
                 .as_ref()
                 .map(|ty| format!("`{ty}` does not implement `Message`"))
@@ -5743,13 +5994,7 @@ impl TypeChecker {
         } else {
             format!("no impl of `{name}` for this call")
         };
-        if std_id::is_std_message_interface(&self.resolved, def_id, "clone_message")
-            && let Some(ty) = receiver_ty.as_ref()
-        {
-            self.push_message_requirement_diagnostic(span, message, ty);
-        } else {
-            self.diagnostics.push(Diagnostic::new(span, message));
-        }
+        self.diagnostics.push(Diagnostic::new(span, message));
         None
     }
 
@@ -6533,6 +6778,9 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        if self.type_implements_compiler_provided_meta_marker(interface_name, args, receiver_ty) {
+            return true;
+        }
         if retained_closure_proves_capability(receiver_ty, interface_name, args) {
             return true;
         }
@@ -6540,27 +6788,19 @@ impl TypeChecker {
             || self
                 .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
                 .is_some()
-            || (self.is_builtin_clone_message_name(interface_name)
-                && args.is_empty()
-                && self.type_implements_message(receiver_ty))
-            || (self.is_builtin_share_handle_name(interface_name)
-                && args.is_empty()
-                && self.type_implements_share_handle(receiver_ty))
-            || (self.is_builtin_thread_local_name(interface_name)
-                && args.is_empty()
-                && self.type_implements_thread_local(receiver_ty))
     }
 
-    fn type_has_capability_impl(
-        &mut self,
+    fn type_implements_compiler_provided_meta_marker(
+        &self,
         interface_name: &str,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
-        self.find_impl(interface_name, args, receiver_ty).is_some()
-            || self
-                .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
-                .is_some()
+        args.is_empty()
+            && ((self.is_std_meta_ciel_fn_value_marker_name(interface_name)
+                && matches!(receiver_ty.unqualified(), Ty::Function { abi: None, .. }))
+                || (self.is_std_meta_closure_value_marker_name(interface_name)
+                    && matches!(receiver_ty.unqualified(), Ty::ClosureInstance { .. })))
     }
 
     fn closure_constraints_satisfied_by_ty(
@@ -6572,38 +6812,16 @@ impl TypeChecker {
     ) -> bool {
         let mut ok = true;
         for capability in &constraints.positive {
-            let has_capability =
-                self.type_implements_capability(&capability.name, &capability.args, source_ty);
-            let lacks_retained_witness = self.is_builtin_thread_local_name(&capability.name)
-                && capability.args.is_empty()
-                && has_capability
-                && !retained_closure_proves_capability(
-                    source_ty,
-                    &capability.name,
-                    &capability.args,
-                )
-                && !self.type_has_capability_impl(&capability.name, &capability.args, source_ty);
-            if !has_capability || lacks_retained_witness {
+            if !self.type_implements_capability(&capability.name, &capability.args, source_ty) {
                 ok = false;
                 if emit_diagnostics {
-                    let message = if lacks_retained_witness {
-                        format!(
-                            "closure conversion requires `{}` to provide an explicit `ThreadLocal` witness",
-                            source_ty
-                        )
-                    } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
                         format!(
                             "closure conversion requires `{}` to implement `{}`",
                             source_ty, capability.name
-                        )
-                    };
-                    if self.is_builtin_clone_message_name(&capability.name)
-                        && capability.args.is_empty()
-                    {
-                        self.push_message_requirement_diagnostic(span, message, source_ty);
-                    } else {
-                        self.diagnostics.push(Diagnostic::new(span, message));
-                    }
+                        ),
+                    ));
                 }
             }
         }
@@ -6625,453 +6843,14 @@ impl TypeChecker {
     }
 
     fn type_implements_message(&mut self, ty: &Ty) -> bool {
-        self.type_implements_message_inner(ty, &mut HashSet::new())
-    }
-
-    fn push_message_requirement_diagnostic(
-        &mut self,
-        span: crate::span::Span,
-        message: impl Into<String>,
-        ty: &Ty,
-    ) {
-        let message = message.into();
-        let mut diagnostic = Diagnostic::new(span, message.clone());
-        if let Some(failure) = self.message_derivation_failure(ty) {
-            let failure = self.format_message_derivation_failure(&failure);
-            diagnostic.message = format!("{message}; {failure}");
-            diagnostic = diagnostic.note(failure);
-        }
-        self.diagnostics.push(diagnostic);
-    }
-
-    fn message_derivation_failure(&mut self, ty: &Ty) -> Option<MessageDerivationFailure> {
-        self.message_derivation_failure_inner(ty, &mut HashSet::new())
-    }
-
-    fn message_derivation_failure_inner(
-        &mut self,
-        ty: &Ty,
-        seen: &mut HashSet<Ty>,
-    ) -> Option<MessageDerivationFailure> {
-        let ty = ty.unqualified();
-        if !seen.insert(ty.clone()) {
-            return None;
-        }
-        if self.type_has_clone_message_impl(ty) || self.type_implements_builtin_message(ty) {
-            return None;
-        }
-        if let Some(reason) = self.direct_message_block_reason(ty) {
-            return Some(MessageDerivationFailure {
-                path: Vec::new(),
-                ty: ty.clone(),
-                reason,
-            });
-        }
-        match ty {
-            Ty::Const(inner) => self.message_derivation_failure_inner(inner, seen),
-            Ty::Array { elem, .. } => {
-                self.message_derivation_failure_inner(elem, seen)
-                    .map(|mut failure| {
-                        failure.path.insert(0, "array element".to_string());
-                        failure
-                    })
-            }
-            Ty::ClosureInstance { captures, .. } => {
-                captures.iter().enumerate().find_map(|(idx, capture)| {
-                    self.message_derivation_failure_inner(capture, seen)
-                        .map(|mut failure| {
-                            failure.path.insert(0, format!("closure capture #{idx}"));
-                            failure
-                        })
-                })
-            }
-            Ty::Named { name, args } => {
-                if let Some(failure) = self.meta_message_derivation_failure(name, args, seen) {
-                    return Some(failure);
-                }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
-                self.ensure_struct_instance(&instance_ty);
-                self.ensure_enum_instance(&instance_ty);
-                let instance_name = enum_instance_name(name, args);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
-                    return fields.into_iter().find_map(|(field, field_ty)| {
-                        self.message_derivation_failure_inner(&field_ty, seen)
-                            .map(|mut failure| {
-                                failure.path.insert(0, format!("field `{field}`"));
-                                failure
-                            })
-                    });
-                }
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
-                    return enm.variants.into_iter().find_map(|variant| {
-                        variant
-                            .payload
-                            .into_iter()
-                            .enumerate()
-                            .find_map(|(idx, payload)| {
-                                self.message_derivation_failure_inner(&payload, seen).map(
-                                    |mut failure| {
-                                        failure.path.insert(
-                                            0,
-                                            format!("variant `{}` payload #{idx}", variant.name),
-                                        );
-                                        failure
-                                    },
-                                )
-                            })
-                    });
-                }
-                Some(MessageDerivationFailure {
-                    path: Vec::new(),
-                    ty: ty.clone(),
-                    reason: MessageDerivationFailureReason::Unknown,
-                })
-            }
-            Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Function { abi: None, .. } => None,
-            Ty::Pointer { .. }
-            | Ty::Slice(_)
-            | Ty::DynamicInterface { .. }
-            | Ty::Function { abi: Some(_), .. }
-            | Ty::Closure { .. }
-            | Ty::Generic(_)
-            | Ty::Unknown => Some(MessageDerivationFailure {
-                path: Vec::new(),
-                ty: ty.clone(),
-                reason: self
-                    .direct_message_block_reason(ty)
-                    .unwrap_or(MessageDerivationFailureReason::Unknown),
-            }),
-        }
-    }
-
-    fn meta_message_derivation_failure(
-        &mut self,
-        name: &str,
-        args: &[Ty],
-        seen: &mut HashSet<Ty>,
-    ) -> Option<MessageDerivationFailure> {
-        match name {
-            "Field" => self.message_derivation_child_failure(args.get(0), "meta field value", seen),
-            "Payload" => {
-                self.message_derivation_child_failure(args.get(0), "meta payload value", seen)
-            }
-            "Variant" => {
-                self.message_derivation_child_failure(args.get(0), "meta variant payload", seen)
-            }
-            "HCons" => self
-                .message_derivation_child_failure(args.get(0), "meta head", seen)
-                .or_else(|| self.message_derivation_child_failure(args.get(1), "meta tail", seen)),
-            "Coproduct" => self
-                .message_derivation_child_failure(args.get(0), "meta variant", seen)
-                .or_else(|| self.message_derivation_child_failure(args.get(1), "meta next", seen)),
-            "HNil" | "CoNil" => None,
-            _ => None,
-        }
-    }
-
-    fn message_derivation_child_failure(
-        &mut self,
-        ty: Option<&Ty>,
-        label: &str,
-        seen: &mut HashSet<Ty>,
-    ) -> Option<MessageDerivationFailure> {
-        ty.and_then(|ty| {
-            self.message_derivation_failure_inner(ty, seen)
-                .map(|mut failure| {
-                    failure.path.insert(0, label.to_string());
-                    failure
-                })
-        })
-    }
-
-    fn direct_message_block_reason(&mut self, ty: &Ty) -> Option<MessageDerivationFailureReason> {
-        let ty = ty.unqualified();
-        if self.find_impl("thread_local_marker", &[], ty).is_some()
-            || self
-                .instantiate_generic_impl_for_receiver("thread_local_marker", &[], ty, None)
-                .is_some()
-        {
-            return Some(MessageDerivationFailureReason::ExplicitThreadLocal);
-        }
-        match ty {
-            Ty::Const(inner) => self.direct_message_block_reason(inner),
-            Ty::Pointer { .. } => Some(MessageDerivationFailureReason::RawPointer),
-            Ty::Slice(_) => Some(MessageDerivationFailureReason::ActorLocalSlice),
-            Ty::DynamicInterface { .. } => Some(MessageDerivationFailureReason::DynamicInterface),
-            Ty::Function { abi: Some(_), .. } => {
-                Some(MessageDerivationFailureReason::ExternCFunctionPointer)
-            }
-            Ty::Closure { .. } if !retained_closure_proves_capability(ty, "clone_message", &[]) => {
-                Some(MessageDerivationFailureReason::ErasedClosure)
-            }
-            Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name) => {
-                Some(MessageDerivationFailureReason::OpaqueCHandle)
-            }
-            Ty::Generic(_) => Some(MessageDerivationFailureReason::Generic),
-            Ty::Unknown => Some(MessageDerivationFailureReason::Unknown),
-            _ => None,
-        }
-    }
-
-    fn format_message_derivation_failure(&self, failure: &MessageDerivationFailure) -> String {
-        let location = if failure.path.is_empty() {
-            format!("`{}`", failure.ty)
-        } else {
-            format!("{} (`{}`)", failure.path.join(" -> "), failure.ty)
-        };
-        let reason = match failure.reason {
-            MessageDerivationFailureReason::ExplicitThreadLocal => {
-                "has an explicit `ThreadLocal` policy"
-            }
-            MessageDerivationFailureReason::RawPointer => {
-                "contains a raw pointer, which is actor-local by default"
-            }
-            MessageDerivationFailureReason::ActorLocalSlice => {
-                "contains a slice view without an owning `Message` container policy"
-            }
-            MessageDerivationFailureReason::DynamicInterface => {
-                "contains a dynamic interface value without a concrete message path"
-            }
-            MessageDerivationFailureReason::ExternCFunctionPointer => {
-                "contains an extern C function pointer"
-            }
-            MessageDerivationFailureReason::ErasedClosure => {
-                "contains an erased closure signature rather than a concrete closure value"
-            }
-            MessageDerivationFailureReason::OpaqueCHandle => {
-                "contains an opaque C handle without an explicit wrapper policy"
-            }
-            MessageDerivationFailureReason::Generic => {
-                "still contains an unconstrained generic type"
-            }
-            MessageDerivationFailureReason::Unknown => "has no structural `Message` derivation",
-        };
-        format!("Message derivation blocked at {location}: {reason}.")
-    }
-
-    fn type_implements_builtin_message(&mut self, ty: &Ty) -> bool {
-        if self.type_has_direct_thread_local_policy(ty) {
-            return false;
-        }
-        self.type_implements_builtin_message_inner(ty, &mut HashSet::new())
-    }
-
-    fn type_implements_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
-        if retained_closure_proves_capability(ty, "clone_message", &[]) {
+        if retained_closure_proves_capability(ty, STD_MESSAGE_CLONE_INTERFACE, &[]) {
             return true;
         }
-        if self.find_impl("clone_message", &[], ty).is_some() {
-            return true;
-        }
-        if self
-            .instantiate_generic_impl_for_receiver("clone_message", &[], ty, None)
+        self.find_impl(STD_MESSAGE_CLONE_INTERFACE, &[], ty)
             .is_some()
-        {
-            return true;
-        }
-        if self.type_has_direct_thread_local_policy(ty) {
-            return false;
-        }
-        self.type_implements_builtin_message_inner(ty, seen)
-    }
-
-    fn type_implements_builtin_message_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
-        let ty = ty.unqualified();
-        if !seen.insert(ty.clone()) {
-            return true;
-        }
-        if retained_closure_proves_capability(ty, "clone_message", &[]) {
-            return true;
-        }
-        match ty {
-            Ty::Bool
-            | Ty::Void
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. } => true,
-            Ty::Const(inner) => self.type_implements_message_inner(inner, seen),
-            Ty::Array { elem, .. } => self.type_implements_message_inner(elem, seen),
-            Ty::Function { abi: None, .. } => true,
-            Ty::ClosureInstance { captures, .. } => captures
-                .iter()
-                .all(|capture| self.type_implements_message_inner(capture, seen)),
-            Ty::Named { .. } => false,
-            Ty::Hole(_)
-            | Ty::Never
-            | Ty::Pointer { .. }
-            | Ty::Slice(_)
-            | Ty::DynamicInterface { .. }
-            | Ty::Function { abi: Some(_), .. }
-            | Ty::Closure { .. }
-            | Ty::Generic(_)
-            | Ty::Unknown => false,
-        }
-    }
-
-    fn type_implements_share_handle(&mut self, ty: &Ty) -> bool {
-        self.find_impl("share_handle_marker", &[], ty).is_some()
             || self
-                .instantiate_generic_impl_for_receiver("share_handle_marker", &[], ty, None)
+                .instantiate_generic_impl_for_receiver(STD_MESSAGE_CLONE_INTERFACE, &[], ty, None)
                 .is_some()
-    }
-
-    fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
-        self.type_implements_thread_local_inner(ty, &mut HashSet::new())
-    }
-
-    fn type_implements_thread_local_inner(&mut self, ty: &Ty, seen: &mut HashSet<Ty>) -> bool {
-        let ty = ty.unqualified();
-        if !seen.insert(ty.clone()) {
-            return false;
-        }
-
-        if self.type_has_direct_thread_local_policy(ty) {
-            return true;
-        }
-        if self.type_implements_share_handle(ty) || self.type_has_clone_message_impl(ty) {
-            return false;
-        }
-
-        match ty {
-            Ty::Const(inner) => self.type_implements_thread_local_inner(inner, seen),
-            Ty::Array { elem, .. } => self.type_implements_thread_local_inner(elem, seen),
-            Ty::ClosureInstance { captures, .. } => captures
-                .iter()
-                .any(|capture| self.type_implements_thread_local_inner(capture, seen)),
-            Ty::Named { name, args } => {
-                let instance_name = enum_instance_name(name, args);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
-                    return fields.iter().any(|(_, field_ty)| {
-                        self.type_implements_thread_local_inner(field_ty, seen)
-                    });
-                }
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
-                    return enm.variants.iter().any(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .any(|payload| self.type_implements_thread_local_inner(payload, seen))
-                    });
-                }
-                false
-            }
-            Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Pointer { .. }
-            | Ty::Slice(_)
-            | Ty::DynamicInterface { .. }
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Generic(_)
-            | Ty::Unknown => false,
-        }
-    }
-
-    fn type_has_clone_message_impl(&mut self, ty: &Ty) -> bool {
-        self.find_impl("clone_message", &[], ty).is_some()
-            || self
-                .instantiate_generic_impl_for_receiver("clone_message", &[], ty, None)
-                .is_some()
-    }
-
-    fn type_has_direct_thread_local_policy(&mut self, ty: &Ty) -> bool {
-        let ty = ty.unqualified();
-        if self.find_impl("thread_local_marker", &[], ty).is_some() {
-            return true;
-        }
-        if self
-            .instantiate_generic_impl_for_receiver("thread_local_marker", &[], ty, None)
-            .is_some()
-        {
-            return true;
-        }
-
-        match ty {
-            Ty::Const(inner) => self.type_has_direct_thread_local_policy(inner),
-            Ty::Pointer { .. }
-            | Ty::Slice(_)
-            | Ty::DynamicInterface { .. }
-            | Ty::Function { abi: Some(_), .. } => true,
-            Ty::Closure { constraints, .. } => {
-                constraints.is_empty()
-                    || constraints.positive.iter().any(|entry| {
-                        self.is_builtin_thread_local_name(&entry.name) && entry.args.is_empty()
-                    })
-            }
-            Ty::Named { name, args } => {
-                if args.is_empty() && self.opaque_structs.contains(name) {
-                    return true;
-                }
-                false
-            }
-            Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Array { .. }
-            | Ty::Function { abi: None, .. }
-            | Ty::ClosureInstance { .. }
-            | Ty::Generic(_)
-            | Ty::Unknown => false,
-        }
     }
 
     fn find_impl_by_full_args(
@@ -7196,7 +6975,7 @@ impl TypeChecker {
             ));
         }
         if matches.len() > 1 {
-            if self.is_builtin_marker_interface_name(interface_name) {
+            if self.is_std_message_capability_interface_name(interface_name) {
                 self.diagnostics.push(Diagnostic::new(
                     span.unwrap_or(matches[0].0.item_span),
                     format!("ambiguous generic impls for marker interface `{interface_name}`"),
@@ -7207,7 +6986,7 @@ impl TypeChecker {
         if let Some((template, concrete_interface_args, concrete_receiver, ret, params, subst)) =
             matches.into_iter().next()
         {
-            return Some(self.instantiate_impl_body(
+            return self.instantiate_impl_body(
                 template.module,
                 &template.decl,
                 &template.interface_name,
@@ -7216,7 +6995,7 @@ impl TypeChecker {
                 ret,
                 params,
                 &subst,
-            ));
+            );
         }
         None
     }
@@ -7440,48 +7219,50 @@ impl TypeChecker {
         Some((args[0].clone(), args[1].clone()))
     }
 
-    fn is_builtin_clone_message_name(&self, name: &str) -> bool {
-        name == "clone_message"
-            && self
-                .interface_names
-                .get(name)
-                .is_some_and(|def_id| {
-                    std_id::is_std_message_interface(&self.resolved, *def_id, "clone_message")
-                })
+    fn is_std_message_clone_interface_name(&self, name: &str) -> bool {
+        name == STD_MESSAGE_CLONE_INTERFACE
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_message_clone_interface(&self.resolved, *def_id)
+            })
     }
 
-    fn is_builtin_share_handle_name(&self, name: &str) -> bool {
+    fn is_std_message_share_handle_marker_name(&self, name: &str) -> bool {
         name == "share_handle_marker"
-            && self
-                .interface_names
-                .get(name)
-                .is_some_and(|def_id| {
-                    std_id::is_std_message_interface(
-                        &self.resolved,
-                        *def_id,
-                        "share_handle_marker",
-                    )
-                })
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_message_interface(&self.resolved, *def_id, "share_handle_marker")
+            })
     }
 
-    fn is_builtin_thread_local_name(&self, name: &str) -> bool {
+    fn is_std_message_thread_local_marker_name(&self, name: &str) -> bool {
         name == "thread_local_marker"
-            && self
-                .interface_names
-                .get(name)
-                .is_some_and(|def_id| {
-                    std_id::is_std_message_interface(
-                        &self.resolved,
-                        *def_id,
-                        "thread_local_marker",
-                    )
-                })
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_message_interface(&self.resolved, *def_id, "thread_local_marker")
+            })
     }
 
-    fn is_builtin_marker_interface_name(&self, name: &str) -> bool {
-        self.is_builtin_clone_message_name(name)
-            || self.is_builtin_share_handle_name(name)
-            || self.is_builtin_thread_local_name(name)
+    fn is_std_meta_ciel_fn_value_marker_name(&self, name: &str) -> bool {
+        name == "ciel_fn_value_marker"
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_meta_interface(&self.resolved, *def_id, "ciel_fn_value_marker")
+            })
+    }
+
+    fn is_std_meta_closure_value_marker_name(&self, name: &str) -> bool {
+        name == "closure_value_marker"
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_meta_interface(&self.resolved, *def_id, "closure_value_marker")
+            })
+    }
+
+    fn is_compiler_provided_meta_marker_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_meta_interface(&self.resolved, def_id, "ciel_fn_value_marker")
+            || std_id::is_std_meta_interface(&self.resolved, def_id, "closure_value_marker")
+    }
+
+    fn is_std_message_capability_interface_name(&self, name: &str) -> bool {
+        self.is_std_message_clone_interface_name(name)
+            || self.is_std_message_share_handle_marker_name(name)
+            || self.is_std_message_thread_local_marker_name(name)
     }
 
     fn apply_condition_narrowing(&mut self, scopes: &mut LocalScopes, cond: &TExpr, truth: bool) {
@@ -7855,6 +7636,40 @@ fn marker_impl_patterns_overlap(
             .iter()
             .zip(right_args.iter())
             .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+}
+
+fn marker_impl_domains_disjoint(
+    left_domain: Option<CompilerMarkerDomain>,
+    left_receiver: Option<&Ty>,
+    right_domain: Option<CompilerMarkerDomain>,
+    right_receiver: Option<&Ty>,
+) -> bool {
+    match (left_domain, right_domain) {
+        (Some(left), Some(right)) if left != right => return true,
+        _ => {}
+    }
+
+    if let (Some(domain), Some(receiver)) = (left_domain, right_receiver)
+        && !ty_can_satisfy_compiler_marker_domain(receiver, domain)
+    {
+        return true;
+    }
+    if let (Some(domain), Some(receiver)) = (right_domain, left_receiver)
+        && !ty_can_satisfy_compiler_marker_domain(receiver, domain)
+    {
+        return true;
+    }
+    false
+}
+
+fn ty_can_satisfy_compiler_marker_domain(ty: &Ty, domain: CompilerMarkerDomain) -> bool {
+    match (ty.unqualified(), domain) {
+        (Ty::Generic(_), _) => true,
+        (Ty::Const(inner), domain) => ty_can_satisfy_compiler_marker_domain(inner, domain),
+        (Ty::Function { abi: None, .. }, CompilerMarkerDomain::CielFnValue) => true,
+        (Ty::ClosureInstance { .. }, CompilerMarkerDomain::ClosureValue) => true,
+        _ => false,
+    }
 }
 
 fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {

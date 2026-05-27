@@ -3,7 +3,7 @@
 
 import /std/message;
 
-Result<[]i64, Error> copy_slice([]i64 values) {
-    []i64 local = values;
+Result<[3]i64, Error> copy_array([3]i64 values) {
+    [3]i64 local = values;
     return clone_message(&local);
 }

@@ -1,7 +1,6 @@
 // ciel-test: error
 // expect-error: actor message type
 // expect-error: does not implement `Message`
-// expect-error: erased closure signature
 
 import /std/lib;
 

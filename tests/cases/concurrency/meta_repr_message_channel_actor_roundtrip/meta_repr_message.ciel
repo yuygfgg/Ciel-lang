@@ -11,7 +11,6 @@ struct Packet {
 }
 
 struct State {
-    Channel<i64> out;
     i64 total;
 }
 
@@ -31,7 +30,7 @@ Result<meta::Repr<State>, Error> handle(
             state.total = state.total + value;
             return Ok(meta::into_repr(state));
         case Flush:
-            channel_send(&state.out, state.total)?;
+            print("{}", [state.total])?;
             return Ok(meta::into_repr(state));
     }
 }
@@ -43,8 +42,7 @@ i64 main() {
     Packet received = meta::from_repr<Packet>(must(channel_recv(&packets)));
     must(channel_close(&packets));
 
-    Channel<i64> out = must(make_channel<i64>());
-    State initial = { out: out, total: received.value };
+    State initial = { total: received.value };
     Actor<meta::Repr<Command>> actor = must(spawn_actor<meta::Repr<State>, meta::Repr<Command>>(
         meta::into_repr(initial),
         handle
@@ -54,9 +52,6 @@ i64 main() {
     must(send(&actor, meta::into_repr(Add(9))));
     must(send(&actor, meta::into_repr(Flush)));
 
-    i64 total = must(channel_recv(&out));
     must(join(&actor));
-    must(channel_close(&out));
-    must(print("{}", [total]));
     return 0;
 }

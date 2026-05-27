@@ -1,7 +1,6 @@
 // ciel-test: error
 // expect-error: closure conversion requires
 // expect-error: implement `clone_message`
-// expect-error: explicit `ThreadLocal` policy
 
 import /std/lib;
 

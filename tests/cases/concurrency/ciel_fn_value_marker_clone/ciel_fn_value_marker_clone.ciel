@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 9
+
+import /std/lib;
+
+i64 add_two(i64 value) {
+    return value + 2;
+}
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 main() {
+    i64 fn(i64) op = add_two;
+    i64 fn(i64) copied = clone_value(op);
+    return copied(7);
+}

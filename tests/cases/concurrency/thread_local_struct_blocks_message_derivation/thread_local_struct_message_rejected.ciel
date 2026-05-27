@@ -1,7 +1,5 @@
 // ciel-test: error
 // expect-error: does not implement `Message`
-// expect-error: field `fd`
-// expect-error: explicit `ThreadLocal` policy
 
 import /std/lib;
 

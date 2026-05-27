@@ -1017,6 +1017,19 @@ meta::RefRepr<Token>
 // >
 ```
 
+Fixed-size arrays are structural only through owned representation. `Repr<[0]T>`
+normalizes to `ArrayNil`, `Repr<[1]T>` through `Repr<[16]T>` normalize to
+`ArrayChunk1<T>` through `ArrayChunk16<T>`, and larger arrays normalize to a
+balanced `ArrayCat<L, R>` tree of bounded chunks. Nested fixed arrays are
+expanded recursively in owned leaves, including struct fields, enum payloads,
+and closure captures. Borrowed representation leaves arrays as borrowed array
+leaves such as `FieldRef<[N]T>`.
+
+Array representation expansion is budgeted. Very large static arrays are bulk
+storage rather than record-shaped structural data; using `meta::Repr<[N]T>` past
+the budget is rejected and should be replaced by an explicit wrapper policy or
+an owned buffer type.
+
 For a concrete closure instance, structural representation exposes the captured
 environment as an `HCons` product in capture order. Captures are named
 `capture#0`, `capture#1`, and so on in the value-level metadata. Erased closure
@@ -1073,6 +1086,15 @@ type PacketMessage = meta::Repr<Packet>;
 payload leaf lacks `Message`, ordinary generic constraint checking rejects the
 representation. Code that wants the original nominal type itself to cross an
 actor or channel boundary must write an explicit `clone_message(*T)` policy.
+
+Owned representation recursively expands structs, enums, concrete closures, and
+fixed-size arrays where no nominal policy boundary exists. A nested named field
+or payload that already has an ordinary `clone_message` impl remains a leaf and
+is cloned through that impl by the SOP policy. The top-level `meta::Repr<T>`
+still reflects `T` itself, so this rule does not make `T` directly implement
+`Message` and does not hide its fields when code explicitly asks for
+`meta::Repr<T>`. Concrete closure instances are not opaque policy leaves; their
+standard-library `clone_message` impl reflects captures through `meta::Repr<C>`.
 
 Structural metaprogramming is not a text macro system. It does not generate
 Ciel source, paste tokens, or run before name resolution. The order is:
@@ -1359,14 +1381,21 @@ impl clone_message(*Event value) {
 }
 ```
 
-The implementation still treats fixed-size arrays, Ciel ABI `fn` values, and
-concrete closure instances as compiler-known message leaves because the current
-type system cannot express const-generic array policies or callable-kind
-library impls. Capability-erased closure values do not add an actor-specific
-exception: they retain whichever capability witnesses the source type already
-proved. Raw pointers, slices, dynamic interface values, plain erased closure
-signatures, extern C function pointers, and opaque C handles do not implement
-`Message` without an explicit policy.
+Fixed-size arrays, Ciel ABI `fn` values, and concrete closure instances are not
+compiler-known `Message` leaves. The compiler only normalizes fixed-size arrays
+inside `meta::Repr`, provides compiler-owned marker facts for Ciel ABI function
+values and concrete closure instances, and emits `into_repr` / `from_repr`
+code. `/std/message` owns the ordinary impls: function values clone by copying
+the Ciel ABI function pointer, concrete closures clone by converting their
+capture environment through `meta::Repr<C>`, and array representation nodes
+clone through `ArrayNil`, `ArrayChunk1` through `ArrayChunk16`, and
+`ArrayCat<L, R>`.
+
+Capability-erased closure values do not add an actor-specific exception: they
+retain whichever capability witnesses the source type already proved. Raw
+pointers, slices, dynamic interface values, plain erased closure signatures,
+extern C function pointers, and opaque C handles do not implement `Message`
+without an explicit policy.
 
 The current actor runtime is backed by pthreads. `spawn_actor` clones the
 initial state and handler, creates a runtime mailbox, and starts a worker thread
@@ -1462,13 +1491,14 @@ duplicating, reconnecting, or otherwise constructing an independent receiver
 value; wrappers implement `ShareHandle` only when operations are internally
 synchronized or immutable.
 
-The compiler recognizes the standard-library concurrency marker interfaces
-`Message`, `ShareHandle`, and `ThreadLocal`. It does not synthesize
-`clone_message` implementations for user structs or enums. Structural message
-behavior is proved through the ordinary `/std/message` impls for owned
-`/std/meta` SOP nodes, and diagnostics report the SOP path when a raw pointer,
-slice, dynamic interface value, plain erased closure signature, C opaque handle,
-or other non-message leaf blocks the policy.
+The compiler recognizes canonical `/std/message` interface names only for
+generic constraint lookup, retained closure witnesses, coherence checks, and
+code generation of calls to selected ordinary impls. It does not synthesize
+`clone_message` implementations, infer `Message`, `ShareHandle`, or
+`ThreadLocal` policy from type structure, or emit policy-specific fallback
+diagnostics. Structural message behavior is proved through the ordinary
+`/std/message` impls for owned `/std/meta` SOP nodes; failures surface as the
+normal missing `clone_message` or `Message` constraint.
 
 The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
@@ -1476,12 +1506,14 @@ the existing interface-constraint machinery. Monomorphized code calls ordinary
 Whole-program coherence rejects duplicate concrete `clone_message` impls and
 ambiguous generic marker impls.
 
-Concrete closure value layouts used by the C backend include or reference the
-generated environment clone operation when the concrete closure type implements
-`Message`. `clone_message` for such a closure copies the call entry and clones
-the environment through that operation. Erased closure signature values are
-callable values, but they do not carry enough static type information to satisfy
-`Message` by default.
+Concrete closure value layouts used by the C backend expose the call entry and
+environment pointer. `clone_message` for a concrete closure is ordinary
+`/std/message` code: it reflects the concrete closure into `meta::Repr<C>`,
+clones that representation through the SOP impls, then reconstructs the
+closure. Retained closure signature values use their stored capability witness
+when the source value already proved `Message`. Erased closure signature values
+are callable values, but they do not carry enough static type information to
+satisfy `Message` by default.
 
 Runtime-backed generic APIs need code generation help only where C cannot
 express monomorphized Ciel types directly. `/std/meta` exposes

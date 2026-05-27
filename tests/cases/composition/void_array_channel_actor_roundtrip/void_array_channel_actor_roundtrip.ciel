@@ -14,11 +14,11 @@ enum Msg {
     Flush(void),
 }
 
-impl clone_message(*Marker value) {
+impl clone_message(*const Marker value) {
     return Ok(*value);
 }
 
-impl clone_message(*Msg value) {
+impl clone_message(*const Msg value) {
     return Ok(*value);
 }
 

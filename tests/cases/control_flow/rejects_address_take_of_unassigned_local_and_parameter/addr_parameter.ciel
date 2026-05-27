@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: immutable parameter
+// expect-error: expected `*i64`, got `*const i64`
 
 *i64 expose(i64 value) {
     return &value;

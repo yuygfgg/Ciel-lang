@@ -18,11 +18,11 @@ export struct Channel<T> {
     *void handle;
 }
 
-impl<T> clone_message(*Channel<T> value) {
+impl<T> clone_message(*const Channel<T> value) {
     return Ok(*value);
 }
 
-impl<T> share_handle_marker(*Channel<T> value) {
+impl<T> share_handle_marker(*const Channel<T> value) {
     return true;
 }
 
@@ -42,7 +42,7 @@ export Result<Channel<T>, Error> make_channel<T: Message>() {
     return Ok({ handle: raw as *void });
 }
 
-export Result<void, Error> channel_send<T: Message>(*Channel<T> channel, T value) {
+export Result<void, Error> channel_send<T: Message>(*const Channel<T> channel, T value) {
     T local = value;
     T cloned = clone_message(&local)?;
     c::c_int rc = ciel_channel_send(channel->handle as *CielChannel, &cloned as *const void);
@@ -52,7 +52,7 @@ export Result<void, Error> channel_send<T: Message>(*Channel<T> channel, T value
     return Ok;
 }
 
-export Result<T, Error> channel_recv<T: Message>(*Channel<T> channel) {
+export Result<T, Error> channel_recv<T: Message>(*const Channel<T> channel) {
     ?*void raw = ciel_channel_recv(channel->handle as *CielChannel);
     if (raw == null) {
         return Err(runtime_error());
@@ -62,7 +62,7 @@ export Result<T, Error> channel_recv<T: Message>(*Channel<T> channel) {
     return Ok(value);
 }
 
-export Result<void, Error> channel_close<T: Message>(*Channel<T> channel) {
+export Result<void, Error> channel_close<T: Message>(*const Channel<T> channel) {
     c::c_int rc = ciel_channel_close(channel->handle as *CielChannel);
     if ((rc as i64) != 0) {
         return Err(Code(rc as i64));

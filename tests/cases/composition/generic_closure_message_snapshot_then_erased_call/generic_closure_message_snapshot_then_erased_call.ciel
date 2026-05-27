@@ -29,7 +29,7 @@ i64 run(Slot<i64 |(i64)|> slot, i64 input) {
 }
 
 i64 main() {
-    i64 base = 2;
+    i64 @base = 2;
     Box<i64 |(i64)|> box = { value: clone_value(|i64 value| value * 3 + base) };
     base = 100;
     Slot<i64 |(i64)|> slot = Full(box);

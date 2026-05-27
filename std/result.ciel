@@ -6,7 +6,7 @@ export enum Result<T, E> {
     Err(E),
 }
 
-export T expect<T, E>(Result<T, E> value, []char message) {
+export T expect<T, E>(Result<T, E> value, []const char message) {
     switch (value) {
         case Ok(result):
             return result;

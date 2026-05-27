@@ -14,7 +14,7 @@ extern "C" {
 
 i32 main() {
     ciel_thread_attach();
-    i64 value = 42;
+    i64 @value = 42;
     *CielRoot root = ciel_root_pin(&value as *void);
     *i64 ptr = ciel_root_get(root) as *i64;
     i64 out = *ptr;

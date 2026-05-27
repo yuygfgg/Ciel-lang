@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: cannot partially initialize immutable binding `pair`
+
+struct Pair {
+    i64 left;
+    i64 right;
+}
+
+i64 main() {
+    Pair pair;
+    pair.left = 1;
+    return 0;
+}

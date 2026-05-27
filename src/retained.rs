@@ -20,7 +20,7 @@ pub fn retained_closure_can_forward_source_witness(
     source_ty: &Ty,
     capability: &ConstraintRef,
 ) -> bool {
-    matches!(source_ty.unqualified(), Ty::Closure { .. })
+    matches!(source_ty, Ty::Closure { .. })
         && retained_closure_has_capability(source_ty, capability)
 }
 
@@ -29,8 +29,7 @@ pub fn retained_closure_can_reuse_source_witness_field(
     source_ty: &Ty,
     capability: &ConstraintRef,
 ) -> bool {
-    retained_closure_can_forward_source_witness(source_ty, capability)
-        && source_ty.unqualified() == target_ty.unqualified()
+    retained_closure_can_forward_source_witness(source_ty, capability) && source_ty == target_ty
 }
 
 pub fn retained_closure_required_witnesses(target_ty: &Ty, source_ty: &Ty) -> Vec<ConstraintRef> {
@@ -43,7 +42,7 @@ pub fn retained_closure_required_witnesses(target_ty: &Ty, source_ty: &Ty) -> Ve
 }
 
 pub fn retained_closure_needs_wrapper(target_ty: &Ty, source_ty: &Ty) -> bool {
-    matches!(source_ty.unqualified(), Ty::Closure { .. })
-        && source_ty.unqualified() != target_ty.unqualified()
+    matches!(source_ty, Ty::Closure { .. })
+        && source_ty != target_ty
         && !retained_closure_capabilities(target_ty).is_empty()
 }

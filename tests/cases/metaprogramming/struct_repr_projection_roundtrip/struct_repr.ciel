@@ -8,13 +8,13 @@ struct Packet {
     bool ok;
 }
 
-interface<T> i64 count_fields(*T value);
+interface<T> i64 count_fields(*const T value);
 
-impl count_fields(*meta::HNil value) {
+impl count_fields(*const meta::HNil value) {
     return 0;
 }
 
-impl<V, Tail: count_fields> count_fields(*meta::HCons<meta::FieldRef<V>, Tail> value) {
+impl<V, Tail: count_fields> count_fields(*const meta::HCons<meta::FieldRef<V>, Tail> value) {
     return 1 + count_fields(&value->tail);
 }
 
@@ -25,7 +25,7 @@ i64 read_id(meta::RefRepr<Packet> repr) {
 i64 main() {
     Packet packet = { id: 40, ok: true };
     meta::RefRepr<Packet> refs = meta::as_ref_repr(&packet);
-    meta::Repr<Packet> owned = meta::into_repr(packet);
+    meta::Repr<Packet> owned = meta::into_repr(&packet);
     Packet copy = meta::from_repr<Packet>(owned);
     i64 count = count_fields(&refs);
     if (*refs.tail.head.value) {

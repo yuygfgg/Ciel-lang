@@ -18,11 +18,11 @@ i64 main() {
     []_ values = [1, 2, 3];
     [3]_ fixed = [4, 5, 6];
 
-    _ stable = 1;
+    _ @stable = 1;
     stable = 2;
 
-    _ total = 0;
-    for (_ i = 0; i < 3; i = i + 1) {
+    _ @total = 0;
+    for (_ @i = 0; i < 3; i = i + 1) {
         total = total + values[i as usize];
     }
 

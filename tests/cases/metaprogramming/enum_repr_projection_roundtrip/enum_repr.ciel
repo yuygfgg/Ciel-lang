@@ -9,27 +9,27 @@ enum Token {
     End,
 }
 
-interface<T> i64 count_payloads(*T value);
-interface<T> i64 active_payloads(*T value);
+interface<T> i64 count_payloads(*const T value);
+interface<T> i64 active_payloads(*const T value);
 
-impl count_payloads(*meta::HNil value) {
+impl count_payloads(*const meta::HNil value) {
     return 0;
 }
 
-impl<V, Tail: count_payloads> count_payloads(*meta::HCons<meta::PayloadRef<V>, Tail> value) {
+impl<V, Tail: count_payloads> count_payloads(*const meta::HCons<meta::PayloadRef<V>, Tail> value) {
     return 1 + count_payloads(&value->tail);
 }
 
-impl<P: count_payloads> active_payloads(*meta::VariantRef<P> value) {
+impl<P: count_payloads> active_payloads(*const meta::VariantRef<P> value) {
     return count_payloads(&value->payload);
 }
 
-impl active_payloads(*meta::CoNil value) {
+impl active_payloads(*const meta::CoNil value) {
     switch (*value) {
     }
 }
 
-impl<H: active_payloads, Tail: active_payloads> active_payloads(*meta::Coproduct<H, Tail> value) {
+impl<H: active_payloads, Tail: active_payloads> active_payloads(*const meta::Coproduct<H, Tail> value) {
     switch (*value) {
         case meta::This(head):
             H local = head;
@@ -43,7 +43,7 @@ impl<H: active_payloads, Tail: active_payloads> active_payloads(*meta::Coproduct
 i64 main() {
     Token token = Pair(10, true);
     meta::RefRepr<Token> refs = meta::as_ref_repr(&token);
-    meta::Repr<Token> owned = meta::into_repr(token);
+    meta::Repr<Token> owned = meta::into_repr(&token);
     Token copy = meta::from_repr<Token>(owned);
     i64 payloads = active_payloads(&refs);
     switch (copy) {

@@ -5,7 +5,7 @@ extern "C" {
 }
 
 i32 main() {
-    i32 value = 1;
+    i32 @value = 1;
     takes_nullable(&value);
     return value;
 }

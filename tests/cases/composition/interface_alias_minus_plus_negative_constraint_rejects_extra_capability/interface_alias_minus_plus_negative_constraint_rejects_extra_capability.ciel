@@ -23,6 +23,6 @@ i64 generic_read<T: streaming + !seek>(*T stream) {
 }
 
 i64 main() {
-    Stream stream = { value: 5 };
+    Stream @stream = { value: 5 };
     return generic_read(&stream);
 }

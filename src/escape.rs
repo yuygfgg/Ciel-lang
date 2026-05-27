@@ -279,9 +279,9 @@ impl<'a> FunctionAnalyzer<'a> {
                 }
                 self.scan_closure_body(body);
             }
-            TExprKind::FunctionToClosure(inner) | TExprKind::RetainClosure { expr: inner, .. } => {
-                self.scan_expr(inner)
-            }
+            TExprKind::FunctionToClosure(inner)
+            | TExprKind::RetainClosure { expr: inner, .. }
+            | TExprKind::SliceToConst(inner) => self.scan_expr(inner),
             TExprKind::ArrayToSlice(expr) => self.scan_expr(expr),
             TExprKind::MakeDynamicInterface { expr, .. } => {
                 self.scan_expr(expr);
@@ -446,8 +446,9 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.collect_storage_sources(inner, out);
                 }
             }
+            TExprKind::SliceToConst(inner) => self.collect_storage_sources(inner, out),
             TExprKind::Slice { base, .. } => {
-                if matches!(base.ty.unqualified(), Ty::Array { .. })
+                if matches!(base.ty, Ty::Array { .. })
                     && let TExprKind::Local(local_id, _) = &base.kind
                 {
                     if let Some(param_idx) = self.local_to_param.get(local_id) {
@@ -556,7 +557,7 @@ fn storage_source_key(source: &StorageSource) -> (usize, usize) {
 fn ty_can_carry_pointer(ty: &Ty) -> bool {
     match ty {
         Ty::Pointer { .. }
-        | Ty::Slice(_)
+        | Ty::Slice { .. }
         | Ty::DynamicInterface { .. }
         | Ty::Function { .. }
         | Ty::Closure { .. }

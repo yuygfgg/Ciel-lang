@@ -209,8 +209,8 @@ bare use cannot choose exactly one declaration, that use is a compile error.
 
 ```ebnf
 Type            ::= [ AbiSpec ] PrefixType { CallableSuffix }
-PrefixType      ::= { TypePrefix } PrimaryType
-TypePrefix      ::= "*" | "?*" | "const"
+PrefixType      ::= { PointerConstructor } PrimaryType
+PointerConstructor ::= "*" | "*const" | "?*" | "?*const"
 PrimaryType     ::= NamedType
                  | TypeHole
                  | "never"
@@ -225,7 +225,7 @@ TypeArgList     ::= "<" TypeList ">"
 TypeList        ::= Type { "," Type } [ "," ]
 
 ArrayType       ::= "[" IntegerLiteral "]" Type
-SliceType       ::= "[" "]" Type
+SliceType       ::= "[" "]" Type | "[" "]" "const" Type
 
 CallableSuffix  ::= FnSuffix | ClosureSuffix
 FnSuffix        ::= "fn" "(" [ TypeList ] ")"
@@ -233,15 +233,36 @@ ClosureSuffix   ::= "|" "(" [ TypeList ] ")" "|"
 AbiSpec         ::= "extern" StringLiteral
 ```
 
-`*T` is a non-null pointer to `T`. `?*T` is a nullable pointer to `T`.
-`null` has nullable pointer type and cannot be assigned to `*T`.
-`*T` implicitly widens to `?*T` when a nullable pointer is expected.
-`const T` is a C ABI qualifier for interop declarations and generated C types;
-Ciel mutability is governed by binding and lvalue rules.
+Pointer and slice views carry write permission on the view edge:
 
 ```rust
-*const char     // generated as const char *
-const Big       // generated as const Big
+*T          // writable non-null pointer to T
+*const T    // read-only non-null pointer to T
+?*T         // writable nullable pointer to T
+?*const T   // read-only nullable pointer to T
+[]T         // writable slice view over T elements
+[]const T   // read-only slice view over T elements
+```
+
+`null` has nullable pointer type and cannot be assigned to `*T` or `*const T`.
+`*T` implicitly widens to `?*T` when a nullable pointer is expected, and a
+writable view may weaken to the corresponding read-only view. Standalone
+`const T` is not a Ciel source type. `const` appears only inside the pointer
+and slice constructors `*const`, `?*const`, and `[]const`.
+
+Read-only views are not deep immutability and do not create const-qualified
+value types. Reading through `*const T` or `[]const T` produces an ordinary
+`T` value. If that stored value is itself a writable pointer or slice, the
+loaded view keeps its own write permission.
+
+Standalone `const` forms are invalid:
+
+```rust
+const i64 value = 1;        // error
+const bool flag = true;     // error
+const Point p = make();     // error
+[4]const i64 values;        // error
+Result<const i64, Error> r; // error
 ```
 
 `void` is a zero-size, single-value type. It is valid as a function return type,
@@ -256,11 +277,12 @@ It is valid as a function return type. Plain locals, fields, and parameters of
 type `never` are invalid.
 
 `[N]T` is a fixed-size array value containing `N` contiguous elements of type
-`T`. `[]T` is a slice view over contiguous storage. Arrays and slices are
-zero-indexed. Index expressions are bounds-checked and panic on out-of-bounds
-access. Slice subview expressions are range-checked and panic if the range is
-invalid. Arrays do not decay to pointers. Array-to-slice conversion is implicit
-when a `[]T` is expected.
+`T`. Arrays and slices are zero-indexed. Index expressions are bounds-checked
+and panic on out-of-bounds access. Slice subview expressions are range-checked
+and panic if the range is invalid. Arrays do not decay to pointers.
+Array-to-slice conversion is implicit when a slice is expected, but it follows
+the source access path: a writable array lvalue can become `[]T`, while a
+read-only array lvalue can become only `[]const T`.
 
 `[N]void` has a length but no element storage. It is declared without an
 initializer, and indexing performs the normal bounds check before producing the
@@ -423,19 +445,32 @@ i64 |(i64)| fn()   // function taking no arguments and returning a closure
 
 ### Slice Semantics
 
-`[]T` is a built-in slice type. A slice value contains:
+`[]T` and `[]const T` are built-in slice view types. A writable slice value
+contains:
 
 ```text
 *T ptr;
 usize len;
 ```
 
+The read-only form has the same descriptor shape but its pointer field is
+read-only:
+
+```text
+*const T ptr;
+usize len;
+```
+
 Slice fields are accessed directly:
 
 ```rust
-[]char text = "hello";
+[4]i64 @values = [1, 2, 3, 4];
+[]i64 view = values;
+*i64 raw_values = view.ptr;
+
+[]const char text = "hello";
 usize n = text.len;
-*char raw = text.ptr;
+*const char raw_text = text.ptr;
 char first = text[0];
 ```
 
@@ -448,12 +483,15 @@ A slice does not own its storage. Escape analysis keeps the backing storage
 alive when a slice escapes. Slices can be created by:
 
 ```rust
-[4]i64 values = [1, 2, 3, 4];
+[4]i64 @values = [1, 2, 3, 4];
 []i64 view = values; // array-to-slice
 []i64 tail = view[2..]; // subview
 []i64 mid = values[1..3]; // array subview
 
-[]char text = "hello"; // string-literal slice
+[4]i64 read_only_values = [1, 2, 3, 4];
+[]const i64 read_only_view = read_only_values;
+
+[]const char text = "hello"; // string-literal slice
 ```
 
 The core slice creation forms are array-to-slice conversion, slice subview
@@ -495,7 +533,8 @@ ConstraintExpr      ::= ConstraintTerm { ( "+" | "-" ) ConstraintTerm }
 ConstraintTerm      ::= [ "!" ] Identifier [ TypeArgList ]
 
 ParamList           ::= Param { "," Param } [ "," ]
-Param               ::= Type Identifier
+Param               ::= Type BindingName
+BindingName         ::= [ "@" ] Identifier
 
 ExternBlock         ::= "extern" StringLiteral "{" { ExternItem } "}"
 ExternItem          ::= OpaqueStructDecl
@@ -505,18 +544,36 @@ ExternItem          ::= OpaqueStructDecl
 OpaqueStructDecl    ::= "opaque" "struct" Identifier ";"
 ```
 
-Local variables and function parameters are declared with type syntax. Local
-declarations may use `_` type holes only when they have an initializer. There is
-no assignment-based `auto`.
+Local variables and function parameters are declared with type syntax.
+`BindingName` controls whether the binding may be assigned again:
 
-Function parameters are immutable bindings: they cannot be reassigned and their
-binding address cannot be taken. Local variables and struct fields are mutable
-by default. Struct and enum assignment is shallow field-wise copy.
-Fixed-size array assignment is element-wise copy. Slice assignment copies only
-the slice view. Assignment evaluates the right-hand side first, then stores
-into the left-hand side lvalue. Returning a struct, enum, or array value uses
-the same value semantics at the Ciel level; backend lowering may avoid physical
-copies.
+```rust
+i64 value = 1;      // immutable binding
+i64 @count = 0;     // mutable binding
+
+void step(i64 input, i64 @state) {
+    state = state + input;
+}
+```
+
+A binding without `@` is immutable after initialization. A binding with `@`
+may be assigned repeatedly. `@` belongs to the binding name, not to the type;
+a mutable binding may hold a read-only pointer or slice view.
+
+```rust
+*const i64 @cursor = start;
+cursor = next; // ok: the pointer binding is mutable
+*cursor = 1;   // error: the pointer view is read-only
+```
+
+Local declarations may use `_` type holes only when they have an initializer.
+There is no assignment-based `auto`.
+
+Struct and enum assignment is shallow field-wise copy. Fixed-size array
+assignment is element-wise copy. Slice assignment copies only the slice view.
+Assignment evaluates the right-hand side first, then stores into the
+left-hand-side lvalue. Returning a struct, enum, or array value uses the same
+value semantics at the Ciel level; backend lowering may avoid physical copies.
 
 A local declaration without an initializer creates an uninitialized binding,
 unless its type contains a hole. Declarations with type holes require an
@@ -524,18 +581,57 @@ initializer. The binding must be definitely assigned before any use. Assigning
 to the whole local initializes it. Aggregate construction initializes the whole
 local at once.
 
+Immutable locals may be declared before their initializer, but they may be
+initialized only once on every control-flow path. The initializing assignment
+must target the whole binding:
+
+```rust
+i64 x;
+if (cond) {
+    x = 1;
+} else {
+    x = 2;
+}
+
+x = 3; // error: x is already initialized
+```
+
+Partial writes cannot initialize an immutable aggregate:
+
+```rust
+Point p;
+p.x = 1; // error: immutable delayed initialization must assign the whole value
+```
+
 Definite assignment is a compile-time forward data-flow analysis:
 
 1. function parameters start assigned
 2. `T x;` starts unassigned
 3. `T x = expr;` checks `expr`, then marks `x` assigned
-4. `x = expr;` checks `expr`, then marks `x` assigned
-5. `x.field = expr` and `x[i] = expr` require `x` to already be assigned
-6. branch merges keep only variables assigned on every incoming path
-7. loop bodies do not prove post-loop assignment unless a later specification
-   adds stronger control-flow proof
+4. assigning to a mutable binding checks `expr`, stores, and marks it assigned
+5. assigning to an unassigned immutable local initializes it only when the
+   target is the whole binding
+6. assigning to an assigned immutable local is an error
+7. `x.field = expr` and `x[i] = expr` require `x` to already be assigned and
+   require a writable access path
+8. branch merges use three states:
+   `assigned + assigned => assigned`,
+   `unassigned + unassigned => unassigned`,
+   `assigned + unassigned => maybe-assigned`, and
+   `maybe-assigned + anything => maybe-assigned`
+9. loop bodies are conservative: assigning an immutable local declared outside
+   a `while` or `for` body is rejected unless a later specification adds
+   stronger control-flow proof
 
 No runtime initialized-bit checks are part of the language.
+
+Type holes still require initializers:
+
+```rust
+_ value = make_value(); // ok
+_ value;                // error
+_ @value;               // error
+```
 
 Struct declarations do not define default field values. A struct value is
 created by a named-field struct literal, by copying another value, by a
@@ -576,7 +672,7 @@ Statement       ::= Block
                  | ContinueStmt
                  | ExprStmt
 
-VarDeclStmt     ::= Type Identifier [ "=" Expr ] ";"
+VarDeclStmt     ::= Type BindingName [ "=" Expr ] ";"
 AssignStmt      ::= LValue "=" Expr ";"
 ExprStmt        ::= Expr ";"
 
@@ -584,7 +680,7 @@ IfStmt          ::= "if" "(" Expr ")" Block [ "else" ( Block | IfStmt ) ]
 WhileStmt       ::= "while" "(" Expr ")" Block
 ForStmt         ::= "for" "(" [ ForInit ] ";" ExprOpt ";"
                     [ ForStep ] ")" Block
-ForInit         ::= Type Identifier [ "=" Expr ]
+ForInit         ::= Type BindingName [ "=" Expr ]
                  | LValue "=" Expr
                  | Expr
 ForStep         ::= LValue "=" Expr
@@ -646,7 +742,7 @@ ArrayLiteral    ::= "[" [ Expr { "," Expr } [ "," ] | Expr ";" [ IntegerLiteral 
 ClosureExpr     ::= ClosureIntro ClosureBody
 ClosureIntro    ::= "||" | "|" ClosureParamList "|"
 ClosureParamList ::= ClosureParam { "," ClosureParam } [ "," ]
-ClosureParam    ::= Identifier | Type Identifier
+ClosureParam    ::= BindingName | Type BindingName
 ClosureBody     ::= Block | Expr
 
 LValue          ::= Identifier
@@ -656,6 +752,7 @@ LValue          ::= Identifier
                  | "*" UnaryExpr
 
 Pattern         ::= QualifiedName [ "(" PatternList ")" ]
+                 | BindingName
                  | "_"
 PatternList     ::= Pattern { "," Pattern } [ "," ]
 ```
@@ -685,11 +782,19 @@ take their binding address, or assign through their fields or indices. If
 mutable shared state is needed, the program must capture an explicit pointer or
 synchronized handle and use that value's API.
 
-Closure parameters may write either `name` or `Type name`. If a parameter type
-is omitted, it must be supplied by an expected callable type. Expected callable
-types come from assignment, parameter passing, return context, or an explicit
-`as` type annotation. If no expected callable type exists, every closure
-parameter must write its type.
+Closure parameters may write either `BindingName` or `Type BindingName`. If a
+parameter type is omitted, it must be supplied by an expected callable type.
+Expected callable types come from assignment, parameter passing, return
+context, or an explicit `as` type annotation. If no expected callable type
+exists, every closure parameter must write its type. Closure parameters use the
+same `@` mutability rule as function parameters:
+
+```rust
+i64 |(i64)| bump = |i64 @value| {
+    value = value + 1;
+    return value;
+};
+```
 
 Closure literals do not have a return-type annotation. The return type is
 supplied by the expected callable type when one exists. Without an expected
@@ -745,14 +850,95 @@ with `T = void`. Bare `return;` in a non-`void` function is invalid.
 the process, abort, panic, or loop forever. Calls to functions returning
 `never` are not normal fallthrough paths.
 
-`&expr` requires a mutable lvalue and produces a non-null pointer. Immutable
-parameter bindings cannot be addressed. `*ptr` requires a non-null pointer.
-`p->field` is equivalent to `(*p).field` after type checking. Indexing requires
-an array or slice operand and an integer index; indices are zero-based and
-bounds-checked. Slice subview syntax `s[start..end]`, `s[start..]`,
-`s[..end]`, and `s[..]` requires an array or slice operand and integer bounds.
-The omitted start is `0`; the omitted end is the operand length. The result is
-a `[]T` view over the original storage. The valid condition is
+Lvalue access is tracked separately from expression type. An lvalue is either
+writable or read-only:
+
+- ordinary immutable bindings are read-only after initialization
+- `@` bindings are writable
+- captured bindings are read-only closure snapshots
+- struct fields and fixed-array elements follow the base lvalue's access mode
+- pointer dereference and `->` follow the pointer view's mutability
+- slice element and subview access follow the slice view's mutability
+
+Assignments require a writable lvalue, except for the one allowed whole-binding
+initialization of an unassigned immutable local.
+
+```rust
+Point p = make_point();
+p.x = 1; // error: field of an immutable owned binding
+
+Point @m = make_point();
+m.x = 1; // ok
+
+*Point mp = &m;
+mp->x = 1; // ok
+
+*const Point rp = &m;
+rp->x = 1; // error
+
+[]Point points = get_mut_points();
+points[0].x = 1; // ok
+
+[]const Point view = points;
+view[0].x = 1; // error
+```
+
+Read-only lvalues are not const-qualified rvalues. Reading a field, pointer, or
+slice descriptor from a read-only aggregate produces the ordinary stored value,
+including whatever view mutability that stored value carries:
+
+```rust
+struct Holder {
+    *i64 ptr;
+}
+
+*const Holder h = get_holder();
+h->ptr = other; // error: cannot overwrite the field
+*(h->ptr) = 1;  // ok: the stored pointer value is *i64
+
+struct ViewHolder {
+    []u8 bytes;
+}
+
+*const ViewHolder vh = get_view_holder();
+vh->bytes = other; // error: cannot overwrite the slice descriptor
+vh->bytes[0] = 1;  // ok: the stored slice value is []u8
+```
+
+`&expr` requires an lvalue and produces a non-null pointer whose view
+mutability follows the lvalue access mode:
+
+```rust
+i64 x = 1;
+i64 @y = 2;
+
+*const i64 px = &x;
+*i64 py = &y;
+```
+
+Taking a writable pointer from a read-only lvalue is rejected, but taking a
+read-only pointer from a writable lvalue is allowed by view weakening.
+
+Parameters follow the same address-of rule as initialized locals. `T value` is
+a read-only lvalue and `T @value` is a writable lvalue:
+
+```rust
+Result<T, Error> clone<T: Message>(T value) {
+    return clone_message(&value); // &value has type *const T
+}
+
+void update(Point @p) {
+    mutate(&p); // &p has type *Point
+}
+```
+
+`*ptr` requires a non-null pointer. `p->field` is equivalent to `(*p).field`
+after type checking. Indexing requires an array or slice operand and an integer
+index; indices are zero-based and bounds-checked. Slice subview syntax
+`s[start..end]`, `s[start..]`, `s[..end]`, and `s[..]` requires an array or
+slice operand and integer bounds. The omitted start is `0`; the omitted end is
+the operand length. The result is a slice view over the original storage whose
+view mutability follows the operand access path. The valid condition is
 `start <= end <= len`; invalid ranges panic.
 
 Struct literals are named-field literals and require an expected struct type.
@@ -777,19 +963,16 @@ literals have type `char`. If an expected type exists, literals are checked
 against that type. Literal values must be in range for the inferred type.
 `null` requires an expected nullable pointer type.
 
-String literals have type `[]char`:
+String literals have type `[]const char`:
 
 ```rust
-[]char s = "hello"; // { ptr: static NUL-terminated bytes, len: 5 }
-*char p = s.ptr;    // for C APIs that expect a C string
+[]const char s = "hello"; // { ptr: static NUL-terminated bytes, len: 5 }
+*const char p = s.ptr;    // for C APIs that expect a read-only C string
 ```
 
 Each string literal occurrence denotes a program-lifetime NUL-terminated byte
-array and a slice whose `len` excludes the trailing NUL. The backing bytes are
-emitted as static storage, such as read-only data or a writable generated
-global, depending on the backend's mutability model. An implementation that
-exposes literal storage as mutable `[]char` places it in memory that supports
-ordinary slice access.
+array and a read-only slice whose `len` excludes the trailing NUL. The backing
+bytes are emitted as static const storage.
 
 `bool` is separate from integers. Only `true` and `false` produce bool
 literals. Integers do not implicitly or explicitly convert to bool, and bool
@@ -809,18 +992,45 @@ integer and floating-point types. Pointer arithmetic is not part of Ciel.
 Integer overflow traps in debug builds and wraps in release builds. Integer
 division by zero panics. Floating-point operations follow IEEE 754.
 
-`as` permits numeric-to-numeric casts, integer-to-`char` casts, `char`-to-integer
-casts, and pointer casts involving `*void` or `?*void`. Integer narrowing casts
-truncate in release builds and trap on out-of-range values in debug builds.
-Pointer casts do not change nullability; converting `?*T` to `*U` requires
-nullable narrowing first. When the left-hand side is a closure literal or a
-parenthesized closure literal, `as` may also supply a closure or Ciel-ABI
-function-pointer expected type as specified above.
+`as` permits numeric-to-numeric casts, integer-to-`char` casts,
+`char`-to-integer casts, and pointer casts involving `*void`, `?*void`,
+`*const void`, or `?*const void`. Integer narrowing casts truncate in release
+builds and trap on out-of-range values in debug builds. Pointer casts preserve
+nullability and never remove read-only view mutability; converting `?*T` to
+`*U` requires nullable narrowing first, and converting `*const T` to `*U` is
+rejected. When the left-hand side is a closure literal or a parenthesized
+closure literal, `as` may also supply a closure or Ciel-ABI function-pointer
+expected type as specified above.
+
+The pointer and slice view constructors have only these implicit view
+conversions:
+
+```rust
+*T       -> *const T
+*T       -> ?*T
+*T       -> ?*const T
+*const T -> ?*const T
+?*T      -> ?*const T
+[]T      -> []const T
+```
+
+Conversions that remove read-only view mutability are rejected, including under
+`as`:
+
+```rust
+*const T ro = get_ro();
+*T rw = ro;        // error
+*T rw2 = ro as *T; // error
+
+[]const T readonly = get_ro_slice();
+[]T writable = readonly; // error
+```
 
 Implicit conversions are intentionally small: literal typing by context,
-`*T` to `?*T`, array-to-slice, function item or function pointer to matching
-closure, and noncapturing closure to matching Ciel-ABI function pointer. Other
-conversions require `as` or an explicit function.
+writable-to-read-only view weakening, non-null-to-nullable pointer widening,
+array-to-slice conversion according to source access, function item or function
+pointer to matching closure, and noncapturing closure to matching Ciel-ABI
+function pointer. Other conversions require `as` or an explicit function.
 
 ## 9. Nullable Pointer Narrowing
 
@@ -881,7 +1091,7 @@ from the receiver and other interface arguments, then monomorphized like a
 generic function:
 
 ```ciel
-impl<T> clone_message(*Actor<T> value) {
+impl<T> clone_message(*const Actor<T> value) {
     return Ok(*value);
 }
 ```
@@ -913,12 +1123,12 @@ provided by the concrete constrained type or erased dynamic value.
 Examples:
 
 ```rust
-interface<T> i64 measure(*T value);
+interface<T> i64 measure(*const T value);
 i64 call_measure(measure value);
 ```
 
 ```rust
-interface<T, U> bool eq(*T value, U other);
+interface<T, U> bool eq(*const T value, U other);
 
 bool check_eq(eq<i64> value, i64 target) {
     return eq(value, target);
@@ -1040,26 +1250,27 @@ signature types do not expose captures.
 The compiler-lowered functions are:
 
 ```rust
-meta::RefRepr<T> as_ref_repr<T>(*T value);
-meta::Repr<T> into_repr<T>(T value);
+meta::RefRepr<T> as_ref_repr<T>(*const T value);
+meta::Repr<T> into_repr<T>(*const T value);
 T from_repr<T>(meta::Repr<T> value);
 ```
 
-`as_ref_repr` creates ordinary pointers to visible fields, enum payloads, or
+`as_ref_repr` creates read-only pointers to visible fields, enum payloads, or
 closure captures. Its result has the same lifetime and actor-local behavior as
 those pointers. For enums, projection switches on the active variant and returns
-the corresponding `Coproduct` branch. `into_repr` copies a value into the owned
-representation. `from_repr` reconstructs a struct, enum, or concrete closure
-instance from the owned representation by structural position.
+the corresponding `Coproduct` branch. `into_repr` copies from a read-only source
+pointer into the owned representation. `from_repr` reconstructs a struct, enum,
+or concrete closure instance from the owned representation by structural
+position.
 
 Policies remain library code. A type opts into a policy by projecting itself
 and delegating to ordinary generic impls:
 
 ```rust
-interface<T> u64 hash(*T value, u64 seed);
+interface<T> u64 hash(*const T value, u64 seed);
 interface hashable = hash;
 
-impl hash(*Packet value, u64 seed) {
+impl hash(*const Packet value, u64 seed) {
     meta::RefRepr<Packet> repr = meta::as_ref_repr(value);
     return hash(&repr, seed);
 }
@@ -1087,7 +1298,8 @@ type PacketMessage = meta::Repr<Packet>;
 `HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and `Payload`. If a field or
 payload leaf lacks `Message`, ordinary generic constraint checking rejects the
 representation. Code that wants the original nominal type itself to cross an
-actor or channel boundary must write an explicit `clone_message(*T)` policy.
+actor or channel boundary must write an explicit `clone_message(*const T)`
+policy.
 
 Owned representation recursively expands structs, enums, concrete closures, and
 fixed-size arrays where no nominal policy boundary exists. A nested named field
@@ -1138,7 +1350,8 @@ return Err(InvalidPort(raw_port));
 `switch` over an enum must be exhaustive unless it has `default:`. `default:`
 is the only top-level fallback; `case _:` is invalid. Nested enum patterns are
 matched recursively. Pattern bindings use copy semantics and are scoped to
-their case body.
+their case body. Pattern bindings use the same `BindingName` rule as locals and
+parameters: `name` is immutable and `@name` is mutable.
 
 ```rust
 enum Inner {
@@ -1162,6 +1375,15 @@ i64 pick(Outer value) {
         case Empty:
             return 0;
     }
+}
+```
+
+```rust
+switch (event) {
+    case Click(pos):
+        pos.x = 1; // error: pos is an immutable binding
+    case Drag(@pos):
+        pos.x = 1; // ok
 }
 ```
 
@@ -1283,7 +1505,7 @@ the actor runtime to clone the handler across the actor boundary.
 `Message` is an explicit conversion capability:
 
 ```rust
-interface<T> Result<T, Error> clone_message(*T value);
+interface<T> Result<T, Error> clone_message(*const T value);
 interface Message = clone_message;
 ```
 
@@ -1295,16 +1517,16 @@ Cross-domain standard-library APIs are ordinary functions that require
 `Message` and call `clone_message` explicitly:
 
 ```rust
-Result<void, Error> send<M: Message>(*Actor<M> actor, M value);
+Result<void, Error> send<M: Message>(*const Actor<M> actor, M value);
 ```
 
 Conceptually, `send` clones before storing into another actor's mailbox:
 
 ```rust
-Result<void, Error> send<T: Message>(*Actor<T> actor, T value) {
+Result<void, Error> send<T: Message>(*const Actor<T> actor, T value) {
     T copy = clone_message(&value)?;
     enqueue(actor, copy);
-    return Ok({});
+    return Ok;
 }
 ```
 
@@ -1312,7 +1534,7 @@ The sender keeps its original value. The receiver receives the result of
 `clone_message`, with independent mutable identity:
 
 ```rust
-Buffer buf = make_buffer();
+Buffer @buf = make_buffer();
 *Buffer p = &buf;
 send(actor, buf);        // send calls clone_message(&value)
 append(p, "local only"); // mutates only the sender's buffer
@@ -1369,8 +1591,8 @@ struct Event {
 
 type EventMessage = meta::Repr<Event>;
 
-Result<void, Error> send_event(*Channel<EventMessage> channel, Event event) {
-    return channel_send(channel, meta::into_repr(event));
+Result<void, Error> send_event(*const Channel<EventMessage> channel, Event event) {
+    return channel_send(channel, meta::into_repr(&event));
 }
 ```
 
@@ -1378,7 +1600,7 @@ An explicit user-defined impl is still the way to make the original nominal
 type itself a message type:
 
 ```rust
-impl clone_message(*Event value) {
+impl clone_message(*const Event value) {
     return Ok(*value);
 }
 ```
@@ -1421,12 +1643,12 @@ struct Actor<M> { *void handle; }
 Their safe APIs expose operations:
 
 ```rust
-Result<void, Error> channel_send<T: Message>(*Channel<T> ch, T value);
-Result<T, Error> channel_recv<T: Message>(*Channel<T> ch);
+Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value);
+Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
 
-Result<T, Error> atomic_load<T: AtomicValue>(*Atomic<T> value, MemoryOrder order);
+Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> value, MemoryOrder order);
 Result<void, Error> atomic_store<T: AtomicValue>(
-    *Atomic<T> value,
+    *const Atomic<T> value,
     T next,
     MemoryOrder order
 );
@@ -1449,9 +1671,9 @@ struct Update<T, R> {
     R result;
 }
 
-interface<F, T, R> Result<Update<T, R>, Error> update_value(*F f, T value);
+interface<F, T, R> Result<Update<T, R>, Error> update_value(*const F f, T value);
 
-Result<R, Error> mutex_update<T, F, R>(*Mutex<T> mutex, *F f);
+Result<R, Error> mutex_update<T, F, R>(*const Mutex<T> mutex, *const F f);
 ```
 
 `mutex_update` takes the current value, calls `update_value`, stores the
@@ -1462,9 +1684,9 @@ replacement rather than a borrowed interior pointer.
 The actor model uses interfaces for capability classification:
 
 ```rust
-interface<T> Result<T, Error> clone_message(*T value);
-interface<T> bool share_handle_marker(*T value);
-interface<T> bool thread_local_marker(*T value);
+interface<T> Result<T, Error> clone_message(*const T value);
+interface<T> bool share_handle_marker(*const T value);
+interface<T> bool thread_local_marker(*const T value);
 
 interface Message = clone_message;
 interface ShareHandle = share_handle_marker;
@@ -1474,16 +1696,16 @@ interface ThreadLocal = thread_local_marker;
 Examples:
 
 ```rust
-Result<void, Error> send<T: Message>(*Actor<T> actor, T value);
+Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
 Result<void, Error> accept_handle<T: ShareHandle>(T handle);
-void local_resource<T: ThreadLocal>(*T value);
+void local_resource<T: ThreadLocal>(*const T value);
 ```
 
 Negative constraints remain useful for APIs that require a type to stay
 actor-local:
 
 ```rust
-void bind_local<T: !Message>(*T value);
+void bind_local<T: !Message>(*const T value);
 ```
 
 C interop is a trusted boundary. C wrappers decide which C-backed values are
@@ -1559,12 +1781,13 @@ import /std/actor;
 explicitly like any other file. The concurrency modules are imported directly.
 
 String literals have compiler support because each occurrence emits
-program-lifetime static NUL-terminated bytes and constructs a `[]char` slice:
+program-lifetime static NUL-terminated bytes and constructs a `[]const char`
+slice:
 
 ```rust
-[]char name = "ciel";
+[]const char name = "ciel";
 usize n = name.len;
-*char raw = name.ptr;
+*const char raw = name.ptr;
 ```
 
 The core standard library is organized as follows:
@@ -1572,7 +1795,7 @@ The core standard library is organized as follows:
 ```rust
 // /std/error
 export enum Error {
-    Text([]char),
+    Text([]const char),
     Code(i64),
 }
 ```
@@ -1587,16 +1810,16 @@ export enum Result<T, E> {
 }
 
 export T must<T, E>(Result<T, E> value);
-export T expect<T, E>(Result<T, E> value, []char message);
+export T expect<T, E>(Result<T, E> value, []const char message);
 ```
 
 ```rust
 // /std/panic
 extern "C" {
-    noescape never ciel_panic(*char message, usize len);
+    noescape never ciel_panic(*const char message, usize len);
 }
 
-export never panic([]char message) {
+export never panic([]const char message) {
     ciel_panic(message.ptr, message.len);
 }
 ```
@@ -1634,7 +1857,7 @@ export enum OpenMode {
     Append,
 }
 
-export interface<T> []char to_string(*T value);
+export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
 export Fd stdin();
@@ -1645,16 +1868,16 @@ export c::c_int raw_fd(Fd fd);
 
 export Error last_error();
 
-export Result<Fd, Error> open([]char path, OpenMode mode);
-export Result<Fd, Error> open_read([]char path);
-export Result<Fd, Error> create([]char path);
-export Result<Fd, Error> append([]char path);
+export Result<Fd, Error> open([]const char path, OpenMode mode);
+export Result<Fd, Error> open_read([]const char path);
+export Result<Fd, Error> create([]const char path);
+export Result<Fd, Error> append([]const char path);
 export Result<void, Error> close(Fd fd);
 
 export Result<usize, Error> read(Fd fd, []u8 out);
-export Result<usize, Error> write(Fd fd, []u8 data);
-export Result<void, Error> write_all(Fd fd, []u8 data);
-export Result<void, Error> write_text(Fd fd, []char text);
+export Result<usize, Error> write(Fd fd, []const u8 data);
+export Result<void, Error> write_all(Fd fd, []const u8 data);
+export Result<void, Error> write_text(Fd fd, []const char text);
 
 export Result<void, Error> write_value<T: printable>(Fd fd, T value);
 export Result<void, Error> print_value<T: printable>(T value);
@@ -1662,21 +1885,21 @@ export Result<void, Error> println_value<T: printable>(T value);
 export Result<void, Error> eprint_value<T: printable>(T value);
 export Result<void, Error> eprintln_value<T: printable>(T value);
 
-export Result<void, Error> write_format(Fd fd, []char fmt, []printable values);
-export Result<void, Error> print([]char fmt, []printable values);
-export Result<void, Error> println([]char fmt, []printable values);
-export Result<void, Error> eprint([]char fmt, []printable values);
-export Result<void, Error> eprintln([]char fmt, []printable values);
+export Result<void, Error> write_format(Fd fd, []const char fmt, []printable values);
+export Result<void, Error> print([]const char fmt, []printable values);
+export Result<void, Error> println([]const char fmt, []printable values);
+export Result<void, Error> eprint([]const char fmt, []printable values);
+export Result<void, Error> eprintln([]const char fmt, []printable values);
 ```
 
 `/std/io` is POSIX-limited in this compiler slice. It uses file descriptor
 numbers directly for `stdin`, `stdout`, and `stderr`; `read`, `write`, and
 `close` are direct POSIX calls. Opening files uses tiny runtime hooks so the C
 backend can use target C macros such as `O_CREAT` without hard-coding platform
-flag values in Ciel source. `open` copies the `[]char` path into a
+flag values in Ciel source. `open` copies the `[]const char` path into a
 NUL-terminated GC allocation before calling the host `open`. Printable values
 are values that implement `to_string`; printing functions convert values to
-`[]char` first, then write the resulting slice to the selected descriptor.
+`[]const char` first, then write the resulting slice to the selected descriptor.
 Formatted printing uses `{}` placeholders and a `[]printable` slice, so callers
 can pass heterogeneous printable values through dynamic interface erasure:
 
@@ -1689,9 +1912,9 @@ print("{} = {}", ["answer", 42 as usize]);
 import /std/result;
 import /std/meta as meta;
 
-export interface<T> Result<T, Error> clone_message(*T value);
-export interface<T> bool share_handle_marker(*T value);
-export interface<T> bool thread_local_marker(*T value);
+export interface<T> Result<T, Error> clone_message(*const T value);
+export interface<T> bool share_handle_marker(*const T value);
+export interface<T> bool thread_local_marker(*const T value);
 
 export interface Message = clone_message;
 export interface ShareHandle = share_handle_marker;
@@ -1702,6 +1925,49 @@ export interface ThreadLocal = thread_local_marker;
 // /std/meta
 export usize type_size<T>();
 export usize type_align<T>();
+
+export struct RefRepr<T> {}
+export struct Repr<T> {}
+
+export interface<T> bool ciel_fn_value_marker(*const T value);
+export interface CielFnValue = ciel_fn_value_marker;
+
+export interface<T> bool closure_value_marker(*const T value);
+export interface ClosureValue = closure_value_marker;
+
+export struct FieldRef<T> {
+    []const char name;
+    *const T value;
+}
+
+export struct Field<T> {
+    []const char name;
+    T value;
+}
+
+export struct PayloadRef<T> {
+    usize index;
+    *const T value;
+}
+
+export struct Payload<T> {
+    usize index;
+    T value;
+}
+
+export struct VariantRef<P> {
+    []const char name;
+    P payload;
+}
+
+export struct Variant<P> {
+    []const char name;
+    P payload;
+}
+
+export RefRepr<T> as_ref_repr<T>(*const T value);
+export Repr<T> into_repr<T>(*const T value);
+export T from_repr<T>(Repr<T> value);
 ```
 
 ```rust
@@ -1717,7 +1983,7 @@ export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
 );
-export Result<void, Error> send<T: Message>(*Actor<T> actor, T value);
+export Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
 ```
 
 ```rust
@@ -1731,9 +1997,9 @@ export struct Channel<T> {
 }
 
 export Result<Channel<T>, Error> make_channel<T: Message>();
-export Result<void, Error> channel_send<T: Message>(*Channel<T> ch, T value);
-export Result<T, Error> channel_recv<T: Message>(*Channel<T> ch);
-export Result<void, Error> channel_close<T: Message>(*Channel<T> ch);
+export Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value);
+export Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
+export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch);
 ```
 
 ```rust
@@ -1755,41 +2021,41 @@ export struct CompareExchange<T> {
     T previous;
 }
 
-export interface<T> bool atomic_value_marker(*T value);
+export interface<T> bool atomic_value_marker(*const T value);
 export interface AtomicValue = atomic_value_marker;
 
-export interface<T> bool atomic_integer_marker(*T value);
+export interface<T> bool atomic_integer_marker(*const T value);
 export interface AtomicInteger = atomic_integer_marker;
 
 export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial);
 export Result<T, Error> atomic_load<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     MemoryOrder order
 );
 export Result<void, Error> atomic_store<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 );
 export Result<T, Error> atomic_exchange<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 );
 export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T expected,
     T desired,
     MemoryOrder success,
     MemoryOrder failure
 );
 export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 );
 export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 );
@@ -1810,11 +2076,11 @@ export struct Update<T, R> {
 }
 
 export interface<F, T, R> Result<Update<T, R>, Error> update_value(
-    *F f,
+    *const F f,
     T value
 );
 
-export Result<R, Error> mutex_update<T, F, R>(*Mutex<T> mutex, *F f);
+export Result<R, Error> mutex_update<T, F, R>(*const Mutex<T> mutex, *const F f);
 ```
 
 ```rust
@@ -1838,10 +2104,11 @@ hook.
 ## 18. C Interop and ABI
 
 `extern "C"` declarations are C ABI declarations. C APIs require explicit
-pointer nullability and constness: users write `*T`, `?*T`, and `const T`.
-Ciel specifies `extern "C"` as its C ABI spelling. C ABI callable types are
-named C ABI functions and `extern "C" ... fn(...)` function-pointer types.
-Closure values use the Ciel ABI.
+pointer nullability and view mutability: users write `*T`, `*const T`, `?*T`,
+and `?*const T`. Standalone `const T` is not a Ciel source type. Ciel specifies
+`extern "C"` as its C ABI spelling. C ABI callable types are named C ABI
+functions and `extern "C" ... fn(...)` function-pointer types. Closure values
+use the Ciel ABI.
 
 A top-level `extern "C" T name(...);` declares an external C symbol. A
 top-level `export extern "C" T name(...) { ... }` defines a C ABI symbol
@@ -1867,12 +2134,87 @@ function type has an explicit ABI.
 extern "C" {
     opaque struct FILE;
 
-    ?*FILE fopen(*char filename, *char mode);
+    ?*FILE fopen(*const char filename, *const char mode);
     i32 fclose(*FILE stream);
     i32 fputs(*const char str, *FILE stream);
     void free(?*void ptr);
 }
 ```
+
+Ciel models only caller-visible pointer mutability at the C boundary:
+
+```text
+*T         => T *
+*const T   => const T *
+?*T        => T *
+?*const T  => const T *
+```
+
+C top-level `const` on a by-value parameter or on the pointer value itself is
+not part of the caller-visible Ciel function type. Pointee `const` is
+preserved because it controls whether the callee may write through the
+argument:
+
+```c
+void f(const int value);      // Ciel: void f(i32 value)
+void g(char * const buffer);  // Ciel: void g(*char buffer)
+void h(const char * const s); // Ciel: void h(*const char s)
+```
+
+Only pointee `const` is preserved because it changes what the callee may write
+through the argument:
+
+```c
+void takes_mut(char *buffer);      // Ciel: void takes_mut(*char buffer)
+void takes_ro(const char *buffer); // Ciel: void takes_ro(*const char buffer)
+```
+
+Calls obey the Ciel declaration exactly. A writable view may weaken to a
+read-only C parameter, but a read-only view cannot satisfy a writable C
+parameter:
+
+```rust
+extern "C" {
+    void read_only(*const char s);
+    void may_write(*char s);
+}
+
+[]const char text = "hello";
+read_only(text.ptr); // ok
+may_write(text.ptr); // error
+```
+
+Generated C may normalize top-level `const` spelling at ABI boundaries after
+Ciel type checking, but it must preserve pointee `const` in prototypes and must
+not create a source-level conversion from `*const T` to `*T` or from
+`[]const T` to `[]T`.
+
+If a legacy C API accepts `void *` for data it only reads, the binding should
+use a C shim or a corrected declaration that exposes `*const void` to Ciel.
+The ordinary Ciel call path must not insert a `*const T` to `*T` cast. For rare
+C declarations where exact spelling matters but no Ciel semantics are needed,
+users should keep using C spelling aliases:
+
+```rust
+extern "C" type CHandle = "const struct CHandle";
+```
+
+For exported Ciel functions, generated prototypes preserve pointee `const`:
+
+```rust
+export extern "C" void inspect(*const Packet packet) { ... }
+export extern "C" void mutate(*Packet packet) { ... }
+```
+
+```c
+void inspect(const Packet *packet);
+void mutate(Packet *packet);
+```
+
+Top-level `const` on C parameters may appear in a user-written C header, but
+Ciel does not need to reproduce it in generated definitions. Pointee `const`
+must match; otherwise the C and Ciel declarations describe different write
+permissions.
 
 ```rust
 import /std/c as c;
@@ -1952,14 +2294,14 @@ Ciel keeps source-level value semantics. The generated C ABI for internal Ciel
 functions may avoid large copies:
 
 ```rust
-BigResult parse_big(*char text);
+BigResult parse_big(*const char text);
 void consume_big(BigResult value);
 ```
 
 may lower internally to:
 
 ```c
-void parse_big(BigResult *out, char *text);
+void parse_big(BigResult *out, const char *text);
 void consume_big(const BigResult *value);
 ```
 

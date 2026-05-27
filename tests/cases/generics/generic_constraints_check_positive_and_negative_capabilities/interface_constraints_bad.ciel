@@ -21,6 +21,6 @@ i64 read_measure<T: measure + !seek>(*T value) {
 }
 
 i64 main() {
-    Box box = { value: 17 };
+    Box @box = { value: 17 };
     return read_measure(&box);
 }

@@ -1,13 +1,13 @@
 // ciel-test: run
 // expect-exit: 100
 
-interface<T> i64 measure(*T value);
+interface<T> i64 measure(*const T value);
 
 struct Box {
     i64 value;
 }
 
-impl measure(*Box box) {
+impl measure(*const Box box) {
     return box->value;
 }
 
@@ -26,7 +26,7 @@ i64 execute(Job job) {
 }
 
 i64 main() {
-    Box box = { value: 31 };
+    Box @box = { value: 31 };
     measure erased = &box;
     Job job = Run(|| measure(erased));
     box.value = 100;

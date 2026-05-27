@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: expected `[]i64`, got `[]const i64`
+
+i64 main() {
+    []const i64 read_only = [1, 2];
+    []i64 writable = read_only;
+    writable[0] = 3;
+    return writable[0];
+}

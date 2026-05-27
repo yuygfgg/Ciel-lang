@@ -25,7 +25,7 @@ T choose<T>(T left, T right, bool use_left) {
 
 i64 main() {
     Outer outer = { choice: Wrap({ values: [13, 29] }) };
-    meta::Repr<Outer> repr = meta::into_repr(outer);
+    meta::Repr<Outer> repr = meta::into_repr(&outer);
     Outer copy = meta::from_repr<Outer>(repr);
 
     switch (copy.choice) {
@@ -33,7 +33,7 @@ i64 main() {
             i64 base = inner.values[0];
             Inner captured = { values: [base, inner.values[1]] };
             _ f = |i64 x| x + captured.values[0] + captured.values[1];
-            _ owned = meta::into_repr(f);
+            _ owned = meta::into_repr(&f);
             _ rebuilt = choose(f, meta::from_repr(owned), false);
             return rebuilt(0) - 42;
         case Empty:

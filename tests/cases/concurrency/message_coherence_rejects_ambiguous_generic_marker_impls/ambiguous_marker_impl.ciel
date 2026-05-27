@@ -7,11 +7,11 @@ struct Box<T> {
     T value;
 }
 
-impl<T> thread_local_marker(*Box<T> value) {
+impl<T> thread_local_marker(*const Box<T> value) {
     return true;
 }
 
-impl<U> thread_local_marker(*Box<U> value) {
+impl<U> thread_local_marker(*const Box<U> value) {
     return true;
 }
 

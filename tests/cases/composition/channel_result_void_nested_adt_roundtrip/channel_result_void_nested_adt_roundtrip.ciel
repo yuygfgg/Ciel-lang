@@ -14,15 +14,15 @@ struct Envelope<T> {
     void marker;
 }
 
-impl<T: Message> clone_message(*Step<T> value) {
+impl<T: Message> clone_message(*const Step<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Envelope<T> value) {
+impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> post<T: Message>(*Channel<Envelope<T>> channel, Step<T> step) {
+Result<void, Error> post<T: Message>(*const Channel<Envelope<T>> channel, Step<T> step) {
     Envelope<T> envelope = { result: Ok(step) };
     return channel_send(channel, envelope);
 }
@@ -36,7 +36,7 @@ i64 main() {
     Envelope<i64> second = must(channel_recv(&channel));
     must(channel_close(&channel));
 
-    i64 total = 0;
+    i64 @total = 0;
     switch (must(first.result)) {
         case Value(value):
             total = total + value;

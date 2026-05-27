@@ -6,7 +6,7 @@ struct Box {
 }
 
 i64 main() {
-    Box box = { value: 5 };
+    Box @box = { value: 5 };
     i64 |()| read = || box.value;
     box.value = 9;
     return read();

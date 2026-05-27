@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: standalone `const T` is not a Ciel type
+
+i64 main() {
+    const i64 value = 1;
+    return value;
+}

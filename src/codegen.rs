@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
-    ast::{BinaryOp, Literal, UnaryOp},
+    ast::{BinaryOp, Literal, UnaryOp, ViewMutability},
     diagnostic::{DiagResult, Diagnostic},
     escape::EscapeProgram,
     hir::LocalId,
@@ -206,7 +206,7 @@ impl<'a> CGenerator<'a> {
                 .get(&key)
                 .cloned()
                 .unwrap_or_else(|| self.next_temp("str"));
-            self.line(&format!("static char {name}[] = {raw};"));
+            self.line(&format!("static const char {name}[] = {raw};"));
         }
         if !self.plan.string_literals.is_empty() {
             self.line("");
@@ -223,11 +223,20 @@ impl<'a> CGenerator<'a> {
             self.line("");
         }
 
-        for (slice, elem) in self.plan.slice_types.clone() {
-            let c_ty = self.c_type(&elem);
+        for (slice, ty) in self.plan.slice_types.clone() {
+            let Ty::Slice { mutability, elem } = ty else {
+                continue;
+            };
+            let ptr_decl = self.c_decl(
+                &Ty::Pointer {
+                    nullable: false,
+                    mutability,
+                    inner: elem,
+                },
+                "ptr",
+            );
             self.line(&format!(
-                "typedef struct {{ {} *ptr; size_t len; }} {};",
-                c_ty, slice
+                "typedef struct {{ {ptr_decl}; size_t len; }} {slice};"
             ));
         }
         if !self.plan.slice_types.is_empty() {
@@ -463,8 +472,7 @@ impl<'a> CGenerator<'a> {
         aggregate_names: &HashSet<String>,
         out: &mut Vec<String>,
     ) {
-        match ty.unqualified() {
-            Ty::Const(inner) => self.collect_aggregate_value_deps(inner, aggregate_names, out),
+        match ty {
             Ty::Array { elem, .. } => self.collect_aggregate_value_deps(elem, aggregate_names, out),
             Ty::Named { name, args } => {
                 let c_name = self.c_named_type(name, args);
@@ -592,11 +600,10 @@ impl<'a> CGenerator<'a> {
 
     fn collect_ty_slice(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.collect_ty_slice(inner),
-            Ty::Slice(elem) => {
+            Ty::Slice { mutability, elem } => {
                 self.plan
                     .slice_types
-                    .insert(self.slice_name(elem), (**elem).clone());
+                    .insert(self.slice_name(*mutability, elem), ty.clone());
                 self.collect_ty_slice(elem);
             }
             Ty::Pointer { inner, .. } | Ty::Array { elem: inner, .. } => {
@@ -668,7 +675,6 @@ impl<'a> CGenerator<'a> {
 
     fn collect_ty_closure(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.collect_ty_closure(inner),
             Ty::Closure {
                 ret,
                 params,
@@ -692,9 +698,9 @@ impl<'a> CGenerator<'a> {
                     self.collect_ty_closure(param);
                 }
             }
-            Ty::Pointer { inner, .. } | Ty::Array { elem: inner, .. } | Ty::Slice(inner) => {
-                self.collect_ty_closure(inner)
-            }
+            Ty::Pointer { inner, .. }
+            | Ty::Array { elem: inner, .. }
+            | Ty::Slice { elem: inner, .. } => self.collect_ty_closure(inner),
             Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.collect_ty_closure(arg);
@@ -907,7 +913,9 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_closures(owner, arg);
                 }
             }
-            TExprKind::ArrayToSlice(inner) => self.collect_expr_closures(owner, inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr_closures(owner, inner)
+            }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_ty_closure(concrete_ty);
                 self.collect_expr_closures(owner, expr);
@@ -1016,7 +1024,6 @@ impl<'a> CGenerator<'a> {
 
     fn collect_ty_dynamic(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.collect_ty_dynamic(inner),
             Ty::DynamicInterface { .. } => {
                 let name = self.dynamic_type_name(ty);
                 self.plan.dynamic_types.insert(name, ty.clone());
@@ -1026,9 +1033,9 @@ impl<'a> CGenerator<'a> {
                     }
                 }
             }
-            Ty::Pointer { inner, .. } | Ty::Array { elem: inner, .. } | Ty::Slice(inner) => {
-                self.collect_ty_dynamic(inner)
-            }
+            Ty::Pointer { inner, .. }
+            | Ty::Array { elem: inner, .. }
+            | Ty::Slice { elem: inner, .. } => self.collect_ty_dynamic(inner),
             Ty::Named { args, .. } => {
                 for arg in args {
                     self.collect_ty_dynamic(arg);
@@ -1156,7 +1163,7 @@ impl<'a> CGenerator<'a> {
             } => {
                 self.collect_expr_dynamic(inner);
                 self.collect_ty_dynamic(concrete_ty);
-                if !matches!(concrete_ty.unqualified(), Ty::DynamicInterface { .. }) {
+                if !matches!(concrete_ty, Ty::DynamicInterface { .. }) {
                     self.plan.dynamic_impls.insert(
                         self.dynamic_impl_key(&expr.ty, concrete_ty),
                         DynamicImplUse {
@@ -1192,7 +1199,9 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_dynamic(source_ty);
                 self.collect_expr_dynamic(expr);
             }
-            TExprKind::ArrayToSlice(inner) => self.collect_expr_dynamic(inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr_dynamic(inner)
+            }
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_dynamic(base)
             }
@@ -1411,7 +1420,9 @@ impl<'a> CGenerator<'a> {
             TExprKind::Closure { body, .. } => self.collect_closure_body_locations(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_locations(inner),
             TExprKind::RetainClosure { expr, .. } => self.collect_expr_locations(expr),
-            TExprKind::ArrayToSlice(inner) => self.collect_expr_locations(inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr_locations(inner)
+            }
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
@@ -1638,7 +1649,9 @@ impl<'a> CGenerator<'a> {
             TExprKind::Closure { body, .. } => self.collect_closure_body_string_literals(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_string_literals(inner),
             TExprKind::RetainClosure { expr, .. } => self.collect_expr_string_literals(expr),
-            TExprKind::ArrayToSlice(inner) => self.collect_expr_string_literals(inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr_string_literals(inner)
+            }
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
@@ -1843,7 +1856,9 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_slice(source_ty);
                 self.collect_expr_slices(expr);
             }
-            TExprKind::ArrayToSlice(inner) => self.collect_expr_slices(inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr_slices(inner)
+            }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_ty_slice(concrete_ty);
                 self.collect_expr_slices(expr);
@@ -2300,7 +2315,9 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<()> {
         match pattern {
             TPattern::Wildcard { .. } => {}
-            TPattern::Binding { local_id, name, ty } => {
+            TPattern::Binding {
+                local_id, name, ty, ..
+            } => {
                 if ty.is_erased_value() {
                     return Ok(());
                 }
@@ -2616,7 +2633,7 @@ impl<'a> CGenerator<'a> {
                 }
             }
             TExprKind::ArrayLiteral(elements) => {
-                if matches!(expr.ty, Ty::Slice(_)) {
+                if matches!(expr.ty, Ty::Slice { .. }) {
                     if let Some(indent) = stmt_indent {
                         return self.emit_slice_literal_temp(&expr.ty, elements, indent);
                     }
@@ -2642,7 +2659,7 @@ impl<'a> CGenerator<'a> {
                 format!("{{ {elements} }}")
             }
             TExprKind::ArrayRepeat { element, len } => {
-                if matches!(expr.ty, Ty::Slice(_)) {
+                if matches!(expr.ty, Ty::Slice { .. }) {
                     if let Some(indent) = stmt_indent {
                         return self.emit_slice_repeat_temp(&expr.ty, element, *len, indent);
                     }
@@ -2764,10 +2781,7 @@ impl<'a> CGenerator<'a> {
                         args[0], args[1]
                     ));
                 }
-                if matches!(
-                    callee.ty.unqualified(),
-                    Ty::Closure { .. } | Ty::ClosureInstance { .. }
-                ) {
+                if matches!(callee.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. }) {
                     return self.emit_closure_call(callee, args, stmt_indent);
                 }
                 let callee = self.gen_expr_with_lowering(callee, stmt_indent)?;
@@ -2775,7 +2789,7 @@ impl<'a> CGenerator<'a> {
                 format!("{callee}({args})")
             }
             TExprKind::ArrayToSlice(inner) => {
-                let Ty::Slice(elem) = &expr.ty else {
+                let Ty::Slice { mutability, elem } = &expr.ty else {
                     return Err(vec![Diagnostic::new(
                         expr.span,
                         "internal error: array-to-slice conversion has non-slice type",
@@ -2790,13 +2804,34 @@ impl<'a> CGenerator<'a> {
                 if elem.is_erased_value() {
                     return Ok(format!(
                         "({}){{ .ptr = NULL, .len = {len} }}",
-                        self.slice_name(elem)
+                        self.slice_name(*mutability, elem)
                     ));
                 }
                 let inner_code = self.gen_expr_with_lowering(inner, stmt_indent)?;
                 format!(
                     "({}){{ .ptr = {inner_code}, .len = {len} }}",
-                    self.slice_name(elem)
+                    self.slice_name(*mutability, elem)
+                )
+            }
+            TExprKind::SliceToConst(inner) => {
+                let Ty::Slice {
+                    mutability: ViewMutability::ReadOnly,
+                    ..
+                } = &expr.ty
+                else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: slice weakening has non-read-only slice type",
+                    )]);
+                };
+                let source = if let Some(indent) = stmt_indent {
+                    self.emit_temp_value("slice_view", inner, indent)?
+                } else {
+                    self.gen_expr_with_lowering(inner, stmt_indent)?
+                };
+                format!(
+                    "({}){{ .ptr = {source}.ptr, .len = {source}.len }}",
+                    self.c_type(&expr.ty)
                 )
             }
             TExprKind::MakeDynamicInterface {
@@ -2879,7 +2914,7 @@ impl<'a> CGenerator<'a> {
                 let base_code = self.gen_expr_with_lowering(base, stmt_indent)?;
                 let index_code = self.gen_expr_with_lowering(index, stmt_indent)?;
                 match &base.ty {
-                    Ty::Slice(_) => {
+                    Ty::Slice { .. } => {
                         let (file, line) = self.location_args(expr.span);
                         if expr.ty.is_erased_value() {
                             format!(
@@ -3031,7 +3066,7 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_ref_src", value, indent)?;
-        if let Ty::Array { len, elem } = source_ty.unqualified() {
+        if let Ty::Array { len, elem } = source_ty {
             let (_, literal) = self.emit_meta_array_ref_repr_literal(*len, elem, &value_temp, 0)?;
             return Ok(literal);
         }
@@ -3050,7 +3085,7 @@ impl<'a> CGenerator<'a> {
         if let Ok(variants) = self.enum_variants_for_ty(expr.span, source_ty) {
             return self.emit_meta_enum_ref_repr(expr, &value_temp, &variants, indent);
         }
-        if matches!(source_ty.unqualified(), Ty::ClosureInstance { .. }) {
+        if matches!(source_ty, Ty::ClosureInstance { .. }) {
             return self.emit_meta_closure_ref_repr(expr, &value_temp, source_ty, indent);
         }
         Err(vec![Diagnostic::new(
@@ -3068,13 +3103,14 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_owned_src", value, indent)?;
         if matches!(
-            source_ty.unqualified(),
+            source_ty,
             Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
         ) {
+            let source_expr = format!("(*{value_temp})");
             let (_, literal) = self.emit_meta_owned_leaf_repr_expr(
                 expr.span,
                 source_ty,
-                &value_temp,
+                &source_expr,
                 source_ty,
                 indent,
             )?;
@@ -3095,7 +3131,7 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<String> {
         let value_temp = self.emit_temp_value("meta_repr_src", value, indent)?;
         if matches!(
-            target_ty.unqualified(),
+            target_ty,
             Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
         ) {
             let result = self.next_temp("meta_value");
@@ -3117,7 +3153,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn value_initializer_from_expr(&self, ty: &Ty, expr: &str) -> String {
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => {
                 let elements = (0..*len)
                     .map(|idx| self.value_initializer_from_expr(elem, &format!("({expr})[{idx}]")))
@@ -3130,7 +3166,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_value_copy(&mut self, target: &str, source: &str, ty: &Ty, indent: usize) {
-        if matches!(ty.unqualified(), Ty::Array { .. }) {
+        if matches!(ty, Ty::Array { .. }) {
             self.line_indent(
                 indent,
                 &format!("memcpy({target}, {source}, sizeof({target}));"),
@@ -3141,7 +3177,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn value_or_initializer_from_expr(&self, ty: &Ty, expr: &str) -> String {
-        if matches!(ty.unqualified(), Ty::Array { .. }) {
+        if matches!(ty, Ty::Array { .. }) {
             self.value_initializer_from_expr(ty, expr)
         } else {
             expr.to_string()
@@ -3154,9 +3190,7 @@ impl<'a> CGenerator<'a> {
         stmt_indent: Option<usize>,
     ) -> DiagResult<String> {
         let value = self.gen_expr_with_lowering(expr, stmt_indent)?;
-        if matches!(expr.ty.unqualified(), Ty::Array { .. })
-            && !matches!(expr.kind, TExprKind::ArrayLiteral(_))
-        {
+        if matches!(expr.ty, Ty::Array { .. }) && !matches!(expr.kind, TExprKind::ArrayLiteral(_)) {
             Ok(self.value_initializer_from_expr(&expr.ty, &value))
         } else {
             Ok(value)
@@ -3193,7 +3227,7 @@ impl<'a> CGenerator<'a> {
         init: &TExpr,
         indent: usize,
     ) -> DiagResult<()> {
-        if matches!(ty.unqualified(), Ty::Array { .. }) {
+        if matches!(ty, Ty::Array { .. }) {
             self.line_indent(indent, &format!("{};", self.c_decl(ty, name)));
             self.emit_expr_store(name, init, indent)?;
             return Ok(());
@@ -3219,11 +3253,11 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<(Ty, String)> {
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
             return Ok((
-                ty.unqualified().clone(),
+                ty.clone(),
                 self.value_or_initializer_from_expr(ty, value_expr),
             ));
         }
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => {
                 self.emit_meta_array_repr_literal(span, *len, elem, value_expr, root_ty, indent)
             }
@@ -3373,9 +3407,9 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
-            return Ok(ty.unqualified().clone());
+            return Ok(ty.clone());
         }
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => self.meta_owned_array_repr_ty(span, *len, elem, root_ty),
             Ty::Named { .. } => {
                 if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
@@ -3510,7 +3544,7 @@ impl<'a> CGenerator<'a> {
             self.emit_value_copy(target, repr_expr, ty, indent);
             return Ok(());
         }
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => {
                 for idx in 0..*len {
                     if elem.is_erased_value() {
@@ -3571,10 +3605,10 @@ impl<'a> CGenerator<'a> {
     }
 
     fn is_owned_meta_policy_leaf(&self, ty: &Ty, root_ty: &Ty) -> bool {
-        if ty.unqualified() == root_ty.unqualified() {
+        if ty == root_ty {
             return false;
         }
-        matches!(ty.unqualified(), Ty::Named { .. }) && self.clone_message_impl(ty).is_some()
+        matches!(ty, Ty::Named { .. }) && self.clone_message_impl(ty).is_some()
     }
 
     fn emit_meta_enum_ref_repr(
@@ -4078,7 +4112,7 @@ impl<'a> CGenerator<'a> {
     fn meta_name_slice_literal(&self, name: &str) -> String {
         format!(
             "({}){{ .ptr = \"{}\", .len = {} }}",
-            self.slice_name(&Ty::Char),
+            self.slice_name(ViewMutability::ReadOnly, &Ty::Char),
             escape_c_string(name),
             name.len()
         )
@@ -4089,7 +4123,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<(String, Ty)>> {
-        let Ty::Named { name, args } = ty.unqualified() else {
+        let Ty::Named { name, args } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected struct type for meta representation, got `{ty}`"),
@@ -4117,7 +4151,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<CheckedVariant>> {
-        let Ty::Named { name, args } = ty.unqualified() else {
+        let Ty::Named { name, args } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected enum type for meta representation, got `{ty}`"),
@@ -4145,7 +4179,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<MetaCaptureField>> {
-        let Ty::ClosureInstance { captures, .. } = ty.unqualified() else {
+        let Ty::ClosureInstance { captures, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!(
@@ -4169,7 +4203,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<(DefId, usize)> {
-        let Ty::ClosureInstance { id, .. } = ty.unqualified() else {
+        let Ty::ClosureInstance { id, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected concrete closure type, got `{ty}`"),
@@ -4179,7 +4213,7 @@ impl<'a> CGenerator<'a> {
             .plan
             .closure_defs
             .values()
-            .filter(|closure| closure.id == *id && closure.ty.unqualified() == ty.unqualified())
+            .filter(|closure| closure.id == *id && &closure.ty == ty)
             .collect::<Vec<_>>();
         if let Some(owner) = self.current_closure_owner
             && let Some(closure) = matches.iter().find(|closure| closure.owner == owner)
@@ -4211,10 +4245,11 @@ impl<'a> CGenerator<'a> {
             Literal::Null => "NULL".to_string(),
             Literal::String(raw) => {
                 let len = string_literal_len(raw);
-                let slice = self.slice_name(match ty {
-                    Ty::Slice(elem) => elem,
-                    _ => &Ty::Char,
-                });
+                let (mutability, elem) = match ty {
+                    Ty::Slice { mutability, elem } => (*mutability, elem.as_ref()),
+                    _ => (ViewMutability::ReadOnly, &Ty::Char),
+                };
+                let slice = self.slice_name(mutability, elem);
                 let name = self
                     .plan
                     .string_literal_names
@@ -4419,7 +4454,7 @@ impl<'a> CGenerator<'a> {
             );
             return Ok(result_temp);
         }
-        if let Ty::Closure { constraints, .. } = message_ty.unqualified()
+        if let Ty::Closure { constraints, .. } = message_ty
             && constraints.positive.iter().any(is_clone_message_capability)
         {
             let capability = clone_message_capability();
@@ -4442,7 +4477,7 @@ impl<'a> CGenerator<'a> {
                 && implementation
                     .receiver_ty
                     .as_ref()
-                    .is_some_and(|receiver| receiver == ty.unqualified())
+                    .is_some_and(|receiver| receiver == ty)
                 && implementation.interface_args.get(1..) == Some(&[][..])
         })
     }
@@ -4731,7 +4766,7 @@ impl<'a> CGenerator<'a> {
         elements: &[TExpr],
         indent: usize,
     ) -> DiagResult<String> {
-        let Ty::Slice(elem) = ty else {
+        let Ty::Slice { elem, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 None,
                 "internal error: slice literal emitted for non-slice type",
@@ -4786,7 +4821,7 @@ impl<'a> CGenerator<'a> {
         len: usize,
         indent: usize,
     ) -> DiagResult<String> {
-        let Ty::Slice(elem) = ty else {
+        let Ty::Slice { elem, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 None,
                 "internal error: slice repeat literal emitted for non-slice type",
@@ -4839,8 +4874,8 @@ impl<'a> CGenerator<'a> {
             Array { len: usize, elem: Ty },
         }
 
-        let source = match base.ty.unqualified() {
-            Ty::Slice(_) => SliceBase::Slice,
+        let source = match &base.ty {
+            Ty::Slice { .. } => SliceBase::Slice,
             Ty::Array { len, elem } => SliceBase::Array {
                 len: *len,
                 elem: (**elem).clone(),
@@ -4969,7 +5004,7 @@ impl<'a> CGenerator<'a> {
         concrete_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        if matches!(concrete_ty.unqualified(), Ty::DynamicInterface { .. }) {
+        if matches!(concrete_ty, Ty::DynamicInterface { .. }) {
             return self.emit_dynamic_interface_reerasure(expr, inner, concrete_ty, indent);
         }
         let data_expr = self.gen_expr_in_stmt(inner, indent)?;
@@ -5054,10 +5089,10 @@ impl<'a> CGenerator<'a> {
                 "internal error: closure emitted outside a function",
             )]
         })?;
-        if matches!(expr.ty.unqualified(), Ty::Function { .. }) {
+        if matches!(expr.ty, Ty::Function { .. }) {
             return Ok(self.closure_thunk_name(owner, id));
         }
-        let (Ty::Closure { .. } | Ty::ClosureInstance { .. }) = expr.ty.unqualified() else {
+        let (Ty::Closure { .. } | Ty::ClosureInstance { .. }) = expr.ty else {
             return Err(vec![Diagnostic::new(
                 expr.span,
                 "internal error: closure literal has non-closure type",
@@ -5144,7 +5179,7 @@ impl<'a> CGenerator<'a> {
         source_value: &str,
         indent: usize,
     ) -> DiagResult<String> {
-        if matches!(source_ty.unqualified(), Ty::Function { abi: None, .. }) {
+        if matches!(source_ty, Ty::Function { abi: None, .. }) {
             return self.emit_function_closure_value_from_source(
                 target_ty,
                 source_ty,
@@ -5312,8 +5347,8 @@ impl<'a> CGenerator<'a> {
             args: interface_args.to_vec(),
         };
         let receiver_code = self.gen_expr_with_lowering(receiver, stmt_indent)?;
-        let (receiver_ref, receiver_value) = match receiver.ty.unqualified() {
-            Ty::Pointer { inner, .. } if matches!(inner.unqualified(), Ty::Closure { .. }) => {
+        let (receiver_ref, receiver_value) = match &receiver.ty {
+            Ty::Pointer { inner, .. } if matches!(&**inner, Ty::Closure { .. }) => {
                 let receiver_ref = if let Some(indent) = stmt_indent {
                     let temp = self.next_temp("retained_recv_ptr");
                     self.line_indent(
@@ -5775,7 +5810,7 @@ impl<'a> CGenerator<'a> {
                 len: target_len,
                 elem: target_elem,
             },
-        ) = (source_ty.unqualified(), target_ty.unqualified())
+        ) = (source_ty, target_ty)
             && source_len == target_len
         {
             let target_temp = self.next_temp("retained_target_array");
@@ -5803,8 +5838,14 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, "}");
             return Ok(target_temp);
         }
-        if let (Ty::Slice(source_elem), Ty::Slice(target_elem)) =
-            (source_ty.unqualified(), target_ty.unqualified())
+        if let (
+            Ty::Slice {
+                elem: source_elem, ..
+            },
+            Ty::Slice {
+                elem: target_elem, ..
+            },
+        ) = (source_ty, target_ty)
         {
             let target_temp = self.next_temp("retained_target_slice");
             self.line_indent(
@@ -5900,7 +5941,7 @@ impl<'a> CGenerator<'a> {
                 name: target_name,
                 args: target_args,
             },
-        ) = (source_ty.unqualified(), target_ty.unqualified())
+        ) = (source_ty, target_ty)
         else {
             return Ok(None);
         };
@@ -5988,7 +6029,7 @@ impl<'a> CGenerator<'a> {
                 name: target_name,
                 args: target_args,
             },
-        ) = (source_ty.unqualified(), target_ty.unqualified())
+        ) = (source_ty, target_ty)
         else {
             return Ok(None);
         };
@@ -6134,7 +6175,7 @@ impl<'a> CGenerator<'a> {
             indent,
             &format!("{};", self.c_decl(&witness.source_ty, &source_temp)),
         );
-        match witness.source_ty.unqualified() {
+        match &witness.source_ty {
             Ty::Function { abi: None, .. } => {
                 self.line_indent(indent, &format!("{source_temp} = *({source_ptr});"));
             }
@@ -6555,7 +6596,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn callable_ret_params(&self, ty: &Ty) -> DiagResult<(Ty, Vec<Ty>)> {
-        match ty.unqualified() {
+        match ty {
             Ty::Closure { ret, params, .. }
             | Ty::ClosureInstance { ret, params, .. }
             | Ty::Function { ret, params, .. } => Ok(((**ret).clone(), params.clone())),
@@ -6741,42 +6782,57 @@ impl<'a> CGenerator<'a> {
     }
 
     fn c_decl(&self, ty: &Ty, name: &str) -> String {
+        self.c_decl_qualified(ty, name, false)
+    }
+
+    fn c_decl_qualified(&self, ty: &Ty, name: &str, top_const: bool) -> String {
         match ty {
-            Ty::Const(inner) => format!("const {}", self.c_decl(inner, name)),
-            Ty::Never => c_base_decl("void", name),
-            Ty::Void => c_base_decl("void", name),
-            Ty::Bool => c_base_decl("bool", name),
-            Ty::Char => c_base_decl("char", name),
-            Ty::I8 => c_base_decl("int8_t", name),
-            Ty::I16 => c_base_decl("int16_t", name),
-            Ty::I32 => c_base_decl("int32_t", name),
-            Ty::I64 => c_base_decl("int64_t", name),
-            Ty::U8 => c_base_decl("uint8_t", name),
-            Ty::U16 => c_base_decl("uint16_t", name),
-            Ty::U32 => c_base_decl("uint32_t", name),
-            Ty::U64 => c_base_decl("uint64_t", name),
-            Ty::Usize => c_base_decl("size_t", name),
-            Ty::F32 => c_base_decl("float", name),
-            Ty::F64 => c_base_decl("double", name),
-            Ty::CSpelling { spelling, .. } => c_base_decl(spelling, name),
-            Ty::Pointer { inner, .. } => {
-                let ptr_name = if matches!(**inner, Ty::Array { .. } | Ty::Function { .. }) {
-                    format!("(*{name})")
-                } else {
-                    format!("*{name}")
-                };
-                self.c_decl(inner, &ptr_name)
+            Ty::Never => c_base_decl(&c_qualified_base("void", top_const), name),
+            Ty::Void => c_base_decl(&c_qualified_base("void", top_const), name),
+            Ty::Bool => c_base_decl(&c_qualified_base("bool", top_const), name),
+            Ty::Char => c_base_decl(&c_qualified_base("char", top_const), name),
+            Ty::I8 => c_base_decl(&c_qualified_base("int8_t", top_const), name),
+            Ty::I16 => c_base_decl(&c_qualified_base("int16_t", top_const), name),
+            Ty::I32 => c_base_decl(&c_qualified_base("int32_t", top_const), name),
+            Ty::I64 => c_base_decl(&c_qualified_base("int64_t", top_const), name),
+            Ty::U8 => c_base_decl(&c_qualified_base("uint8_t", top_const), name),
+            Ty::U16 => c_base_decl(&c_qualified_base("uint16_t", top_const), name),
+            Ty::U32 => c_base_decl(&c_qualified_base("uint32_t", top_const), name),
+            Ty::U64 => c_base_decl(&c_qualified_base("uint64_t", top_const), name),
+            Ty::Usize => c_base_decl(&c_qualified_base("size_t", top_const), name),
+            Ty::F32 => c_base_decl(&c_qualified_base("float", top_const), name),
+            Ty::F64 => c_base_decl(&c_qualified_base("double", top_const), name),
+            Ty::CSpelling { spelling, .. } => {
+                c_base_decl(&c_qualified_base(spelling, top_const), name)
             }
-            Ty::Array { len, elem } => self.c_decl(elem, &format!("{name}[{len}]")),
-            Ty::Slice(elem) => c_base_decl(&self.slice_name(elem), name),
+            Ty::Pointer {
+                mutability, inner, ..
+            } => {
+                let ptr_name = c_pointer_name(name, top_const, matches!(**inner, Ty::Array { .. }));
+                self.c_decl_qualified(inner, &ptr_name, mutability.is_read_only())
+            }
+            Ty::Array { len, elem } => {
+                self.c_decl_qualified(elem, &format!("{name}[{len}]"), top_const)
+            }
+            Ty::Slice { mutability, elem } => c_base_decl(
+                &c_qualified_base(&self.slice_name(*mutability, elem), top_const),
+                name,
+            ),
             Ty::Named {
                 name: ty_name,
                 args,
-            } => c_base_decl(&self.c_named_type(ty_name, args), name),
-            Ty::DynamicInterface { .. } => c_base_decl(&self.dynamic_type_name(ty), name),
-            Ty::Closure { .. } | Ty::ClosureInstance { .. } => {
-                c_base_decl(&self.closure_type_name(ty), name)
-            }
+            } => c_base_decl(
+                &c_qualified_base(&self.c_named_type(ty_name, args), top_const),
+                name,
+            ),
+            Ty::DynamicInterface { .. } => c_base_decl(
+                &c_qualified_base(&self.dynamic_type_name(ty), top_const),
+                name,
+            ),
+            Ty::Closure { .. } | Ty::ClosureInstance { .. } => c_base_decl(
+                &c_qualified_base(&self.closure_type_name(ty), top_const),
+                name,
+            ),
             Ty::Function { ret, params, .. } => {
                 let params = params
                     .iter()
@@ -6789,9 +6845,14 @@ impl<'a> CGenerator<'a> {
                 } else {
                     params.join(", ")
                 };
-                self.c_return_decl(ret, &format!("(*{name})({params})"))
+                self.c_return_decl(
+                    ret,
+                    &format!("{}({params})", c_function_pointer_name(name, top_const)),
+                )
             }
-            Ty::Hole(_) | Ty::Generic(_) | Ty::Unknown => c_base_decl("void", name),
+            Ty::Hole(_) | Ty::Generic(_) | Ty::Unknown => {
+                c_base_decl(&c_qualified_base("void", top_const), name)
+            }
         }
     }
 
@@ -6799,6 +6860,7 @@ impl<'a> CGenerator<'a> {
         self.c_decl(
             &Ty::Pointer {
                 nullable: false,
+                mutability: ViewMutability::Writable,
                 inner: Box::new(ty.clone()),
             },
             name,
@@ -6808,6 +6870,7 @@ impl<'a> CGenerator<'a> {
     fn c_pointer_type(&self, ty: &Ty) -> String {
         self.c_type(&Ty::Pointer {
             nullable: false,
+            mutability: ViewMutability::Writable,
             inner: Box::new(ty.clone()),
         })
     }
@@ -6843,7 +6906,6 @@ impl<'a> CGenerator<'a> {
             return String::new();
         }
         match ty {
-            Ty::Const(inner) => self.zero_value(inner),
             Ty::Never => String::new(),
             Ty::Void => String::new(),
             Ty::Bool => "false".to_string(),
@@ -6862,7 +6924,7 @@ impl<'a> CGenerator<'a> {
             | Ty::CSpelling { .. }
             | Ty::Char => "0".to_string(),
             Ty::Array { .. }
-            | Ty::Slice(_)
+            | Ty::Slice { .. }
             | Ty::Named { .. }
             | Ty::DynamicInterface { .. }
             | Ty::Closure { .. }
@@ -6875,8 +6937,12 @@ impl<'a> CGenerator<'a> {
         }
     }
 
-    fn slice_name(&self, elem: &Ty) -> String {
-        format!("CielSlice_{}", mangle_ty_fragment(elem))
+    fn slice_name(&self, mutability: ViewMutability, elem: &Ty) -> String {
+        let prefix = match mutability {
+            ViewMutability::Writable => "CielSlice",
+            ViewMutability::ReadOnly => "CielConstSlice",
+        };
+        format!("{prefix}_{}", mangle_ty_fragment(elem))
     }
 
     fn dynamic_type_name(&self, ty: &Ty) -> String {
@@ -7021,7 +7087,7 @@ impl<'a> CGenerator<'a> {
         witness: &RetainedClosureWitness,
         target_ptr: &str,
     ) -> String {
-        match witness.source_ty.unqualified() {
+        match witness.source_ty {
             Ty::Function { abi: None, .. } => {
                 let env_name =
                     self.function_closure_env_name(&witness.target_ty, &witness.source_ty);
@@ -7057,7 +7123,7 @@ impl<'a> CGenerator<'a> {
         state: &str,
         message: &str,
     ) -> DiagResult<String> {
-        match handler_ty.unqualified() {
+        match handler_ty {
             Ty::Function { .. } => Ok(format!("({handler})({state}, {message})")),
             Ty::Closure { .. } | Ty::ClosureInstance { .. } => Ok(format!(
                 "({handler}).call(({handler}).env, {state}, {message})"
@@ -7122,7 +7188,7 @@ impl<'a> CGenerator<'a> {
                 implementation,
                 &capability.name,
                 &capability.args,
-                source_ty.unqualified(),
+                source_ty,
             )
         })
     }
@@ -7230,8 +7296,45 @@ fn c_base_decl(base: &str, name: &str) -> String {
     }
 }
 
+fn c_qualified_base(base: &str, top_const: bool) -> String {
+    if top_const {
+        format!("const {base}")
+    } else {
+        base.to_string()
+    }
+}
+
+fn c_pointer_name(name: &str, pointer_const: bool, parenthesize: bool) -> String {
+    let pointer = if pointer_const {
+        if name.is_empty() {
+            "* const".to_string()
+        } else {
+            format!("* const {name}")
+        }
+    } else {
+        format!("*{name}")
+    };
+    if parenthesize {
+        format!("({pointer})")
+    } else {
+        pointer
+    }
+}
+
+fn c_function_pointer_name(name: &str, pointer_const: bool) -> String {
+    if pointer_const {
+        if name.is_empty() {
+            "(* const)".to_string()
+        } else {
+            format!("(* const {name})")
+        }
+    } else {
+        format!("(*{name})")
+    }
+}
+
 fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
-    let Ty::Named { name, args } = ty.unqualified() else {
+    let Ty::Named { name, args } = ty else {
         return None;
     };
     if name == "Result" && args.len() == 2 {
@@ -7298,7 +7401,9 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
                     .any(|arg| arg.ty.is_erased_value() || expr_needs_stmt_lowering(arg))
         }
         TExprKind::Closure { captures, .. } => !captures.is_empty(),
-        TExprKind::ArrayToSlice(inner) => expr_needs_stmt_lowering(inner),
+        TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+            expr_needs_stmt_lowering(inner)
+        }
         TExprKind::DynamicInterfaceCall { receiver, args, .. }
         | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
             expr_needs_stmt_lowering(receiver)
@@ -7374,7 +7479,7 @@ fn checked_integer_op_helper(op: &str, ty: &Ty) -> Option<String> {
 }
 
 fn checked_integer_helper_suffix(ty: &Ty) -> Option<&'static str> {
-    Some(match ty.unqualified() {
+    Some(match ty {
         Ty::I8 => "i8",
         Ty::I16 => "i16",
         Ty::I32 => "i32",
@@ -7389,7 +7494,7 @@ fn checked_integer_helper_suffix(ty: &Ty) -> Option<&'static str> {
 }
 
 fn checked_integer_unary_helper(ty: &Ty) -> Option<String> {
-    if ty.unqualified().is_signed_integer() {
+    if ty.is_signed_integer() {
         Some(format!("ciel_neg_{}", checked_integer_helper_suffix(ty)?))
     } else {
         None

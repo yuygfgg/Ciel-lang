@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: cannot write through read-only slice
+
+i64 main() {
+    []const i64 view = [1, 2];
+    view[0] = 3;
+    return view[0];
+}

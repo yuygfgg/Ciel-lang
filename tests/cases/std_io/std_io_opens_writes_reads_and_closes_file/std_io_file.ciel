@@ -10,7 +10,7 @@ i32 main() {
     must(close(file));
 
     Fd input = must(open_read("/tmp/ciel_std_io_fixture.txt"));
-    [32]u8 buffer = [0;];
+    [32]u8 @buffer = [0;];
     usize n = must(read(input, buffer));
     must(close(input));
     must(write(stdout(), buffer[..n]));

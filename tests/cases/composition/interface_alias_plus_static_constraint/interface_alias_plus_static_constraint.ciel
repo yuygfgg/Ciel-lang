@@ -23,6 +23,6 @@ i64 total<T: sized_reader>(*T stream) {
 }
 
 i64 main() {
-    Stream stream = { value: 9, len: 5 };
+    Stream @stream = { value: 9, len: 5 };
     return total(&stream);
 }

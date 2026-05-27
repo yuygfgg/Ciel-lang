@@ -32,7 +32,7 @@ i32 main() {
     defer cleanup(marker);
     while (stop(marker)) {
     }
-    for (i64 i = 0; i < 2 && keep(marker); i = i + step(marker)) {
+    for (i64 @i = 0; i < 2 && keep(marker); i = i + step(marker)) {
         if (i == 0) {
             putchar(65);
             continue;

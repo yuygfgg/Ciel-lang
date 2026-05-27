@@ -19,15 +19,15 @@ struct State<T> {
     T total;
 }
 
-impl<T: Message> clone_message(*Command<T> value) {
+impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Event<T> value) {
+impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*State<T> value) {
+impl<T: Message> clone_message(*const State<T> value) {
     return Ok(*value);
 }
 
@@ -36,15 +36,17 @@ i64 main() {
     State<i64> initial = { out: out, total: 0 };
 
     Actor<Command<i64>> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, |State<i64> state, Command<i64> command| {
-        State<i64> next = state;
+        State<i64> @next = state;
         switch (command) {
             case Add(value):
                 next.total = next.total + value;
                 return Ok(next);
             case Flush(marker):
                 marker;
-                channel_send(&next.out, Ok(Total(next.total)))?;
-                channel_send(&next.out, Ok(Closed))?;
+                Result<Event<i64>, Error> total_event = Ok(Total(next.total));
+                Result<Event<i64>, Error> closed_event = Ok(Closed);
+                channel_send(&next.out, total_event)?;
+                channel_send(&next.out, closed_event)?;
                 return Ok(next);
         }
     }));
@@ -58,7 +60,7 @@ i64 main() {
     must(join(&actor));
     must(channel_close(&out));
 
-    i64 total = 0;
+    i64 @total = 0;
     switch (must(first)) {
         case Total(value):
             total = total + value;

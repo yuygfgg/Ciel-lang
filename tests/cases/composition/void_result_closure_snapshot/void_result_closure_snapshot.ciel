@@ -17,7 +17,7 @@ Result<void, LocalError> apply<T>(T value, Result<void, LocalError> |(T)| action
 }
 
 i64 main() {
-    Cell cell = { value: 17 };
+    Cell @cell = { value: 17 };
     i64 |()| read_snapshot = || {
         cell.tag;
         return cell.value;

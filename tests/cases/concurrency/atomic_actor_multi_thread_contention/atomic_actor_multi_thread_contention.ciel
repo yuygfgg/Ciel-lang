@@ -11,7 +11,7 @@ struct Burst {
     i64 repeats;
 }
 
-impl clone_message(*Burst value) {
+impl clone_message(*const Burst value) {
     return Ok(*value);
 }
 
@@ -25,7 +25,7 @@ Result<i64, Error> worker(i64 state, Burst burst) {
     while (atomic_load(&start, Acquire)? == false) {
     }
 
-    i64 i = 0;
+    i64 @i = 0;
     while (i < repeats) {
         atomic_fetch_add(&counter, 1, AcqRel)?;
         i = i + 1;

@@ -9,19 +9,19 @@ struct Packet {
 }
 
 i64 main() {
-    [20]i64 values = [1;];
+    [20]i64 @values = [1;];
     values[0] = 7;
     values[17] = 8;
     values[19] = 9;
 
     Channel<meta::Repr<[20]i64>> arrays = must(make_channel<meta::Repr<[20]i64>>());
-    must(channel_send(&arrays, meta::into_repr(values)));
+    must(channel_send(&arrays, meta::into_repr(&values)));
     [20]i64 copied = meta::from_repr<[20]i64>(must(channel_recv(&arrays)));
     must(channel_close(&arrays));
 
     Packet packet = { values: copied };
     Channel<meta::Repr<Packet>> packets = must(make_channel<meta::Repr<Packet>>());
-    must(channel_send(&packets, meta::into_repr(packet)));
+    must(channel_send(&packets, meta::into_repr(&packet)));
     Packet received = meta::from_repr<Packet>(must(channel_recv(&packets)));
     must(channel_close(&packets));
 

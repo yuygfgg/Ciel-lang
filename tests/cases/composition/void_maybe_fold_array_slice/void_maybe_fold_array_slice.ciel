@@ -21,7 +21,7 @@ Acc fold_void(Maybe<void> input, Acc seed, Acc |(Acc, void)| step) {
 
 i64 main() {
     [4]void markers;
-    []void view = markers;
+    []const void view = markers;
     Maybe<void> input = Some;
     Acc seed = { total: view.len as i64 };
 

@@ -20,6 +20,6 @@ i64 matches<T: same_i64>(*T value, i64 expected) {
 }
 
 i64 main() {
-    Box box = { value: 9 };
+    Box @box = { value: 9 };
     return matches(&box, 9);
 }

@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 8
+
+struct Box {
+    i64 value;
+}
+
+enum Holder {
+    Hold(Box),
+}
+
+i64 main() {
+    Holder holder = Hold({ value: 1 });
+    switch (holder) {
+        case Hold(@box):
+            box.value = 8;
+            return box.value;
+    }
+}

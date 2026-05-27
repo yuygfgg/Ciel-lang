@@ -31,10 +31,10 @@ i64 read_holder(Holder<Packet> holder) {
 
 i64 main() {
     Packet packet = { id: 17, ok: true };
-    meta::Repr<Packet> repr = meta::into_repr(packet);
-    Holder<Packet> holder = { repr: meta::into_repr(packet) };
+    meta::Repr<Packet> repr = meta::into_repr(&packet);
+    Holder<Packet> holder = { repr: meta::into_repr(&packet) };
     return consume_explicit<Packet>(repr)
-        + consume_after_value(packet, meta::into_repr(packet))
+        + consume_after_value(packet, meta::into_repr(&packet))
         + read_holder(holder)
         - 17;
 }

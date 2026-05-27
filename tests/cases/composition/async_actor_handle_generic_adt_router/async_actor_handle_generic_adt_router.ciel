@@ -14,11 +14,11 @@ enum RouterMsg<M> {
     Done(void),
 }
 
-impl<M: Message> clone_message(*Route<M> value) {
+impl<M: Message> clone_message(*const Route<M> value) {
     return Ok(*value);
 }
 
-impl<M: Message> clone_message(*RouterMsg<M> value) {
+impl<M: Message> clone_message(*const RouterMsg<M> value) {
     return Ok(*value);
 }
 

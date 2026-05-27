@@ -5,7 +5,7 @@
 // expect-c-contains: return ciel_return_
 
 *i64 keep() {
-    i64 value = 7;
+    i64 @value = 7;
     return &value;
 }
 

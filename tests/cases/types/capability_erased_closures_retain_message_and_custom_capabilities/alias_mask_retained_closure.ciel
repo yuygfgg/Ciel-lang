@@ -16,7 +16,7 @@ impl<T: Message> reset(*T value) {
 }
 
 i64 main() {
-    i64 base = 2;
+    i64 @base = 2;
     i64 |(i64): scoring| scored = |i64 value| value + base;
     base = 100;
     return scored(5) + score(&scored);

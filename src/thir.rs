@@ -1,5 +1,5 @@
 use crate::{
-    ast::{BinaryOp, Literal, UnaryOp},
+    ast::{BinaryOp, BindingMutability, Literal, UnaryOp},
     hir::{ConstraintExpr, FunctionDecl, Local, LocalId, Module},
     resolve::{DefId, ModuleId, ResolvedProgram},
     span::Span,
@@ -193,6 +193,7 @@ pub enum TPattern {
     Binding {
         local_id: LocalId,
         name: String,
+        mutability: BindingMutability,
         ty: Ty,
     },
     Variant {
@@ -213,10 +214,18 @@ impl TPattern {
         }
     }
 
-    pub fn collect_bindings<'a>(&'a self, out: &mut Vec<(&'a LocalId, &'a String, &'a Ty)>) {
+    pub fn collect_bindings<'a>(
+        &'a self,
+        out: &mut Vec<(&'a LocalId, &'a String, BindingMutability, &'a Ty)>,
+    ) {
         match self {
             TPattern::Wildcard { .. } => {}
-            TPattern::Binding { local_id, name, ty } => out.push((local_id, name, ty)),
+            TPattern::Binding {
+                local_id,
+                name,
+                mutability,
+                ty,
+            } => out.push((local_id, name, *mutability, ty)),
             TPattern::Variant { payload, .. } => {
                 for pattern in payload {
                     pattern.collect_bindings(out);
@@ -293,6 +302,7 @@ pub enum TExprKind {
         args: Vec<TExpr>,
     },
     ArrayToSlice(Box<TExpr>),
+    SliceToConst(Box<TExpr>),
     MakeDynamicInterface {
         expr: Box<TExpr>,
         concrete_ty: Ty,
@@ -547,6 +557,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::Cast { expr: inner, .. }
         | TExprKind::Try(inner)
         | TExprKind::ArrayToSlice(inner)
+        | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
         TExprKind::Binary { left, right, .. } => {
             visitor.visit_expr(left);

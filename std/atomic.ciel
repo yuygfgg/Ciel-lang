@@ -41,45 +41,45 @@ export struct CompareExchange<T> {
     T previous;
 }
 
-export interface<T> bool atomic_value_marker(*T value);
+export interface<T> bool atomic_value_marker(*const T value);
 export interface AtomicValue = atomic_value_marker;
 
-export interface<T> bool atomic_integer_marker(*T value);
+export interface<T> bool atomic_integer_marker(*const T value);
 export interface AtomicInteger = atomic_integer_marker;
 
-impl atomic_value_marker(*bool value) {
+impl atomic_value_marker(*const bool value) {
     return true;
 }
 
-impl atomic_value_marker(*i64 value) {
+impl atomic_value_marker(*const i64 value) {
     return true;
 }
 
-impl atomic_value_marker(*u64 value) {
+impl atomic_value_marker(*const u64 value) {
     return true;
 }
 
-impl atomic_value_marker(*usize value) {
+impl atomic_value_marker(*const usize value) {
     return true;
 }
 
-impl atomic_integer_marker(*i64 value) {
+impl atomic_integer_marker(*const i64 value) {
     return true;
 }
 
-impl atomic_integer_marker(*u64 value) {
+impl atomic_integer_marker(*const u64 value) {
     return true;
 }
 
-impl atomic_integer_marker(*usize value) {
+impl atomic_integer_marker(*const usize value) {
     return true;
 }
 
-impl<T> clone_message(*Atomic<T> value) {
+impl<T> clone_message(*const Atomic<T> value) {
     return Ok(*value);
 }
 
-impl<T> share_handle_marker(*Atomic<T> value) {
+impl<T> share_handle_marker(*const Atomic<T> value) {
     return true;
 }
 
@@ -181,7 +181,7 @@ bool valid_compare_failure_order(MemoryOrder success, MemoryOrder failure) {
     return false;
 }
 
-*CielAtomic raw_atomic<T>(*Atomic<T> atomic) {
+*CielAtomic raw_atomic<T>(*const Atomic<T> atomic) {
     return atomic->handle as *CielAtomic;
 }
 
@@ -194,7 +194,7 @@ export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
     return Ok({ handle: raw as *void });
 }
 
-export Result<T, Error> atomic_load<T: AtomicValue>(*Atomic<T> atomic, MemoryOrder order) {
+export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) {
     if (valid_load_order(order) == false) {
         return Err(invalid_memory_order());
     }
@@ -207,7 +207,7 @@ export Result<T, Error> atomic_load<T: AtomicValue>(*Atomic<T> atomic, MemoryOrd
 }
 
 export Result<void, Error> atomic_store<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) {
@@ -223,7 +223,7 @@ export Result<void, Error> atomic_store<T: AtomicValue>(
 }
 
 export Result<T, Error> atomic_exchange<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) {
@@ -237,7 +237,7 @@ export Result<T, Error> atomic_exchange<T: AtomicValue>(
 }
 
 export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T expected,
     T desired,
     MemoryOrder success,
@@ -248,7 +248,7 @@ export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>
     }
     T expected_local = expected;
     T desired_local = desired;
-    c::c_int exchanged = 0 as c::c_int;
+    c::c_int @exchanged = 0 as c::c_int;
     ?*void raw = ciel_atomic_compare_exchange(
         raw_atomic(atomic),
         &expected_local as *const void,
@@ -268,7 +268,7 @@ export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>
 }
 
 export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) {
@@ -282,7 +282,7 @@ export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
 }
 
 export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
-    *Atomic<T> atomic,
+    *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) {

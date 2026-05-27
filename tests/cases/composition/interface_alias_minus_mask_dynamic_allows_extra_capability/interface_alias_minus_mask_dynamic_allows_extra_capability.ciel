@@ -37,6 +37,6 @@ i64 load(Stored stored) {
 }
 
 i64 main() {
-    Source source = { value: 42 };
+    Source @source = { value: 42 };
     return load(erase(&source));
 }

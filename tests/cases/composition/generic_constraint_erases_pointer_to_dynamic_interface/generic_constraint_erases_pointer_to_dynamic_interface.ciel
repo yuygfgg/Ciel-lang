@@ -1,17 +1,17 @@
 // ciel-test: run
 // expect-exit: 21
 
-interface<T> i64 measure(*T value);
+interface<T> i64 measure(*const T value);
 
 struct Box {
     i64 value;
 }
 
-impl measure(*Box box) {
+impl measure(*const Box box) {
     return box->value;
 }
 
-measure |()| make_reader<T: measure>(*T value) {
+measure |()| make_reader<T: measure>(*const T value) {
     return || value;
 }
 

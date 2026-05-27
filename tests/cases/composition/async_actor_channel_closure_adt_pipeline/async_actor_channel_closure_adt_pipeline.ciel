@@ -14,15 +14,15 @@ struct Sink<T> {
     T base;
 }
 
-impl<T: Message> clone_message(*Job<T> value) {
+impl<T: Message> clone_message(*const Job<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Sink<T> value) {
+impl<T: Message> clone_message(*const Sink<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> send_job<T: Message>(*Actor<Job<T>> actor, Job<T> job) {
+Result<void, Error> send_job<T: Message>(*const Actor<Job<T>> actor, Job<T> job) {
     return send(actor, job);
 }
 

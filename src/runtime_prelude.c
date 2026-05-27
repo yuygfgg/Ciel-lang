@@ -65,7 +65,7 @@ static CIEL_MAYBE_UNUSED void *ciel_alloc_array(size_t elem_size, size_t len) {
     return ciel_alloc(bytes == 0 ? 1 : bytes);
 }
 
-void ciel_panic_at(char *message, size_t len, char *file, size_t line) {
+void ciel_panic_at(const char *message, size_t len, const char *file, size_t line) {
     fputs("panic", stderr);
     if (file != NULL && file[0] != '\0')
         fprintf(stderr, " at %s:%zu", file, line);
@@ -77,13 +77,13 @@ void ciel_panic_at(char *message, size_t len, char *file, size_t line) {
     exit(0);
 }
 
-void ciel_panic(char *message, size_t len) {
+void ciel_panic(const char *message, size_t len) {
     ciel_panic_at(message, len, "<runtime>", 0);
 }
 
 int ciel_errno(void) { return errno; }
 
-char *ciel_cstr_from_slice(char *ptr, size_t len) {
+char *ciel_cstr_from_slice(const char *ptr, size_t len) {
     char *out = (char *)ciel_alloc_array(sizeof(char), len + 1);
     for (size_t i = 0; i < len; i++)
         out[i] = ptr[i];
@@ -115,31 +115,31 @@ size_t ciel_f64_to_string(double value, char *out, size_t cap) {
 }
 
 #if defined(_WIN32)
-int ciel_io_open_read(char *path) {
+int ciel_io_open_read(const char *path) {
     (void)path;
     errno = ENOSYS;
     return -1;
 }
 
-int ciel_io_open_write(char *path) {
+int ciel_io_open_write(const char *path) {
     (void)path;
     errno = ENOSYS;
     return -1;
 }
 
-int ciel_io_open_append(char *path) {
+int ciel_io_open_append(const char *path) {
     (void)path;
     errno = ENOSYS;
     return -1;
 }
 #else
-int ciel_io_open_read(char *path) { return open(path, O_RDONLY); }
+int ciel_io_open_read(const char *path) { return open(path, O_RDONLY); }
 
-int ciel_io_open_write(char *path) {
+int ciel_io_open_write(const char *path) {
     return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
 }
 
-int ciel_io_open_append(char *path) {
+int ciel_io_open_append(const char *path) {
     return open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
 }
 #endif

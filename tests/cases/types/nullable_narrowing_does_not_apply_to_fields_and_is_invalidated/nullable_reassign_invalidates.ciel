@@ -6,8 +6,8 @@ struct Box {
 }
 
 i64 main() {
-    Box box = { value: 1 };
-    ?*Box ptr = &box;
+    Box @box = { value: 1 };
+    ?*Box @ptr = &box;
     if (ptr != null) {
         ptr = null;
         return ptr->value;

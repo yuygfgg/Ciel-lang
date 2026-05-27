@@ -1,0 +1,8 @@
+// ciel-test: run
+// expect-exit: 7
+
+i64 main() {
+    i64 @value = 7;
+    *const i64 view = &value;
+    return *view;
+}

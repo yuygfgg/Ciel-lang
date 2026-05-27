@@ -10,10 +10,10 @@ export struct Repr<T> {}
 // Compiler-provided marker facts. User code cannot implement these interfaces;
 // the compiler only proves them for Ciel ABI function pointers and concrete
 // closure instance values respectively.
-export interface<T> bool ciel_fn_value_marker(*T value);
+export interface<T> bool ciel_fn_value_marker(*const T value);
 export interface CielFnValue = ciel_fn_value_marker;
 
-export interface<T> bool closure_value_marker(*T value);
+export interface<T> bool closure_value_marker(*const T value);
 export interface ClosureValue = closure_value_marker;
 
 // Product lists.
@@ -26,19 +26,19 @@ export struct HCons<H, T> {
 
 // Named struct fields.
 export struct FieldRef<T> {
-    []char name;
-    *T value;
+    []const char name;
+    *const T value;
 }
 
 export struct Field<T> {
-    []char name;
+    []const char name;
     T value;
 }
 
 // Positional enum payloads.
 export struct PayloadRef<T> {
     usize index;
-    *T value;
+    *const T value;
 }
 
 export struct Payload<T> {
@@ -55,12 +55,12 @@ export enum Coproduct<H, T> {
 }
 
 export struct VariantRef<P> {
-    []char name;
+    []const char name;
     P payload;
 }
 
 export struct Variant<P> {
-    []char name;
+    []const char name;
     P payload;
 }
 
@@ -258,6 +258,6 @@ export struct ArrayCat<L, R> {
 }
 
 // Compiler built-ins: lowered from visible type layouts.
-export RefRepr<T> as_ref_repr<T>(*T value);
-export Repr<T> into_repr<T>(T value);
+export RefRepr<T> as_ref_repr<T>(*const T value);
+export Repr<T> into_repr<T>(*const T value);
 export T from_repr<T>(Repr<T> value);

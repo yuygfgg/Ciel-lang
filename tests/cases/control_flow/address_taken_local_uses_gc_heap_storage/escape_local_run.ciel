@@ -2,7 +2,7 @@
 // expect-exit: 7
 
 *i64 keep() {
-    i64 value = 7;
+    i64 @value = 7;
     return &value;
 }
 

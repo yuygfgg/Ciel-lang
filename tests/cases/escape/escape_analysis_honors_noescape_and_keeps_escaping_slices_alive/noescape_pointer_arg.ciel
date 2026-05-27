@@ -6,7 +6,7 @@ extern "C" {
 }
 
 i64 main() {
-    i64 value = 5;
+    i64 @value = 5;
     observe(&value);
     return value;
 }

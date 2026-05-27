@@ -1,4 +1,4 @@
 export enum Error {
-    Text([]char),
+    Text([]const char),
     Code(i64),
 }

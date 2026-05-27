@@ -19,15 +19,15 @@ struct Envelope<T> {
     i64 scale;
 }
 
-impl<T: Message> clone_message(*Pair<T> value) {
+impl<T: Message> clone_message(*const Pair<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Command<T> value) {
+impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Envelope<T> value) {
+impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 
@@ -35,7 +35,7 @@ Envelope<T> wrap<T: Message>(T item, i64 scale) {
     return { item: item, scale: scale };
 }
 
-Result<void, Error> send_wrapped<T: Message>(*Actor<Envelope<T>> actor, T item, i64 scale) {
+Result<void, Error> send_wrapped<T: Message>(*const Actor<Envelope<T>> actor, T item, i64 scale) {
     return send(actor, wrap(item, scale));
 }
 

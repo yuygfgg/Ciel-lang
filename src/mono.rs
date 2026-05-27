@@ -436,7 +436,17 @@ impl MonoContext {
     fn rewrite_pattern(&mut self, pattern: TPattern) -> DiagResult<TPattern> {
         Ok(match pattern {
             TPattern::Wildcard { ty } => TPattern::Wildcard { ty },
-            TPattern::Binding { local_id, name, ty } => TPattern::Binding { local_id, name, ty },
+            TPattern::Binding {
+                local_id,
+                name,
+                mutability,
+                ty,
+            } => TPattern::Binding {
+                local_id,
+                name,
+                mutability,
+                ty,
+            },
             TPattern::Variant {
                 ty,
                 enum_type_name,
@@ -522,6 +532,9 @@ impl MonoContext {
             }
             TExprKind::ArrayToSlice(inner) => {
                 TExprKind::ArrayToSlice(Box::new(self.rewrite_expr(*inner)?))
+            }
+            TExprKind::SliceToConst(inner) => {
+                TExprKind::SliceToConst(Box::new(self.rewrite_expr(*inner)?))
             }
             TExprKind::MakeDynamicInterface {
                 expr: inner,
@@ -732,7 +745,7 @@ impl MonoContext {
                         implementation,
                         &capability.name,
                         &capability.args,
-                        source_ty.unqualified(),
+                        source_ty,
                     )
                 })
                 .map(|implementation| implementation.function_def)
@@ -743,7 +756,7 @@ impl MonoContext {
     }
 
     fn clone_message_impl_def(&self, ty: &Ty) -> Option<DefId> {
-        let ty = ty.unqualified();
+        let ty = ty;
         self.checked
             .impls
             .iter()
@@ -1049,7 +1062,9 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_message_clone_result_tys(source_ty);
                 }
             }
-            TExprKind::ArrayToSlice(inner) => self.collect_expr(inner),
+            TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_expr(inner)
+            }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_expr(expr);
                 self.collect_ty(concrete_ty);
@@ -1151,12 +1166,11 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn collect_message_clone_result_tys(&mut self, ty: &Ty) {
-        self.collect_ty(&std_message_result_ty(ty.unqualified().clone()));
+        self.collect_ty(&std_message_result_ty(ty.clone()));
     }
 
     fn collect_ty(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.collect_ty(inner),
             Ty::Named { name, args } => {
                 if self.structs.contains_key(name) {
                     self.instantiate_struct(name, args);
@@ -1169,7 +1183,7 @@ impl<'a> AggregateCollector<'a> {
                 }
             }
             Ty::Pointer { inner, .. } => self.collect_ty(inner),
-            Ty::Array { elem, .. } | Ty::Slice(elem) => self.collect_ty(elem),
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.collect_ty(elem),
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.collect_ty(arg);
@@ -1243,7 +1257,7 @@ impl<'a> AggregateCollector<'a> {
         receiver_ty: &Ty,
         capability: &ConstraintRef,
     ) {
-        let key = (receiver_ty.unqualified().clone(), capability.clone());
+        let key = (receiver_ty.clone(), capability.clone());
         if !self.retained_closure_interface_tys.insert(key) {
             return;
         }
@@ -1365,16 +1379,23 @@ impl<'a> AggregateCollector<'a> {
 
     fn normalize_meta_repr_markers(&mut self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Const(inner) => Ty::Const(Box::new(self.normalize_meta_repr_markers(inner))),
-            Ty::Pointer { nullable, inner } => Ty::Pointer {
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.normalize_meta_repr_markers(inner)),
             },
             Ty::Array { len, elem } => Ty::Array {
                 len: *len,
                 elem: Box::new(self.normalize_meta_repr_markers(elem)),
             },
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_meta_repr_markers(elem))),
+            Ty::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.normalize_meta_repr_markers(elem)),
+            },
             Ty::Named { name, args } => {
                 let args = args
                     .iter()
@@ -1446,7 +1467,7 @@ impl<'a> AggregateCollector<'a> {
         borrowed: bool,
     ) -> Ty {
         let span = span.into();
-        let root = (!borrowed).then(|| source_ty.unqualified().clone());
+        let root = (!borrowed).then(|| source_ty.clone());
         let mut expanding = HashSet::new();
         self.meta_repr_ty_rec(span, source_ty, borrowed, root.as_ref(), &mut expanding)
     }
@@ -1462,15 +1483,15 @@ impl<'a> AggregateCollector<'a> {
         if contains_generic(source_ty) {
             return std_meta_repr_marker_ty(borrowed, source_ty.clone());
         }
-        match source_ty.unqualified() {
+        match source_ty {
             Ty::Array { .. } => {
                 if borrowed {
-                    let Ty::Array { len, elem } = source_ty.unqualified() else {
+                    let Ty::Array { len, elem } = source_ty else {
                         unreachable!();
                     };
                     meta_ref_array_repr_ty(*len, elem)
                 } else {
-                    let Ty::Array { len, elem } = source_ty.unqualified() else {
+                    let Ty::Array { len, elem } = source_ty else {
                         unreachable!();
                     };
                     self.meta_array_repr_ty_rec(*len, elem, false, root, expanding)
@@ -1592,9 +1613,9 @@ impl<'a> AggregateCollector<'a> {
         expanding: &mut HashSet<Ty>,
     ) -> Ty {
         if self.is_owned_meta_policy_leaf(ty, root) {
-            return ty.unqualified().clone();
+            return ty.clone();
         }
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => {
                 self.meta_array_repr_ty_rec(*len, elem, false, root, expanding)
             }
@@ -1606,16 +1627,16 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn is_owned_meta_policy_leaf(&self, ty: &Ty, root: Option<&Ty>) -> bool {
-        if root.is_some_and(|root| ty.unqualified() == root) || contains_generic(ty) {
+        if root.is_some_and(|root| ty == root) || contains_generic(ty) {
             return false;
         }
-        matches!(ty.unqualified(), Ty::Named { .. })
+        matches!(ty, Ty::Named { .. })
             && self.checked.impls.iter().any(|implementation| {
                 implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
                     && implementation
                         .receiver_ty
                         .as_ref()
-                        .is_some_and(|receiver| receiver == ty.unqualified())
+                        .is_some_and(|receiver| receiver == ty)
                     && implementation.interface_args.get(1..) == Some(&[][..])
             })
     }
@@ -1765,16 +1786,23 @@ impl<'a> AggregateCollector<'a> {
                     self.normalize_meta_repr_markers(&Ty::Named { name, args })
                 }
             }
-            TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+            TypeKind::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.lower_ast_type(inner, subst)),
             },
-            TypeKind::Const(inner) => Ty::Const(Box::new(self.lower_ast_type(inner, subst))),
             TypeKind::Array { len, elem } => Ty::Array {
                 len: *len,
                 elem: Box::new(self.lower_ast_type(elem, subst)),
             },
-            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.lower_ast_type(elem, subst))),
+            TypeKind::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.lower_ast_type(elem, subst)),
+            },
             TypeKind::Function { abi, ret, params } => Ty::Function {
                 abi: abi.clone(),
                 ret: Box::new(self.lower_ast_type(ret, subst)),
@@ -1885,7 +1913,7 @@ fn generic_instance_name(name: &str, args: &[Ty]) -> String {
 }
 
 fn enum_c_name_from_ty(ty: &Ty) -> Option<String> {
-    match ty.unqualified() {
+    match ty {
         Ty::Named { name, args } => Some(aggregate_instance_name(name, args)),
         _ => None,
     }

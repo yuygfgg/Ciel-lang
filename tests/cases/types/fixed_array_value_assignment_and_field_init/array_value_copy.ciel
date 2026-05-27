@@ -10,7 +10,7 @@ i64 main() {
     [2]i64 second;
     second = first;
 
-    Box box = { values: second };
+    Box @box = { values: second };
     box.values = first;
 
     [2]i64 copy = box.values;

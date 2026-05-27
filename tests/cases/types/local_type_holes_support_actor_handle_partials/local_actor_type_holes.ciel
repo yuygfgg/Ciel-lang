@@ -11,11 +11,11 @@ enum Command {
     Add(i64),
 }
 
-impl clone_message(*State value) {
+impl clone_message(*const State value) {
     return Ok(*value);
 }
 
-impl clone_message(*Command value) {
+impl clone_message(*const Command value) {
     return Ok(*value);
 }
 

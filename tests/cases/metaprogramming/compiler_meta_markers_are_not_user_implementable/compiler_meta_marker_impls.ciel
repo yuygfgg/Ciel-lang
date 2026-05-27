@@ -4,10 +4,10 @@
 
 import /std/meta;
 
-impl ciel_fn_value_marker(*i64 value) {
+impl ciel_fn_value_marker(*const i64 value) {
     return true;
 }
 
-impl closure_value_marker(*bool value) {
+impl closure_value_marker(*const bool value) {
     return true;
 }

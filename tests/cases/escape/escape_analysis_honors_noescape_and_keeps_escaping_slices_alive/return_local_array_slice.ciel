@@ -2,7 +2,7 @@
 // expect-exit: 8
 
 []i64 make() {
-    [2]i64 values = [7, 8];
+    [2]i64 @values = [7, 8];
     return values;
 }
 

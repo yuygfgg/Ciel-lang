@@ -8,6 +8,6 @@ i64 only_reader<T: reader_only + !seek>(*T value) {
 }
 
 i64 main() {
-    Stream stream = { value: 3 };
+    Stream @stream = { value: 3 };
     return only_reader(&stream);
 }

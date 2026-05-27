@@ -9,7 +9,7 @@ enum Op {
     Flush(void),
 }
 
-impl clone_message(*Op value) {
+impl clone_message(*const Op value) {
     return Ok(*value);
 }
 

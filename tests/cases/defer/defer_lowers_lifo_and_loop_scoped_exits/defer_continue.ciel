@@ -10,7 +10,7 @@ extern "C" {
 
 i32 main() {
     defer putchar(79);
-    for (i64 i = 0; i < 2; i = i + 1) {
+    for (i64 @i = 0; i < 2; i = i + 1) {
         defer putchar(65);
         continue;
     }

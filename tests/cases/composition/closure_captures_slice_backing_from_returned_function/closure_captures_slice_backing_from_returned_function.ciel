@@ -3,7 +3,7 @@
 
 i64 |()| make_reader() {
     [3]i64 values = [2, 7, 11];
-    []i64 view = values;
+    []const i64 view = values;
     return || view[1];
 }
 

@@ -135,14 +135,111 @@ struct Binding {
     name: String,
     ty: Ty,
     narrowed_ty: Option<Ty>,
-    assigned: bool,
-    immutable: bool,
+    init_state: InitState,
+    mutability: BindingMutability,
+    captured: bool,
+    declared_loop_depth: usize,
 }
 
 struct CheckedLocalInit {
     ty: Ty,
     init: Option<TExpr>,
     assigned: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InitState {
+    Unassigned,
+    Assigned,
+    MaybeAssigned,
+}
+
+impl InitState {
+    fn from_assigned(assigned: bool) -> Self {
+        if assigned {
+            InitState::Assigned
+        } else {
+            InitState::Unassigned
+        }
+    }
+
+    fn is_assigned(self) -> bool {
+        matches!(self, InitState::Assigned)
+    }
+
+    fn merge(self, other: Self) -> Self {
+        match (self, other) {
+            (InitState::Assigned, InitState::Assigned) => InitState::Assigned,
+            (InitState::Unassigned, InitState::Unassigned) => InitState::Unassigned,
+            _ => InitState::MaybeAssigned,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LvalueAccess {
+    ReadOnly,
+    Writable,
+}
+
+impl LvalueAccess {
+    fn from_view(mutability: ViewMutability) -> Self {
+        match mutability {
+            ViewMutability::ReadOnly => LvalueAccess::ReadOnly,
+            ViewMutability::Writable => LvalueAccess::Writable,
+        }
+    }
+
+    fn pointer_ty(self, inner: Ty) -> Ty {
+        match self {
+            LvalueAccess::ReadOnly => Ty::const_pointer_to(inner),
+            LvalueAccess::Writable => Ty::pointer_to(inner),
+        }
+    }
+
+    fn is_writable(self) -> bool {
+        matches!(self, LvalueAccess::Writable)
+    }
+}
+
+#[derive(Clone, Debug)]
+enum ReadOnlyReason {
+    ImmutableBinding(String),
+    CapturedBinding(String),
+    ReadOnlyPointer,
+    ReadOnlySlice,
+}
+
+#[derive(Clone, Debug)]
+struct CheckedLvalue {
+    expr: TExpr,
+    access: LvalueAccess,
+    read_only_reason: Option<ReadOnlyReason>,
+}
+
+impl CheckedLvalue {
+    fn writable(expr: TExpr) -> Self {
+        Self {
+            expr,
+            access: LvalueAccess::Writable,
+            read_only_reason: None,
+        }
+    }
+
+    fn read_only(expr: TExpr, reason: ReadOnlyReason) -> Self {
+        Self {
+            expr,
+            access: LvalueAccess::ReadOnly,
+            read_only_reason: Some(reason),
+        }
+    }
+
+    fn from_view(expr: TExpr, mutability: ViewMutability, reason: ReadOnlyReason) -> Self {
+        match LvalueAccess::from_view(mutability) {
+            LvalueAccess::Writable => Self::writable(expr),
+            LvalueAccess::ReadOnly => Self::read_only(expr, reason),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -159,11 +256,12 @@ impl LocalScopes {
         self.scopes.pop();
     }
 
-    fn insert(&mut self, id: LocalId, binding: Binding) -> Result<(), String> {
+    fn insert(&mut self, id: LocalId, mut binding: Binding) -> Result<(), String> {
         let scope = self.scopes.last_mut().expect("scope stack is not empty");
         if scope.contains_key(&id) {
             return Err(binding.name);
         }
+        binding.declared_loop_depth = binding.declared_loop_depth.max(0);
         scope.insert(id, binding);
         Ok(())
     }
@@ -200,10 +298,10 @@ impl LocalScopes {
         }
     }
 
-    fn mark_all_immutable(&mut self) {
+    fn mark_all_captured(&mut self) {
         for scope in &mut self.scopes {
             for binding in scope.values_mut() {
-                binding.immutable = true;
+                binding.captured = true;
             }
         }
     }
@@ -217,15 +315,15 @@ impl LocalScopes {
                 continue;
             };
             for (id, binding) in scope {
-                let left_assigned = left_scope
+                let left_state = left_scope
                     .get(id)
-                    .map(|binding| binding.assigned)
-                    .unwrap_or(binding.assigned);
-                let right_assigned = right_scope
+                    .map(|binding| binding.init_state)
+                    .unwrap_or(binding.init_state);
+                let right_state = right_scope
                     .get(id)
-                    .map(|binding| binding.assigned)
-                    .unwrap_or(binding.assigned);
-                binding.assigned = left_assigned && right_assigned;
+                    .map(|binding| binding.init_state)
+                    .unwrap_or(binding.init_state);
+                binding.init_state = left_state.merge(right_state);
                 let left_narrowed = left_scope
                     .get(id)
                     .and_then(|binding| binding.narrowed_ty.clone());
@@ -246,7 +344,7 @@ impl LocalScopes {
             };
             for (id, binding) in scope {
                 if let Some(source_binding) = source_scope.get(id) {
-                    binding.assigned = source_binding.assigned;
+                    binding.init_state = source_binding.init_state;
                     binding.narrowed_ty = source_binding.narrowed_ty.clone();
                 }
             }
@@ -417,6 +515,7 @@ struct TypeChecker {
     next_closure_id: usize,
     next_type_hole_id: usize,
     type_hole_solutions: HashMap<usize, Ty>,
+    current_loop_depth: usize,
 }
 
 impl TypeChecker {
@@ -453,6 +552,7 @@ impl TypeChecker {
             next_closure_id: 0,
             next_type_hole_id: 0,
             type_hole_solutions: HashMap::new(),
+            current_loop_depth: 0,
         }
     }
 
@@ -1065,24 +1165,23 @@ impl TypeChecker {
                     Ty::Unknown
                 }
             }
-            TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+            TypeKind::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.lower_type_with_subst_inner(inner, subst, allow_holes)),
             },
-            TypeKind::Const(inner) => Ty::Const(Box::new(self.lower_type_with_subst_inner(
-                inner,
-                subst,
-                allow_holes,
-            ))),
             TypeKind::Array { len, elem } => Ty::Array {
                 len: *len,
                 elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
             },
-            TypeKind::Slice(elem) => Ty::Slice(Box::new(self.lower_type_with_subst_inner(
-                elem,
-                subst,
-                allow_holes,
-            ))),
+            TypeKind::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
+            },
             TypeKind::Function { abi, ret, params } => Ty::Function {
                 abi: abi.clone(),
                 ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
@@ -1126,16 +1225,23 @@ impl TypeChecker {
                 .get(id)
                 .map(|solution| self.resolve_type_holes(solution))
                 .unwrap_or(Ty::Hole(*id)),
-            Ty::Const(inner) => Ty::Const(Box::new(self.resolve_type_holes(inner))),
-            Ty::Pointer { nullable, inner } => Ty::Pointer {
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.resolve_type_holes(inner)),
             },
             Ty::Array { len, elem } => Ty::Array {
                 len: *len,
                 elem: Box::new(self.resolve_type_holes(elem)),
             },
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.resolve_type_holes(elem))),
+            Ty::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.resolve_type_holes(elem)),
+            },
             Ty::Named { name, args } => Ty::Named {
                 name: name.clone(),
                 args: args
@@ -1209,17 +1315,20 @@ impl TypeChecker {
         match (&expected, &actual) {
             (Ty::Hole(id), _) => self.bind_type_hole(*id, &actual),
             (_, Ty::Hole(id)) => self.bind_type_hole(*id, &expected),
-            (Ty::Const(inner), _) => self.unify_type_holes(inner, actual.unqualified()),
             (
                 Ty::Pointer {
                     nullable,
+                    mutability,
                     inner: expected_inner,
                 },
                 Ty::Pointer {
                     nullable: actual_nullable,
+                    mutability: actual_mutability,
                     inner: actual_inner,
                 },
-            ) if nullable == actual_nullable => self.unify_type_holes(expected_inner, actual_inner),
+            ) if nullable == actual_nullable && mutability == actual_mutability => {
+                self.unify_type_holes(expected_inner, actual_inner)
+            }
             (
                 Ty::Array {
                     len,
@@ -1230,11 +1339,23 @@ impl TypeChecker {
                     elem: actual_elem,
                 },
             ) if len == actual_len => self.unify_type_holes(expected_elem, actual_elem),
-            (Ty::Slice(expected_elem), Ty::Slice(actual_elem)) => {
+            (
+                Ty::Slice {
+                    mutability,
+                    elem: expected_elem,
+                },
+                Ty::Slice {
+                    mutability: actual_mutability,
+                    elem: actual_elem,
+                },
+            ) if mutability == actual_mutability => {
                 self.unify_type_holes(expected_elem, actual_elem)
             }
             (
-                Ty::Slice(expected_elem),
+                Ty::Slice {
+                    elem: expected_elem,
+                    ..
+                },
                 Ty::Array {
                     elem: actual_elem, ..
                 },
@@ -1322,7 +1443,7 @@ impl TypeChecker {
                         .zip(actual_captures.iter())
                         .all(|(expected, actual)| self.unify_type_holes(expected, actual))
             }
-            _ => expected.unqualified() == actual.unqualified(),
+            _ => expected == actual,
         }
     }
 
@@ -1337,7 +1458,6 @@ impl TypeChecker {
         let actual = self.resolve_type_holes(actual);
         match &pattern {
             Ty::Hole(id) => self.bind_type_hole(*id, &actual),
-            Ty::Const(inner) => self.unify_ty_for_inference(inner, actual.unqualified(), subst),
             Ty::Generic(name) => match subst.get(name).cloned() {
                 Some(Ty::Generic(existing)) if existing == *name => {
                     subst.insert(name.clone(), actual);
@@ -1357,12 +1477,14 @@ impl TypeChecker {
             },
             Ty::Pointer {
                 nullable,
+                mutability,
                 inner: pattern_inner,
-            } => match actual.unqualified() {
+            } => match &actual {
                 Ty::Pointer {
                     nullable: actual_nullable,
+                    mutability: actual_mutability,
                     inner: actual_inner,
-                } if nullable == actual_nullable => {
+                } if nullable == actual_nullable && mutability == actual_mutability => {
                     self.unify_ty_for_inference(pattern_inner, actual_inner, subst)
                 }
                 _ => false,
@@ -1370,7 +1492,7 @@ impl TypeChecker {
             Ty::Array {
                 len,
                 elem: pattern_elem,
-            } => match actual.unqualified() {
+            } => match &actual {
                 Ty::Array {
                     len: actual_len,
                     elem: actual_elem,
@@ -1379,8 +1501,14 @@ impl TypeChecker {
                 }
                 _ => false,
             },
-            Ty::Slice(pattern_elem) => match actual.unqualified() {
-                Ty::Slice(actual_elem) => {
+            Ty::Slice {
+                mutability,
+                elem: pattern_elem,
+            } => match &actual {
+                Ty::Slice {
+                    mutability: actual_mutability,
+                    elem: actual_elem,
+                } if mutability == actual_mutability => {
                     self.unify_ty_for_inference(pattern_elem, actual_elem, subst)
                 }
                 Ty::Array {
@@ -1388,7 +1516,7 @@ impl TypeChecker {
                 } => self.unify_ty_for_inference(pattern_elem, actual_elem, subst),
                 _ => false,
             },
-            Ty::Named { name, args } => match actual.unqualified() {
+            Ty::Named { name, args } => match &actual {
                 Ty::Named {
                     name: actual_name,
                     args: actual_args,
@@ -1398,7 +1526,7 @@ impl TypeChecker {
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
                 _ => false,
             },
-            Ty::DynamicInterface { name, args } => match actual.unqualified() {
+            Ty::DynamicInterface { name, args } => match &actual {
                 Ty::DynamicInterface {
                     name: actual_name,
                     args: actual_args,
@@ -1408,7 +1536,7 @@ impl TypeChecker {
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
                 _ => false,
             },
-            Ty::Function { abi, ret, params } => match actual.unqualified() {
+            Ty::Function { abi, ret, params } => match &actual {
                 Ty::Function {
                     abi: actual_abi,
                     ret: actual_ret,
@@ -1428,7 +1556,7 @@ impl TypeChecker {
                 ret,
                 params,
                 constraints,
-            } => match actual.unqualified() {
+            } => match &actual {
                 Ty::Closure {
                     ret: actual_ret,
                     params: actual_params,
@@ -1467,7 +1595,7 @@ impl TypeChecker {
                 ret,
                 params,
                 captures,
-            } => match actual.unqualified() {
+            } => match &actual {
                 Ty::ClosureInstance {
                     id: actual_id,
                     ret: actual_ret,
@@ -1493,7 +1621,7 @@ impl TypeChecker {
                 }
                 _ => false,
             },
-            other => other == actual.unqualified(),
+            other => other == &actual,
         }
     }
 
@@ -1622,7 +1750,7 @@ impl TypeChecker {
             if matches!(solved_ty, Ty::Unknown) {
                 init
             } else {
-                self.coerce_expr_to_expected(init, Some(&solved_ty))
+                self.coerce_expr_to_expected(scopes, init, Some(&solved_ty))
             }
         });
         if let Some(init) = &init {
@@ -1749,13 +1877,13 @@ impl TypeChecker {
         emit_diagnostics: bool,
     ) -> Ty {
         match ty {
-            Ty::Const(inner) => Ty::Const(Box::new(self.normalize_meta_repr_markers_inner(
+            Ty::Pointer {
+                nullable,
+                mutability,
                 inner,
-                span,
-                emit_diagnostics,
-            ))),
-            Ty::Pointer { nullable, inner } => Ty::Pointer {
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.normalize_meta_repr_markers_inner(
                     inner,
                     span,
@@ -1770,11 +1898,14 @@ impl TypeChecker {
                     emit_diagnostics,
                 )),
             },
-            Ty::Slice(elem) => Ty::Slice(Box::new(self.normalize_meta_repr_markers_inner(
-                elem,
-                span,
-                emit_diagnostics,
-            ))),
+            Ty::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.normalize_meta_repr_markers_inner(
+                    elem,
+                    span,
+                    emit_diagnostics,
+                )),
+            },
             Ty::Named { name, args } => {
                 let args = args
                     .iter()
@@ -1913,7 +2044,7 @@ impl TypeChecker {
         borrowed: bool,
         emit_diagnostics: bool,
     ) -> Option<Ty> {
-        let root = (!borrowed).then(|| source_ty.unqualified().clone());
+        let root = (!borrowed).then(|| source_ty.clone());
         let mut expanding = HashSet::new();
         self.meta_repr_ty_inner_rec(
             span,
@@ -1937,7 +2068,7 @@ impl TypeChecker {
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
             return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
         }
-        match source_ty.unqualified() {
+        match source_ty {
             Ty::Array { len, elem } => {
                 self.check_meta_array_budget(span, source_ty, *len, elem, emit_diagnostics)?;
                 Some(if borrowed {
@@ -2077,9 +2208,9 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if self.is_owned_meta_policy_leaf(ty, root) {
-            return Some(ty.unqualified().clone());
+            return Some(ty.clone());
         }
-        match ty.unqualified() {
+        match ty {
             Ty::Array { len, elem } => {
                 self.check_meta_array_budget(span, ty, *len, elem, emit_diagnostics)?;
                 self.meta_array_repr_ty_inner(
@@ -2100,13 +2231,10 @@ impl TypeChecker {
     }
 
     fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
-        if root.is_some_and(|root| ty.unqualified() == root)
-            || contains_generic(ty)
-            || contains_type_hole(ty)
-        {
+        if root.is_some_and(|root| ty == root) || contains_generic(ty) || contains_type_hole(ty) {
             return false;
         }
-        matches!(ty.unqualified(), Ty::Named { .. }) && self.type_implements_message(ty)
+        matches!(ty, Ty::Named { .. }) && self.type_implements_message(ty)
     }
 
     fn meta_array_repr_ty_inner(
@@ -2200,7 +2328,6 @@ impl TypeChecker {
 
     fn ensure_enum_instance(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.ensure_enum_instance(inner),
             Ty::Named { name, args } => {
                 let Some(template) = self.enum_templates.get(name).cloned() else {
                     return;
@@ -2253,7 +2380,7 @@ impl TypeChecker {
                 );
             }
             Ty::Pointer { inner, .. } => self.ensure_enum_instance(inner),
-            Ty::Array { elem, .. } | Ty::Slice(elem) => self.ensure_enum_instance(elem),
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.ensure_enum_instance(elem),
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.ensure_enum_instance(arg);
@@ -2277,7 +2404,6 @@ impl TypeChecker {
 
     fn ensure_struct_instance(&mut self, ty: &Ty) {
         match ty {
-            Ty::Const(inner) => self.ensure_struct_instance(inner),
             Ty::Named { name, args } => {
                 let Some(template) = self.struct_templates.get(name).cloned() else {
                     return;
@@ -2318,7 +2444,7 @@ impl TypeChecker {
                 self.structs.insert(instance_name, fields);
             }
             Ty::Pointer { inner, .. } => self.ensure_struct_instance(inner),
-            Ty::Array { elem, .. } | Ty::Slice(elem) => self.ensure_struct_instance(elem),
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.ensure_struct_instance(elem),
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.ensure_struct_instance(arg);
@@ -2619,7 +2745,7 @@ impl TypeChecker {
         generics: &[GenericInfo],
         receiver_ty: Option<&Ty>,
     ) -> Option<CompilerMarkerDomain> {
-        let Ty::Generic(receiver_name) = receiver_ty?.unqualified() else {
+        let Ty::Generic(receiver_name) = receiver_ty? else {
             return None;
         };
         let generic = generics
@@ -2839,9 +2965,14 @@ impl TypeChecker {
             .iter()
             .zip(params_ty.iter())
             .filter_map(|(param, ty)| {
-                param
-                    .local_id
-                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+                param.local_id.map(|local_id| {
+                    (
+                        local_id,
+                        param.name.name.clone(),
+                        ty.clone(),
+                        param.mutability,
+                    )
+                })
             })
             .collect::<Vec<_>>();
         let previous_module = self.current_module;
@@ -3022,9 +3153,14 @@ impl TypeChecker {
             .iter()
             .zip(params.iter())
             .filter_map(|(param, (_, _, ty))| {
-                param
-                    .local_id
-                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+                param.local_id.map(|local_id| {
+                    (
+                        local_id,
+                        param.name.name.clone(),
+                        ty.clone(),
+                        param.mutability,
+                    )
+                })
             })
             .collect::<Vec<_>>();
         let body = function
@@ -3047,22 +3183,24 @@ impl TypeChecker {
     fn check_function_body(
         &mut self,
         sig: &FunctionSig,
-        params: &[(LocalId, String, Ty)],
+        params: &[(LocalId, String, Ty, BindingMutability)],
         body: &Block,
     ) -> Option<TBlock> {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
         let mut scopes = LocalScopes::default();
         scopes.push();
-        for (local_id, name, ty) in params {
+        for (local_id, name, ty, mutability) in params {
             if let Err(name) = scopes.insert(
                 *local_id,
                 Binding {
                     name: name.clone(),
                     ty: ty.clone(),
                     narrowed_ty: None,
-                    assigned: true,
-                    immutable: true,
+                    init_state: InitState::Assigned,
+                    mutability: *mutability,
+                    captured: false,
+                    declared_loop_depth: self.current_loop_depth,
                 },
             ) {
                 self.diagnostics.push(Diagnostic::new(
@@ -3197,6 +3335,7 @@ impl TypeChecker {
             StmtKind::VarDecl {
                 ty,
                 name,
+                mutability,
                 local_id,
                 init,
             } => {
@@ -3208,8 +3347,10 @@ impl TypeChecker {
                         name: name.name.clone(),
                         ty: checked.ty.clone(),
                         narrowed_ty: None,
-                        assigned: checked.assigned,
-                        immutable: false,
+                        init_state: InitState::from_assigned(checked.assigned),
+                        mutability: *mutability,
+                        captured: false,
+                        declared_loop_depth: self.current_loop_depth,
                     },
                 ) {
                     self.diagnostics.push(Diagnostic::new(
@@ -3228,8 +3369,13 @@ impl TypeChecker {
                 )
             }
             StmtKind::Assign { target, value } => {
-                let target = self.check_lvalue(scopes, target, false)?;
-                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let checked_target = self.check_lvalue(scopes, target, false)?;
+                let assignment_allowed = self.validate_assignment_target(
+                    scopes,
+                    &checked_target,
+                    checked_target.expr.span,
+                );
+                let target = checked_target.expr;
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
                 if target.ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
@@ -3238,11 +3384,8 @@ impl TypeChecker {
                     ));
                 }
                 self.require_assignable(&target.ty, &value.ty, stmt.span);
-                if let TExprKind::Local(local_id, _) = &target.kind
-                    && let Some(binding) = scopes.get_mut(*local_id)
-                {
-                    binding.assigned = true;
-                    binding.narrowed_ty = None;
+                if assignment_allowed {
+                    self.mark_assignment_complete(scopes, &target);
                 }
                 (TStmtKind::Assign { target, value }, Flow::fallthrough())
             }
@@ -3294,8 +3437,11 @@ impl TypeChecker {
                 self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
                 let mut body_scopes = scopes.clone();
                 self.push_control_context(ControlContextKind::Loop);
-                let checked_body = self.check_block(&mut body_scopes, body, ret_ty)?;
+                self.current_loop_depth += 1;
+                let checked_body = self.check_block(&mut body_scopes, body, ret_ty);
+                self.current_loop_depth -= 1;
                 let loop_context = self.pop_control_context();
+                let checked_body = checked_body?;
                 let flow = if bool_literal_is(&cond, true) && loop_context.break_scopes.is_empty() {
                     Flow::no_fallthrough()
                 } else {
@@ -3326,12 +3472,15 @@ impl TypeChecker {
                     self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
                 }
                 let mut loop_scopes = scopes.clone();
+                self.current_loop_depth += 1;
                 let step = step
                     .as_ref()
                     .and_then(|step| self.check_for_step(&mut loop_scopes, step));
                 self.push_control_context(ControlContextKind::Loop);
-                let checked_body = self.check_block(&mut loop_scopes, body, ret_ty)?;
+                let checked_body = self.check_block(&mut loop_scopes, body, ret_ty);
+                self.current_loop_depth -= 1;
                 let loop_context = self.pop_control_context();
+                let checked_body = checked_body?;
                 let condition_always_true = cond
                     .as_ref()
                     .map(|cond| bool_literal_is(cond, true))
@@ -3453,6 +3602,7 @@ impl TypeChecker {
             ForInit::VarDecl {
                 ty,
                 name,
+                mutability,
                 local_id,
                 init: initializer,
             } => {
@@ -3471,8 +3621,10 @@ impl TypeChecker {
                         name: local_name.clone(),
                         ty: checked.ty.clone(),
                         narrowed_ty: None,
-                        assigned: checked.assigned,
-                        immutable: false,
+                        init_state: InitState::from_assigned(checked.assigned),
+                        mutability: *mutability,
+                        captured: false,
+                        declared_loop_depth: self.current_loop_depth,
                     },
                 ) {
                     self.diagnostics.push(Diagnostic::new(
@@ -3488,8 +3640,13 @@ impl TypeChecker {
                 })
             }
             ForInit::Assign { target, value } => {
-                let target = self.check_lvalue(scopes, target, false)?;
-                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let checked_target = self.check_lvalue(scopes, target, false)?;
+                let assignment_allowed = self.validate_assignment_target(
+                    scopes,
+                    &checked_target,
+                    checked_target.expr.span,
+                );
+                let target = checked_target.expr;
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
                 if target.ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
@@ -3498,11 +3655,8 @@ impl TypeChecker {
                     ));
                 }
                 self.require_assignable(&target.ty, &value.ty, value.span);
-                if let TExprKind::Local(local_id, _) = &target.kind
-                    && let Some(binding) = scopes.get_mut(*local_id)
-                {
-                    binding.assigned = true;
-                    binding.narrowed_ty = None;
+                if assignment_allowed {
+                    self.mark_assignment_complete(scopes, &target);
                 }
                 Some(TForInit::Assign { target, value })
             }
@@ -3513,8 +3667,13 @@ impl TypeChecker {
     fn check_for_step(&mut self, scopes: &mut LocalScopes, step: &ForInit) -> Option<TForInit> {
         match step {
             ForInit::Assign { target, value } => {
-                let target = self.check_lvalue(scopes, target, false)?;
-                self.diagnose_immutable_lvalue(scopes, &target, target.span);
+                let checked_target = self.check_lvalue(scopes, target, false)?;
+                let assignment_allowed = self.validate_assignment_target(
+                    scopes,
+                    &checked_target,
+                    checked_target.expr.span,
+                );
+                let target = checked_target.expr;
                 let value = self.check_expr(scopes, value, Some(&target.ty))?;
                 if target.ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
@@ -3523,11 +3682,8 @@ impl TypeChecker {
                     ));
                 }
                 self.require_assignable(&target.ty, &value.ty, value.span);
-                if let TExprKind::Local(local_id, _) = &target.kind
-                    && let Some(binding) = scopes.get_mut(*local_id)
-                {
-                    binding.assigned = true;
-                    binding.narrowed_ty = None;
+                if assignment_allowed {
+                    self.mark_assignment_complete(scopes, &target);
                 }
                 Some(TForInit::Assign { target, value })
             }
@@ -3587,15 +3743,17 @@ impl TypeChecker {
             case_scopes.push();
             let mut bindings = Vec::new();
             pattern.collect_bindings(&mut bindings);
-            for (local_id, binding_name, binding_ty) in bindings {
+            for (local_id, binding_name, mutability, binding_ty) in bindings {
                 if let Err(duplicate) = case_scopes.insert(
                     *local_id,
                     Binding {
                         name: binding_name.clone(),
                         ty: binding_ty.clone(),
                         narrowed_ty: None,
-                        assigned: true,
-                        immutable: false,
+                        init_state: InitState::Assigned,
+                        mutability,
+                        captured: false,
+                        declared_loop_depth: self.current_loop_depth,
                     },
                 ) {
                     self.diagnostics.push(Diagnostic::new(
@@ -3734,14 +3892,16 @@ impl TypeChecker {
                 PatternNameKind::Variant(_) => {
                     self.check_variant_pattern(name, subpatterns, expected_ty)
                 }
-                PatternNameKind::Binding(local_id) if !is_case_head && subpatterns.is_empty() => {
-                    Some(TPattern::Binding {
-                        local_id,
-                        name: name.display.clone(),
-                        ty: expected_ty.clone(),
-                    })
-                }
-                PatternNameKind::Binding(_) => {
+                PatternNameKind::Binding {
+                    local_id,
+                    mutability,
+                } if !is_case_head && subpatterns.is_empty() => Some(TPattern::Binding {
+                    local_id,
+                    name: name.display.clone(),
+                    mutability,
+                    ty: expected_ty.clone(),
+                }),
+                PatternNameKind::Binding { .. } => {
                     self.diagnostics.push(Diagnostic::new(
                         name.span,
                         "pattern binding cannot have payload patterns",
@@ -3772,7 +3932,7 @@ impl TypeChecker {
         let Ty::Named {
             name: enum_name,
             args: enum_args,
-        } = expected_ty.unqualified()
+        } = expected_ty
         else {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
@@ -3928,7 +4088,7 @@ impl TypeChecker {
     }
 
     fn checked_enum_for_type(&mut self, ty: &Ty) -> Option<CheckedEnum> {
-        let Ty::Named { name, args } = ty.unqualified() else {
+        let Ty::Named { name, args } = ty else {
             return None;
         };
         self.ensure_enum_instance(ty);
@@ -3943,7 +4103,7 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
         let result = self.check_expr_uncoerced(scopes, expr, expected)?;
-        Some(self.coerce_expr_to_expected(result, expected))
+        Some(self.coerce_expr_to_expected(scopes, result, expected))
     }
 
     fn check_expr_uncoerced(
@@ -3958,7 +4118,7 @@ impl TypeChecker {
                     && let Some(binding) = scopes.get(local_id)
                 {
                     let name = binding.name.clone();
-                    if !binding.assigned {
+                    if !binding.init_state.is_assigned() {
                         self.diagnostics.push(Diagnostic::new(
                             expr.span,
                             format!("local `{name}` is not definitely assigned"),
@@ -4126,7 +4286,13 @@ impl TypeChecker {
                         }
                         ((**elem).clone(), expected.cloned().unwrap())
                     }
-                    Some(Ty::Slice(elem)) => ((**elem).clone(), Ty::Slice(elem.clone())),
+                    Some(Ty::Slice { mutability, elem }) => (
+                        (**elem).clone(),
+                        Ty::Slice {
+                            mutability: *mutability,
+                            elem: elem.clone(),
+                        },
+                    ),
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
                             expr.span,
@@ -4162,7 +4328,7 @@ impl TypeChecker {
                         }
                         ((**elem).clone(), expected.cloned().unwrap(), *expected_len)
                     }
-                    Some(Ty::Slice(elem)) => {
+                    Some(Ty::Slice { mutability, elem }) => {
                         let Some(len) = len else {
                             self.diagnostics.push(Diagnostic::new(
                                 expr.span,
@@ -4170,7 +4336,14 @@ impl TypeChecker {
                             ));
                             return None;
                         };
-                        ((**elem).clone(), Ty::Slice(elem.clone()), *len)
+                        (
+                            (**elem).clone(),
+                            Ty::Slice {
+                                mutability: *mutability,
+                                elem: elem.clone(),
+                            },
+                            *len,
+                        )
                     }
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
@@ -4218,68 +4391,66 @@ impl TypeChecker {
                 let inner = match op {
                     UnaryOp::Addr => {
                         let inner = self.check_lvalue(scopes, inner, true)?;
-                        if inner.ty.is_erased_value() {
+                        if let Some(ReadOnlyReason::CapturedBinding(name)) =
+                            inner.read_only_reason.as_ref()
+                        {
                             self.diagnostics.push(Diagnostic::new(
-                                inner.span,
+                                inner.expr.span,
+                                format!("cannot take address of captured binding `{name}`"),
+                            ));
+                        }
+                        if inner.expr.ty.is_erased_value() {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.expr.span,
                                 "cannot take the address of a void value",
                             ));
                         }
-                        if let TExprKind::Local(local_id, _) = &inner.kind {
-                            if let Some(binding) = scopes.get(*local_id)
-                                && binding.immutable
-                            {
-                                self.diagnostics.push(Diagnostic::new(
-                                    inner.span,
-                                    format!(
-                                        "cannot take address of immutable parameter `{}`",
-                                        binding.name
-                                    ),
-                                ));
-                            }
+                        if let TExprKind::Local(local_id, _) = &inner.expr.kind {
                             scopes.clear_narrowing(*local_id);
-                        } else {
-                            self.diagnose_immutable_lvalue(scopes, &inner, inner.span);
                         }
                         inner
                     }
-                    UnaryOp::Neg => {
-                        self.check_expr(scopes, inner, expected.filter(|ty| ty.is_numeric()))?
-                    }
-                    _ => self.check_expr(scopes, inner, None)?,
+                    UnaryOp::Neg => CheckedLvalue::writable(self.check_expr(
+                        scopes,
+                        inner,
+                        expected.filter(|ty| ty.is_numeric()),
+                    )?),
+                    _ => CheckedLvalue::writable(self.check_expr(scopes, inner, None)?),
                 };
                 let ty = match op {
                     UnaryOp::Not => {
-                        self.require_assignable(&Ty::Bool, &inner.ty, inner.span);
+                        self.require_assignable(&Ty::Bool, &inner.expr.ty, inner.expr.span);
                         Ty::Bool
                     }
                     UnaryOp::Neg => {
-                        if !(inner.ty.is_signed_integer()
-                            || matches!(inner.ty.unqualified(), Ty::F32 | Ty::F64))
+                        if !(inner.expr.ty.is_signed_integer()
+                            || matches!(inner.expr.ty, Ty::F32 | Ty::F64))
                         {
                             self.diagnostics.push(Diagnostic::new(
-                                inner.span,
-                                format!("cannot negate `{}`", inner.ty),
+                                inner.expr.span,
+                                format!("cannot negate `{}`", inner.expr.ty),
                             ));
                         }
-                        inner.ty.clone()
+                        inner.expr.ty.clone()
                     }
-                    UnaryOp::Addr => Ty::pointer_to(inner.ty.clone()),
-                    UnaryOp::Deref => match inner.ty.unqualified() {
+                    UnaryOp::Addr => inner.access.pointer_ty(inner.expr.ty.clone()),
+                    UnaryOp::Deref => match &inner.expr.ty {
                         Ty::Pointer {
                             nullable: false,
                             inner,
+                            ..
                         } => (**inner).clone(),
                         Ty::Pointer { nullable: true, .. } => {
                             self.diagnostics.push(Diagnostic::new(
-                                inner.span,
+                                inner.expr.span,
                                 "cannot dereference nullable pointer without narrowing",
                             ));
                             Ty::Unknown
                         }
                         _ => {
                             self.diagnostics.push(Diagnostic::new(
-                                inner.span,
-                                format!("cannot dereference `{}`", inner.ty),
+                                inner.expr.span,
+                                format!("cannot dereference `{}`", inner.expr.ty),
                             ));
                             Ty::Unknown
                         }
@@ -4290,7 +4461,7 @@ impl TypeChecker {
                     ty,
                     kind: TExprKind::Unary {
                         op: *op,
-                        expr: Box::new(inner),
+                        expr: Box::new(inner.expr),
                     },
                 }
             }
@@ -4341,7 +4512,7 @@ impl TypeChecker {
                         span: expr.span,
                         ..checked
                     };
-                    return Some(self.coerce_expr_to_expected(checked, Some(&target)));
+                    return Some(self.coerce_expr_to_expected(scopes, checked, Some(&target)));
                 }
                 let inner = self.check_expr(scopes, inner, None)?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
@@ -4397,7 +4568,7 @@ impl TypeChecker {
                     return None;
                 }
                 let callee = self.check_expr(scopes, callee, None)?;
-                let (ret, params) = match callee.ty.unqualified() {
+                let (ret, params) = match &callee.ty {
                     Ty::Function { ret, params, .. }
                     | Ty::Closure { ret, params, .. }
                     | Ty::ClosureInstance { ret, params, .. } => ((**ret).clone(), params.clone()),
@@ -4454,7 +4625,8 @@ impl TypeChecker {
                 let Ty::Pointer {
                     nullable: false,
                     inner,
-                } = base.ty.unqualified()
+                    ..
+                } = &base.ty
                 else {
                     self.diagnostics.push(Diagnostic::new(
                         base.span,
@@ -4479,8 +4651,8 @@ impl TypeChecker {
                     self.diagnostics
                         .push(Diagnostic::new(index.span, "index must be integer"));
                 }
-                let ty = match base.ty.unqualified() {
-                    Ty::Array { elem, .. } | Ty::Slice(elem) => (**elem).clone(),
+                let ty = match &base.ty {
+                    Ty::Array { elem, .. } | Ty::Slice { elem, .. } => (**elem).clone(),
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
                             base.span,
@@ -4522,8 +4694,18 @@ impl TypeChecker {
                     }
                     None => None,
                 };
-                let ty = match base.ty.unqualified() {
-                    Ty::Array { elem, .. } | Ty::Slice(elem) => Ty::Slice(elem.clone()),
+                let ty = match &base.ty {
+                    Ty::Array { elem, .. } => Ty::Slice {
+                        mutability: match self.texpr_lvalue_access(scopes, &base) {
+                            Some(LvalueAccess::Writable) => ViewMutability::Writable,
+                            _ => ViewMutability::ReadOnly,
+                        },
+                        elem: elem.clone(),
+                    },
+                    Ty::Slice { mutability, elem } => Ty::Slice {
+                        mutability: *mutability,
+                        elem: elem.clone(),
+                    },
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
                             base.span,
@@ -4655,7 +4837,7 @@ impl TypeChecker {
             },
         };
         let handler = if let Some(handler) = prechecked_handler {
-            self.coerce_expr_to_expected(handler, Some(&expected_handler_ty))
+            self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
         } else if let ExprKind::Closure { params, body } = &args[1].kind {
             let handler = self.check_closure_expr(
                 scopes,
@@ -4664,7 +4846,7 @@ impl TypeChecker {
                 body,
                 Some(&expected_handler_ty),
             )?;
-            self.coerce_expr_to_expected(handler, Some(&expected_handler_ty))
+            self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
         } else {
             self.check_expr(scopes, &args[1], Some(&expected_handler_ty))?
         };
@@ -4846,15 +5028,16 @@ impl TypeChecker {
             return None;
         }
         let explicit = type_args.first().map(|ty| self.lower_type(ty));
-        let expected_arg = explicit.clone().map(Ty::pointer_to);
+        let expected_arg = explicit.clone().map(Ty::const_pointer_to);
         let value = self.check_expr(scopes, &args[0], expected_arg.as_ref())?;
         let source_ty = if let Some(source_ty) = explicit {
             source_ty
         } else {
-            match value.ty.unqualified() {
+            match &value.ty {
                 Ty::Pointer {
                     nullable: false,
                     inner,
+                    ..
                 } => (**inner).clone(),
                 Ty::Pointer { nullable: true, .. } => {
                     self.diagnostics.push(Diagnostic::new(
@@ -4866,7 +5049,7 @@ impl TypeChecker {
                 other => {
                     self.diagnostics.push(Diagnostic::new(
                         value.span,
-                        format!("as_ref_repr requires `*T`, got `{other}`"),
+                        format!("as_ref_repr requires `*const T`, got `{other}`"),
                     ));
                     Ty::Unknown
                 }
@@ -4909,11 +5092,36 @@ impl TypeChecker {
             return None;
         }
         let explicit = type_args.first().map(|ty| self.lower_type(ty));
-        let value = self.check_expr(scopes, &args[0], explicit.as_ref())?;
-        if let Some(expected) = explicit.as_ref() {
-            self.require_assignable(expected, &value.ty, value.span);
+        let expected_arg = explicit.clone().map(Ty::const_pointer_to);
+        let value = self.check_expr(scopes, &args[0], expected_arg.as_ref())?;
+        let source_ty = if let Some(source_ty) = explicit {
+            source_ty
+        } else {
+            match &value.ty {
+                Ty::Pointer {
+                    nullable: false,
+                    inner,
+                    ..
+                } => (**inner).clone(),
+                Ty::Pointer { nullable: true, .. } => {
+                    self.diagnostics.push(Diagnostic::new(
+                        value.span,
+                        "into_repr requires a non-null pointer",
+                    ));
+                    Ty::Unknown
+                }
+                other => {
+                    self.diagnostics.push(Diagnostic::new(
+                        value.span,
+                        format!("into_repr requires `*const T`, got `{other}`"),
+                    ));
+                    Ty::Unknown
+                }
+            }
+        };
+        if let Some(expected_arg) = expected_arg.as_ref() {
+            self.require_assignable(expected_arg, &value.ty, value.span);
         }
-        let source_ty = explicit.unwrap_or_else(|| self.resolve_type_holes(&value.ty));
         let ret = self.meta_repr_ty(span, &source_ty, false);
         Some(TExpr {
             span,
@@ -4972,7 +5180,7 @@ impl TypeChecker {
     }
 
     fn reject_meta_ref_repr_erased_fields(&mut self, span: crate::span::Span, source_ty: &Ty) {
-        let Ty::Named { name, args } = source_ty.unqualified() else {
+        let Ty::Named { name, args } = source_ty else {
             return;
         };
         let instance_name = enum_instance_name(name, args);
@@ -5035,7 +5243,7 @@ impl TypeChecker {
         let Ty::Named {
             name: actor_name,
             args: actor_args,
-        } = args[0].unqualified()
+        } = &args[0]
         else {
             return None;
         };
@@ -5065,7 +5273,8 @@ impl TypeChecker {
         let Ty::Pointer {
             nullable: false,
             inner,
-        } = actor_ty.unqualified()
+            ..
+        } = actor_ty
         else {
             self.diagnostics.push(Diagnostic::new(
                 span,
@@ -5073,7 +5282,7 @@ impl TypeChecker {
             ));
             return None;
         };
-        let Ty::Named { name, args } = inner.unqualified() else {
+        let Ty::Named { name, args } = &**inner else {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
@@ -5218,7 +5427,7 @@ impl TypeChecker {
     }
 
     fn check_closure_cast_allowed(&mut self, target: &Ty, span: crate::span::Span) {
-        match target.unqualified() {
+        match target {
             Ty::Closure { .. } => {}
             Ty::Function { abi: None, .. } => {}
             Ty::Function { abi: Some(_), .. } => {
@@ -5246,11 +5455,11 @@ impl TypeChecker {
         body: &ClosureBody,
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
-        let expected_closure_instance_id = match expected.map(Ty::unqualified) {
+        let expected_closure_instance_id = match expected {
             Some(Ty::ClosureInstance { id, .. }) => Some(*id),
             _ => None,
         };
-        let expected_sig = match expected.map(Ty::unqualified) {
+        let expected_sig = match expected {
             Some(Ty::Closure { ret, params, .. })
             | Some(Ty::ClosureInstance { ret, params, .. }) => {
                 Some(((**ret).clone(), params.clone(), false))
@@ -5292,7 +5501,7 @@ impl TypeChecker {
 
         let mut checked_params = Vec::new();
         let mut closure_scopes = scopes.clone();
-        closure_scopes.mark_all_immutable();
+        closure_scopes.mark_all_captured();
         closure_scopes.push();
         for (idx, param) in params.iter().enumerate() {
             let param_ty = if let Some(ty) = &param.ty {
@@ -5329,8 +5538,10 @@ impl TypeChecker {
                     name: param.name.name.clone(),
                     ty: param_ty.clone(),
                     narrowed_ty: None,
-                    assigned: true,
-                    immutable: true,
+                    init_state: InitState::Assigned,
+                    mutability: param.mutability,
+                    captured: false,
+                    declared_loop_depth: self.current_loop_depth,
                 },
             ) {
                 self.diagnostics.push(Diagnostic::new(
@@ -5394,7 +5605,7 @@ impl TypeChecker {
             let Some(binding) = scopes.get(local_id) else {
                 continue;
             };
-            if !binding.assigned {
+            if !binding.init_state.is_assigned() {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!(
@@ -5537,7 +5748,7 @@ impl TypeChecker {
                     span: arg.span,
                     ..checked
                 };
-                Some(self.coerce_expr_to_expected(checked, Some(&target)))
+                Some(self.coerce_expr_to_expected(scopes, checked, Some(&target)))
             }
             _ => self.check_expr(scopes, arg, expected),
         }
@@ -5785,9 +5996,14 @@ impl TypeChecker {
             .iter()
             .zip(params.iter())
             .filter_map(|(param, (_, _, ty))| {
-                param
-                    .local_id
-                    .map(|local_id| (local_id, param.name.name.clone(), ty.clone()))
+                param.local_id.map(|local_id| {
+                    (
+                        local_id,
+                        param.name.name.clone(),
+                        ty.clone(),
+                        param.mutability,
+                    )
+                })
             })
             .collect::<Vec<_>>();
         let ret = self.lower_type_with_subst(&template.function.signature.ret, &subst);
@@ -6061,7 +6277,12 @@ impl TypeChecker {
         })
     }
 
-    fn coerce_expr_to_expected(&mut self, expr: TExpr, expected: Option<&Ty>) -> TExpr {
+    fn coerce_expr_to_expected(
+        &mut self,
+        scopes: &LocalScopes,
+        expr: TExpr,
+        expected: Option<&Ty>,
+    ) -> TExpr {
         let Some(expected) = expected else {
             return expr;
         };
@@ -6074,7 +6295,7 @@ impl TypeChecker {
             ret: expected_ret,
             params: expected_params,
             constraints: expected_constraints,
-        } = expected.unqualified()
+        } = &expected
             && closure_shape_satisfies(expected_ret, expected_params, &expr_ty)
         {
             if self.closure_constraints_satisfied_by_ty(
@@ -6083,7 +6304,7 @@ impl TypeChecker {
                 expr.span,
                 true,
             ) {
-                let needs_retain = match expr_ty.unqualified() {
+                let needs_retain = match &expr_ty {
                     Ty::Closure {
                         constraints: actual_constraints,
                         ..
@@ -6116,24 +6337,60 @@ impl TypeChecker {
                 kind: expr.kind,
             };
         }
+        if let (
+            Ty::Slice {
+                mutability: expected_mutability,
+                elem: expected_elem,
+            },
+            Ty::Slice {
+                mutability: actual_mutability,
+                elem: actual_elem,
+            },
+        ) = (&expected, &expr_ty)
+            && *expected_mutability == ViewMutability::ReadOnly
+            && *actual_mutability == ViewMutability::Writable
+            && expected_elem == actual_elem
+        {
+            return TExpr {
+                span: expr.span,
+                ty: expected,
+                kind: TExprKind::SliceToConst(Box::new(expr)),
+            };
+        }
+        if let (
+            Ty::Slice {
+                mutability: expected_mutability,
+                elem: expected_elem,
+            },
+            Ty::Array {
+                elem: actual_elem, ..
+            },
+        ) = (&expected, &expr_ty)
+            && expected_elem == actual_elem
+        {
+            let access = self.texpr_lvalue_access(scopes, &expr);
+            if *expected_mutability == ViewMutability::Writable
+                && !matches!(access, Some(LvalueAccess::Writable))
+            {
+                self.diagnostics.push(Diagnostic::new(
+                    expr.span,
+                    format!("expected `{expected}`, got `{expr_ty}`"),
+                ));
+                return expr;
+            }
+            return TExpr {
+                span: expr.span,
+                ty: Ty::Slice {
+                    mutability: *expected_mutability,
+                    elem: expected_elem.clone(),
+                },
+                kind: TExprKind::ArrayToSlice(Box::new(expr)),
+            };
+        }
         if expected.can_assign_from(&expr_ty)
             || contains_generic(&expected)
             || matches!(expr_ty, Ty::Unknown)
         {
-            if let (
-                Ty::Slice(expected_elem),
-                Ty::Array {
-                    elem: actual_elem, ..
-                },
-            ) = (&expected, &expr_ty)
-                && expected_elem == actual_elem
-            {
-                return TExpr {
-                    span: expr.span,
-                    ty: expected,
-                    kind: TExprKind::ArrayToSlice(Box::new(expr)),
-                };
-            }
             return TExpr {
                 span: expr.span,
                 ty: if contains_type_hole(&expr.ty) {
@@ -6147,14 +6404,17 @@ impl TypeChecker {
         if let (
             Ty::Pointer {
                 nullable: false,
+                mutability: expected_mutability,
                 inner: expected_inner,
             },
             Ty::Pointer {
                 nullable: true,
+                mutability: actual_mutability,
                 inner: actual_inner,
             },
         ) = (&expected, &expr_ty)
             && expected_inner == actual_inner
+            && expected_mutability == actual_mutability
             && matches!(expr.kind, TExprKind::Literal(Literal::Null))
         {
             return expr;
@@ -6180,7 +6440,7 @@ impl TypeChecker {
                 abi: None,
                 ret: actual_ret,
                 params: actual_params,
-            } = expr_ty.unqualified()
+            } = &expr_ty
             && expected_params == actual_params
             && expected_ret.can_assign_from(actual_ret)
             && self.closure_constraints_satisfied_by_ty(
@@ -6208,7 +6468,7 @@ impl TypeChecker {
         scopes: &mut LocalScopes,
         expr: &Expr,
         require_assigned: bool,
-    ) -> Option<TExpr> {
+    ) -> Option<CheckedLvalue> {
         match &expr.kind {
             ExprKind::Name(name_ref) => {
                 let Some(local_id) = self.resolved_local_id(name_ref) else {
@@ -6226,41 +6486,168 @@ impl TypeChecker {
                     return None;
                 };
                 let name = binding.name.clone();
-                if require_assigned && !binding.assigned {
+                if require_assigned && !binding.init_state.is_assigned() {
                     self.diagnostics.push(Diagnostic::new(
                         expr.span,
                         format!("local `{name}` is not definitely assigned"),
                     ));
                 }
-                Some(TExpr {
+                let expr = TExpr {
                     span: expr.span,
                     ty: binding.ty.clone(),
                     kind: TExprKind::Local(local_id, name),
+                };
+                if binding.captured {
+                    Some(CheckedLvalue::read_only(
+                        expr,
+                        ReadOnlyReason::CapturedBinding(binding.name.clone()),
+                    ))
+                } else if binding.mutability == BindingMutability::Mutable {
+                    Some(CheckedLvalue::writable(expr))
+                } else {
+                    Some(CheckedLvalue::read_only(
+                        expr,
+                        ReadOnlyReason::ImmutableBinding(binding.name.clone()),
+                    ))
+                }
+            }
+            ExprKind::Field { base, field } => {
+                let base = self.check_lvalue(scopes, base, true)?;
+                let ty = self.field_ty(&base.expr.ty, &field.name, field.span)?;
+                let expr = TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Field {
+                        base: Box::new(base.expr),
+                        field: field.name.clone(),
+                    },
+                };
+                Some(CheckedLvalue {
+                    expr,
+                    access: base.access,
+                    read_only_reason: base.read_only_reason,
                 })
             }
-            ExprKind::Field { .. } | ExprKind::Arrow { .. } | ExprKind::Index { .. } => {
-                self.check_expr(scopes, expr, None)
+            ExprKind::Arrow { base, field } => {
+                let base = self.check_expr(scopes, base, None)?;
+                let (mutability, ty) = {
+                    let Ty::Pointer {
+                        nullable: false,
+                        mutability,
+                        inner,
+                    } = &base.ty
+                    else {
+                        self.diagnostics.push(Diagnostic::new(
+                            base.span,
+                            format!("`->` requires non-null pointer, got `{}`", base.ty),
+                        ));
+                        return None;
+                    };
+                    (*mutability, self.field_ty(inner, &field.name, field.span)?)
+                };
+                let expr = TExpr {
+                    span: expr.span,
+                    ty,
+                    kind: TExprKind::Arrow {
+                        base: Box::new(base),
+                        field: field.name.clone(),
+                    },
+                };
+                Some(CheckedLvalue::from_view(
+                    expr,
+                    mutability,
+                    ReadOnlyReason::ReadOnlyPointer,
+                ))
+            }
+            ExprKind::Index { base, index } => {
+                let base_expr = self.check_expr(scopes, base, None)?;
+                let index = self.check_expr(scopes, index, Some(&Ty::Usize))?;
+                if !index.ty.is_integer() {
+                    self.diagnostics
+                        .push(Diagnostic::new(index.span, "index must be integer"));
+                }
+                match base_expr.ty.clone() {
+                    Ty::Slice { mutability, elem } => {
+                        let expr = TExpr {
+                            span: expr.span,
+                            ty: (*elem).clone(),
+                            kind: TExprKind::Index {
+                                base: Box::new(base_expr),
+                                index: Box::new(index),
+                            },
+                        };
+                        Some(CheckedLvalue::from_view(
+                            expr,
+                            mutability,
+                            ReadOnlyReason::ReadOnlySlice,
+                        ))
+                    }
+                    Ty::Array { elem, .. } => {
+                        let base = self.check_lvalue(scopes, base, true)?;
+                        let expr = TExpr {
+                            span: expr.span,
+                            ty: (*elem).clone(),
+                            kind: TExprKind::Index {
+                                base: Box::new(base.expr),
+                                index: Box::new(index),
+                            },
+                        };
+                        Some(CheckedLvalue {
+                            expr,
+                            access: base.access,
+                            read_only_reason: base.read_only_reason,
+                        })
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            base_expr.span,
+                            format!("cannot index `{}`", base_expr.ty),
+                        ));
+                        None
+                    }
+                }
             }
             ExprKind::Unary {
                 op: UnaryOp::Deref,
                 expr: inner,
-            } => self.check_expr(scopes, inner, None).map(|inner| {
-                let ty = match &inner.ty {
+            } => {
+                let inner = self.check_expr(scopes, inner, None)?;
+                let (ty, mutability) = match &inner.ty {
                     Ty::Pointer {
                         nullable: false,
+                        mutability,
                         inner,
-                    } => (**inner).clone(),
-                    _ => Ty::Unknown,
+                        ..
+                    } => ((**inner).clone(), *mutability),
+                    Ty::Pointer { nullable: true, .. } => {
+                        self.diagnostics.push(Diagnostic::new(
+                            inner.span,
+                            "cannot dereference nullable pointer without narrowing",
+                        ));
+                        (Ty::Unknown, ViewMutability::ReadOnly)
+                    }
+                    _ => {
+                        self.diagnostics.push(Diagnostic::new(
+                            inner.span,
+                            format!("cannot dereference `{}`", inner.ty),
+                        ));
+                        (Ty::Unknown, ViewMutability::ReadOnly)
+                    }
                 };
-                TExpr {
+                let expr = TExpr {
                     span: expr.span,
                     ty,
                     kind: TExprKind::Unary {
                         op: UnaryOp::Deref,
                         expr: Box::new(inner),
                     },
-                }
-            }),
+                };
+                Some(CheckedLvalue::from_view(
+                    expr,
+                    mutability,
+                    ReadOnlyReason::ReadOnlyPointer,
+                ))
+            }
             _ => {
                 self.diagnostics
                     .push(Diagnostic::new(expr.span, "expression is not assignable"));
@@ -6269,23 +6656,137 @@ impl TypeChecker {
         }
     }
 
-    fn diagnose_immutable_lvalue(
+    fn validate_assignment_target(
         &mut self,
         scopes: &LocalScopes,
-        target: &TExpr,
+        target: &CheckedLvalue,
         span: crate::span::Span,
-    ) {
-        let Some((local_id, name)) = lvalue_root_local(target) else {
-            return;
-        };
-        if scopes
-            .get(local_id)
-            .is_some_and(|binding| binding.immutable)
+    ) -> bool {
+        if target.access.is_writable() {
+            return true;
+        }
+        if let TExprKind::Local(local_id, name) = &target.expr.kind {
+            let Some(binding) = scopes.get(*local_id) else {
+                return false;
+            };
+            if binding.captured {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("cannot mutate captured binding `{name}`"),
+                ));
+                return false;
+            }
+            if binding.mutability == BindingMutability::Immutable {
+                match binding.init_state {
+                    InitState::Unassigned => {
+                        if binding.declared_loop_depth < self.current_loop_depth {
+                            self.diagnostics.push(Diagnostic::new(
+                                span,
+                                format!(
+                                    "cannot initialize immutable binding `{name}` from a loop body"
+                                ),
+                            ));
+                            return false;
+                        }
+                        return true;
+                    }
+                    InitState::Assigned => {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!("cannot initialize immutable binding `{name}` more than once"),
+                        ));
+                        return false;
+                    }
+                    InitState::MaybeAssigned => {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!("cannot initialize maybe-assigned immutable binding `{name}`"),
+                        ));
+                        return false;
+                    }
+                }
+            }
+        }
+
+        match target.read_only_reason.as_ref() {
+            Some(ReadOnlyReason::CapturedBinding(name)) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("cannot mutate captured binding `{name}`"),
+                ));
+            }
+            Some(ReadOnlyReason::ImmutableBinding(name)) => {
+                if let Some((local_id, _)) = lvalue_root_local(&target.expr)
+                    && let Some(binding) = scopes.get(local_id)
+                    && binding.init_state == InitState::Unassigned
+                {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("cannot partially initialize immutable binding `{name}`"),
+                    ));
+                    return false;
+                }
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("cannot mutate immutable binding `{name}`"),
+                ));
+            }
+            Some(ReadOnlyReason::ReadOnlyPointer) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "cannot write through read-only pointer",
+                ));
+            }
+            Some(ReadOnlyReason::ReadOnlySlice) => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "cannot write through read-only slice",
+                ));
+            }
+            None => {
+                self.diagnostics
+                    .push(Diagnostic::new(span, "expression is not writable"));
+            }
+        }
+        false
+    }
+
+    fn mark_assignment_complete(&mut self, scopes: &mut LocalScopes, target: &TExpr) {
+        if let TExprKind::Local(local_id, _) = &target.kind
+            && let Some(binding) = scopes.get_mut(*local_id)
         {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!("cannot mutate immutable binding `{name}`"),
-            ));
+            binding.init_state = InitState::Assigned;
+            binding.narrowed_ty = None;
+        }
+    }
+
+    fn texpr_lvalue_access(&self, scopes: &LocalScopes, expr: &TExpr) -> Option<LvalueAccess> {
+        match &expr.kind {
+            TExprKind::Local(local_id, _) => scopes.get(*local_id).map(|binding| {
+                if !binding.captured && binding.mutability == BindingMutability::Mutable {
+                    LvalueAccess::Writable
+                } else {
+                    LvalueAccess::ReadOnly
+                }
+            }),
+            TExprKind::Field { base, .. } => self.texpr_lvalue_access(scopes, base),
+            TExprKind::Arrow { base, .. } => match &base.ty {
+                Ty::Pointer { mutability, .. } => Some(LvalueAccess::from_view(*mutability)),
+                _ => None,
+            },
+            TExprKind::Index { base, .. } => match &base.ty {
+                Ty::Slice { mutability, .. } => Some(LvalueAccess::from_view(*mutability)),
+                Ty::Array { .. } => self.texpr_lvalue_access(scopes, base),
+                _ => None,
+            },
+            TExprKind::Unary {
+                op: UnaryOp::Deref,
+                expr,
+            } => match &expr.ty {
+                Ty::Pointer { mutability, .. } => Some(LvalueAccess::from_view(*mutability)),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -6424,9 +6925,7 @@ impl TypeChecker {
         let ty = match literal {
             Literal::Integer(raw) => {
                 let ty = expected
-                    .filter(|ty| {
-                        ty.is_integer() || matches!(ty.unqualified(), Ty::CSpelling { .. })
-                    })
+                    .filter(|ty| ty.is_integer() || matches!(ty, Ty::CSpelling { .. }))
                     .cloned()
                     .unwrap_or(Ty::I64);
                 if ty.is_integer() {
@@ -6436,12 +6935,10 @@ impl TypeChecker {
             }
             Literal::Float(raw) => {
                 let ty = expected
-                    .filter(|ty| {
-                        matches!(ty.unqualified(), Ty::F32 | Ty::F64 | Ty::CSpelling { .. })
-                    })
+                    .filter(|ty| matches!(ty, Ty::F32 | Ty::F64 | Ty::CSpelling { .. }))
                     .cloned()
                     .unwrap_or(Ty::F64);
-                if matches!(ty.unqualified(), Ty::F32 | Ty::F64) {
+                if matches!(ty, Ty::F32 | Ty::F64) {
                     self.check_float_literal_range(span, raw, &ty);
                 }
                 ty
@@ -6450,11 +6947,17 @@ impl TypeChecker {
                 self.check_char_literal_range(span, raw);
                 Ty::Char
             }
-            Literal::String(_) => Ty::Slice(Box::new(Ty::Char)),
+            Literal::String(_) => Ty::Slice {
+                mutability: ViewMutability::ReadOnly,
+                elem: Box::new(Ty::Char),
+            },
             Literal::Bool(_) => Ty::Bool,
-            Literal::Null => match expected.map(Ty::unqualified) {
-                Some(Ty::Pointer { inner, .. }) => Ty::Pointer {
+            Literal::Null => match expected {
+                Some(Ty::Pointer {
+                    inner, mutability, ..
+                }) => Ty::Pointer {
                     nullable: true,
+                    mutability: *mutability,
                     inner: inner.clone(),
                 },
                 _ => {
@@ -6504,8 +7007,7 @@ impl TypeChecker {
                 .push(Diagnostic::new(span, "float literal is invalid"));
             return;
         };
-        if matches!(ty.unqualified(), Ty::F32) && value.is_finite() && value.abs() > f32::MAX as f64
-        {
+        if matches!(ty, Ty::F32) && value.is_finite() && value.abs() > f32::MAX as f64 {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("float literal `{raw}` is out of range for `f32`"),
@@ -6549,13 +7051,9 @@ impl TypeChecker {
                         "struct, enum, slice, and dynamic interface values cannot be compared directly",
                     ));
                 }
-                if matches!(
-                    left.ty.unqualified(),
-                    Ty::Closure { .. } | Ty::ClosureInstance { .. }
-                ) || matches!(
-                    right.ty.unqualified(),
-                    Ty::Closure { .. } | Ty::ClosureInstance { .. }
-                ) {
+                if matches!(left.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. })
+                    || matches!(right.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. })
+                {
                     self.diagnostics.push(Diagnostic::new(
                         span,
                         "closure values cannot be compared directly",
@@ -6564,7 +7062,7 @@ impl TypeChecker {
                 Ty::Bool
             }
             Lt | Le | Gt | Ge => {
-                if !left.ty.is_numeric() && !matches!(left.ty.unqualified(), Ty::Char) {
+                if !left.ty.is_numeric() && !matches!(left.ty, Ty::Char) {
                     self.diagnostics.push(Diagnostic::new(
                         left.span,
                         format!("relational operator does not accept `{}`", left.ty),
@@ -6591,9 +7089,13 @@ impl TypeChecker {
     }
 
     fn field_ty(&mut self, base: &Ty, field: &str, span: crate::span::Span) -> Option<Ty> {
-        match base.unqualified() {
-            Ty::Slice(elem) if field == "ptr" => Some(Ty::pointer_to((**elem).clone())),
-            Ty::Slice(_) if field == "len" => Some(Ty::Usize),
+        match base {
+            Ty::Slice { mutability, elem } if field == "ptr" => Some(Ty::Pointer {
+                nullable: false,
+                mutability: *mutability,
+                inner: Box::new((**elem).clone()),
+            }),
+            Ty::Slice { .. } if field == "len" => Some(Ty::Usize),
             Ty::Named { name, args } => {
                 let instance_name = enum_instance_name(name, args);
                 let fields = self.structs.get(&instance_name)?;
@@ -6633,7 +7135,7 @@ impl TypeChecker {
             ret,
             params,
             constraints,
-        } = expected.unqualified()
+        } = &expected
             && closure_shape_satisfies(ret, params, &actual)
         {
             self.closure_constraints_satisfied_by_ty(constraints, &actual, span, false);
@@ -6648,8 +7150,8 @@ impl TypeChecker {
     }
 
     fn check_cast_allowed(&mut self, source: &Ty, target: &Ty, span: crate::span::Span) {
-        let source = source.unqualified();
-        let target = target.unqualified();
+        let source = source;
+        let target = target;
         if matches!(source, Ty::Unknown) || matches!(target, Ty::Unknown) || source == target {
             return;
         }
@@ -6673,10 +7175,12 @@ impl TypeChecker {
         if let (
             Ty::Pointer {
                 nullable: source_nullable,
+                mutability: source_mutability,
                 inner: source_inner,
             },
             Ty::Pointer {
                 nullable: target_nullable,
+                mutability: target_mutability,
                 inner: target_inner,
             },
         ) = (source, target)
@@ -6688,9 +7192,14 @@ impl TypeChecker {
                 ));
                 return;
             }
-            if matches!(source_inner.unqualified(), Ty::Void)
-                || matches!(target_inner.unqualified(), Ty::Void)
-            {
+            if source_mutability.is_read_only() && target_mutability.is_writable() {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("cannot cast `{source}` to `{target}`"),
+                ));
+                return;
+            }
+            if matches!(&**source_inner, Ty::Void) || matches!(&**target_inner, Ty::Void) {
                 return;
             }
             self.diagnostics.push(Diagnostic::new(
@@ -6735,7 +7244,9 @@ impl TypeChecker {
             ));
         }
         match ty {
-            Ty::Array { elem, .. } | Ty::Slice(elem) if type_contains_plain_never_value(elem) => {
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. }
+                if type_contains_plain_never_value(elem) =>
+            {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     "function return type cannot contain `never` by value",
@@ -6746,17 +7257,17 @@ impl TypeChecker {
     }
 
     fn is_opaque_by_value(&self, ty: &Ty) -> bool {
-        matches!(ty.unqualified(), Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name))
+        matches!(ty, Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name))
     }
 
     fn is_c_aggregate_value(&self, ty: &Ty) -> bool {
-        match ty.unqualified() {
+        match ty {
             Ty::Named { name, args } => {
                 let instance_name = enum_instance_name(name, args);
                 self.structs.contains_key(&instance_name)
                     || self.checked_enums.contains_key(&instance_name)
             }
-            Ty::Slice(_) | Ty::DynamicInterface { .. } => true,
+            Ty::Slice { .. } | Ty::DynamicInterface { .. } => true,
             _ => false,
         }
     }
@@ -6798,9 +7309,9 @@ impl TypeChecker {
     ) -> bool {
         args.is_empty()
             && ((self.is_std_meta_ciel_fn_value_marker_name(interface_name)
-                && matches!(receiver_ty.unqualified(), Ty::Function { abi: None, .. }))
+                && matches!(receiver_ty, Ty::Function { abi: None, .. }))
                 || (self.is_std_meta_closure_value_marker_name(interface_name)
-                    && matches!(receiver_ty.unqualified(), Ty::ClosureInstance { .. })))
+                    && matches!(receiver_ty, Ty::ClosureInstance { .. })))
     }
 
     fn closure_constraints_satisfied_by_ty(
@@ -7040,7 +7551,7 @@ impl TypeChecker {
         if let Ty::DynamicInterface {
             name: actual_name,
             args: actual_args,
-        } = actual.unqualified()
+        } = actual
         {
             let actual_view = self.interface_view(actual_name, actual_args);
             return view
@@ -7314,6 +7825,7 @@ fn nullable_comparison_local(candidate: &TExpr, other: &TExpr) -> Option<(LocalI
     };
     let Ty::Pointer {
         nullable: true,
+        mutability,
         inner,
     } = &candidate.ty
     else {
@@ -7323,6 +7835,7 @@ fn nullable_comparison_local(candidate: &TExpr, other: &TExpr) -> Option<(LocalI
         local_id,
         Ty::Pointer {
             nullable: false,
+            mutability: *mutability,
             inner: inner.clone(),
         },
     ))
@@ -7394,11 +7907,8 @@ fn collect_layout_edges_from_type(
         TypeKind::Array { elem, .. } => {
             collect_layout_edges_from_type(elem, resolved, aliases, edges, alias_stack);
         }
-        TypeKind::Const(inner) => {
-            collect_layout_edges_from_type(inner, resolved, aliases, edges, alias_stack);
-        }
         TypeKind::Pointer { .. }
-        | TypeKind::Slice(_)
+        | TypeKind::Slice { .. }
         | TypeKind::Function { .. }
         | TypeKind::Closure { .. } => {}
         TypeKind::Void | TypeKind::Primitive(_) => {}
@@ -7436,8 +7946,7 @@ fn detect_layout_cycle(
 
 fn unify_receiver_param(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
     match pattern {
-        Ty::Const(inner) => unify_receiver_param(inner, actual, subst),
-        Ty::Pointer { inner, .. } => match actual.unqualified() {
+        Ty::Pointer { inner, .. } => match actual {
             Ty::Pointer {
                 inner: actual_inner,
                 ..
@@ -7451,7 +7960,7 @@ fn unify_receiver_param(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, T
 fn hir_type_contains_hole(ty: &Type) -> bool {
     match &ty.kind {
         TypeKind::Hole => true,
-        TypeKind::Pointer { inner, .. } | TypeKind::Const(inner) | TypeKind::Slice(inner) => {
+        TypeKind::Pointer { inner, .. } | TypeKind::Slice { elem: inner, .. } => {
             hir_type_contains_hole(inner)
         }
         TypeKind::Array { elem, .. } => hir_type_contains_hole(elem),
@@ -7465,9 +7974,8 @@ fn hir_type_contains_hole(ty: &Type) -> bool {
 
 fn type_contains_plain_never_value(ty: &Ty) -> bool {
     match ty {
-        Ty::Const(inner) => type_contains_plain_never_value(inner),
         Ty::Never => true,
-        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_plain_never_value(elem),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_plain_never_value(elem),
         Ty::Function { params, .. }
         | Ty::Closure { params, .. }
         | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_never_value),
@@ -7497,10 +8005,9 @@ fn type_contains_plain_never_value(ty: &Ty) -> bool {
 
 fn type_contains_closure(ty: &Ty) -> bool {
     match ty {
-        Ty::Const(inner) => type_contains_closure(inner),
         Ty::Closure { .. } | Ty::ClosureInstance { .. } => true,
         Ty::Pointer { inner, .. } => type_contains_closure(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => type_contains_closure(elem),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_closure(elem),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(type_contains_closure)
         }
@@ -7542,7 +8049,7 @@ fn parse_integer_literal_u128(raw: &str) -> Option<u128> {
 }
 
 fn integer_abs_limits(ty: &Ty) -> Option<(u128, u128)> {
-    Some(match ty.unqualified() {
+    Some(match ty {
         Ty::I8 => (128, 127),
         Ty::I16 => (32768, 32767),
         Ty::I32 => (2147483648, 2147483647),
@@ -7663,9 +8170,8 @@ fn marker_impl_domains_disjoint(
 }
 
 fn ty_can_satisfy_compiler_marker_domain(ty: &Ty, domain: CompilerMarkerDomain) -> bool {
-    match (ty.unqualified(), domain) {
+    match (ty, domain) {
         (Ty::Generic(_), _) => true,
-        (Ty::Const(inner), domain) => ty_can_satisfy_compiler_marker_domain(inner, domain),
         (Ty::Function { abi: None, .. }, CompilerMarkerDomain::CielFnValue) => true,
         (Ty::ClosureInstance { .. }, CompilerMarkerDomain::ClosureValue) => true,
         _ => false,
@@ -7673,18 +8179,24 @@ fn ty_can_satisfy_compiler_marker_domain(ty: &Ty, domain: CompilerMarkerDomain) 
 }
 
 fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
-    match (left.unqualified(), right.unqualified()) {
+    match (left, right) {
         (Ty::Generic(_), _) | (_, Ty::Generic(_)) => true,
         (
             Ty::Pointer {
                 nullable: left_nullable,
+                mutability: left_mutability,
                 inner: left_inner,
             },
             Ty::Pointer {
                 nullable: right_nullable,
+                mutability: right_mutability,
                 inner: right_inner,
             },
-        ) => left_nullable == right_nullable && marker_ty_patterns_overlap(left_inner, right_inner),
+        ) => {
+            left_nullable == right_nullable
+                && left_mutability == right_mutability
+                && marker_ty_patterns_overlap(left_inner, right_inner)
+        }
         (
             Ty::Array {
                 len: left_len,
@@ -7695,8 +8207,17 @@ fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
                 elem: right_elem,
             },
         ) => left_len == right_len && marker_ty_patterns_overlap(left_elem, right_elem),
-        (Ty::Slice(left_elem), Ty::Slice(right_elem)) => {
-            marker_ty_patterns_overlap(left_elem, right_elem)
+        (
+            Ty::Slice {
+                mutability: left_mutability,
+                elem: left_elem,
+            },
+            Ty::Slice {
+                mutability: right_mutability,
+                elem: right_elem,
+            },
+        ) => {
+            left_mutability == right_mutability && marker_ty_patterns_overlap(left_elem, right_elem)
         }
         (
             Ty::Named {
@@ -7819,8 +8340,9 @@ fn ast_type_mentions_name(ty: &Type, name: &str) -> bool {
                 || args.iter().any(|arg| ast_type_mentions_name(arg, name))
         }
         TypeKind::Pointer { inner, .. } => ast_type_mentions_name(inner, name),
-        TypeKind::Const(inner) => ast_type_mentions_name(inner, name),
-        TypeKind::Array { elem, .. } | TypeKind::Slice(elem) => ast_type_mentions_name(elem, name),
+        TypeKind::Array { elem, .. } | TypeKind::Slice { elem, .. } => {
+            ast_type_mentions_name(elem, name)
+        }
         TypeKind::Function { ret, params, .. } => {
             ast_type_mentions_name(ret, name)
                 || params

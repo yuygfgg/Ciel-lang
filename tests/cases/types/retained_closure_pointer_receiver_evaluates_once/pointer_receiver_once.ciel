@@ -3,9 +3,9 @@
 
 import /std/lib;
 
-interface<T> i64 score(*T value);
+interface<T> i64 score(*const T value);
 
-impl<T: Message> score(*T value) {
+impl<T: Message> score(*const T value) {
     return (*value)(2);
 }
 
@@ -13,8 +13,8 @@ struct PickState {
     usize idx;
 }
 
-*(i64 |(i64): Message + score|) pick(
-    *[2](i64 |(i64): Message + score|) handlers,
+*const (i64 |(i64): Message + score|) pick(
+    *const [2](i64 |(i64): Message + score|) handlers,
     *PickState state,
 ) {
     usize idx = state->idx;
@@ -28,6 +28,6 @@ i64 main() {
     i64 |(i64): Message + score| left = |i64 value| value + left_base;
     i64 |(i64): Message + score| right = |i64 value| value + right_base;
     [2](i64 |(i64): Message + score|) handlers = [left, right];
-    PickState state = { idx: 0 };
+    PickState @state = { idx: 0 };
     return score(pick(&handlers, &state)) + (state.idx as i64) + handlers[1](1);
 }

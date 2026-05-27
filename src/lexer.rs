@@ -181,6 +181,8 @@ pub enum TokenKind {
     Bang,
     #[token("&")]
     Amp,
+    #[token("@")]
+    At,
     #[token("|")]
     Pipe,
     #[token("<")]

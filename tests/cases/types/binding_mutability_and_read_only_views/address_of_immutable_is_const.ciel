@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 9
+
+i64 read_value(*const i64 value) {
+    return *value;
+}
+
+i64 main() {
+    i64 value = 9;
+    return read_value(&value);
+}

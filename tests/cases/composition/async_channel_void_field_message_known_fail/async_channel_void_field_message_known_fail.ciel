@@ -13,15 +13,15 @@ enum Event<T> {
     Done(void),
 }
 
-impl clone_message(*Token value) {
+impl clone_message(*const Token value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*Event<T> value) {
+impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> post<T: Message>(*Channel<Event<T>> channel, T value) {
+Result<void, Error> post<T: Message>(*const Channel<Event<T>> channel, T value) {
     return channel_send(channel, Item(value));
 }
 

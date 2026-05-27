@@ -1,0 +1,8 @@
+// ciel-test: run
+// expect-exit: 4
+
+i64 main() {
+    i64 @value = 1;
+    value = value + 3;
+    return value;
+}

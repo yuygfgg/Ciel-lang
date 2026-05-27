@@ -9,11 +9,11 @@ enum Event<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*Event<T> value) {
+impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-void send_event<T: Message>(*Channel<Event<T>> channel, Event<T> event) {
+void send_event<T: Message>(*const Channel<Event<T>> channel, Event<T> event) {
     must(channel_send(channel, event));
 }
 
@@ -26,7 +26,7 @@ i64 main() {
     Event<i64> second = must(channel_recv(&channel));
     must(channel_close(&channel));
 
-    i64 total = 0;
+    i64 @total = 0;
     switch (first) {
         case Data(value):
             total = total + value;

@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 6
+
+i64 apply(i64 |(i64)| func, i64 value) {
+    return func(value);
+}
+
+i64 main() {
+    i64 |(i64)| bump = |i64 @value| {
+        value = value + 1;
+        return value;
+    };
+    return apply(bump, 5);
+}

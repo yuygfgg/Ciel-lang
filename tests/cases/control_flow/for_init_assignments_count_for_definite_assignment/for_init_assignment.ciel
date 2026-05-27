@@ -2,7 +2,7 @@
 // expect-exit: 1
 
 i64 main() {
-    i64 value;
+    i64 @value;
     for (value = 0; value < 1; value = value + 1) {
     }
     return value;

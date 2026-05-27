@@ -8,7 +8,9 @@ use crate::{
     span::{FileId, Span},
 };
 
-pub use ast::{BinaryOp, InterfaceOp, Literal, PrimitiveType, UnaryOp};
+pub use ast::{
+    BinaryOp, BindingMutability, InterfaceOp, Literal, PrimitiveType, UnaryOp, ViewMutability,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalId(pub usize);
@@ -183,6 +185,7 @@ pub struct ConstraintTerm {
 pub struct Param {
     pub ty: Type,
     pub name: ast::Ident,
+    pub mutability: BindingMutability,
     pub local_id: Option<LocalId>,
 }
 
@@ -201,14 +204,17 @@ pub enum TypeKind {
     Named(TypeName, Vec<Type>),
     Pointer {
         nullable: bool,
+        mutability: ViewMutability,
         inner: Box<Type>,
     },
-    Const(Box<Type>),
     Array {
         len: usize,
         elem: Box<Type>,
     },
-    Slice(Box<Type>),
+    Slice {
+        mutability: ViewMutability,
+        elem: Box<Type>,
+    },
     Function {
         abi: Option<String>,
         ret: Box<Type>,
@@ -253,6 +259,7 @@ pub enum StmtKind {
     VarDecl {
         ty: Type,
         name: ast::Ident,
+        mutability: BindingMutability,
         local_id: LocalId,
         init: Option<Expr>,
     },
@@ -293,6 +300,7 @@ pub enum ForInit {
     VarDecl {
         ty: Type,
         name: ast::Ident,
+        mutability: BindingMutability,
         local_id: LocalId,
         init: Option<Expr>,
     },
@@ -326,7 +334,10 @@ pub struct PatternName {
 #[derive(Clone, Debug)]
 pub enum PatternNameKind {
     Variant(DefId),
-    Binding(LocalId),
+    Binding {
+        local_id: LocalId,
+        mutability: BindingMutability,
+    },
     Error,
 }
 
@@ -392,6 +403,7 @@ pub enum ExprKind {
 pub struct ClosureParam {
     pub ty: Option<Type>,
     pub name: ast::Ident,
+    pub mutability: BindingMutability,
     pub local_id: LocalId,
 }
 
@@ -775,6 +787,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         Param {
             ty,
             name: param.name.clone(),
+            mutability: param.mutability,
             local_id,
         }
     }
@@ -789,16 +802,23 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 self.resolve_type_name(path, ty.span),
                 args.iter().map(|arg| self.lower_type(arg)).collect(),
             ),
-            ast::TypeKind::Pointer { nullable, inner } => TypeKind::Pointer {
+            ast::TypeKind::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => TypeKind::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(self.lower_type(inner)),
             },
-            ast::TypeKind::Const(inner) => TypeKind::Const(Box::new(self.lower_type(inner))),
             ast::TypeKind::Array { len, elem } => TypeKind::Array {
                 len: *len,
                 elem: Box::new(self.lower_type(elem)),
             },
-            ast::TypeKind::Slice(elem) => TypeKind::Slice(Box::new(self.lower_type(elem))),
+            ast::TypeKind::Slice { mutability, elem } => TypeKind::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.lower_type(elem)),
+            },
             ast::TypeKind::Function { abi, ret, params } => TypeKind::Function {
                 abi: abi.clone(),
                 ret: Box::new(self.lower_type(ret)),
@@ -844,7 +864,12 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
     fn lower_stmt(&mut self, stmt: &ast::Stmt) -> Stmt {
         let kind = match &stmt.kind {
             ast::StmtKind::Block(block) => StmtKind::Block(self.lower_block(block)),
-            ast::StmtKind::VarDecl { ty, name, init } => {
+            ast::StmtKind::VarDecl {
+                ty,
+                name,
+                mutability,
+                init,
+            } => {
                 let ty = self.lower_type(ty);
                 let init = init.as_ref().map(|expr| self.lower_expr(expr));
                 let local_id = self.alloc_local(name);
@@ -852,6 +877,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 StmtKind::VarDecl {
                     ty,
                     name: name.clone(),
+                    mutability: *mutability,
                     local_id,
                     init,
                 }
@@ -942,7 +968,12 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn lower_for_init(&mut self, init: &ast::ForInit) -> ForInit {
         match init {
-            ast::ForInit::VarDecl { ty, name, init } => {
+            ast::ForInit::VarDecl {
+                ty,
+                name,
+                mutability,
+                init,
+            } => {
                 let ty = self.lower_type(ty);
                 let init = init.as_ref().map(|expr| self.lower_expr(expr));
                 let local_id = self.alloc_local(name);
@@ -950,6 +981,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 ForInit::VarDecl {
                     ty,
                     name: name.clone(),
+                    mutability: *mutability,
                     local_id,
                     init,
                 }
@@ -965,6 +997,22 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
     fn lower_pattern(&mut self, pattern: &ast::Pattern, is_case_head: bool) -> Pattern {
         match pattern {
             ast::Pattern::Wildcard(span) => Pattern::Wildcard(*span),
+            ast::Pattern::Binding { name, mutability } => {
+                let local_id = self.alloc_local(name);
+                self.insert_existing_local(name.clone(), local_id);
+                Pattern::Variant(
+                    PatternName {
+                        path: vec![name.clone()],
+                        display: name.name.clone(),
+                        span: name.span,
+                        kind: PatternNameKind::Binding {
+                            local_id,
+                            mutability: *mutability,
+                        },
+                    },
+                    Vec::new(),
+                )
+            }
             ast::Pattern::Variant(path, subpatterns) => {
                 let display = path_display(path);
                 let span = path.first().unwrap().span.merge(path.last().unwrap().span);
@@ -998,7 +1046,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     Some(_) | None if path.len() == 1 => {
                         let local_id = self.alloc_local(last);
                         self.insert_existing_local(last.clone(), local_id);
-                        PatternNameKind::Binding(local_id)
+                        PatternNameKind::Binding {
+                            local_id,
+                            mutability: BindingMutability::Immutable,
+                        }
                     }
                     Some(_) | None => {
                         self.lowerer.diagnostics.push(Diagnostic::new(
@@ -1055,6 +1106,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         ClosureParam {
                             ty,
                             name: param.name.clone(),
+                            mutability: param.mutability,
                             local_id,
                         }
                     })

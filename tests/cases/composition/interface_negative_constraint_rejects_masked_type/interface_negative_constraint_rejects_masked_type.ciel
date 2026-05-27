@@ -23,6 +23,6 @@ i64 guarded<T: readable_view + !reset>(*T value, i64 |(*T)| callback) {
 }
 
 i64 main() {
-    Source source = { value: 9 };
+    Source @source = { value: 9 };
     return guarded(&source, |item| read(item));
 }

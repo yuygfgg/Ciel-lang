@@ -15,7 +15,7 @@ T clone_value<T: Message>(T value) {
 }
 
 i64 main() {
-    i64 base = 2;
+    i64 @base = 2;
     i64 |(i64): Message| handler = |i64 value| value + base;
     i64 |(i64): Message + score| scored = handler;
     i64 |(i64): Message| narrowed = scored;

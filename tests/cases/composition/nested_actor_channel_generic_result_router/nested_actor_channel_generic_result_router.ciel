@@ -9,11 +9,11 @@ enum Route<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*Route<T> value) {
+impl<T: Message> clone_message(*const Route<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> flush_value<T: Message>(*Channel<T> out, T value) {
+Result<void, Error> flush_value<T: Message>(*const Channel<T> out, T value) {
     return channel_send(out, value);
 }
 

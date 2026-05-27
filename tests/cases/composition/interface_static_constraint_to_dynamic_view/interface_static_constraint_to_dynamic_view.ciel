@@ -37,6 +37,6 @@ i64 visit(Boxed boxed, i64 |(page_view)| callback) {
 }
 
 i64 main() {
-    Page page = { first: 21, count: 34 };
+    Page @page = { first: 21, count: 34 };
     return visit(erase(&page), |item| read(item) + size(item));
 }

@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: cannot write through read-only pointer
+
+i64 main() {
+    i64 @value = 1;
+    *const i64 view = &value;
+    *view = 2;
+    return value;
+}

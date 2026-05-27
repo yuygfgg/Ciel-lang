@@ -366,8 +366,12 @@ impl Parser {
         }
         loop {
             let ty = self.parse_type()?;
-            let name = self.expect_ident("expected parameter name")?;
-            params.push(Param { ty, name });
+            let (name, mutability) = self.parse_binding_name("expected parameter name")?;
+            params.push(Param {
+                ty,
+                name,
+                mutability,
+            });
             if self.eat(TokenKind::Comma).is_some() {
                 if self.eat(TokenKind::RParen).is_some() {
                     break;
@@ -378,6 +382,19 @@ impl Parser {
             }
         }
         Ok(params)
+    }
+
+    fn parse_binding_name(
+        &mut self,
+        message: &'static str,
+    ) -> Result<(Ident, BindingMutability), Diagnostic> {
+        let mutability = if self.eat(TokenKind::At).is_some() {
+            BindingMutability::Mutable
+        } else {
+            BindingMutability::Immutable
+        };
+        let name = self.expect_ident(message)?;
+        Ok((name, mutability))
     }
 
     fn parse_generic_param_list_opt(&mut self) -> Result<Vec<GenericParam>, Diagnostic> {
@@ -544,33 +561,43 @@ impl Parser {
     fn parse_prefix_type(&mut self) -> Result<Type, Diagnostic> {
         if self.eat(TokenKind::Star).is_some() {
             let start = self.previous().span;
+            let mutability = if self.eat(TokenKind::Const).is_some() {
+                ViewMutability::ReadOnly
+            } else {
+                ViewMutability::Writable
+            };
             let inner = self.parse_prefix_type()?;
             return Ok(Type {
                 span: start.merge(inner.span),
                 kind: TypeKind::Pointer {
                     nullable: false,
+                    mutability,
                     inner: Box::new(inner),
                 },
             });
         }
         if self.eat(TokenKind::QStar).is_some() {
             let start = self.previous().span;
+            let mutability = if self.eat(TokenKind::Const).is_some() {
+                ViewMutability::ReadOnly
+            } else {
+                ViewMutability::Writable
+            };
             let inner = self.parse_prefix_type()?;
             return Ok(Type {
                 span: start.merge(inner.span),
                 kind: TypeKind::Pointer {
                     nullable: true,
+                    mutability,
                     inner: Box::new(inner),
                 },
             });
         }
-        if self.eat(TokenKind::Const).is_some() {
-            let start = self.previous().span;
-            let inner = self.parse_prefix_type()?;
-            return Ok(Type {
-                span: start.merge(inner.span),
-                kind: TypeKind::Const(Box::new(inner)),
-            });
+        if self.at(TokenKind::Const) {
+            return Err(Diagnostic::new(
+                self.peek().span,
+                "standalone `const T` is not a Ciel type; use `*const T` or `[]const T`",
+            ));
         }
         self.parse_primary_type()
     }
@@ -637,10 +664,18 @@ impl Parser {
             TokenKind::LBracket => {
                 let start = self.expect(TokenKind::LBracket, "expected `[`")?.span;
                 if self.eat(TokenKind::RBracket).is_some() {
+                    let mutability = if self.eat(TokenKind::Const).is_some() {
+                        ViewMutability::ReadOnly
+                    } else {
+                        ViewMutability::Writable
+                    };
                     let elem = self.parse_type()?;
                     Ok(Type {
                         span: start.merge(elem.span),
-                        kind: TypeKind::Slice(Box::new(elem)),
+                        kind: TypeKind::Slice {
+                            mutability,
+                            elem: Box::new(elem),
+                        },
                     })
                 } else {
                     let len_token = self.expect_any(
@@ -795,6 +830,9 @@ impl Parser {
         if !self.can_start_type() {
             return Ok(None);
         }
+        if self.at(TokenKind::Const) {
+            self.parse_type()?;
+        }
         let save = self.pos;
         let ty = match self.parse_type() {
             Ok(ty) => ty,
@@ -803,11 +841,11 @@ impl Parser {
                 return Ok(None);
             }
         };
-        if !self.at(TokenKind::Ident) {
+        if !(self.at(TokenKind::Ident) || self.at(TokenKind::At)) {
             self.pos = save;
             return Ok(None);
         }
-        let name = self.expect_ident("expected local name")?;
+        let (name, mutability) = self.parse_binding_name("expected local name")?;
         if !(self.at(TokenKind::Eq) || self.at(TokenKind::Semi)) {
             self.pos = save;
             return Ok(None);
@@ -822,7 +860,12 @@ impl Parser {
             .span;
         Ok(Some(Stmt {
             span: ty.span.merge(end),
-            kind: StmtKind::VarDecl { ty, name, init },
+            kind: StmtKind::VarDecl {
+                ty,
+                name,
+                mutability,
+                init,
+            },
         }))
     }
 
@@ -907,16 +950,25 @@ impl Parser {
 
     fn parse_for_init(&mut self) -> Result<ForInit, Diagnostic> {
         if self.can_start_type() {
+            if self.at(TokenKind::Const) {
+                self.parse_type()?;
+            }
             let save = self.pos;
             if let Ok(ty) = self.parse_type() {
-                if self.at(TokenKind::Ident) {
-                    let name = self.expect_ident("expected for variable name")?;
+                if self.at(TokenKind::Ident) || self.at(TokenKind::At) {
+                    let (name, mutability) =
+                        self.parse_binding_name("expected for variable name")?;
                     let init = if self.eat(TokenKind::Eq).is_some() {
                         Some(self.parse_expr()?)
                     } else {
                         None
                     };
-                    return Ok(ForInit::VarDecl { ty, name, init });
+                    return Ok(ForInit::VarDecl {
+                        ty,
+                        name,
+                        mutability,
+                        init,
+                    });
                 }
             }
             self.pos = save;
@@ -1002,6 +1054,10 @@ impl Parser {
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        if self.at(TokenKind::At) {
+            let (name, mutability) = self.parse_binding_name("expected pattern binding name")?;
+            return Ok(Pattern::Binding { name, mutability });
+        }
         if self.at_ident_named("_") {
             let ident = self.expect_ident("expected pattern")?;
             return Ok(Pattern::Wildcard(ident.span));
@@ -1402,17 +1458,24 @@ impl Parser {
     }
 
     fn parse_closure_param(&mut self) -> Result<ClosureParam, Diagnostic> {
-        if self.at(TokenKind::Ident)
-            && matches!(self.peek_next().kind, TokenKind::Comma | TokenKind::Pipe)
+        if (self.at(TokenKind::Ident) || self.at(TokenKind::At))
+            && (self.at(TokenKind::At)
+                || matches!(self.peek_next().kind, TokenKind::Comma | TokenKind::Pipe))
         {
+            let (name, mutability) = self.parse_binding_name("expected closure parameter name")?;
             return Ok(ClosureParam {
                 ty: None,
-                name: self.expect_ident("expected closure parameter name")?,
+                name,
+                mutability,
             });
         }
         let ty = self.parse_type()?;
-        let name = self.expect_ident("expected closure parameter name")?;
-        Ok(ClosureParam { ty: Some(ty), name })
+        let (name, mutability) = self.parse_binding_name("expected closure parameter name")?;
+        Ok(ClosureParam {
+            ty: Some(ty),
+            name,
+            mutability,
+        })
     }
 
     fn parse_struct_literal(&mut self) -> Result<Expr, Diagnostic> {

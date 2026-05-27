@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: cannot cast `*const i64` to `*i64`
+
+i64 main() {
+    i64 @value = 1;
+    *const i64 view = &value;
+    *i64 writable = view as *i64;
+    *writable = 2;
+    return value;
+}

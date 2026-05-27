@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 5
+
+i64 main() {
+    i64 value;
+    if (true) {
+        value = 5;
+    } else {
+        value = 6;
+    }
+    return value;
+}

@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: immutable
+// expect-error: captured binding
 
 struct Box {
     i64 value;

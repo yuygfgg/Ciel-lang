@@ -9,7 +9,7 @@ T clone_value<T: Message>(T value) {
 }
 
 i64 main() {
-    i64 base = 5;
+    i64 @base = 5;
     i64 |(i64)| cloned = clone_value(|i64 value| value + base);
     base = 100;
     return cloned(6);

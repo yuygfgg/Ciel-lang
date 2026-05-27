@@ -14,18 +14,18 @@ struct Outer {
     i64 extra;
 }
 
-impl clone_message(*Handle value) {
+impl clone_message(*const Handle value) {
     return Ok(*value);
 }
 
 i64 main() {
-    i64 backing = 7;
+    i64 @backing = 7;
     Outer outer = {
         handle: { ptr: &backing, tag: 5 },
         extra: 6,
     };
     Channel<meta::Repr<Outer>> channel = must(make_channel<meta::Repr<Outer>>());
-    must(channel_send(&channel, meta::into_repr(outer)));
+    must(channel_send(&channel, meta::into_repr(&outer)));
     Outer copied = meta::from_repr<Outer>(must(channel_recv(&channel)));
     must(channel_close(&channel));
     return *copied.handle.ptr + copied.handle.tag + copied.extra - 18;

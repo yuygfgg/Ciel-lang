@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: cannot initialize immutable binding `value` more than once
+
+i64 main() {
+    i64 value = 1;
+    value = 2;
+    return value;
+}

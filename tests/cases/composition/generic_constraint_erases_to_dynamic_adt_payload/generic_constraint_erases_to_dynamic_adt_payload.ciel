@@ -1,13 +1,13 @@
 // ciel-test: run
 // expect-exit: 34
 
-interface<T> i64 measure(*T value);
+interface<T> i64 measure(*const T value);
 
 struct Box {
     i64 value;
 }
 
-impl measure(*Box box) {
+impl measure(*const Box box) {
     return box->value;
 }
 
@@ -16,7 +16,7 @@ enum Holder {
     Empty,
 }
 
-Holder erase<T: measure>(*T value) {
+Holder erase<T: measure>(*const T value) {
     return Full(value);
 }
 

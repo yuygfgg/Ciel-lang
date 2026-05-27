@@ -27,7 +27,7 @@ i64 evaluate(Holder<Box<i64 |(i64)|>> holder, i64 input) {
 }
 
 i64 main() {
-    i64 offset = 4;
+    i64 @offset = 4;
     Box<i64 |(i64)|> box = { value: clone_value(|i64 value| value + offset) };
     offset = 50;
     Holder<Box<i64 |(i64)|>> holder = Full(box);

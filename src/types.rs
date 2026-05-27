@@ -3,7 +3,7 @@ use std::{
     fmt,
 };
 
-use crate::ast::{PrimitiveType, Type, TypeKind};
+use crate::ast::{PrimitiveType, Type, TypeKind, ViewMutability};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ConstraintBounds {
@@ -67,14 +67,17 @@ pub enum Ty {
     },
     Pointer {
         nullable: bool,
+        mutability: ViewMutability,
         inner: Box<Ty>,
     },
-    Const(Box<Ty>),
     Array {
         len: usize,
         elem: Box<Ty>,
     },
-    Slice(Box<Ty>),
+    Slice {
+        mutability: ViewMutability,
+        elem: Box<Ty>,
+    },
     Named {
         name: String,
         args: Vec<Ty>,
@@ -131,16 +134,23 @@ impl Ty {
                     .unwrap_or_default(),
                 args: args.iter().map(Ty::from_ast).collect(),
             },
-            TypeKind::Pointer { nullable, inner } => Ty::Pointer {
+            TypeKind::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
                 nullable: *nullable,
+                mutability: *mutability,
                 inner: Box::new(Ty::from_ast(inner)),
             },
-            TypeKind::Const(inner) => Ty::Const(Box::new(Ty::from_ast(inner))),
             TypeKind::Array { len, elem } => Ty::Array {
                 len: *len,
                 elem: Box::new(Ty::from_ast(elem)),
             },
-            TypeKind::Slice(elem) => Ty::Slice(Box::new(Ty::from_ast(elem))),
+            TypeKind::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(Ty::from_ast(elem)),
+            },
             TypeKind::Function { abi, ret, params } => Ty::Function {
                 abi: abi.clone(),
                 ret: Box::new(Ty::from_ast(ret)),
@@ -156,25 +166,25 @@ impl Ty {
 
     pub fn is_integer(&self) -> bool {
         matches!(
-            self.unqualified(),
+            self,
             Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize
         )
     }
 
     pub fn is_signed_integer(&self) -> bool {
-        matches!(self.unqualified(), Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
+        matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
     }
 
     pub fn is_numeric(&self) -> bool {
-        self.is_integer() || matches!(self.unqualified(), Ty::F32 | Ty::F64)
+        self.is_integer() || matches!(self, Ty::F32 | Ty::F64)
     }
 
     pub fn is_void(&self) -> bool {
-        matches!(self.unqualified(), Ty::Void)
+        matches!(self, Ty::Void)
     }
 
     pub fn is_erased_value(&self) -> bool {
-        match self.unqualified() {
+        match self {
             Ty::Void => true,
             Ty::Array { elem, .. } => elem.is_erased_value(),
             _ => false,
@@ -182,19 +192,21 @@ impl Ty {
     }
 
     pub fn is_never(&self) -> bool {
-        matches!(self.unqualified(), Ty::Never)
-    }
-
-    pub fn unqualified(&self) -> &Ty {
-        match self {
-            Ty::Const(inner) => inner.unqualified(),
-            other => other,
-        }
+        matches!(self, Ty::Never)
     }
 
     pub fn pointer_to(inner: Ty) -> Self {
         Ty::Pointer {
             nullable: false,
+            mutability: ViewMutability::Writable,
+            inner: Box::new(inner),
+        }
+    }
+
+    pub fn const_pointer_to(inner: Ty) -> Self {
+        Ty::Pointer {
+            nullable: false,
+            mutability: ViewMutability::ReadOnly,
             inner: Box::new(inner),
         }
     }
@@ -202,53 +214,75 @@ impl Ty {
     pub fn nullable_pointer_to(inner: Ty) -> Self {
         Ty::Pointer {
             nullable: true,
+            mutability: ViewMutability::Writable,
+            inner: Box::new(inner),
+        }
+    }
+
+    pub fn nullable_const_pointer_to(inner: Ty) -> Self {
+        Ty::Pointer {
+            nullable: true,
+            mutability: ViewMutability::ReadOnly,
             inner: Box::new(inner),
         }
     }
 
     pub fn can_assign_from(&self, source: &Ty) -> bool {
-        if matches!(self.unqualified(), Ty::Hole(_)) || matches!(source.unqualified(), Ty::Hole(_))
-        {
+        if matches!(self, Ty::Hole(_)) || matches!(source, Ty::Hole(_)) {
             return true;
         }
-        if source.unqualified().is_never() {
+        if source.is_never() {
             return true;
         }
-        if self.unqualified() == source.unqualified() {
+        if self == source {
             return true;
         }
         matches!(
-            (self.unqualified(), source.unqualified()),
+            (self, source),
             (
                 Ty::Pointer {
                     nullable: true,
+                    mutability: expected_mutability,
                     inner: expected,
                 },
                 Ty::Pointer {
                     nullable: false,
+                    mutability: actual_mutability,
                     inner: actual,
                 },
-            ) if expected.can_assign_from(actual)
+            ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability)
+                && expected == actual
         ) || matches!(
-            (self.unqualified(), source.unqualified()),
-            (Ty::Slice(expected), Ty::Array { elem: actual, .. }) if expected.can_assign_from(actual)
-        ) || matches!(
-            (self.unqualified(), source.unqualified()),
+            (self, source),
             (
                 Ty::Pointer {
                     nullable: expected_nullable,
+                    mutability: expected_mutability,
                     inner: expected,
                 },
                 Ty::Pointer {
                     nullable: actual_nullable,
+                    mutability: actual_mutability,
                     inner: actual,
                 },
-        ) if expected_nullable == actual_nullable && expected.can_assign_from(actual)
+        ) if expected_nullable == actual_nullable
+                && pointer_view_can_weaken(*expected_mutability, *actual_mutability)
+                && expected == actual
         ) || matches!(
-            (self.unqualified(), source.unqualified()),
-            (Ty::Slice(expected), Ty::Slice(actual)) if expected.can_assign_from(actual)
+            (self, source),
+            (
+                Ty::Slice {
+                    mutability: expected_mutability,
+                    elem: expected,
+                },
+                Ty::Slice {
+                    mutability: actual_mutability,
+                    elem: actual,
+                },
+            ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability)
+                && expected == actual
         ) || matches!(
-            (self.unqualified(), source.unqualified()),
+            (self, source),
             (
                 Ty::Closure {
                     ret: expected_ret,
@@ -264,7 +298,7 @@ impl Ty {
                 && expected_ret.can_assign_from(actual_ret)
                 && actual_constraints.proves_all(expected_constraints)
         ) || matches!(
-            (self.unqualified(), source.unqualified()),
+            (self, source),
             (
                 Ty::Closure {
                     ret: expected_ret,
@@ -281,6 +315,11 @@ impl Ty {
                 && expected_ret.can_assign_from(actual_ret)
         )
     }
+}
+
+pub fn pointer_view_can_weaken(expected: ViewMutability, actual: ViewMutability) -> bool {
+    expected == actual
+        || (expected == ViewMutability::ReadOnly && actual == ViewMutability::Writable)
 }
 
 pub fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
@@ -304,20 +343,27 @@ pub fn ty_from_primitive(primitive: &PrimitiveType) -> Ty {
 pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
     match ty {
         Ty::Hole(id) => Ty::Hole(*id),
-        Ty::Const(inner) => Ty::Const(Box::new(substitute_ty(inner, subst))),
         Ty::Generic(name) => subst
             .get(name)
             .cloned()
             .unwrap_or_else(|| Ty::Generic(name.clone())),
-        Ty::Pointer { nullable, inner } => Ty::Pointer {
+        Ty::Pointer {
+            nullable,
+            mutability,
+            inner,
+        } => Ty::Pointer {
             nullable: *nullable,
+            mutability: *mutability,
             inner: Box::new(substitute_ty(inner, subst)),
         },
         Ty::Array { len, elem } => Ty::Array {
             len: *len,
             elem: Box::new(substitute_ty(elem, subst)),
         },
-        Ty::Slice(elem) => Ty::Slice(Box::new(substitute_ty(elem, subst))),
+        Ty::Slice { mutability, elem } => Ty::Slice {
+            mutability: *mutability,
+            elem: Box::new(substitute_ty(elem, subst)),
+        },
         Ty::Named { name, args } => Ty::Named {
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
@@ -402,7 +448,6 @@ pub fn substitute_constraint_ref(
 pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
     match pattern {
         Ty::Hole(_) => true,
-        Ty::Const(inner) => unify_ty(inner, actual.unqualified(), subst),
         Ty::Generic(name) => match subst.get(name) {
             Some(Ty::Generic(existing)) if existing == name => {
                 subst.insert(name.clone(), actual.clone());
@@ -416,29 +461,39 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
         },
         Ty::Pointer {
             nullable,
+            mutability,
             inner: pattern_inner,
-        } => match actual.unqualified() {
+        } => match actual {
             Ty::Pointer {
                 nullable: actual_nullable,
+                mutability: actual_mutability,
                 inner: actual_inner,
-            } if nullable == actual_nullable => unify_ty(pattern_inner, actual_inner, subst),
+            } if nullable == actual_nullable && mutability == actual_mutability => {
+                unify_ty(pattern_inner, actual_inner, subst)
+            }
             _ => false,
         },
         Ty::Array {
             len,
             elem: pattern_elem,
-        } => match actual.unqualified() {
+        } => match actual {
             Ty::Array {
                 len: actual_len,
                 elem: actual_elem,
             } if len == actual_len => unify_ty(pattern_elem, actual_elem, subst),
             _ => false,
         },
-        Ty::Slice(pattern_elem) => match actual.unqualified() {
-            Ty::Slice(actual_elem) => unify_ty(pattern_elem, actual_elem, subst),
+        Ty::Slice {
+            mutability,
+            elem: pattern_elem,
+        } => match actual {
+            Ty::Slice {
+                mutability: actual_mutability,
+                elem: actual_elem,
+            } if mutability == actual_mutability => unify_ty(pattern_elem, actual_elem, subst),
             _ => false,
         },
-        Ty::Named { name, args } => match actual.unqualified() {
+        Ty::Named { name, args } => match actual {
             Ty::Named {
                 name: actual_name,
                 args: actual_args,
@@ -448,7 +503,7 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
             _ => false,
         },
-        Ty::DynamicInterface { name, args } => match actual.unqualified() {
+        Ty::DynamicInterface { name, args } => match actual {
             Ty::DynamicInterface {
                 name: actual_name,
                 args: actual_args,
@@ -458,7 +513,7 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
             _ => false,
         },
-        Ty::Function { abi, ret, params } => match actual.unqualified() {
+        Ty::Function { abi, ret, params } => match actual {
             Ty::Function {
                 abi: actual_abi,
                 ret: actual_ret,
@@ -476,7 +531,7 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             ret,
             params,
             constraints,
-        } => match actual.unqualified() {
+        } => match actual {
             Ty::Closure {
                 ret: actual_ret,
                 params: actual_params,
@@ -507,7 +562,7 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             ret,
             params,
             captures,
-        } => match actual.unqualified() {
+        } => match actual {
             Ty::ClosureInstance {
                 id: actual_id,
                 ret: actual_ret,
@@ -529,7 +584,7 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             }
             _ => false,
         },
-        other => other == actual.unqualified(),
+        other => other == actual,
     }
 }
 
@@ -579,7 +634,7 @@ fn unify_constraint_refs(
 }
 
 pub fn closure_instance_satisfies_signature(expected: &Ty, actual: &Ty) -> bool {
-    match (expected.unqualified(), actual.unqualified()) {
+    match (expected, actual) {
         (
             Ty::Closure {
                 ret: expected_ret,
@@ -601,7 +656,7 @@ pub fn closure_instance_satisfies_signature(expected: &Ty, actual: &Ty) -> bool 
 }
 
 pub fn closure_shape_satisfies(expected_ret: &Ty, expected_params: &[Ty], actual: &Ty) -> bool {
-    match actual.unqualified() {
+    match actual {
         Ty::Closure {
             ret: actual_ret,
             params: actual_params,
@@ -617,7 +672,7 @@ pub fn closure_shape_satisfies(expected_ret: &Ty, expected_params: &[Ty], actual
 }
 
 pub fn callable_ret_params_ty(ty: &Ty) -> Option<(Ty, Vec<Ty>)> {
-    match ty.unqualified() {
+    match ty {
         Ty::Function { ret, params, .. }
         | Ty::Closure { ret, params, .. }
         | Ty::ClosureInstance { ret, params, .. } => Some(((**ret).clone(), params.clone())),
@@ -628,10 +683,9 @@ pub fn callable_ret_params_ty(ty: &Ty) -> Option<(Ty, Vec<Ty>)> {
 pub fn contains_generic(ty: &Ty) -> bool {
     match ty {
         Ty::Hole(_) => false,
-        Ty::Const(inner) => contains_generic(inner),
         Ty::Generic(_) => true,
         Ty::Pointer { inner, .. } => contains_generic(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_generic(elem),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_generic(elem),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(contains_generic)
         }
@@ -672,9 +726,8 @@ pub fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
 pub fn contains_type_hole(ty: &Ty) -> bool {
     match ty {
         Ty::Hole(_) => true,
-        Ty::Const(inner) => contains_type_hole(inner),
         Ty::Pointer { inner, .. } => contains_type_hole(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_type_hole(elem),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_type_hole(elem),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(contains_type_hole)
         }
@@ -714,10 +767,9 @@ pub fn constraint_bounds_contains_type_hole(bounds: &ConstraintBounds) -> bool {
 
 pub fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
     match ty {
-        Ty::Const(inner) => contains_any_generic_name(inner, names),
         Ty::Generic(name) => names.contains(name),
         Ty::Pointer { inner, .. } => contains_any_generic_name(inner, names),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => contains_any_generic_name(elem, names),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_any_generic_name(elem, names),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| contains_any_generic_name(arg, names))
         }
@@ -774,9 +826,8 @@ pub fn constraint_bounds_contains_any_generic_name(
 
 pub fn type_complexity(ty: &Ty) -> usize {
     match ty {
-        Ty::Const(inner) => type_complexity(inner),
         Ty::Pointer { inner, .. } => 1 + type_complexity(inner),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => 1 + type_complexity(elem),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => 1 + type_complexity(elem),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             1 + args.iter().map(type_complexity).sum::<usize>()
         }
@@ -838,9 +889,8 @@ pub fn ty_contains(container: &Ty, needle: &Ty) -> bool {
         return true;
     }
     match container {
-        Ty::Const(inner) => ty_contains(inner, needle),
         Ty::Pointer { inner, .. } => ty_contains(inner, needle),
-        Ty::Array { elem, .. } | Ty::Slice(elem) => ty_contains(elem, needle),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => ty_contains(elem, needle),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| ty_contains(arg, needle))
         }
@@ -897,21 +947,21 @@ pub fn constraint_bounds_contains_ty(bounds: &ConstraintBounds, needle: &Ty) -> 
 }
 
 pub fn retained_closure_capabilities(ty: &Ty) -> Vec<ConstraintRef> {
-    match ty.unqualified() {
+    match ty {
         Ty::Closure { constraints, .. } => constraints.positive.clone(),
         _ => Vec::new(),
     }
 }
 
 pub fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> bool {
-    let Ty::Closure { constraints, .. } = ty.unqualified() else {
+    let Ty::Closure { constraints, .. } = ty else {
         return false;
     };
     constraints.positive.iter().any(|entry| entry == capability)
 }
 
 pub fn retained_closure_proves_capability(ty: &Ty, interface_name: &str, args: &[Ty]) -> bool {
-    let Ty::Closure { constraints, .. } = ty.unqualified() else {
+    let Ty::Closure { constraints, .. } = ty else {
         return false;
     };
     constraints
@@ -926,7 +976,6 @@ pub fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
 
 pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
     match ty {
-        Ty::Const(inner) => receiver_ty_from_value_ty(inner),
         Ty::Pointer { inner, .. } => (**inner).clone(),
         other => other.clone(),
     }
@@ -1003,18 +1052,18 @@ where
 }
 
 pub fn meta_repr_owned_leaf_ty(ty: &Ty) -> Ty {
-    match ty.unqualified() {
+    match ty {
         Ty::Array { len, elem } => meta_array_repr_ty(*len, elem, false),
         other => other.clone(),
     }
 }
 
 pub fn meta_repr_borrowed_array_leaf_ty(ty: &Ty) -> Ty {
-    ty.unqualified().clone()
+    ty.clone()
 }
 
 pub fn meta_repr_borrowed_array_item_ty(ty: &Ty) -> Ty {
-    Ty::pointer_to(ty.unqualified().clone())
+    Ty::pointer_to(ty.clone())
 }
 
 pub fn meta_ref_array_repr_ty(len: usize, elem: &Ty) -> Ty {
@@ -1081,7 +1130,7 @@ pub fn meta_array_split_len(len: usize) -> usize {
 }
 
 pub fn meta_array_expansion_cost(len: usize, elem: &Ty) -> Option<usize> {
-    let elem_cost = match elem.unqualified() {
+    let elem_cost = match elem {
         Ty::Array {
             len: elem_len,
             elem: inner,
@@ -1143,7 +1192,6 @@ pub fn aggregate_instance_name(name: &str, args: &[Ty]) -> String {
 pub fn mangle_ty_fragment(ty: &Ty) -> String {
     match ty {
         Ty::Hole(_) => "hole".to_string(),
-        Ty::Const(inner) => format!("const_{}", mangle_ty_fragment(inner)),
         Ty::Never => "never".to_string(),
         Ty::Void => "void".to_string(),
         Ty::Bool => "bool".to_string(),
@@ -1166,15 +1214,27 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
                 sanitize_mangle_fragment(spelling)
             )
         }
-        Ty::Pointer { inner, nullable } => {
-            if *nullable {
-                format!("qptr_{}", mangle_ty_fragment(inner))
-            } else {
-                format!("ptr_{}", mangle_ty_fragment(inner))
-            }
+        Ty::Pointer {
+            inner,
+            nullable,
+            mutability,
+        } => {
+            let prefix = match (*nullable, *mutability) {
+                (false, ViewMutability::Writable) => "ptr",
+                (false, ViewMutability::ReadOnly) => "cptr",
+                (true, ViewMutability::Writable) => "qptr",
+                (true, ViewMutability::ReadOnly) => "qcptr",
+            };
+            format!("{prefix}_{}", mangle_ty_fragment(inner))
         }
         Ty::Array { len, elem } => format!("arr{len}_{}", mangle_ty_fragment(elem)),
-        Ty::Slice(elem) => format!("slice_{}", mangle_ty_fragment(elem)),
+        Ty::Slice { mutability, elem } => {
+            let prefix = match mutability {
+                ViewMutability::Writable => "slice",
+                ViewMutability::ReadOnly => "cslice",
+            };
+            format!("{prefix}_{}", mangle_ty_fragment(elem))
+        }
         Ty::Named { name, args } => aggregate_instance_name(name, args),
         Ty::Generic(name) => format!("gen_{name}"),
         Ty::DynamicInterface { name, args } => {
@@ -1358,16 +1418,24 @@ impl fmt::Display for Ty {
             Ty::F32 => write!(f, "f32"),
             Ty::F64 => write!(f, "f64"),
             Ty::CSpelling { spelling, .. } => write!(f, "{spelling}"),
-            Ty::Pointer { nullable, inner } => {
-                if *nullable {
-                    write!(f, "?*{inner}")
-                } else {
-                    write!(f, "*{inner}")
-                }
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => {
+                let prefix = match (*nullable, *mutability) {
+                    (false, ViewMutability::Writable) => "*",
+                    (false, ViewMutability::ReadOnly) => "*const ",
+                    (true, ViewMutability::Writable) => "?*",
+                    (true, ViewMutability::ReadOnly) => "?*const ",
+                };
+                write!(f, "{prefix}{inner}")
             }
-            Ty::Const(inner) => write!(f, "const {inner}"),
             Ty::Array { len, elem } => write!(f, "[{len}]{elem}"),
-            Ty::Slice(elem) => write!(f, "[]{elem}"),
+            Ty::Slice { mutability, elem } => match mutability {
+                ViewMutability::Writable => write!(f, "[]{elem}"),
+                ViewMutability::ReadOnly => write!(f, "[]const {elem}"),
+            },
             Ty::Named { name, args } => {
                 let display_name = match name.as_str() {
                     "__ciel_std_meta_RefRepr" => "meta::RefRepr",

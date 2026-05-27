@@ -15,7 +15,7 @@ enum Outer {
 
 i64 main() {
     Outer outer = Wrap(Pair(17, 25));
-    meta::Repr<Outer> repr = meta::into_repr(outer);
+    meta::Repr<Outer> repr = meta::into_repr(&outer);
     Outer copy = meta::from_repr<Outer>(repr);
 
     switch (copy) {

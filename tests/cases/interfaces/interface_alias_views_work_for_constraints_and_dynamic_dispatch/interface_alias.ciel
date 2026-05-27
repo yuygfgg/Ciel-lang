@@ -22,6 +22,6 @@ i64 dynamic_read(readable value) {
 }
 
 i64 main() {
-    Box box = { value: 23 };
+    Box @box = { value: 23 };
     return generic_read(&box) + dynamic_read(&box);
 }

@@ -16,7 +16,7 @@ i64 run(Operation operation, i64 value) {
 }
 
 i64 main() {
-    i64 base = 5;
+    i64 @base = 5;
     Operation operation = Apply(|x| x + base);
     base = 100;
     return run(operation, 7);

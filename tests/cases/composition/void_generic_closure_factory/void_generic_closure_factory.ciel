@@ -16,7 +16,7 @@ T |()| |(Holder<T>)| make_factory<T>() {
 }
 
 i64 main() {
-    Holder<i64> holder = { value: 23 };
+    Holder<i64> @holder = { value: 23 };
     i64 |()| |(Holder<i64>)| factory = make_factory<i64>();
     i64 |()| reader = factory(holder);
     holder.value = 99;

@@ -5,10 +5,10 @@
 import /std/io;
 
 struct Label {
-    []char text;
+    []const char text;
 }
 
-impl to_string(*Label value) {
+impl to_string(*const Label value) {
     return value->text;
 }
 

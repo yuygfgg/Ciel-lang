@@ -10,7 +10,7 @@ impl<T: Message> duplicate(*T value) {
 }
 
 i64 main() {
-    i64 base = 3;
+    i64 @base = 3;
     i64 |(i64): Message + duplicate| handler = |i64 value| value + base;
     i64 |(i64): Message + duplicate| copied = duplicate(&handler);
     base = 100;

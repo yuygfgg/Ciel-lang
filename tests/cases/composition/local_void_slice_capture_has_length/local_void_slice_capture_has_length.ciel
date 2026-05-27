@@ -3,7 +3,7 @@
 
 i64 |()| make_counter() {
     [3]void markers;
-    []void view = markers;
+    []const void view = markers;
     return || view.len as i64;
 }
 

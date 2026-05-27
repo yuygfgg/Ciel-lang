@@ -18,7 +18,7 @@ i64 read_ref_repr(RefRepr<i64> value) {
 }
 
 i64 main() {
-    i64 n = 20;
+    i64 @n = 20;
     Repr<i64> owned = { value: 22 };
     RefRepr<i64> borrowed = { value: &n };
     return read_repr(owned) + read_ref_repr(borrowed) - 42;

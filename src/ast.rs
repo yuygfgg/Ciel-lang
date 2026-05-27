@@ -176,6 +176,35 @@ pub struct ConstraintTerm {
 pub struct Param {
     pub ty: Type,
     pub name: Ident,
+    pub mutability: BindingMutability,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum BindingMutability {
+    Immutable,
+    Mutable,
+}
+
+impl BindingMutability {
+    pub fn is_mutable(self) -> bool {
+        matches!(self, BindingMutability::Mutable)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ViewMutability {
+    ReadOnly,
+    Writable,
+}
+
+impl ViewMutability {
+    pub fn is_writable(self) -> bool {
+        matches!(self, ViewMutability::Writable)
+    }
+
+    pub fn is_read_only(self) -> bool {
+        matches!(self, ViewMutability::ReadOnly)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,14 +239,17 @@ pub enum TypeKind {
     Named(Vec<Ident>, Vec<Type>),
     Pointer {
         nullable: bool,
+        mutability: ViewMutability,
         inner: Box<Type>,
     },
-    Const(Box<Type>),
     Array {
         len: usize,
         elem: Box<Type>,
     },
-    Slice(Box<Type>),
+    Slice {
+        mutability: ViewMutability,
+        elem: Box<Type>,
+    },
     Function {
         abi: Option<String>,
         ret: Box<Type>,
@@ -248,6 +280,7 @@ pub enum StmtKind {
     VarDecl {
         ty: Type,
         name: Ident,
+        mutability: BindingMutability,
         init: Option<Expr>,
     },
     Assign {
@@ -287,6 +320,7 @@ pub enum ForInit {
     VarDecl {
         ty: Type,
         name: Ident,
+        mutability: BindingMutability,
         init: Option<Expr>,
     },
     Assign {
@@ -305,6 +339,10 @@ pub struct CaseClause {
 #[derive(Clone, Debug)]
 pub enum Pattern {
     Variant(Vec<Ident>, Vec<Pattern>),
+    Binding {
+        name: Ident,
+        mutability: BindingMutability,
+    },
     Wildcard(Span),
 }
 
@@ -370,6 +408,7 @@ pub enum ExprKind {
 pub struct ClosureParam {
     pub ty: Option<Type>,
     pub name: Ident,
+    pub mutability: BindingMutability,
 }
 
 #[derive(Clone, Debug)]

@@ -7,7 +7,7 @@ enum Choice {
 
 i64 main() {
     Choice choice = A;
-    i64 value;
+    i64 @value;
     while (true) {
         switch (choice) {
             case A:

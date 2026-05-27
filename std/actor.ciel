@@ -6,11 +6,11 @@ export struct Actor<M> {
     *void handle;
 }
 
-impl<M> clone_message(*Actor<M> value) {
+impl<M> clone_message(*const Actor<M> value) {
     return Ok(*value);
 }
 
-impl<M> share_handle_marker(*Actor<M> value) {
+impl<M> share_handle_marker(*const Actor<M> value) {
     return true;
 }
 
@@ -21,10 +21,10 @@ export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
 );
 
 // Compiler built-in: clones the payload before enqueueing it.
-export Result<void, Error> send<M: Message>(*Actor<M> actor, M value);
+export Result<void, Error> send<M: Message>(*const Actor<M> actor, M value);
 
 // Compiler built-in: requests actor shutdown.
-export Result<void, Error> stop<M: Message>(*Actor<M> actor);
+export Result<void, Error> stop<M: Message>(*const Actor<M> actor);
 
 // Compiler built-in: waits for the actor worker to finish.
-export Result<void, Error> join<M: Message>(*Actor<M> actor);
+export Result<void, Error> join<M: Message>(*const Actor<M> actor);

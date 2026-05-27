@@ -13,15 +13,15 @@ struct Audit {
     Channel<i64> out;
 }
 
-impl<T: Message> clone_message(*Command<T> value) {
+impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl clone_message(*Audit value) {
+impl clone_message(*const Audit value) {
     return Ok(*value);
 }
 
-Result<void, Error> publish<T: Message>(*Channel<T> channel, T value) {
+Result<void, Error> publish<T: Message>(*const Channel<T> channel, T value) {
     channel_send(channel, value)?;
     return Ok;
 }

@@ -20,6 +20,6 @@ i64 read_and(?*Box box) {
 }
 
 i64 main() {
-    Box box = { value: 6 };
+    Box @box = { value: 6 };
     return read(&box) + read_and(&box);
 }

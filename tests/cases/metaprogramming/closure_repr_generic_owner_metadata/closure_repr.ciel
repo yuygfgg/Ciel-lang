@@ -12,7 +12,7 @@ C choose<C>(C left, C right, bool use_left) {
 
 T rebuild_captured<T>(T value) {
     _ f = || value;
-    _ owned = meta::into_repr(f);
+    _ owned = meta::into_repr(&f);
     _ rebuilt = choose(f, meta::from_repr(owned), false);
     return rebuilt();
 }

@@ -19,6 +19,11 @@ anchor before its file exists.
 Current active proposal order:
 
 ```text
+binding-mutability <= error-box
+binding-mutability < monomorphized-c-callbacks
+binding-mutability || metaprogramming[borrowed representation pointers]
+binding-mutability || pure-library-message[read-only clone source]
+
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]

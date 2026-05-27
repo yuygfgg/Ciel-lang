@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: expected `[]i64`, got `[]const i64`
+
+i64 main() {
+    [3]i64 values = [1, 2, 3];
+    []i64 view = values[0..2];
+    return view[0];
+}

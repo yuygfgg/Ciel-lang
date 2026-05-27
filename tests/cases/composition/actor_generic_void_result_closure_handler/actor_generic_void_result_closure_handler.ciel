@@ -9,11 +9,11 @@ enum Task<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*Task<T> value) {
+impl<T: Message> clone_message(*const Task<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> send_task<T: Message>(*Actor<Task<T>> actor, Task<T> task) {
+Result<void, Error> send_task<T: Message>(*const Actor<Task<T>> actor, Task<T> task) {
     return send(actor, task);
 }
 

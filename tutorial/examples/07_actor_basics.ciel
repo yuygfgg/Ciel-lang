@@ -1,0 +1,25 @@
+import /std/lib;
+
+Result<i64, Error> handle(i64 total, i64 amount) {
+    // The actor owns `total`. Each message carries one `amount`.
+    i64 next = total + amount;
+
+    // Printing here lets the example show the actor processing messages.
+    print("{} ", [next])?;
+
+    // Returning `next` replaces the actor's private state.
+    return Ok(next);
+}
+
+i32 main() {
+    // This actor's state is i64 and its message type is also i64.
+    Actor<i64> worker = must(spawn_actor<i64, i64>(0, handle));
+
+    // `send` puts messages into the actor's mailbox.
+    must(send(&worker, 2));
+    must(send(&worker, 5));
+
+    // `join` waits until queued messages are processed.
+    must(join(&worker));
+    return 0;
+}

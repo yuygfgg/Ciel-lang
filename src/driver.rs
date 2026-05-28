@@ -91,14 +91,26 @@ pub fn compile_to_c_with_sources(
     let mut loader = ModuleLoader::new(options.project_root, options.std_paths, config);
     match loader.load_entry(&options.entry) {
         Ok(modules) => {
-            let result = resolve_modules(modules)
-                .and_then(lower_to_hir)
-                .and_then(type_check)
-                .and_then(monomorphize)
-                .and_then(|mono| {
-                    let escapes = analyze_escapes(&mono);
-                    generate_c(&mono, &escapes, &loader.source_map)
-                });
+            let resolved = match resolve_modules(modules) {
+                Ok(resolved) => resolved,
+                Err(diags) => return Err((diags, loader.source_map)),
+            };
+            let hir = match lower_to_hir(resolved) {
+                Ok(hir) => hir,
+                Err(diags) => return Err((diags, loader.source_map)),
+            };
+            let checked = match type_check(hir) {
+                Ok(checked) => checked,
+                Err(diags) => return Err((diags, loader.source_map)),
+            };
+            let mono = match monomorphize(checked) {
+                Ok(mono) => mono,
+                Err(diags) => return Err((diags, loader.source_map)),
+            };
+            let result = {
+                let escapes = analyze_escapes(&mono);
+                generate_c(&mono, &escapes, &loader.source_map)
+            };
             match result {
                 Ok(c) => Ok((c, loader.source_map)),
                 Err(diags) => Err((diags, loader.source_map)),

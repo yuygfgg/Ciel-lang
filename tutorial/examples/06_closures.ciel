@@ -1,0 +1,35 @@
+import /std/lib;
+
+interface<T> i64 score(*T value);
+
+impl<T: Message> score(*T value) {
+    return 7;
+}
+
+T clone_value<T: Message>(T value) {
+    T local = value;
+    return must(clone_message(&local));
+}
+
+i64 apply(i64 value, i64 |(i64)| f) {
+    return f(value);
+}
+
+i32 main() {
+    i64 @base = 2;
+
+    // Plain erased closure: callable, but it carries no Message proof.
+    i64 |(i64)| plain = |i64 value| value + base;
+
+    // Retained closure: callable, and it carries Message plus score witnesses.
+    i64 |(i64): Message + score| retained = |i64 value| value + base;
+
+    // The closure captured the old value of base.
+    base = 100;
+
+    // Message was retained, so generic code can clone the erased closure value.
+    i64 |(i64): Message| copied = clone_value(retained);
+
+    must(print("{} {} {}", [apply(5, plain), copied(5), score(&retained)]));
+    return 0;
+}

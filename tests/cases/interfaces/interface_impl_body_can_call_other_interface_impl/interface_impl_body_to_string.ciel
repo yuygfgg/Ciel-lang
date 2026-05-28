@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/lib;
+
+interface<T> []const char render(*const T value);
+
+impl render(*const i64 value) {
+    // Copy the pointed value into a named local first so the call shape is
+    // exactly the one that used to fail inside impl bodies.
+    i64 local = *value;
+    return to_string(&local);
+}
+
+i32 main() {
+    i64 value = 7;
+    must(print("{}", [render(&value)]));
+    return 0;
+}

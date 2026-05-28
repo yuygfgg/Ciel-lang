@@ -22,11 +22,12 @@ use crate::{
         TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, TryPropagation,
     },
     types::{
-        ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, clone_message_capability,
+        ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, Ty, clone_message_capability,
         is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
-        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_sum_ty,
-        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
-        std_result_ty,
+        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_error_code_ty,
+        std_error_trait_ty, std_error_ty, std_meta_repr_marker_ty, std_result_ty, unify_ty,
     },
 };
 
@@ -57,6 +58,7 @@ struct CGenerator<'a> {
     continue_targets: Vec<Option<String>>,
     current_return_ty: Ty,
     temp_counter: usize,
+    share_handle_templates: Vec<Ty>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -187,6 +189,7 @@ impl<'a> CGenerator<'a> {
             continue_targets: Vec::new(),
             current_return_ty: Ty::Void,
             temp_counter: 0,
+            share_handle_templates: program.checked.share_handle_templates.clone(),
         }
     }
 
@@ -970,10 +973,12 @@ impl<'a> CGenerator<'a> {
                 initial_state,
                 handler,
                 state_ty,
+                handle_message_ty,
                 message_ty,
                 handler_ty,
             } => {
                 self.collect_ty_closure(state_ty);
+                self.collect_ty_closure(handle_message_ty);
                 self.collect_ty_closure(message_ty);
                 self.collect_ty_closure(handler_ty);
                 self.collect_expr_closures(owner, initial_state);
@@ -1991,10 +1996,12 @@ impl<'a> CGenerator<'a> {
                 initial_state,
                 handler,
                 state_ty,
+                handle_message_ty,
                 message_ty,
                 handler_ty,
             } => {
                 self.collect_ty_slice(state_ty);
+                self.collect_ty_slice(handle_message_ty);
                 self.collect_ty_slice(message_ty);
                 self.collect_ty_slice(handler_ty);
                 self.collect_expr_slices(initial_state);
@@ -3119,6 +3126,7 @@ impl<'a> CGenerator<'a> {
                 initial_state,
                 handler,
                 state_ty,
+                handle_message_ty,
                 message_ty,
                 handler_ty,
             } => {
@@ -3133,6 +3141,7 @@ impl<'a> CGenerator<'a> {
                     initial_state,
                     handler,
                     state_ty,
+                    handle_message_ty,
                     message_ty,
                     handler_ty,
                     indent,
@@ -3451,9 +3460,10 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<(Ty, String)> {
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
+            let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
             return Ok((
-                ty.clone(),
-                self.value_or_initializer_from_expr(ty, value_expr),
+                leaf_ty.clone(),
+                self.value_or_initializer_from_expr(&leaf_ty, value_expr),
             ));
         }
         match ty {
@@ -3606,7 +3616,7 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
-            return Ok(ty.clone());
+            return Ok(self.meta_repr_policy_leaf_ty(ty));
         }
         match ty {
             Ty::Array { len, elem } => self.meta_owned_array_repr_ty(span, *len, elem, root_ty),
@@ -3740,7 +3750,8 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<()> {
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
-            self.emit_value_copy(target, repr_expr, ty, indent);
+            let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+            self.emit_value_copy(target, repr_expr, &leaf_ty, indent);
             return Ok(());
         }
         match ty {
@@ -3807,7 +3818,118 @@ impl<'a> CGenerator<'a> {
         if ty == root_ty {
             return false;
         }
-        matches!(ty, Ty::Named { .. }) && self.clone_message_impl(ty).is_some()
+        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        matches!(ty, Ty::Named { .. })
+            && (self.type_matches_share_handle_template(&leaf_ty)
+                || self.share_handle_impl(&leaf_ty).is_some()
+                || self.clone_message_impl(&leaf_ty).is_some())
+    }
+
+    fn meta_repr_policy_leaf_ty(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.preserve_meta_repr_markers(arg))
+                    .collect(),
+            },
+            _ => ty.clone(),
+        }
+    }
+
+    fn preserve_meta_repr_markers(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
+                nullable: *nullable,
+                mutability: *mutability,
+                inner: Box::new(self.preserve_meta_repr_markers(inner)),
+            },
+            Ty::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.preserve_meta_repr_markers(elem)),
+            },
+            Ty::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.preserve_meta_repr_markers(elem)),
+            },
+            Ty::Named { name, args } => {
+                if let Some(borrowed) = meta_repr_marker_name(name) {
+                    if args.len() == 1 {
+                        return std_meta_repr_marker_ty(borrowed, args[0].clone());
+                    }
+                }
+                Ty::Named {
+                    name: name.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| self.preserve_meta_repr_markers(arg))
+                        .collect(),
+                }
+            }
+            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.preserve_meta_repr_markers(arg))
+                    .collect(),
+            },
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
+                abi: abi.clone(),
+                ret: Box::new(self.preserve_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.preserve_meta_repr_markers(param))
+                    .collect(),
+            },
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => Ty::Closure {
+                ret: Box::new(self.preserve_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.preserve_meta_repr_markers(param))
+                    .collect(),
+                constraints: constraints.clone(),
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => Ty::ClosureInstance {
+                id: *id,
+                ret: Box::new(self.preserve_meta_repr_markers(ret)),
+                params: params
+                    .iter()
+                    .map(|param| self.preserve_meta_repr_markers(param))
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| self.preserve_meta_repr_markers(capture))
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn type_matches_share_handle_template(&self, ty: &Ty) -> bool {
+        self.share_handle_templates.iter().any(|pattern| {
+            let mut subst = HashMap::new();
+            unify_ty(pattern, ty, &mut subst)
+        })
     }
 
     fn emit_meta_enum_ref_repr(
@@ -4778,6 +4900,17 @@ impl<'a> CGenerator<'a> {
         })
     }
 
+    fn share_handle_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
+        self.program.checked.impls.iter().find(|implementation| {
+            implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| receiver == ty)
+                && implementation.interface_args.get(1..) == Some(&[][..])
+        })
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn emit_actor_spawn_expr(
         &mut self,
@@ -4785,6 +4918,7 @@ impl<'a> CGenerator<'a> {
         initial_state: &TExpr,
         handler: &TExpr,
         state_ty: &Ty,
+        handle_message_ty: &Ty,
         message_ty: &Ty,
         handler_ty: &Ty,
         indent: usize,
@@ -4884,7 +5018,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, "}");
         let actor_ty = Ty::Named {
             name: "Actor".to_string(),
-            args: vec![message_ty.clone()],
+            args: vec![handle_message_ty.clone()],
         };
         let actor_value = format!(
             "({}){{ .handle = (void *){raw_actor} }}",
@@ -7128,10 +7262,15 @@ impl<'a> CGenerator<'a> {
             Ty::Named {
                 name: ty_name,
                 args,
-            } => c_base_decl(
-                &c_qualified_base(&self.c_named_type(ty_name, args), top_const),
-                name,
-            ),
+            } => {
+                if let Some(repr_ty) = self.meta_repr_marker_storage_ty(ty_name, args) {
+                    return self.c_decl_qualified(&repr_ty, name, top_const);
+                }
+                c_base_decl(
+                    &c_qualified_base(&self.c_named_type(ty_name, args), top_const),
+                    name,
+                )
+            }
             Ty::DynamicInterface { .. } => c_base_decl(
                 &c_qualified_base(&self.dynamic_type_name(ty), top_const),
                 name,
@@ -7189,7 +7328,34 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn meta_repr_marker_storage_ty(&self, name: &str, args: &[Ty]) -> Option<Ty> {
+        let borrowed = meta_repr_marker_name(name)?;
+        let source = args.first()?;
+        if args.len() != 1 {
+            return Some(Ty::Unknown);
+        }
+        if borrowed {
+            return Some(match source {
+                Ty::Array { len, elem } => meta_ref_array_repr_ty(*len, elem),
+                other => other.clone(),
+            });
+        }
+        Some(
+            self.meta_owned_leaf_repr_ty(
+                crate::span::Span::new(crate::span::FileId(0), 0, 0),
+                source,
+                source,
+            )
+            .unwrap_or(Ty::Unknown),
+        )
+    }
+
     fn c_type(&self, ty: &Ty) -> String {
+        if let Ty::Named { name, args } = ty
+            && let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args)
+        {
+            return self.c_decl(&repr_ty, "").trim().to_string();
+        }
         self.c_decl(ty, "").trim().to_string()
     }
 

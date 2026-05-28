@@ -21,6 +21,7 @@ pub const STD_ERROR_FORMAT_INTERFACE: &str = "format_error";
 pub const STD_ERROR_TRAIT_ALIAS: &str = "ErrorTrait";
 pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
+pub const STD_MESSAGE_SHARE_HANDLE_INTERFACE: &str = "share_handle_marker";
 
 pub fn clone_message_capability() -> ConstraintRef {
     ConstraintRef {
@@ -1237,6 +1238,31 @@ pub fn meta_repr_marker_name(name: &str) -> Option<bool> {
         STD_META_REF_REPR_MARKER => Some(true),
         STD_META_REPR_MARKER => Some(false),
         _ => None,
+    }
+}
+
+pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
+    match ty {
+        Ty::Named { name, args } => {
+            meta_repr_marker_name(name).is_some() || args.iter().any(contains_meta_repr_marker)
+        }
+        Ty::Pointer { inner, .. } => contains_meta_repr_marker(inner),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_repr_marker(elem),
+        Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_repr_marker),
+        Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
+            contains_meta_repr_marker(ret) || params.iter().any(contains_meta_repr_marker)
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_meta_repr_marker(ret)
+                || params.iter().any(contains_meta_repr_marker)
+                || captures.iter().any(contains_meta_repr_marker)
+        }
+        _ => false,
     }
 }
 

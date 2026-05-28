@@ -1,0 +1,24 @@
+import /std/lib;
+
+Result<i64, Error> half(i64 value) {
+    // Recoverable failure returns Err.
+    if ((value % 2) != 0) {
+        return Err(text_error("odd value"));
+    }
+
+    return Ok(value / 2);
+}
+
+Result<i64, Error> pipeline() {
+    // `?` unwraps Ok or returns Err from `pipeline`.
+    i64 first = half(20)?;
+    i64 second = half(first)?;
+    return Ok(second);
+}
+
+i32 main() {
+    // Examples use `must` when failure should abort the sample.
+    i64 value = must(pipeline());
+    must(print("{}", [value]));
+    return 0;
+}

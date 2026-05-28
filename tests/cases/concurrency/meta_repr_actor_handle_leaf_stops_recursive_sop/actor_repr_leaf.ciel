@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+import /std/meta as meta;
+
+enum Msg {
+    Start(Actor<meta::Repr<Msg>>),
+    Done(i64),
+}
+
+Result<Channel<usize>, Error> handle(Channel<usize> done_signal, meta::Repr<Msg> envelope) {
+    Msg msg = meta::from_repr<Msg>(envelope);
+    switch (msg) {
+        case Start(self):
+            Msg done = Done(7);
+            send(&self, meta::into_repr(&done))?;
+            return Ok(done_signal);
+        case Done(value):
+            channel_send(&done_signal, value as usize)?;
+            return Ok(done_signal);
+    }
+}
+
+i32 main() {
+    Channel<usize> done_signal = must(make_channel<usize>());
+    Actor<meta::Repr<Msg>> actor = must(spawn_actor<Channel<usize>, meta::Repr<Msg>>(
+        done_signal,
+        handle
+    ));
+    Msg start = Start(actor);
+    must(send(&actor, meta::into_repr(&start)));
+    usize value = must(channel_recv(&done_signal));
+    must(join(&actor));
+    must(channel_close(&done_signal));
+    return (value - 7) as i32;
+}

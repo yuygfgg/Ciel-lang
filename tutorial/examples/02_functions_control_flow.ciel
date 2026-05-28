@@ -1,0 +1,29 @@
+import /std/lib;
+
+i64 add_bonus(i64 score, i64 bonus) {
+    // A function returns the value named by `return`.
+    return score + bonus;
+}
+
+i32 main() {
+    // This variable changes as the loop runs, so it uses `@`.
+    i64 @total = 0;
+
+    // The loop has initializer, condition, and step expressions.
+    for (i64 @round = 0; round < 4; round = round + 1) {
+        // `if` conditions must be bool. Integers are not accepted as conditions.
+        if (round == 2) {
+            continue;
+        }
+
+        total = add_bonus(total, round);
+    }
+
+    // A while loop keeps running while its condition is true.
+    while (total < 10) {
+        total = total + 1;
+    }
+
+    must(print("{}", [total]));
+    return 0;
+}

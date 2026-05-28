@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 0
+
+struct Box<T> {
+    T value;
+}
+
+Box<Box<i64>> make_nested(i64 value) {
+    Box<i64> inner = { value: value };
+    return { value: inner };
+}
+
+i64 main() {
+    Box<Box<i64>> nested = make_nested(42);
+    return nested.value.value - 42;
+}

@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: bitwise operator does not accept `bool`
+
+i64 main() {
+    bool value = true & false;
+    return 0;
+}

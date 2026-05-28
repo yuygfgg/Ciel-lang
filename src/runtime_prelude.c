@@ -6,6 +6,7 @@
 #define GC_NO_THREAD_REDIRECTS 1
 #endif
 #include <gc/gc.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -267,60 +268,99 @@ int ciel_io_open_append(const char *path) {
         return lhs % rhs;                                                      \
     }
 
+#define CIEL_DEFINE_SHIFTS(SUFFIX, C_TY, U_TY, BITS)                           \
+    static CIEL_MAYBE_UNUSED C_TY ciel_shl_##SUFFIX(C_TY lhs, uintmax_t rhs,   \
+                                                    char *file, size_t line) { \
+        if (rhs >= (uintmax_t)(BITS))                                          \
+            ciel_panic_at("shift count out of range", 24, file, line);         \
+        return (C_TY)((U_TY)lhs << rhs);                                       \
+    }                                                                          \
+    static CIEL_MAYBE_UNUSED C_TY ciel_shr_##SUFFIX(C_TY lhs, uintmax_t rhs,   \
+                                                    char *file, size_t line) { \
+        if (rhs >= (uintmax_t)(BITS))                                          \
+            ciel_panic_at("shift count out of range", 24, file, line);         \
+        return (C_TY)(lhs >> rhs);                                             \
+    }
+
+#define CIEL_DEFINE_UNSIGNED_SHIFTS(SUFFIX, C_TY, BITS)                        \
+    static CIEL_MAYBE_UNUSED C_TY ciel_shl_##SUFFIX(C_TY lhs, uintmax_t rhs,   \
+                                                    char *file, size_t line) { \
+        if (rhs >= (uintmax_t)(BITS))                                          \
+            ciel_panic_at("shift count out of range", 24, file, line);         \
+        return (C_TY)(lhs << rhs);                                             \
+    }                                                                          \
+    static CIEL_MAYBE_UNUSED C_TY ciel_shr_##SUFFIX(C_TY lhs, uintmax_t rhs,   \
+                                                    char *file, size_t line) { \
+        if (rhs >= (uintmax_t)(BITS))                                          \
+            ciel_panic_at("shift count out of range", 24, file, line);         \
+        return (C_TY)(lhs >> rhs);                                             \
+    }
+
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, i8, int8_t, uint8_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, i8, int8_t, uint8_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, i8, int8_t, uint8_t)
 CIEL_DEFINE_SIGNED_NEG(i8, int8_t, uint8_t, INT8_MIN)
 CIEL_DEFINE_SIGNED_DIV_REM(i8, int8_t, INT8_MIN)
+CIEL_DEFINE_SHIFTS(i8, int8_t, uint8_t, 8)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, i16, int16_t, uint16_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, i16, int16_t, uint16_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, i16, int16_t, uint16_t)
 CIEL_DEFINE_SIGNED_NEG(i16, int16_t, uint16_t, INT16_MIN)
 CIEL_DEFINE_SIGNED_DIV_REM(i16, int16_t, INT16_MIN)
+CIEL_DEFINE_SHIFTS(i16, int16_t, uint16_t, 16)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, i32, int32_t, uint32_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, i32, int32_t, uint32_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, i32, int32_t, uint32_t)
 CIEL_DEFINE_SIGNED_NEG(i32, int32_t, uint32_t, INT32_MIN)
 CIEL_DEFINE_SIGNED_DIV_REM(i32, int32_t, INT32_MIN)
+CIEL_DEFINE_SHIFTS(i32, int32_t, uint32_t, 32)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, i64, int64_t, uint64_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, i64, int64_t, uint64_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, i64, int64_t, uint64_t)
 CIEL_DEFINE_SIGNED_NEG(i64, int64_t, uint64_t, INT64_MIN)
 CIEL_DEFINE_SIGNED_DIV_REM(i64, int64_t, INT64_MIN)
+CIEL_DEFINE_SHIFTS(i64, int64_t, uint64_t, 64)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, u8, uint8_t, uint8_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, u8, uint8_t, uint8_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, u8, uint8_t, uint8_t)
 CIEL_DEFINE_UNSIGNED_DIV_REM(u8, uint8_t)
+CIEL_DEFINE_UNSIGNED_SHIFTS(u8, uint8_t, 8)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, u16, uint16_t, uint16_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, u16, uint16_t, uint16_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, u16, uint16_t, uint16_t)
 CIEL_DEFINE_UNSIGNED_DIV_REM(u16, uint16_t)
+CIEL_DEFINE_UNSIGNED_SHIFTS(u16, uint16_t, 16)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, u32, uint32_t, uint32_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, u32, uint32_t, uint32_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, u32, uint32_t, uint32_t)
 CIEL_DEFINE_UNSIGNED_DIV_REM(u32, uint32_t)
+CIEL_DEFINE_UNSIGNED_SHIFTS(u32, uint32_t, 32)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, u64, uint64_t, uint64_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, u64, uint64_t, uint64_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, u64, uint64_t, uint64_t)
 CIEL_DEFINE_UNSIGNED_DIV_REM(u64, uint64_t)
+CIEL_DEFINE_UNSIGNED_SHIFTS(u64, uint64_t, 64)
 
 CIEL_DEFINE_BINOP(add, __builtin_add_overflow, +, usize, size_t, size_t)
 CIEL_DEFINE_BINOP(sub, __builtin_sub_overflow, -, usize, size_t, size_t)
 CIEL_DEFINE_BINOP(mul, __builtin_mul_overflow, *, usize, size_t, size_t)
 CIEL_DEFINE_UNSIGNED_DIV_REM(usize, size_t)
+CIEL_DEFINE_UNSIGNED_SHIFTS(usize, size_t, sizeof(size_t) * CHAR_BIT)
 
 #undef CIEL_DEFINE_BINOP
 #undef CIEL_DEFINE_SIGNED_NEG
 #undef CIEL_SIGNED_DIV_OVERFLOW_CHECK
 #undef CIEL_DEFINE_SIGNED_DIV_REM
 #undef CIEL_DEFINE_UNSIGNED_DIV_REM
+#undef CIEL_DEFINE_SHIFTS
+#undef CIEL_DEFINE_UNSIGNED_SHIFTS
 
 static CIEL_MAYBE_UNUSED size_t ciel_bounds_check(size_t index, size_t len,
                                                   char *file, size_t line) {

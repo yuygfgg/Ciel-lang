@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+
+i64 main() {
+    i64 a = 1;
+    i64 b = 2;
+    i64 c = 1;
+    i64 d = 6;
+    i64 e = 3;
+    i64 f = 8;
+    bool parsed = ((a + b) << c & d ^ e | f) != 0 && true;
+    if (!parsed) {
+        return 1;
+    }
+    if (((1 | 2) == 3) != true) {
+        return 2;
+    }
+    return 0;
+}

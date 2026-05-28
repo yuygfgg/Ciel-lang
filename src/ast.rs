@@ -451,6 +451,7 @@ pub enum Literal {
 pub enum UnaryOp {
     Not,
     Neg,
+    BitNot,
     Addr,
     Deref,
 }
@@ -465,9 +466,28 @@ pub enum BinaryOp {
     Le,
     Gt,
     Ge,
+    BitOr,
+    BitXor,
+    BitAnd,
+    Shl,
+    Shr,
     Add,
     Sub,
     Mul,
     Div,
     Rem,
+}
+
+impl BinaryOp {
+    pub fn is_equality(self) -> bool {
+        matches!(self, BinaryOp::Eq | BinaryOp::Ne)
+    }
+
+    pub fn is_bitwise(self) -> bool {
+        matches!(self, BinaryOp::BitOr | BinaryOp::BitXor | BinaryOp::BitAnd)
+    }
+
+    pub fn is_shift(self) -> bool {
+        matches!(self, BinaryOp::Shl | BinaryOp::Shr)
+    }
 }

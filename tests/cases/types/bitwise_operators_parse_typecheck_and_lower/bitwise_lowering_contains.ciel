@@ -1,0 +1,24 @@
+// ciel-test: compile
+// expect-c-contains: ciel_shl_u32(value
+// expect-c-contains: ciel_shr_i32(value
+// expect-c-contains: ((uint8_t)(
+// expect-c-contains: ^ right
+
+u32 shift_left(u32 value, u8 count) {
+    return value << count;
+}
+
+i32 shift_right(i32 value, u8 count) {
+    return value >> count;
+}
+
+u8 combine(u8 left, u8 right) {
+    return ~(left & right) ^ right;
+}
+
+i64 main() {
+    u32 a = shift_left(3 as u32, 1 as u8);
+    i32 b = shift_right(-8 as i32, 1 as u8);
+    u8 c = combine(0xf0 as u8, 0x0f as u8);
+    return a as i64 + b as i64 + c as i64;
+}

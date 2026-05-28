@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: shift operator does not accept `f64`
+
+i64 main() {
+    f64 value = 1.0 << 2;
+    return value as i64;
+}

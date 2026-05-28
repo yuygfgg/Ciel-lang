@@ -2791,6 +2791,7 @@ impl<'a> CGenerator<'a> {
                 let inner = self.gen_expr_with_lowering(expr, stmt_indent)?;
                 match op {
                     UnaryOp::Not => format!("(!{inner})"),
+                    UnaryOp::BitNot => integer_result_cast(&expr.ty, format!("~{inner}")),
                     UnaryOp::Neg => {
                         if matches!(expr.kind, TExprKind::Literal(Literal::Integer(_))) {
                             format!("(-{inner})")
@@ -2825,7 +2826,7 @@ impl<'a> CGenerator<'a> {
                     };
                     return self.emit_short_circuit_expr(expr, *op, left, right, indent);
                 }
-                let op = match op {
+                let op_str = match op {
                     BinaryOp::Or => "||",
                     BinaryOp::And => "&&",
                     BinaryOp::Eq => "==",
@@ -2834,6 +2835,11 @@ impl<'a> CGenerator<'a> {
                     BinaryOp::Le => "<=",
                     BinaryOp::Gt => ">",
                     BinaryOp::Ge => ">=",
+                    BinaryOp::BitOr => "|",
+                    BinaryOp::BitXor => "^",
+                    BinaryOp::BitAnd => "&",
+                    BinaryOp::Shl => "<<",
+                    BinaryOp::Shr => ">>",
                     BinaryOp::Add => "+",
                     BinaryOp::Sub => "-",
                     BinaryOp::Mul => "*",
@@ -2843,12 +2849,12 @@ impl<'a> CGenerator<'a> {
                 let left_code = self.gen_expr_with_lowering(left, stmt_indent)?;
                 let right_code = self.gen_expr_with_lowering(right, stmt_indent)?;
                 if left.ty.is_integer()
-                    && let Some(helper) = checked_integer_op_helper(op, &left.ty)
+                    && let Some(helper) = checked_integer_op_helper(op_str, &left.ty)
                 {
                     let (file, line) = self.location_args(expr.span);
                     format!("{helper}({left_code}, {right_code}, {file}, {line})")
-                } else if matches!(op, "/" | "%") && left.ty.is_integer() {
-                    let helper = checked_integer_op_helper(op, &left.ty).ok_or_else(|| {
+                } else if matches!(op_str, "/" | "%") && left.ty.is_integer() {
+                    let helper = checked_integer_op_helper(op_str, &left.ty).ok_or_else(|| {
                         vec![Diagnostic::new(
                             left.span,
                             format!("no checked integer helper for `{}`", left.ty),
@@ -2856,8 +2862,19 @@ impl<'a> CGenerator<'a> {
                     })?;
                     let (file, line) = self.location_args(expr.span);
                     format!("{helper}({left_code}, {right_code}, {file}, {line})")
+                } else if op.is_shift() && left.ty.is_integer() {
+                    let helper = shift_integer_op_helper(*op, &left.ty).ok_or_else(|| {
+                        vec![Diagnostic::new(
+                            left.span,
+                            format!("no shift helper for `{}`", left.ty),
+                        )]
+                    })?;
+                    let (file, line) = self.location_args(expr.span);
+                    format!("{helper}({left_code}, {right_code}, {file}, {line})")
+                } else if op.is_bitwise() && left.ty.is_integer() {
+                    integer_result_cast(&left.ty, format!("{left_code} {op_str} {right_code}"))
                 } else {
-                    format!("({left_code} {op} {right_code})")
+                    format!("({left_code} {op_str} {right_code})")
                 }
             }
             TExprKind::Cast { expr, ty } => {
@@ -7793,5 +7810,41 @@ fn checked_integer_unary_helper(ty: &Ty) -> Option<String> {
         Some(format!("ciel_neg_{}", checked_integer_helper_suffix(ty)?))
     } else {
         None
+    }
+}
+
+fn shift_integer_op_helper(op: BinaryOp, ty: &Ty) -> Option<String> {
+    let prefix = match op {
+        BinaryOp::Shl => "shl",
+        BinaryOp::Shr => "shr",
+        _ => return None,
+    };
+    Some(format!(
+        "ciel_{prefix}_{}",
+        checked_integer_helper_suffix(ty)?
+    ))
+}
+
+fn integer_result_cast(ty: &Ty, expr: String) -> String {
+    match ty {
+        Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize => {
+            format!("(({})({expr}))", c_scalar_type(ty))
+        }
+        _ => format!("({expr})"),
+    }
+}
+
+fn c_scalar_type(ty: &Ty) -> &'static str {
+    match ty {
+        Ty::I8 => "int8_t",
+        Ty::I16 => "int16_t",
+        Ty::I32 => "int32_t",
+        Ty::I64 => "int64_t",
+        Ty::U8 => "uint8_t",
+        Ty::U16 => "uint16_t",
+        Ty::U32 => "uint32_t",
+        Ty::U64 => "uint64_t",
+        Ty::Usize => "size_t",
+        _ => unreachable!("not a C scalar integer type"),
     }
 }

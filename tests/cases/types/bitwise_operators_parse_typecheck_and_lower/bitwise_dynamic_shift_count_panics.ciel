@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stderr-contains: shift count out of range
+
+u8 bad_shift(u8 count) {
+    return (1 as u8) << count;
+}
+
+i64 main() {
+    bad_shift(8 as u8);
+    return 1;
+}

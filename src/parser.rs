@@ -440,7 +440,7 @@ impl Parser {
     fn parse_generic_param_list(&mut self) -> Result<Vec<GenericParam>, Diagnostic> {
         self.expect(TokenKind::Lt, "expected `<`")?;
         let mut params = Vec::new();
-        if self.eat(TokenKind::Gt).is_some() {
+        if self.eat_type_gt().is_some() {
             return Ok(params);
         }
         loop {
@@ -452,11 +452,11 @@ impl Parser {
             };
             params.push(GenericParam { name, constraint });
             if self.eat(TokenKind::Comma).is_some() {
-                if self.eat(TokenKind::Gt).is_some() {
+                if self.eat_type_gt().is_some() {
                     break;
                 }
             } else {
-                self.expect(TokenKind::Gt, "expected `>` after generic parameter list")?;
+                self.expect_type_gt("expected `>` after generic parameter list")?;
                 break;
             }
         }
@@ -499,7 +499,7 @@ impl Parser {
         if self.at(TokenKind::Lt) {
             self.expect(TokenKind::Lt, "expected `<`")?;
             let list = self.parse_type_list()?;
-            self.expect(TokenKind::Gt, "expected `>` after type arguments")?;
+            self.expect_type_gt("expected `>` after type arguments")?;
             Ok(list)
         } else {
             Ok(Vec::new())
@@ -511,7 +511,7 @@ impl Parser {
         loop {
             list.push(self.parse_type()?);
             if self.eat(TokenKind::Comma).is_some() {
-                if self.at(TokenKind::Gt) || self.at(TokenKind::RParen) {
+                if self.at_type_gt() || self.at(TokenKind::RParen) {
                     break;
                 }
             } else {
@@ -1142,10 +1142,37 @@ impl Parser {
     }
 
     fn parse_logical_and(&mut self) -> Result<Expr, Diagnostic> {
-        let mut expr = self.parse_equality()?;
+        let mut expr = self.parse_bitwise_or()?;
         while self.eat(TokenKind::AmpAmp).is_some() {
-            let right = self.parse_equality()?;
+            let right = self.parse_bitwise_or()?;
             expr = self.binary(expr, BinaryOp::And, right);
+        }
+        Ok(expr)
+    }
+
+    fn parse_bitwise_or(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_bitwise_xor()?;
+        while self.eat(TokenKind::Pipe).is_some() {
+            let right = self.parse_bitwise_xor()?;
+            expr = self.binary(expr, BinaryOp::BitOr, right);
+        }
+        Ok(expr)
+    }
+
+    fn parse_bitwise_xor(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_bitwise_and()?;
+        while self.eat(TokenKind::Caret).is_some() {
+            let right = self.parse_bitwise_and()?;
+            expr = self.binary(expr, BinaryOp::BitXor, right);
+        }
+        Ok(expr)
+    }
+
+    fn parse_bitwise_and(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_equality()?;
+        while self.eat(TokenKind::Amp).is_some() {
+            let right = self.parse_equality()?;
+            expr = self.binary(expr, BinaryOp::BitAnd, right);
         }
         Ok(expr)
     }
@@ -1166,7 +1193,7 @@ impl Parser {
     }
 
     fn parse_relational(&mut self) -> Result<Expr, Diagnostic> {
-        let mut expr = self.parse_additive()?;
+        let mut expr = self.parse_shift()?;
         while matches!(
             self.peek().kind,
             TokenKind::Lt | TokenKind::LtEq | TokenKind::Gt | TokenKind::GtEq
@@ -1177,6 +1204,21 @@ impl Parser {
                 TokenKind::Gt => BinaryOp::Gt,
                 TokenKind::GtEq => BinaryOp::Ge,
                 _ => unreachable!(),
+            };
+            let right = self.parse_shift()?;
+            expr = self.binary(expr, op, right);
+        }
+        Ok(expr)
+    }
+
+    fn parse_shift(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_additive()?;
+        while self.at(TokenKind::LtLt) || self.at(TokenKind::GtGt) {
+            let op = if self.eat(TokenKind::LtLt).is_some() {
+                BinaryOp::Shl
+            } else {
+                self.expect(TokenKind::GtGt, "expected shift operator")?;
+                BinaryOp::Shr
             };
             let right = self.parse_additive()?;
             expr = self.binary(expr, op, right);
@@ -1239,6 +1281,7 @@ impl Parser {
         let op = match token.kind {
             TokenKind::Bang => Some(UnaryOp::Not),
             TokenKind::Minus => Some(UnaryOp::Neg),
+            TokenKind::Tilde => Some(UnaryOp::BitNot),
             TokenKind::Amp => Some(UnaryOp::Addr),
             TokenKind::Star => Some(UnaryOp::Deref),
             _ => None,
@@ -1264,6 +1307,7 @@ impl Parser {
         loop {
             if self.at(TokenKind::Lt) {
                 let save = self.pos;
+                let token_save = self.tokens.clone();
                 if let Ok(type_args) = self.parse_type_arg_list_opt() {
                     if self.eat(TokenKind::LParen).is_some() {
                         let args = self.parse_arg_list_after_lparen()?;
@@ -1280,6 +1324,7 @@ impl Parser {
                     }
                 }
                 self.pos = save;
+                self.tokens = token_save;
             }
             if self.eat(TokenKind::LParen).is_some() {
                 let args = self.parse_arg_list_after_lparen()?;
@@ -1756,6 +1801,41 @@ impl Parser {
             Ok(self.advance().clone())
         } else {
             Err(Diagnostic::new(self.peek().span, message))
+        }
+    }
+
+    fn at_type_gt(&self) -> bool {
+        self.at(TokenKind::Gt) || self.at(TokenKind::GtGt)
+    }
+
+    fn eat_type_gt(&mut self) -> Option<Token> {
+        if self.at(TokenKind::Gt) {
+            Some(self.advance().clone())
+        } else if self.at(TokenKind::GtGt) {
+            Some(self.split_gtgt_token())
+        } else {
+            None
+        }
+    }
+
+    fn expect_type_gt(&mut self, message: &str) -> Result<Token, Diagnostic> {
+        self.eat_type_gt()
+            .ok_or_else(|| Diagnostic::new(self.peek().span, message))
+    }
+
+    fn split_gtgt_token(&mut self) -> Token {
+        let token = self.peek().clone();
+        debug_assert_eq!(token.kind, TokenKind::GtGt);
+        let first_end = token.span.start + 1;
+        self.tokens[self.pos] = Token {
+            kind: TokenKind::Gt,
+            lexeme: ">".to_string(),
+            span: crate::span::Span::new(token.span.file, first_end, token.span.end),
+        };
+        Token {
+            kind: TokenKind::Gt,
+            lexeme: ">".to_string(),
+            span: crate::span::Span::new(token.span.file, token.span.start, first_end),
         }
     }
 

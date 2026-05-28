@@ -1,0 +1,48 @@
+// ciel-test: run
+// expect-exit: 0
+
+bool has_write(u32 flags) {
+    u32 WRITE = (1 as u32) << 1;
+    return (flags & WRITE) != (0 as u32);
+}
+
+u64 pack_handle(u32 generation, u32 slot) {
+    return ((generation as u64) << 32) | (slot as u64);
+}
+
+u32 unpack_slot(u64 handle) {
+    return (handle & (0xffff_ffff as u64)) as u32;
+}
+
+u8 upper_nibble(u8 byte) {
+    return (byte >> (4 as u8)) & (0x0f as u8);
+}
+
+i64 main() {
+    u32 READ = (1 as u32) << 0;
+    u32 WRITE = (1 as u32) << 1;
+    u32 EXEC = (1 as u32) << 2;
+    u32 flags = READ | WRITE | EXEC;
+    if (!has_write(flags)) {
+        return 1;
+    }
+    if (unpack_slot(pack_handle(7 as u32, 123 as u32)) != (123 as u32)) {
+        return 2;
+    }
+    if (upper_nibble(0xab as u8) != (0x0a as u8)) {
+        return 3;
+    }
+    i32 signed = ((-8) as i32) >> 1;
+    if (signed != -4) {
+        return 4;
+    }
+    u8 inverted = ~(0xf0 as u8);
+    if (inverted != (0x0f as u8)) {
+        return 5;
+    }
+    u8 narrowed = (0xff as u8) & (0x01 as u8);
+    if (narrowed != (1 as u8)) {
+        return 6;
+    }
+    return 0;
+}

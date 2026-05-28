@@ -185,6 +185,17 @@ impl Ty {
         matches!(self, Ty::I8 | Ty::I16 | Ty::I32 | Ty::I64)
     }
 
+    pub fn integer_bit_width(&self) -> Option<u32> {
+        Some(match self {
+            Ty::I8 | Ty::U8 => 8,
+            Ty::I16 | Ty::U16 => 16,
+            Ty::I32 | Ty::U32 => 32,
+            Ty::I64 | Ty::U64 => 64,
+            Ty::Usize => usize::BITS,
+            _ => return None,
+        })
+    }
+
     pub fn is_numeric(&self) -> bool {
         self.is_integer() || matches!(self, Ty::F32 | Ty::F64)
     }

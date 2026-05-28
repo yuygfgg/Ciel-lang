@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: constant shift count `8` is out of range for `u8`
+
+i64 main() {
+    u8 value = (1 as u8) << 8;
+    return value as i64;
+}

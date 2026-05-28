@@ -4606,6 +4606,11 @@ impl TypeChecker {
                         inner,
                         expected.filter(|ty| ty.is_numeric()),
                     )?),
+                    UnaryOp::BitNot => CheckedLvalue::writable(self.check_expr(
+                        scopes,
+                        inner,
+                        expected.filter(|ty| ty.is_integer()),
+                    )?),
                     _ => CheckedLvalue::writable(self.check_expr(scopes, inner, None)?),
                 };
                 let ty = match op {
@@ -4620,6 +4625,15 @@ impl TypeChecker {
                             self.diagnostics.push(Diagnostic::new(
                                 inner.expr.span,
                                 format!("cannot negate `{}`", inner.expr.ty),
+                            ));
+                        }
+                        inner.expr.ty.clone()
+                    }
+                    UnaryOp::BitNot => {
+                        if !inner.expr.ty.is_integer() {
+                            self.diagnostics.push(Diagnostic::new(
+                                inner.expr.span,
+                                format!("bitwise not does not accept `{}`", inner.expr.ty),
                             ));
                         }
                         inner.expr.ty.clone()
@@ -4664,21 +4678,14 @@ impl TypeChecker {
                     self.apply_condition_narrowing(&mut right_scopes, &left, true);
                     let right = self.check_expr(&mut right_scopes, right, Some(&Ty::Bool))?;
                     (left, right)
-                } else if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                    && matches!(left.kind, ExprKind::Literal(Literal::Null))
+                } else if op.is_equality() && matches!(left.kind, ExprKind::Literal(Literal::Null))
                 {
                     let right = self.check_expr(scopes, right, None)?;
                     let left = self.check_expr(scopes, left, Some(&right.ty))?;
                     (left, right)
                 } else {
                     let left = self.check_expr(scopes, left, None)?;
-                    let right_expected = if matches!(op, BinaryOp::Eq | BinaryOp::Ne)
-                        && matches!(right.kind, ExprKind::Literal(Literal::Null))
-                    {
-                        Some(&left.ty)
-                    } else {
-                        Some(&left.ty)
-                    };
+                    let right_expected = if op.is_shift() { None } else { Some(&left.ty) };
                     let right = self.check_expr(scopes, right, right_expected)?;
                     (left, right)
                 };
@@ -7353,6 +7360,91 @@ impl TypeChecker {
                 self.require_assignable(&left.ty, &right.ty, right.span);
                 left.ty.clone()
             }
+            BitOr | BitXor | BitAnd => {
+                if !left.ty.is_integer() {
+                    self.diagnostics.push(Diagnostic::new(
+                        left.span,
+                        format!("bitwise operator does not accept `{}`", left.ty),
+                    ));
+                }
+                self.require_same_integer_type("bitwise operator", left, right, span);
+                left.ty.clone()
+            }
+            Shl | Shr => {
+                if !left.ty.is_integer() {
+                    self.diagnostics.push(Diagnostic::new(
+                        left.span,
+                        format!("shift operator does not accept `{}`", left.ty),
+                    ));
+                }
+                if !right.ty.is_integer() {
+                    self.diagnostics.push(Diagnostic::new(
+                        right.span,
+                        format!("shift count must be an integer, got `{}`", right.ty),
+                    ));
+                }
+                self.check_constant_shift_count(left, right);
+                left.ty.clone()
+            }
+        }
+    }
+
+    fn require_same_integer_type(
+        &mut self,
+        context: &str,
+        left: &TExpr,
+        right: &TExpr,
+        span: crate::span::Span,
+    ) {
+        if matches!(left.ty, Ty::Unknown) || matches!(right.ty, Ty::Unknown) {
+            return;
+        }
+        if !left.ty.is_integer() || !right.ty.is_integer() {
+            return;
+        }
+        if left.ty != right.ty {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "{context} requires matching integer types, got `{}` and `{}`",
+                    left.ty, right.ty
+                ),
+            ));
+        }
+    }
+
+    fn check_constant_shift_count(&mut self, left: &TExpr, right: &TExpr) {
+        let Some(width) = left.ty.integer_bit_width() else {
+            return;
+        };
+        let count = match &right.kind {
+            TExprKind::Literal(Literal::Integer(raw)) => {
+                let Some(count) = parse_integer_literal_u128(raw) else {
+                    return;
+                };
+                (raw.clone(), Some(count))
+            }
+            TExprKind::Unary {
+                op: UnaryOp::Neg,
+                expr,
+            } => {
+                let TExprKind::Literal(Literal::Integer(raw)) = &expr.kind else {
+                    return;
+                };
+                (format!("-{raw}"), None)
+            }
+            _ => return,
+        };
+        if count.1.is_none_or(|value| value >= u128::from(width)) {
+            self.diagnostics.push(Diagnostic::new(
+                right.span,
+                format!(
+                    "constant shift count `{}` is out of range for `{}`; expected 0..{}",
+                    count.0,
+                    left.ty,
+                    width - 1
+                ),
+            ));
         }
     }
 

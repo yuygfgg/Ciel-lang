@@ -714,13 +714,17 @@ ContinueStmt    ::= "continue" ";"
 
 Expr            ::= LogicalOr
 LogicalOr       ::= LogicalAnd { "||" LogicalAnd }
-LogicalAnd      ::= Equality { "&&" Equality }
+LogicalAnd      ::= BitwiseOr { "&&" BitwiseOr }
+BitwiseOr       ::= BitwiseXor { "|" BitwiseXor }
+BitwiseXor      ::= BitwiseAnd { "^" BitwiseAnd }
+BitwiseAnd      ::= Equality { "&" Equality }
 Equality        ::= Relational { ( "==" | "!=" ) Relational }
-Relational      ::= Additive { ( "<" | "<=" | ">" | ">=" ) Additive }
+Relational      ::= Shift { ( "<" | "<=" | ">" | ">=" ) Shift }
+Shift           ::= Additive { ( "<<" | ">>" ) Additive }
 Additive        ::= Multiplicative { ( "+" | "-" ) Multiplicative }
 Multiplicative  ::= CastExpr { ( "*" | "/" | "%" ) CastExpr }
 CastExpr        ::= UnaryExpr [ "as" Type ]
-UnaryExpr       ::= ( "!" | "-" | "&" | "*" ) UnaryExpr | PostfixExpr
+UnaryExpr       ::= ( "!" | "~" | "-" | "&" | "*" ) UnaryExpr | PostfixExpr
 
 PostfixExpr     ::= PrimaryExpr { PostfixOp }
 PostfixOp       ::= CallSuffix
@@ -1010,6 +1014,25 @@ for `bool`, numeric types, `char`, pointers of the same type, nullable pointers
 of the same type, and function values of the same type. Structs, enums, and
 closure values do not get structural equality by default; use explicit
 functions or capabilities.
+
+Bitwise `&`, `|`, and `^` require integer operands of the same type after
+literal inference and return that type. Shift `<<` and `>>` require an integer
+left operand and an integer shift count; the result type is the left operand
+type. `~` requires an integer operand and returns the same type. `bool`,
+`char`, floats, pointers, closures, slices, structs, enums, and dynamic
+interfaces are not bitwise operands without explicit casts to integer types.
+
+```rust
+u32 mask = (1 as u32) << 5;
+u8 nibble = (byte >> (4 as u8)) & (0x0f as u8);
+i64 both = left ^ right;
+```
+
+Unsigned `>>` is a logical right shift. Signed `>>` is an arithmetic right
+shift; supported C targets are required to provide two's-complement signed
+integers with arithmetic signed right shift. Constant shift counts greater than
+or equal to the left operand bit width are compile-time errors. Dynamic
+out-of-range shift counts panic at runtime.
 
 Logical `&&`, `||`, and `!` operate only on `bool`. Unary `-` operates on signed
 integer and floating-point types. Pointer arithmetic is not part of Ciel.

@@ -136,6 +136,10 @@ pub enum TokenKind {
     LtEq,
     #[token(">=")]
     GtEq,
+    #[token("<<")]
+    LtLt,
+    #[token(">>")]
+    GtGt,
     #[token("&&")]
     AmpAmp,
     #[token("||")]
@@ -187,6 +191,10 @@ pub enum TokenKind {
     At,
     #[token("|")]
     Pipe,
+    #[token("^")]
+    Caret,
+    #[token("~")]
+    Tilde,
     #[token("<")]
     Lt,
     #[token(">")]

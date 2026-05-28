@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: bitwise operator does not accept `*i64`
+
+i64 main() {
+    i64 @value = 1;
+    *i64 ptr = &value;
+    i64 bad = ptr | ptr;
+    return bad;
+}

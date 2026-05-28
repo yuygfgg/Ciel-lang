@@ -31,7 +31,6 @@ capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 
-bitwise-operators || unsafe[raw integer and handle glue]
 self-referential-types || metaprogramming[layout expansion boundaries]
 self-referential-types || pure-library-message[layout-valid does not imply Message]
 
@@ -48,10 +47,6 @@ capability impls produced through those routes.
 `dispatch-actor-io-runtime` is implemented and moved to `proposal/done/`. Its
 runtime ABI still matters for `monomorphized-c-callbacks`, which owns the later
 stdlib-lowering step that removes actor-specific compiler builtins.
-
-`bitwise-operators` is independent from the runtime and unsafe proposals. It
-adds ordinary integer operators only. Runtime handle layouts may benefit from it
-later, but they should not depend on it for their first safe design.
 
 `self-referential-types` covers recursive layout checking through storage edges.
 It is independent from actor/runtime specifics: pointer edges and other future

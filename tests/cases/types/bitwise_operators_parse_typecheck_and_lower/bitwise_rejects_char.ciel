@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: bitwise operator does not accept `char`
+
+i64 main() {
+    char a = 'a';
+    char b = 'b';
+    char c = a & b;
+    return c as i64;
+}

@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+import /std/async_io as aio;
+
+i32 main() {
+    aio::Bytes bytes = must(aio::bytes_copy([65 as u8, 66 as u8]));
+    aio::Bytes copy = must(clone_message(&bytes));
+    if (aio::bytes_len(copy) != 2) {
+        return 1;
+    }
+    [4]u8 @out = [0;];
+    usize n = must(aio::bytes_copy_to(copy, out[..]));
+    if (n != 2) {
+        return 2;
+    }
+    if (out[0] != (65 as u8)) {
+        return 3;
+    }
+    if (out[1] != (66 as u8)) {
+        return 4;
+    }
+    return 0;
+}

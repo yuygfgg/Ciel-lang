@@ -1,9 +1,10 @@
 // ciel-test: error
-// expect-error: field access on unsafe struct `Fd` requires unsafe block
+// expect-error: field access on unsafe struct `RawFd` requires unsafe block
 
 import /std/lib;
+import /std/os/fd as fd;
 
 i32 main() {
-    Fd fd = stdout();
-    return fd.raw as i32;
+    fd::RawFd raw = fd::stdout();
+    return raw.raw as i32;
 }

@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 3
+
+import /std/lib;
+
+Result<i64, Error> add(i64 state, i64 msg) {
+    return Ok(state + msg);
+}
+
+i32 main() {
+    Actor<i64> actor = must(spawn_actor<i64, i64>(0, add));
+    must(send(&actor, 1));
+    must(send(&actor, 2));
+    must(stop(&actor));
+
+    Result<void, Error> late = send(&actor, 4);
+    switch (late) {
+        case Ok(_):
+            return 1;
+        case Err(_):
+            must(join(&actor));
+            must(print_value(3));
+            return 0;
+    }
+}

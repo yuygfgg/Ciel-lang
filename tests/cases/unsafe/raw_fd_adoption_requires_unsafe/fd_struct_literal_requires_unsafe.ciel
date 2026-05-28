@@ -1,9 +1,10 @@
 // ciel-test: error
-// expect-error: constructing unsafe struct `Fd` requires unsafe block
+// expect-error: constructing unsafe struct `RawFd` requires unsafe block
 
 import /std/lib;
+import /std/os/fd as fd;
 
 i32 main() {
-    Fd fd = { raw: 1 as c_int };
-    return unsafe { raw_fd(fd) } as i32;
+    fd::RawFd raw = { raw: 1 as c_int };
+    return unsafe { fd::raw_fd(raw) } as i32;
 }

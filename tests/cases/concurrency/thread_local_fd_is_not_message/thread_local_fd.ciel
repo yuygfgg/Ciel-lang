@@ -2,6 +2,7 @@
 // expect-exit: 0
 
 import /std/lib;
+import /std/os/fd as fd;
 
 Result<void, Error> accept_local<T: ThreadLocal>(T value) {
     T local = value;
@@ -12,7 +13,7 @@ Result<void, Error> accept_local<T: ThreadLocal>(T value) {
 }
 
 i64 main() {
-    Fd fd = stdout();
-    must(accept_local(fd));
+    fd::RawFd raw = fd::stdout();
+    must(accept_local(raw));
     return 0;
 }

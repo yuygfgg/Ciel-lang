@@ -281,6 +281,13 @@ fn bdwgc_cc_args() -> (Vec<String>, Vec<String>) {
     if !cfg!(windows) && !args.iter().any(|arg| arg == "-pthread") {
         args.push("-pthread".to_string());
     }
+    if !cfg!(windows) {
+        args.push("-fblocks".to_string());
+        if !cfg!(target_os = "macos") {
+            args.push("-ldispatch".to_string());
+            args.push("-lBlocksRuntime".to_string());
+        }
+    }
     split_c_and_link_args(args)
 }
 
@@ -301,7 +308,11 @@ fn split_c_and_link_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
 }
 
 fn is_link_arg(arg: &str) -> bool {
-    arg.starts_with("-l") || arg.starts_with("-L") || arg.starts_with("-Wl,")
+    arg.starts_with("-l")
+        || arg.starts_with("-L")
+        || arg.starts_with("-Wl,")
+        || arg == "-framework"
+        || arg == "Dispatch"
 }
 
 fn shared_library_flag(target_os: &str) -> &'static str {

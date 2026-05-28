@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/io;
+
+i32 main() {
+    Result<void, Error> failed = with_create<void>("/tmp/ciel_std_io_error_fixture.txt", |file| {
+        write_text(file, "closed")?;
+        return Err(code_error(9));
+    });
+    switch (failed) {
+        case Ok(_):
+            return 1;
+        case Err(_):
+    }
+
+    usize n = must(with_open_read<usize>("/tmp/ciel_std_io_error_fixture.txt", |file| {
+        [16]u8 @buffer = [0;];
+        usize read_count = read(file, buffer[..])?;
+        return Ok(read_count);
+    }));
+    if (n != 6) {
+        return 2;
+    }
+    return 0;
+}

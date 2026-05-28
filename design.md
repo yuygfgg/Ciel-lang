@@ -2,7 +2,8 @@
 
 This document is the normative specification for Ciel. Ciel compiles whole
 programs to a single generated C translation unit, then invokes the target
-system C compiler. The runtime uses BDWGC/libgc and pthread.
+system C compiler. The runtime uses BDWGC/libgc and a libdispatch-backed actor
+and async I/O runtime on supported targets.
 
 ## 1. Language Model
 
@@ -1665,11 +1666,23 @@ pointers, slices, dynamic interface values, plain erased closure signatures,
 extern C function pointers, and opaque C handles do not implement `Message`
 without an explicit policy.
 
-The current actor runtime is backed by pthreads. `spawn_actor` clones the
-initial state and handler, creates a runtime mailbox, and starts a worker thread
-attached to the GC. `send` clones the payload before enqueueing it. `join`
-closes the mailbox, drains queued messages, waits for the worker, and returns a
-standard boxed `code_error(...)` error on runtime failure.
+The actor runtime is backed by one serial dispatch queue per actor on supported
+targets. `spawn_actor` clones the initial state and handler, creates a runtime
+mailbox, a serial queue, and a group used to track accepted jobs. `send`
+clones the payload before enqueueing it. `stop` closes the mailbox to new
+sends while allowing accepted jobs to drain. `join` closes the mailbox, waits
+for accepted jobs through the dispatch group, rejects self-join with an error,
+and returns a standard boxed `code_error(...)` error on runtime failure.
+
+Dispatch-managed callbacks are not implicit GC roots. Runtime callbacks that
+touch Ciel values or generated code enter through counted callback scope
+helpers that attach the current thread to BDWGC/libgc on first entry and detach
+only when the outermost callback scope exits.
+
+On supported targets, asynchronous file-descriptor operations use public
+dispatch I/O APIs through runtime shims. The actor model remains mailbox-based:
+async completion resumes work by sending a message to an actor rather than by
+suspending and restoring a hidden stack frame.
 
 Resource wrappers define their own policy. `/std/io::File` is actor-local by
 default. A wrapper that crosses actors implements `Message` by explicitly
@@ -1821,8 +1834,9 @@ import /std/actor;
 ```
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
-`/std/result`, `/std/panic`, `/std/c`, and `/std/io`. It is still imported
-explicitly like any other file. The concurrency modules are imported directly.
+`/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
+`/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, and `/std/atomic`.
+It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
 program-lifetime static NUL-terminated bytes and constructs a `[]const char`
@@ -1943,11 +1957,7 @@ export type const_c_string = *const char;
 ```rust
 // /std/io
 export import /std/result;
-import /std/c as c;
-
-export unsafe struct Fd {
-    c::c_int raw;
-}
+import /std/message;
 
 export enum OpenMode {
     Read,
@@ -1955,53 +1965,88 @@ export enum OpenMode {
     Append,
 }
 
+struct File;
+
 export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
-export Fd stdin();
-export Fd stdout();
-export Fd stderr();
-export unsafe Fd from_raw_fd(c::c_int raw);
-export unsafe c::c_int raw_fd(Fd fd);
-
 export Error last_error();
 
-export Result<Fd, Error> open([]const char path, OpenMode mode);
-export Result<Fd, Error> open_read([]const char path);
-export Result<Fd, Error> create([]const char path);
-export Result<Fd, Error> append([]const char path);
-export Result<void, Error> close(Fd fd);
+export Result<R, Error> with_open<R: Message>(
+    []const char path,
+    OpenMode mode,
+    Result<R, Error> |(File)| body
+);
 
-export Result<usize, Error> read(Fd fd, []u8 out);
-export Result<usize, Error> write(Fd fd, []const u8 data);
-export Result<void, Error> write_all(Fd fd, []const u8 data);
-export Result<void, Error> write_text(Fd fd, []const char text);
+export Result<R, Error> with_open_read<R: Message>(
+    []const char path,
+    Result<R, Error> |(File)| body
+);
 
-export Result<void, Error> write_value<T: printable>(Fd fd, T value);
+export Result<R, Error> with_create<R: Message>(
+    []const char path,
+    Result<R, Error> |(File)| body
+);
+
+export Result<R, Error> with_append<R: Message>(
+    []const char path,
+    Result<R, Error> |(File)| body
+);
+
+export Result<usize, Error> read(File file, []u8 out);
+export Result<usize, Error> write(File file, []const u8 data);
+export Result<void, Error> write_all(File file, []const u8 data);
+export Result<void, Error> write_text(File file, []const char text);
+
+export Result<void, Error> write_value<T: printable>(File file, T value);
+export Result<void, Error> write_format(File file, []const char fmt, []printable values);
 export Result<void, Error> print_value<T: printable>(T value);
 export Result<void, Error> println_value<T: printable>(T value);
 export Result<void, Error> eprint_value<T: printable>(T value);
 export Result<void, Error> eprintln_value<T: printable>(T value);
-
-export Result<void, Error> write_format(Fd fd, []const char fmt, []printable values);
 export Result<void, Error> print([]const char fmt, []printable values);
 export Result<void, Error> println([]const char fmt, []printable values);
 export Result<void, Error> eprint([]const char fmt, []printable values);
 export Result<void, Error> eprintln([]const char fmt, []printable values);
 ```
 
-`/std/io` is POSIX-limited in this compiler slice. It uses file descriptor
-numbers directly for `stdin`, `stdout`, and `stderr`; `read`, `write`, and
-`close` are direct POSIX calls. Opening files uses tiny runtime hooks so the C
-backend can use target C macros such as `O_CREAT` without hard-coding platform
-flag values in Ciel source. `open` copies the `[]const char` path into a
-NUL-terminated GC allocation before calling the host `open`. Printable values
-are values that implement `to_string`; printing functions convert values to
-`[]const char` first, then write the resulting slice to the selected descriptor.
-Raw descriptor adoption and extraction are low-level unsafe operations:
-`from_raw_fd` creates an `Fd` from an unvalidated host descriptor, and `raw_fd`
-exposes the descriptor for foreign calls. Safe constructors and I/O functions
-wrap those operations internally.
+`/std/io` is a scoped blocking I/O API. Importers do not get a public copyable
+descriptor value from this module. Instead, a private `File` token is passed by
+value into a callback and is closed when that callback returns. The callback
+result type is constrained as `R: Message`, so safe code cannot return the
+private token through the ordinary result path.
+
+The runtime stores real descriptors in a generation-checked slot table. The
+private `File` token contains a slot index and generation. Every blocking I/O
+operation validates that the slot is live, the generation matches, and the slot
+state is open before touching the OS descriptor. This prevents stale escaped
+tokens from touching a reused descriptor number.
+
+`stdout`, `stderr`, and formatting helpers use borrowed slot-table entries for
+the process standard streams. Printable values are values that implement
+`to_string`; printing functions convert values to `[]const char` first, then
+write through a scoped `File`.
+
+Low-level raw descriptor interop lives in `/std/os/fd`, not `/std/io`:
+
+```rust
+// /std/os/fd
+import /std/c as c;
+
+export unsafe struct RawFd {
+    c::c_int raw;
+}
+
+export unsafe RawFd from_raw_fd(c::c_int raw);
+export unsafe c::c_int raw_fd(RawFd fd);
+export RawFd stdin();
+export RawFd stdout();
+export RawFd stderr();
+```
+
+`RawFd` is a low-level interop type. It is actor-local by default and requires
+unsafe operations for adoption and extraction.
+
 Formatted printing uses `{}` placeholders and a `[]printable` slice, so callers
 can pass heterogeneous printable values through dynamic interface erasure:
 
@@ -2086,6 +2131,8 @@ export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     Result<S, Error> |(S, M): Message| handler
 );
 export Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
+export Result<void, Error> stop<T: Message>(*const Actor<T> actor);
+export Result<void, Error> join<T: Message>(*const Actor<T> actor);
 ```
 
 ```rust
@@ -2192,12 +2239,81 @@ export import /std/result;
 export import /std/panic;
 export import /std/c;
 export import /std/io;
+export import /std/async_io;
 export import /std/meta;
 export import /std/actor;
 export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
 ```
+
+```rust
+// /std/async_io
+import /std/actor;
+import /std/io;
+import /std/message;
+import /std/os/fd as os_fd;
+
+export struct Bytes {
+    *void handle;
+}
+
+export struct AsyncFd {
+    *void handle;
+}
+
+export struct AsyncRead {
+    *void handle;
+}
+
+export struct AsyncWrite {
+    *void handle;
+}
+
+export Result<Bytes, Error> bytes_copy([]const u8 data);
+export usize bytes_len(Bytes bytes);
+export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out);
+
+export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode);
+export Result<AsyncFd, Error> open_async_read([]const char path);
+export Result<AsyncFd, Error> create_async([]const char path);
+export Result<AsyncFd, Error> append_async([]const char path);
+export unsafe Result<AsyncFd, Error> async_from_raw_fd(os_fd::RawFd fd);
+export Result<void, Error> close_async(AsyncFd fd);
+
+export Result<AsyncRead, Error> read_bytes(AsyncFd fd, usize max_len);
+export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data);
+
+export Result<void, Error> notify_read_done<M: Message>(
+    *const AsyncRead op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+
+export Result<void, Error> notify_write_done<M: Message>(
+    *const AsyncWrite op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+
+export Result<Bytes, Error> finish_read(AsyncRead op);
+export Result<usize, Error> finish_write(AsyncWrite op);
+export Result<void, Error> cancel_read(AsyncRead op);
+export Result<void, Error> cancel_write(AsyncWrite op);
+```
+
+`/std/async_io` provides actor-oriented asynchronous file-descriptor
+operations. Starting an operation returns an operation token immediately. The
+caller then registers a completion message for an actor. When the runtime
+observes the final dispatch I/O callback for that operation, it sends the
+preboxed message to the actor mailbox. The actor later calls `finish_read` or
+`finish_write` to consume the result.
+
+`Bytes`, `AsyncFd`, `AsyncRead`, and `AsyncWrite` are runtime-backed handle
+types. They are fixed-size handle values and may implement `Message` through
+explicit standard-library policy impls. `Bytes` represents immutable owned byte
+storage. `AsyncRead` and `AsyncWrite` are one-shot operation handles whose
+results may be finished exactly once.
 
 These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime

@@ -2,13 +2,14 @@
 // expect-error: does not implement `Message`
 
 import /std/lib;
+import /std/os/fd as fd;
 
 struct LocalEnvelope {
-    Fd fd;
+    fd::RawFd raw;
 }
 
 i64 main() {
-    LocalEnvelope envelope = { fd: stdout() };
+    LocalEnvelope envelope = { raw: fd::stdout() };
     LocalEnvelope copy = must(clone_message(&envelope));
-    return unsafe { raw_fd(copy.fd) } as i64;
+    return unsafe { fd::raw_fd(copy.raw) } as i64;
 }

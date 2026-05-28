@@ -27,8 +27,8 @@ safe ad hoc exceptions before `unsafe interface`, `unsafe impl`, unsafe C
 imports, and unsafe function calls are available.
 
 This proposal owns the actor runtime backend, dispatch integration, GC rooting
-rules for dispatch callbacks, scoped blocking I/O shape, and the first
-asynchronous file descriptor completion surface.
+rules for dispatch callbacks, generation-checked scoped blocking I/O handles,
+and the first asynchronous file descriptor completion surface.
 
 `monomorphized-c-callbacks` owns the future migration that removes
 actor-specific compiler builtins from `/std/actor`. This proposal does not wait
@@ -116,8 +116,8 @@ but this proposal does not preserve the current pthread actor backend.
    Blocks in Ciel source.
 3. No dependency on `private/io_private.h`.
 4. No removal of blocking POSIX-backed file operations. This proposal reshapes
-   the safe surface around scoped helpers instead of exposing raw descriptor
-   values.
+   the safe surface around scoped helpers with generation-checked value
+   handles instead of exposing raw descriptor values.
 5. No asynchronous reads into caller-provided `[]u8`; borrowed slices remain
    actor-local and cannot be held by pending runtime operations.
 6. No move-only, affine, borrow-checking, or owned-handle language feature.
@@ -260,8 +260,8 @@ by an outer runtime entry.
 
 The safe blocking `/std/io` API should stop exposing a copyable `Fd { raw }`
 value as its main file abstraction. Instead, it should expose scoped helpers
-that open a descriptor, pass a private file token to a callback, and close the
-descriptor before returning:
+that open a descriptor, pass a private file token by value to a callback, and
+close the descriptor before returning:
 
 ```rust
 // /std/io
@@ -273,42 +273,39 @@ export enum OpenMode {
     Append,
 }
 
-struct File {
-    *void handle;
-}
+struct File;
 
 export Result<R, Error> with_open<R: Message>(
     []const char path,
     OpenMode mode,
-    Result<R, Error> |(*const File)| body
+    Result<R, Error> |(File)| body
 );
 
 export Result<R, Error> with_open_read<R: Message>(
     []const char path,
-    Result<R, Error> |(*const File)| body
+    Result<R, Error> |(File)| body
 );
 
 export Result<R, Error> with_create<R: Message>(
     []const char path,
-    Result<R, Error> |(*const File)| body
+    Result<R, Error> |(File)| body
 );
 
 export Result<R, Error> with_append<R: Message>(
     []const char path,
-    Result<R, Error> |(*const File)| body
+    Result<R, Error> |(File)| body
 );
 
-export Result<usize, Error> read(*const File file, []u8 out);
-export Result<usize, Error> write(*const File file, []const u8 data);
-export Result<void, Error> write_all(*const File file, []const u8 data);
-export Result<void, Error> write_text(*const File file, []const char text);
+export Result<usize, Error> read(File file, []u8 out);
+export Result<usize, Error> write(File file, []const u8 data);
+export Result<void, Error> write_all(File file, []const u8 data);
+export Result<void, Error> write_text(File file, []const char text);
 ```
 
 `File` is not exported and does not implement `Message`. Importers cannot name
 it in fields, globals, function signatures, or actor state. The callback result
 type is constrained with `R: Message`, so a callback cannot return the private
-file token, a pointer to it, or a closure that captured it through the ordinary
-safe result path.
+file token or a closure that captured it through the ordinary safe result path.
 
 Ordinary file use becomes:
 
@@ -333,8 +330,10 @@ the descriptor outside the scoped helper. The standard-library implementation
 uses `defer` to close the descriptor after the callback returns.
 
 Because the scoped callback is not statically noescape, the runtime must still
-validate every `File` operation. `File.handle` points to a runtime object, not
-to a raw descriptor value copied into Ciel storage:
+validate every `File` operation. That validation must not rely on a stack
+address or a per-open GC object that may dangle or accumulate. `File` is a
+small private value handle, and the runtime stores the real descriptor state in
+a slot table:
 
 ```c
 typedef enum {
@@ -343,25 +342,47 @@ typedef enum {
     CIEL_FILE_TRANSFERRED,
 } CielFileState;
 
-struct CielFile {
+typedef struct {
+    uint32_t slot;
+    uint32_t generation;
+} CielFile;
+
+struct CielFileSlot {
     int fd;
+    uint32_t generation;
     CielFileState state;
 };
 ```
 
-`with_open_*` creates a `CielFile` in `OPEN` state, calls the callback, then
-closes the descriptor and marks the handle `CLOSED` before returning. `read`
-and `write` check that the state is still `OPEN` before touching the OS
-descriptor. If a private token escapes through a generic or closure edge case,
-using it after the scoped callback returns produces an error from the Ciel
-runtime handle. It must not call `read`, `write`, or `close` on an integer fd
-that the OS may already have reused.
+`with_open_*` allocates a slot, opens the descriptor, writes the fd plus current
+generation into that slot, constructs a `File` value from `(slot, generation)`,
+calls the callback, then closes the descriptor, marks the slot `CLOSED`,
+increments the slot generation, and returns the slot to the free list. `read`
+and `write` first resolve the handle by checking that:
+
+1. `slot` names a live slot;
+2. `generation` matches the slot generation;
+3. the slot state is `OPEN`.
+
+Only after those checks does the runtime touch the OS descriptor. If a private
+token escapes through a generic or closure edge case, later use fails because
+the generation no longer matches or the slot state is no longer `OPEN`. The
+runtime must not call `read`, `write`, or `close` on an integer fd that the OS
+may already have reused.
 
 If a future interop API transfers a `File` into an async or raw runtime owner,
-it marks the handle `TRANSFERRED`. Later blocking operations on the old scoped
-token return an error. The private token shape and `R: Message` result bound
-reduce the ways a token can escape; the runtime state machine is the safety
-backstop while Ciel has no noescape closure parameter.
+it marks the slot `TRANSFERRED` before handing ownership to the new runtime
+owner. Later blocking operations on the old scoped token return an error. The
+private token shape and `R: Message` result bound reduce the ways a token can
+escape; the generation-checked slot table is the safety backstop while Ciel has
+no noescape closure parameter.
+
+This design deliberately uses value handles rather than `*const File` wrapper
+pointers. A pointer wrapper would need either stack storage, which becomes
+unsound if the token escapes, or one runtime allocation per scoped open, which
+would turn simple blocking I/O helpers into a GC-heavy path. A small value
+token plus a reusable slot table keeps stale-handle detection and avoids those
+costs.
 
 The scoped API is intended for short-lived synchronous file operations:
 read-all, write-file, append, copy, configuration loading, and formatting. It
@@ -659,7 +680,8 @@ runtime prelude or runtime support object owns that code.
 5. Add stress tests for actor FIFO order, many actors, concurrent sends, stop,
    join drain, handler failure, self-join, and GC pressure.
 6. Reshape safe `/std/io` around scoped blocking helpers with a private `File`
-   token, leaving raw descriptors to a low-level interop module.
+   value handle backed by a generation-checked slot table, leaving raw
+   descriptors to a low-level interop module.
 7. Add `/std/async_io` and runtime hooks for `Bytes`, `AsyncFd`,
    `AsyncRead`, `AsyncWrite`, completion notification, finish, and
    cancellation.
@@ -705,8 +727,8 @@ Scoped blocking I/O tests:
 3. nested scoped file callbacks can copy data between two files;
 4. importers cannot name the private `File` type from `/std/io`;
 5. safe `/std/io` does not expose raw descriptor constructors or accessors;
-6. stale or escaped `File` tokens fail through the runtime `CielFile` state and
-   never touch a possibly reused OS descriptor.
+6. stale or escaped `File` tokens fail through slot generation or slot state
+   checks and never touch a possibly reused OS descriptor.
 
 Generated C tests:
 

@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/io;
+
+i32 main() {
+    must(with_create<void>("/tmp/ciel_std_io_infer_fixture.txt", |file| {
+        write_text(file, "ok")?;
+        return Ok;
+    }));
+
+    usize n = must(with_open_read<usize>("/tmp/ciel_std_io_infer_fixture.txt", |file| {
+        [8]u8 @buffer = [0;];
+        usize read_count = read(file, buffer[..])?;
+        return Ok(read_count);
+    }));
+    if (n != 2) {
+        return 1;
+    }
+    return 0;
+}

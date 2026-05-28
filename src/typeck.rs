@@ -2075,6 +2075,54 @@ impl TypeChecker {
         (expected_arg, expected_for_arg)
     }
 
+    fn closure_inference_expected(
+        &mut self,
+        param_ty: &Ty,
+        subst: &HashMap<String, Ty>,
+        expected_hints: &HashMap<String, Ty>,
+    ) -> Option<Ty> {
+        let hinted = expected_hints
+            .iter()
+            .chain(subst.iter())
+            .map(|(name, ty)| (name.clone(), ty.clone()))
+            .collect::<HashMap<_, _>>();
+        let candidate = self.substitute_ty_normalized_silent(param_ty, &hinted);
+        match candidate {
+            Ty::Closure {
+                params,
+                constraints,
+                ..
+            } => Some(Ty::Closure {
+                ret: Box::new(Ty::Unknown),
+                params,
+                constraints,
+            }),
+            Ty::ClosureInstance {
+                id,
+                params,
+                captures,
+                ..
+            } => Some(Ty::ClosureInstance {
+                id,
+                ret: Box::new(Ty::Unknown),
+                params,
+                captures,
+            }),
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                params,
+                ..
+            } => Some(Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ret: Box::new(Ty::Unknown),
+                params,
+            }),
+            _ => None,
+        }
+    }
+
     fn meta_repr_ty(
         &mut self,
         span: impl Into<Option<crate::span::Span>>,
@@ -6009,12 +6057,19 @@ impl TypeChecker {
             };
             let (expected_arg, expected_for_arg) =
                 self.inference_arg_expected(param_ty, &subst, &expected_hints);
-            if contains_generic(&expected_arg)
-                && expected_for_arg.is_none()
-                && expr_is_closure_literal(arg)
-            {
-                deferred_closure_args.push(idx);
-                continue;
+            if contains_generic(&expected_arg) && expr_is_closure_literal(arg) {
+                if expected_for_arg.is_none() {
+                    if let Some(partial_expected) =
+                        self.closure_inference_expected(param_ty, &subst, &expected_hints)
+                    {
+                        let checked =
+                            self.check_generic_inference_arg(scopes, arg, Some(&partial_expected))?;
+                        self.unify_ty_for_inference(&expected_arg, &checked.ty, &mut subst);
+                        continue;
+                    }
+                    deferred_closure_args.push(idx);
+                    continue;
+                }
             }
             let checked =
                 self.check_generic_inference_arg(scopes, arg, expected_for_arg.as_ref())?;

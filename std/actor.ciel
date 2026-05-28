@@ -14,7 +14,7 @@ unsafe impl<M> share_handle_marker(*const Actor<M> value) {
     return true;
 }
 
-// Compiler built-in: lowered to the pthread-backed actor runtime.
+// Compiler built-in: lowered to the runtime actor backend.
 export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler

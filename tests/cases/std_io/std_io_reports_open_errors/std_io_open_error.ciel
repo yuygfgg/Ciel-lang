@@ -4,10 +4,11 @@
 import /std/io;
 
 i32 main() {
-    Result<Fd, Error> result = open_read("/tmp/ciel_std_io_missing_file_should_not_exist");
+    Result<void, Error> result = with_open_read("/tmp/ciel_std_io_missing_file_should_not_exist", |file| {
+        return Ok;
+    });
     switch (result) {
-        case Ok(fd):
-            must(close(fd));
+        case Ok(_):
             return 1;
         case Err(error):
             return 7;

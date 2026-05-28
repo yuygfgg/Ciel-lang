@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+
+Result<Channel<i64>, Error> handle(Channel<i64> out, Actor<i64> self) {
+    Result<void, Error> result = join(&self);
+    switch (result) {
+        case Ok(_):
+            channel_send(&out, 1)?;
+            return Ok(out);
+        case Err(_):
+            channel_send(&out, 0)?;
+            return Ok(out);
+    }
+}
+
+i32 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    Actor<Actor<i64>> actor = must(spawn_actor<Channel<i64>, Actor<i64>>(out, handle));
+    Actor<i64> self = { handle: actor.handle };
+    must(send(&actor, self));
+    i64 value = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    if (value != 0) {
+        return value as i32;
+    }
+    return 0;
+}

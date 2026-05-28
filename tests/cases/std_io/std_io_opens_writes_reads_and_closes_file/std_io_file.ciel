@@ -5,14 +5,19 @@
 import /std/io;
 
 i32 main() {
-    Fd file = must(create("/tmp/ciel_std_io_fixture.txt"));
-    must(write_text(file, "file-output"));
-    must(close(file));
+    must(with_create<void>("/tmp/ciel_std_io_fixture.txt", |file| {
+        write_text(file, "file-output")?;
+        return Ok;
+    }));
 
-    Fd input = must(open_read("/tmp/ciel_std_io_fixture.txt"));
-    [32]u8 @buffer = [0;];
-    usize n = must(read(input, buffer));
-    must(close(input));
-    must(write(stdout(), buffer[..n]));
+    usize n = must(with_open_read<usize>("/tmp/ciel_std_io_fixture.txt", |file| {
+        [32]u8 @buffer = [0;];
+        usize read_count = read(file, buffer[..])?;
+        return Ok(read_count);
+    }));
+    if (n != 11) {
+        return 1;
+    }
+    must(print("{}", ["file-output"]));
     return 0;
 }

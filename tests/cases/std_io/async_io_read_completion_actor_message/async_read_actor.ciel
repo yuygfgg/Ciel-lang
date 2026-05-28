@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
+import /std/lib;
+import /std/async_io as aio;
+
+Result<Channel<usize>, Error> handle(Channel<usize> out, aio::AsyncRead op) {
+    aio::Bytes bytes = aio::finish_read(op)?;
+    usize len = aio::bytes_len(bytes);
+    channel_send(&out, len)?;
+    return Ok(out);
+}
+
+i32 main() {
+    must(with_create<void>("/tmp/ciel_async_read_fixture.txt", |file| {
+        write_text(file, "hello")?;
+        return Ok;
+    }));
+
+    Channel<usize> done = must(make_channel<usize>());
+    Actor<aio::AsyncRead> actor = must(spawn_actor<Channel<usize>, aio::AsyncRead>(done, handle));
+    aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_async_read_fixture.txt"));
+    aio::AsyncRead op = must(aio::read_bytes(fd, 16));
+    must(aio::notify_read_done(&op, &actor, op));
+    usize len = must(channel_recv(&done));
+    must(print_value(len));
+    must(join(&actor));
+    must(aio::close_async(fd));
+    return 0;
+}

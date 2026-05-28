@@ -2,9 +2,10 @@
 // expect-error: does not implement `Message`
 
 import /std/lib;
+import /std/os/fd as fd;
 
 i64 main() {
-    Fd fd = stdout();
-    Fd copy = must(clone_message(&fd));
-    return unsafe { raw_fd(copy) } as i64;
+    fd::RawFd raw = fd::stdout();
+    fd::RawFd copy = must(clone_message(&raw));
+    return unsafe { fd::raw_fd(copy) } as i64;
 }

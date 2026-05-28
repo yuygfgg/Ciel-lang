@@ -1,0 +1,30 @@
+import /std/c as c;
+import /std/message;
+
+export unsafe struct RawFd {
+    c::c_int raw;
+}
+
+unsafe impl thread_local_marker(*const RawFd value) {
+    return true;
+}
+
+export unsafe RawFd from_raw_fd(c::c_int raw) {
+    return unsafe { { raw: raw } };
+}
+
+export unsafe c::c_int raw_fd(RawFd fd) {
+    return unsafe { fd.raw };
+}
+
+export RawFd stdin() {
+    return unsafe { from_raw_fd(0 as c::c_int) };
+}
+
+export RawFd stdout() {
+    return unsafe { from_raw_fd(1 as c::c_int) };
+}
+
+export RawFd stderr() {
+    return unsafe { from_raw_fd(2 as c::c_int) };
+}

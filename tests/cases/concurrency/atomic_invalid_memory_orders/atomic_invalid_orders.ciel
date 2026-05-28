@@ -2,14 +2,24 @@
 // expect-exit: 0
 
 import /std/lib;
+import /std/format as format;
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
 
 bool is_code(Error error, i64 expected) {
-    switch (error) {
-        case Text(text):
-            return false;
-        case Code(code):
-            return code == expected;
-    }
+    return same_text(error_message(&error), format::i64_to_string(expected));
 }
 
 bool is_invalid_load(Result<i64, Error> result) {

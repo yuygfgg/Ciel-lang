@@ -65,6 +65,13 @@ static CIEL_MAYBE_UNUSED void *ciel_alloc_array(size_t elem_size, size_t len) {
     return ciel_alloc(bytes == 0 ? 1 : bytes);
 }
 
+static CIEL_MAYBE_UNUSED void *ciel_box_value(const void *value, size_t size) {
+    void *out = ciel_alloc(size == 0 ? 1 : size);
+    if (size > 0)
+        memcpy(out, value, size);
+    return out;
+}
+
 void ciel_panic_at(const char *message, size_t len, const char *file, size_t line) {
     fputs("panic", stderr);
     if (file != NULL && file[0] != '\0')

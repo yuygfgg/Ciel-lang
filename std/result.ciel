@@ -1,10 +1,6 @@
+export import /std/result/core;
 export import /std/error;
 import /std/panic;
-
-export enum Result<T, E> {
-    Ok(T),
-    Err(E),
-}
 
 export T expect<T, E>(Result<T, E> value, []const char message) {
     switch (value) {

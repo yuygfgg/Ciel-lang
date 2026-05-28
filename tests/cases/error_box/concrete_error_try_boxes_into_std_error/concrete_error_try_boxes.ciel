@@ -1,0 +1,68 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/format as format;
+
+enum ParseError {
+    Empty,
+    Bad(i64),
+}
+
+impl format_error(*const ParseError error) {
+    switch (*error) {
+        case Empty:
+            return "empty";
+        case Bad(code):
+            return format::i64_to_string(code);
+    }
+}
+
+Result<i64, ParseError> parse(bool ok) {
+    if (ok) {
+        return Ok(40);
+    }
+    return Err(Bad(7));
+}
+
+Result<i64, Error> load(bool ok) {
+    i64 value = parse(ok)?;
+    return Ok(value + 2);
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    Result<i64, Error> ok = load(true);
+    switch (ok) {
+        case Ok(value):
+            if (value != 42) {
+                return 1;
+            }
+        case Err(error):
+            return 2;
+    }
+
+    Result<i64, Error> failed = load(false);
+    switch (failed) {
+        case Ok(value):
+            return 3;
+        case Err(error):
+            if (same_text(error_message(&error), "7")) {
+                return 0;
+            }
+            return 4;
+    }
+}

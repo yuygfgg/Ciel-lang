@@ -86,13 +86,13 @@ impl<T> share_handle_marker(*const Atomic<T> value) {
 Error runtime_error() {
     c::c_int code = ciel_errno();
     if ((code as i64) == 0) {
-        return Code(5);
+        return code_error(5);
     }
-    return Code(code as i64);
+    return code_error(code as i64);
 }
 
 Error invalid_memory_order() {
-    return Code(22);
+    return code_error(22);
 }
 
 c::c_int memory_order_code(MemoryOrder order) {
@@ -217,7 +217,7 @@ export Result<void, Error> atomic_store<T: AtomicValue>(
     T local = value;
     c::c_int rc = ciel_atomic_store(raw_atomic(atomic), &local as *const void, memory_order_code(order));
     if ((rc as i64) != 0) {
-        return Err(Code(rc as i64));
+        return Err(code_error(rc as i64));
     }
     return Ok;
 }

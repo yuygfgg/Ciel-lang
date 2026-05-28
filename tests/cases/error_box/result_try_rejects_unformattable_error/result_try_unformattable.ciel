@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: does not implement `format_error`
+
+import /std/result;
+
+enum RawError {
+    Bad,
+}
+
+Result<i64, RawError> read_value() {
+    return Err(Bad);
+}
+
+Result<i64, Error> load() {
+    i64 value = read_value()?;
+    return Ok(value);
+}
+
+i64 main() {
+    return 0;
+}

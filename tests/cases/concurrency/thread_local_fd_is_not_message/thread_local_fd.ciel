@@ -8,7 +8,7 @@ Result<void, Error> accept_local<T: ThreadLocal>(T value) {
     if (thread_local_marker(&local)) {
         return Ok;
     }
-    return Err(Code(1));
+    return Err(code_error(1));
 }
 
 i64 main() {

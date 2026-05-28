@@ -1,5 +1,6 @@
 export import /std/result;
 import /std/c as c;
+import /std/format as format;
 import /std/message;
 import ./io_posix as posix;
 
@@ -31,7 +32,7 @@ export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
 export Error last_error() {
-    return Code(ciel_errno() as i64);
+    return code_error(ciel_errno() as i64);
 }
 
 export Fd from_raw_fd(c::c_int raw) {
@@ -122,7 +123,7 @@ export Result<void, Error> write_all(Fd fd, []const u8 data) {
     while (offset < data.len) {
         usize n = write(fd, data[offset..])?;
         if (n == 0) {
-            return Err(Text("write returned zero"));
+            return Err(text_error("write returned zero"));
         }
         offset = offset + n;
     }
@@ -134,72 +135,11 @@ export Result<void, Error> write_text(Fd fd, []const char text) {
     while (offset < text.len) {
         usize n = write_text_once(fd, text[offset..])?;
         if (n == 0) {
-            return Err(Text("write returned zero"));
+            return Err(text_error("write returned zero"));
         }
         offset = offset + n;
     }
     return Ok;
-}
-
-export []const char u64_to_string(u64 value) {
-    [20]char @buf = ['\0';];
-    usize @i = 20;
-    u64 @n = value;
-    if (n == 0) {
-        i = i - 1;
-        buf[i] = '0';
-    }
-    while (n > 0) {
-        i = i - 1;
-        buf[i] = (((n % 10) + 48) as char);
-        n = n / 10;
-    }
-    return buf[i..];
-}
-
-export []const char usize_to_string(usize value) {
-    [32]char @buf = ['\0';];
-    usize @i = 32;
-    usize @n = value;
-    if (n == 0) {
-        i = i - 1;
-        buf[i] = '0';
-    }
-    while (n > 0) {
-        i = i - 1;
-        buf[i] = (((n % 10) + 48) as char);
-        n = n / 10;
-    }
-    return buf[i..];
-}
-
-export []const char i64_to_string(i64 value) {
-    if (value == -9223372036854775808) {
-        return "-9223372036854775808";
-    }
-    if (value < 0) {
-        [20]char @digits = ['\0';];
-        usize @i = 20;
-        u64 @n = (-value) as u64;
-        if (n == 0) {
-            i = i - 1;
-            digits[i] = '0';
-        }
-        while (n > 0) {
-            i = i - 1;
-            digits[i] = (((n % 10) + 48) as char);
-            n = n / 10;
-        }
-        [21]char @out = ['\0';];
-        out[0] = '-';
-        usize @j = 0;
-        while ((i + j) < 20) {
-            out[j + 1] = digits[i + j];
-            j = j + 1;
-        }
-        return out[..j + 1];
-    }
-    return u64_to_string(value as u64);
 }
 
 export []const char f32_to_string(f32 value) {
@@ -231,39 +171,39 @@ impl to_string(*const bool value) {
 }
 
 impl to_string(*const u8 value) {
-    return u64_to_string((*value) as u64);
+    return format::u64_to_string((*value) as u64);
 }
 
 impl to_string(*const u16 value) {
-    return u64_to_string((*value) as u64);
+    return format::u64_to_string((*value) as u64);
 }
 
 impl to_string(*const u32 value) {
-    return u64_to_string((*value) as u64);
+    return format::u64_to_string((*value) as u64);
 }
 
 impl to_string(*const u64 value) {
-    return u64_to_string(*value);
+    return format::u64_to_string(*value);
 }
 
 impl to_string(*const usize value) {
-    return usize_to_string(*value);
+    return format::usize_to_string(*value);
 }
 
 impl to_string(*const i8 value) {
-    return i64_to_string((*value) as i64);
+    return format::i64_to_string((*value) as i64);
 }
 
 impl to_string(*const i16 value) {
-    return i64_to_string((*value) as i64);
+    return format::i64_to_string((*value) as i64);
 }
 
 impl to_string(*const i32 value) {
-    return i64_to_string((*value) as i64);
+    return format::i64_to_string((*value) as i64);
 }
 
 impl to_string(*const i64 value) {
-    return i64_to_string(*value);
+    return format::i64_to_string(*value);
 }
 
 impl to_string(*const f32 value) {
@@ -275,12 +215,7 @@ impl to_string(*const f64 value) {
 }
 
 impl to_string(*const Error value) {
-    switch (*value) {
-        case Text(text):
-            return text;
-        case Code(code):
-            return i64_to_string(code);
-    }
+    return error_message(value);
 }
 
 export Result<void, Error> write_value<T: printable>(Fd fd, T value) {

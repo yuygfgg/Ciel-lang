@@ -1,0 +1,49 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/error/basic as basic;
+import /std/format/number as number;
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    Error code = code_error(123);
+    if (same_text(error_message(&code), "123") == false) {
+        return 1;
+    }
+
+    Error text = text_error("plain");
+    if (same_text(error_message(&text), "plain") == false) {
+        return 2;
+    }
+
+    Error direct = basic::text_error("direct");
+    if (same_text(error_message(&direct), "direct") == false) {
+        return 3;
+    }
+
+    CodeError concrete = { code: -5 };
+    Error boxed = error_box(concrete);
+    if (same_text(error_message(&boxed), "-5") == false) {
+        return 4;
+    }
+
+    if (same_text(number::i64_to_string(-42), "-42") == false) {
+        return 5;
+    }
+
+    return 0;
+}

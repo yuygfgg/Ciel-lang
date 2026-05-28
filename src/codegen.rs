@@ -19,13 +19,14 @@ use crate::{
     source::SourceMap,
     thir::{
         CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock, TClosureBody,
-        TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind,
+        TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, TryPropagation,
     },
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, clone_message_capability,
         is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_sum_ty,
-        retained_closure_capabilities, std_error_ty, std_result_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
+        std_result_ty,
     },
 };
 
@@ -240,6 +241,10 @@ impl<'a> CGenerator<'a> {
             ));
         }
         if !self.plan.slice_types.is_empty() {
+            self.line("");
+        }
+        if self.plan.slice_types.contains_key("CielConstSlice_char") {
+            self.line("#define CIEL_CONST_STR(S) ((CielConstSlice_char){.ptr = (S), .len = sizeof(S) - 1})");
             self.line("");
         }
 
@@ -900,9 +905,10 @@ impl<'a> CGenerator<'a> {
                 self.collect_retained_closure_witnesses(&expr.ty, source_ty, expr.span);
                 self.collect_expr_closures(owner, inner);
             }
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
                 self.collect_expr_closures(owner, expr)
             }
+            TExprKind::Try { expr, .. } => self.collect_expr_closures(owner, expr),
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_closures(owner, left);
                 self.collect_expr_closures(owner, right);
@@ -1180,8 +1186,25 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_dynamic(arg);
                 }
             }
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
                 self.collect_expr_dynamic(expr)
+            }
+            TExprKind::Try { expr, propagation } => {
+                self.collect_expr_dynamic(expr);
+                if matches!(propagation, TryPropagation::ErrorBox)
+                    && let Some((_, err_ty)) = result_args(&expr.ty)
+                {
+                    let dyn_ty = std_error_trait_ty();
+                    self.collect_ty_dynamic(&dyn_ty);
+                    self.collect_ty_dynamic(err_ty);
+                    self.plan.dynamic_impls.insert(
+                        self.dynamic_impl_key(&dyn_ty, err_ty),
+                        DynamicImplUse {
+                            dyn_ty,
+                            concrete_ty: err_ty.clone(),
+                        },
+                    );
+                }
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_dynamic(left);
@@ -1226,14 +1249,17 @@ impl<'a> CGenerator<'a> {
                 handler,
                 ..
             } => {
+                self.collect_standard_error_code_dynamic();
                 self.collect_expr_dynamic(initial_state);
                 self.collect_expr_dynamic(handler);
             }
             TExprKind::ActorSend { actor, value, .. } => {
+                self.collect_standard_error_code_dynamic();
                 self.collect_expr_dynamic(actor);
                 self.collect_expr_dynamic(value);
             }
             TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
+                self.collect_standard_error_code_dynamic();
                 self.collect_expr_dynamic(actor);
             }
             TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
@@ -1265,6 +1291,20 @@ impl<'a> CGenerator<'a> {
             TClosureBody::Expr(expr) => self.collect_expr_dynamic(expr),
             TClosureBody::Block(block) => self.collect_block_dynamic(block),
         }
+    }
+
+    fn collect_standard_error_code_dynamic(&mut self) {
+        let dyn_ty = std_error_trait_ty();
+        let code_ty = std_error_code_ty();
+        self.collect_ty_dynamic(&dyn_ty);
+        self.collect_ty_dynamic(&code_ty);
+        self.plan.dynamic_impls.insert(
+            self.dynamic_impl_key(&dyn_ty, &code_ty),
+            DynamicImplUse {
+                dyn_ty,
+                concrete_ty: code_ty,
+            },
+        );
     }
 
     fn collect_string_literals(&mut self) {
@@ -1404,9 +1444,10 @@ impl<'a> CGenerator<'a> {
     fn collect_expr_locations(&mut self, expr: &TExpr) {
         self.register_source_location(expr.span);
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
                 self.collect_expr_locations(expr)
             }
+            TExprKind::Try { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_locations(left);
                 self.collect_expr_locations(right);
@@ -1633,9 +1674,10 @@ impl<'a> CGenerator<'a> {
                 .insert(span_key(expr.span), raw.clone());
         }
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
                 self.collect_expr_string_literals(expr)
             }
+            TExprKind::Try { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_string_literals(left);
                 self.collect_expr_string_literals(right);
@@ -1837,8 +1879,17 @@ impl<'a> CGenerator<'a> {
     fn collect_expr_slices(&mut self, expr: &TExpr) {
         self.collect_ty_slice(&expr.ty);
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
                 self.collect_expr_slices(expr)
+            }
+            TExprKind::Try { expr, propagation } => {
+                self.collect_expr_slices(expr);
+                if matches!(propagation, TryPropagation::ErrorBox)
+                    && let Some((_, err_ty)) = result_args(&expr.ty)
+                {
+                    self.collect_ty_slice(&std_error_trait_ty());
+                    self.collect_ty_slice(err_ty);
+                }
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_slices(left);
@@ -2950,14 +3001,17 @@ impl<'a> CGenerator<'a> {
                 };
                 self.emit_slice_subview_temp(expr, base, start.as_deref(), end.as_deref(), indent)?
             }
-            TExprKind::Try(inner) => {
+            TExprKind::Try {
+                expr: inner,
+                propagation,
+            } => {
                 let Some(indent) = stmt_indent else {
                     return Err(vec![Diagnostic::new(
                         expr.span,
                         "`?` needs statement lowering in this context",
                     )]);
                 };
-                self.emit_try_expr(expr, inner, indent)?
+                self.emit_try_expr(expr, inner, propagation, indent)?
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => {
                 let Some(indent) = stmt_indent else {
@@ -4261,7 +4315,13 @@ impl<'a> CGenerator<'a> {
         }
     }
 
-    fn emit_try_expr(&mut self, expr: &TExpr, inner: &TExpr, indent: usize) -> DiagResult<String> {
+    fn emit_try_expr(
+        &mut self,
+        expr: &TExpr,
+        inner: &TExpr,
+        propagation: &TryPropagation,
+        indent: usize,
+    ) -> DiagResult<String> {
         let inner_layout = self.result_layout(&inner.ty, inner.span)?;
         let return_ty = self.current_return_ty.clone();
         let return_layout = self.result_layout(&return_ty, expr.span)?;
@@ -4276,11 +4336,30 @@ impl<'a> CGenerator<'a> {
             &format!("if ({temp}.tag == {}) {{", inner_layout.err_index),
         );
         self.emit_all_defers(indent + 1);
+        let err_payload = if matches!(propagation, TryPropagation::ErrorBox) {
+            Some(self.emit_error_boxed_value(
+                &format!("{temp}.as.{}._0", inner_layout.err_name),
+                inner_layout.err_payload_ty.as_ref().ok_or_else(|| {
+                    vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: error-box `?` requires an Err payload",
+                    )]
+                })?,
+                indent + 1,
+                expr.span,
+            )?)
+        } else {
+            None
+        };
         self.line_indent(
             indent + 1,
             &format!(
                 "return {};",
-                self.result_err_literal(&return_layout, &inner_layout, &temp)
+                if let Some(err_payload) = err_payload.as_deref() {
+                    self.result_err_from_error_literal(&return_layout, err_payload)
+                } else {
+                    self.result_err_literal(&return_layout, &inner_layout, &temp)
+                }
             ),
         );
         self.line_indent(indent, "}");
@@ -4407,25 +4486,97 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn emit_error_boxed_value(
+        &mut self,
+        value: &str,
+        concrete_ty: &Ty,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let error_ty = std_error_ty();
+        let trait_ty = std_error_trait_ty();
+        let trait_value = self.emit_dynamic_interface_value_from_code(
+            &trait_ty,
+            concrete_ty,
+            value,
+            indent,
+            span,
+        )?;
+        Ok(self.error_value_literal(&error_ty, &trait_value, "\"\"", "NULL"))
+    }
+
     fn error_code_literal(&self, code: &str) -> String {
-        let c_type = self.c_named_type("Error", &[]);
-        let (variant_index, variant_name) = self
-            .program
-            .checked
-            .enums
-            .iter()
-            .find(|enm| enm.name == c_type)
-            .and_then(|enm| {
-                enm.variants
-                    .iter()
-                    .enumerate()
-                    .find(|(_, variant)| variant.name == "Code")
-                    .map(|(idx, variant)| (idx, variant.name.clone()))
-            })
-            .unwrap_or_else(|| (1, "Code".to_string()));
+        let code_ty = std_error_code_ty();
+        let code_ptr = format!(
+            "(({})ciel_box_value(&({}){{ .code = (int64_t)({code}) }}, sizeof({})))",
+            self.c_pointer_type(&code_ty),
+            self.c_type(&code_ty),
+            self.c_sizeof_type(&code_ty)
+        );
+        let trait_value =
+            self.dynamic_interface_from_ptr_literal(&std_error_trait_ty(), &code_ty, &code_ptr);
+        self.error_value_literal(&std_error_ty(), &trait_value, "\"\"", "NULL")
+    }
+
+    fn error_value_literal(
+        &self,
+        error_ty: &Ty,
+        value: &str,
+        context: &str,
+        source: &str,
+    ) -> String {
+        let c_type = self.c_type(error_ty);
         format!(
-            "({c_type}){{ .tag = {variant_index}, .as.{variant_name} = {{ ._0 = (int64_t)({code}) }} }}"
+            "({c_type}){{ .value = {value}, .context = CIEL_CONST_STR({context}), .source = {source} }}"
         )
+    }
+
+    fn emit_dynamic_interface_value_from_code(
+        &mut self,
+        dyn_ty: &Ty,
+        concrete_ty: &Ty,
+        value: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let data_ptr = if matches!(concrete_ty, Ty::Pointer { .. }) {
+            format!("(void *)({value})")
+        } else {
+            let temp = self.next_temp("dyn_data");
+            self.line_indent(
+                indent,
+                &format!(
+                    "{} *{temp} = ({})ciel_alloc(sizeof({}));",
+                    self.c_type(concrete_ty),
+                    self.c_pointer_type(concrete_ty),
+                    self.c_sizeof_type(concrete_ty)
+                ),
+            );
+            self.line_indent(indent, &format!("*{temp} = {value};"));
+            format!("(void *){temp}")
+        };
+        let Ty::DynamicInterface { .. } = dyn_ty else {
+            return Err(vec![Diagnostic::new(
+                span,
+                "internal error: error-box target is not dynamic",
+            )]);
+        };
+        let dyn_c = self.c_type(dyn_ty);
+        let vtable = self.dynamic_table_name(dyn_ty, concrete_ty);
+        Ok(format!(
+            "({dyn_c}){{ .data = {data_ptr}, .vtable = &{vtable} }}"
+        ))
+    }
+
+    fn dynamic_interface_from_ptr_literal(
+        &self,
+        dyn_ty: &Ty,
+        concrete_ty: &Ty,
+        ptr: &str,
+    ) -> String {
+        let dyn_c = self.c_type(dyn_ty);
+        let vtable = self.dynamic_table_name(dyn_ty, concrete_ty);
+        format!("({dyn_c}){{ .data = (void *)({ptr}), .vtable = &{vtable} }}")
     }
 
     fn emit_clone_message_result_from_ptr(
@@ -7376,7 +7527,7 @@ fn span_key(span: crate::span::Span) -> (usize, usize, usize) {
 
 fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
     match &expr.kind {
-        TExprKind::Try(_)
+        TExprKind::Try { .. }
         | TExprKind::Slice { .. }
         | TExprKind::MakeDynamicInterface { .. }
         | TExprKind::MetaAsRefRepr { .. }

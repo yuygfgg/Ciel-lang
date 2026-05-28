@@ -29,9 +29,9 @@ impl<T> share_handle_marker(*const Channel<T> value) {
 Error runtime_error() {
     c::c_int code = ciel_errno();
     if ((code as i64) == 0) {
-        return Code(5);
+        return code_error(5);
     }
-    return Code(code as i64);
+    return code_error(code as i64);
 }
 
 export Result<Channel<T>, Error> make_channel<T: Message>() {
@@ -47,7 +47,7 @@ export Result<void, Error> channel_send<T: Message>(*const Channel<T> channel, T
     T cloned = clone_message(&local)?;
     c::c_int rc = ciel_channel_send(channel->handle as *CielChannel, &cloned as *const void);
     if ((rc as i64) != 0) {
-        return Err(Code(rc as i64));
+        return Err(code_error(rc as i64));
     }
     return Ok;
 }
@@ -65,7 +65,7 @@ export Result<T, Error> channel_recv<T: Message>(*const Channel<T> channel) {
 export Result<void, Error> channel_close<T: Message>(*const Channel<T> channel) {
     c::c_int rc = ciel_channel_close(channel->handle as *CielChannel);
     if ((rc as i64) != 0) {
-        return Err(Code(rc as i64));
+        return Err(code_error(rc as i64));
     }
     return Ok;
 }

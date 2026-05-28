@@ -1,0 +1,60 @@
+export []const char u64_to_string(u64 value) {
+    [20]char @buf = ['\0';];
+    usize @i = 20;
+    u64 @n = value;
+    if (n == 0) {
+        i = i - 1;
+        buf[i] = '0';
+    }
+    while (n > 0) {
+        i = i - 1;
+        buf[i] = (((n % 10) + 48) as char);
+        n = n / 10;
+    }
+    return buf[i..];
+}
+
+export []const char usize_to_string(usize value) {
+    [32]char @buf = ['\0';];
+    usize @i = 32;
+    usize @n = value;
+    if (n == 0) {
+        i = i - 1;
+        buf[i] = '0';
+    }
+    while (n > 0) {
+        i = i - 1;
+        buf[i] = (((n % 10) + 48) as char);
+        n = n / 10;
+    }
+    return buf[i..];
+}
+
+export []const char i64_to_string(i64 value) {
+    if (value == -9223372036854775808) {
+        return "-9223372036854775808";
+    }
+    if (value < 0) {
+        [20]char @digits = ['\0';];
+        usize @i = 20;
+        u64 @n = (-value) as u64;
+        if (n == 0) {
+            i = i - 1;
+            digits[i] = '0';
+        }
+        while (n > 0) {
+            i = i - 1;
+            digits[i] = (((n % 10) + 48) as char);
+            n = n / 10;
+        }
+        [21]char @out = ['\0';];
+        out[0] = '-';
+        usize @j = 0;
+        while ((i + j) < 20) {
+            out[j + 1] = digits[i + j];
+            j = j + 1;
+        }
+        return out[..j + 1];
+    }
+    return u64_to_string(value as u64);
+}

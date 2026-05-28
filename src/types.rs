@@ -17,6 +17,9 @@ pub struct ConstraintRef {
     pub args: Vec<Ty>,
 }
 
+pub const STD_ERROR_FORMAT_INTERFACE: &str = "format_error";
+pub const STD_ERROR_TRAIT_ALIAS: &str = "ErrorTrait";
+pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
 
 pub fn clone_message_capability() -> ConstraintRef {
@@ -984,6 +987,20 @@ pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
 pub fn std_error_ty() -> Ty {
     Ty::Named {
         name: "Error".to_string(),
+        args: Vec::new(),
+    }
+}
+
+pub fn std_error_trait_ty() -> Ty {
+    Ty::DynamicInterface {
+        name: STD_ERROR_TRAIT_ALIAS.to_string(),
+        args: Vec::new(),
+    }
+}
+
+pub fn std_error_code_ty() -> Ty {
+    Ty::Named {
+        name: STD_ERROR_CODE_TYPE.to_string(),
         args: Vec::new(),
     }
 }

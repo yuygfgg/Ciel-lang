@@ -1,0 +1,28 @@
+import /std/error/core;
+import /std/format as format;
+
+export struct TextError {
+    []const char text;
+}
+
+export struct CodeError {
+    i64 code;
+}
+
+export Error text_error([]const char text) {
+    TextError error = { text: text };
+    return error_box(error);
+}
+
+export Error code_error(i64 code) {
+    CodeError error = { code: code };
+    return error_box(error);
+}
+
+impl format_error(*const TextError error) {
+    return error->text;
+}
+
+impl format_error(*const CodeError error) {
+    return format::i64_to_string(error->code);
+}

@@ -1391,8 +1391,11 @@ switch (event) {
 
 The `?` operator works only on the `Result<T, E>` type exported by
 `/std/result`, or aliases of that type. The surrounding function must return
-`Result<U, E>` with exactly the same error type `E`. No implicit error
-conversion is performed.
+`Result<U, E>` with exactly the same error type `E`, or `Result<U, Error>` where
+`Error` is the standard error type exported by `/std/error` and `E` implements
+the standard `ErrorTrait` formatting capability. In the latter case, `?` boxes
+the concrete error through `error_box`. No general implicit conversion graph is
+searched.
 
 `must` and `expect` are standard-library generic functions. They are not
 special syntax. On error, they call a runtime panic function.
@@ -1625,7 +1628,7 @@ The current actor runtime is backed by pthreads. `spawn_actor` clones the
 initial state and handler, creates a runtime mailbox, and starts a worker thread
 attached to the GC. `send` clones the payload before enqueueing it. `join`
 closes the mailbox, drains queued messages, waits for the worker, and returns a
-standard `Error::Code` on runtime failure.
+standard boxed `code_error(...)` error on runtime failure.
 
 Resource wrappers define their own policy. `/std/io::File` is actor-local by
 default. A wrapper that crosses actors implements `Message` by explicitly
@@ -1790,27 +1793,79 @@ usize n = name.len;
 *const char raw = name.ptr;
 ```
 
-The core standard library is organized as follows:
+The core standard library is organized around small implementation modules and
+stable facade modules:
 
 ```rust
 // /std/error
-export enum Error {
-    Text([]const char),
-    Code(i64),
+export import /std/result/core;
+export import /std/error/core;
+export import /std/error/basic;
+export import /std/error/context;
+```
+
+```rust
+// /std/error/core
+export interface<T> []const char format_error(*const T error);
+export interface ErrorTrait = format_error;
+
+export struct Error {
+    ErrorTrait value;
+    []const char context;
+    ?*const Error source;
+}
+
+export Error error_box(ErrorTrait error);
+export Error error_with_context(Error source, []const char context);
+export []const char error_message(*const Error error);
+```
+
+```rust
+// /std/error/basic
+export struct TextError {
+    []const char text;
+}
+
+export struct CodeError {
+    i64 code;
+}
+
+export Error text_error([]const char text);
+export Error code_error(i64 code);
+```
+
+```rust
+// /std/error/context
+export Result<T, Error> error_context<T, E: ErrorTrait>(
+    Result<T, E> result,
+    []const char context,
+);
+export Result<void, Error> error_context_void<E: ErrorTrait>(
+    Result<void, E> result,
+    []const char context,
+);
+```
+
+```rust
+// /std/result/core
+export enum Result<T, E> {
+    Ok(T),
+    Err(E),
 }
 ```
 
 ```rust
 // /std/result
+export import /std/result/core;
 export import /std/error;
-
-export enum Result<T, E> {
-    Ok(T),
-    Err(E),
-}
 
 export T must<T, E>(Result<T, E> value);
 export T expect<T, E>(Result<T, E> value, []const char message);
+```
+
+```rust
+// /std/format
+export import /std/format/number;
 ```
 
 ```rust

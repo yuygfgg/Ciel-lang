@@ -33,8 +33,11 @@ currently inconsistent with the design.
 ## P0: Error Model And Panic
 
 - [x] Implement the `?` operator for `Result<T, E>` from `/std/result`.
-- [x] Ensure `?` requires the enclosing function to return `Result<U, E>` with an
-      exactly matching error type.
+- [x] Ensure ordinary `?` propagation requires the enclosing function to return
+      `Result<U, E>` with an exactly matching error type.
+- [x] Allow `?` from any `E: ErrorTrait` into standard `Result<U, Error>` by
+      boxing the concrete error through `/std/error`.
+- [x] Provide `/std/error` owned error boxing, formatting, and context helpers.
 - [x] Lower `?` without C extensions: expression lowering supports
       pre-statements and early return.
 - [x] Implement or provide standard-library `must` and `expect` as ordinary
@@ -378,7 +381,7 @@ currently inconsistent with the design.
       `Result<S, Error> |(S, M): Message|`, `send<T: Message>` that calls
       `clone_message` for each payload, actor lifecycle helpers, and mailbox
       close errors.
-- [ ] Add typed mailbox/backpressure error surfaces beyond `Error::Code`.
+- [ ] Add typed mailbox/backpressure error surfaces beyond boxed `code_error(...)`.
 - [x] Add `/std/channel` as ordinary Ciel code built on the same explicit
       `clone_message` conversion rules.
 - [x] Add `/std/channel` runtime hooks as a minimal pthread-backed proof of

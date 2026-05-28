@@ -1,0 +1,61 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+
+enum StepError {
+    Failed,
+}
+
+impl format_error(*const StepError error) {
+    switch (*error) {
+        case Failed:
+            return "step failed";
+    }
+}
+
+Result<void, StepError> step(bool ok) {
+    if (ok) {
+        return Ok;
+    }
+    return Err(Failed);
+}
+
+Result<void, Error> run_task(bool ok) {
+    step(ok)?;
+    return Ok;
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    Result<void, Error> ok = run_task(true);
+    switch (ok) {
+        case Ok:
+        case Err(error):
+            return 1;
+    }
+
+    Result<void, Error> failed = run_task(false);
+    switch (failed) {
+        case Ok:
+            return 2;
+        case Err(error):
+            if (same_text(error_message(&error), "step failed")) {
+                return 0;
+            }
+            return 3;
+    }
+}

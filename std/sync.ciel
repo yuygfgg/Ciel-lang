@@ -35,9 +35,9 @@ impl<T> share_handle_marker(*const Mutex<T> value) {
 Error runtime_error() {
     c::c_int code = ciel_errno();
     if ((code as i64) == 0) {
-        return Code(5);
+        return code_error(5);
     }
-    return Code(code as i64);
+    return code_error(code as i64);
 }
 
 export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {

@@ -1,0 +1,28 @@
+export interface<T> []const char format_error(*const T error);
+export interface ErrorTrait = format_error;
+
+export struct Error {
+    ErrorTrait value;
+    []const char context;
+    ?*const Error source;
+}
+
+export Error error_box(ErrorTrait error) {
+    return { value: error, context: "", source: null };
+}
+
+export Error error_with_context(Error source, []const char context) {
+    Error source_copy = source;
+    return { value: source.value, context: context, source: &source_copy };
+}
+
+impl format_error(*const Error error) {
+    if (error->context.len > 0) {
+        return error->context;
+    }
+    return format_error(error->value);
+}
+
+export []const char error_message(*const Error error) {
+    return format_error(error);
+}

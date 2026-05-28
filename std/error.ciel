@@ -1,4 +1,4 @@
-export enum Error {
-    Text([]const char),
-    Code(i64),
-}
+export import /std/result/core;
+export import /std/error/core;
+export import /std/error/basic;
+export import /std/error/context;

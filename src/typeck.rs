@@ -8,13 +8,14 @@ use crate::{
     std_id,
     thir::*,
     types::{
-        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_MESSAGE_CLONE_INTERFACE,
-        Ty, aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
-        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
-        mangle_ty_fragment, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty, std_error_ty,
-        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
+        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_ERROR_FORMAT_INTERFACE,
+        STD_MESSAGE_CLONE_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
+        closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
+        contains_generic, contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
+        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
+        meta_sum_ty, receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty,
+        std_error_ty, std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive,
+        unify_ty,
     },
 };
 
@@ -4737,7 +4738,10 @@ impl TypeChecker {
                     return Some(TExpr {
                         span: expr.span,
                         ty: Ty::Unknown,
-                        kind: TExprKind::Try(Box::new(inner)),
+                        kind: TExprKind::Try {
+                            expr: Box::new(inner),
+                            propagation: TryPropagation::Exact,
+                        },
                     });
                 };
                 let Some((_, return_err_ty)) = self.result_ok_err_tys(&self.current_return_ty)
@@ -4752,21 +4756,40 @@ impl TypeChecker {
                     return Some(TExpr {
                         span: expr.span,
                         ty: Ty::Unknown,
-                        kind: TExprKind::Try(Box::new(inner)),
+                        kind: TExprKind::Try {
+                            expr: Box::new(inner),
+                            propagation: TryPropagation::Exact,
+                        },
                     });
                 };
-                if err_ty != return_err_ty {
+                let propagation = if err_ty == return_err_ty {
+                    TryPropagation::Exact
+                } else if self.is_std_error_ty(&return_err_ty)
+                    && self.type_implements_std_error_trait(&err_ty)
+                {
+                    TryPropagation::ErrorBox
+                } else {
                     self.diagnostics.push(Diagnostic::new(
                         expr.span,
-                        format!(
-                            "`?` error type mismatch: expected `{return_err_ty}`, got `{err_ty}`"
-                        ),
+                        if self.is_std_error_ty(&return_err_ty) {
+                            format!(
+                                "`?` cannot convert error type `{err_ty}` to `{return_err_ty}` because `{err_ty}` does not implement `{STD_ERROR_FORMAT_INTERFACE}`"
+                            )
+                        } else {
+                            format!(
+                                "`?` error type mismatch: expected `{return_err_ty}`, got `{err_ty}`"
+                            )
+                        },
                     ));
-                }
+                    TryPropagation::Exact
+                };
                 TExpr {
                     span: expr.span,
                     ty: ok_ty,
-                    kind: TExprKind::Try(Box::new(inner)),
+                    kind: TExprKind::Try {
+                        expr: Box::new(inner),
+                        propagation,
+                    },
                 }
             }
         };
@@ -7763,6 +7786,23 @@ impl TypeChecker {
             && self.interface_names.get(name).is_some_and(|def_id| {
                 std_id::is_std_meta_interface(&self.resolved, *def_id, "closure_value_marker")
             })
+    }
+
+    fn is_std_error_format_interface_name(&self, name: &str) -> bool {
+        name == STD_ERROR_FORMAT_INTERFACE
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_error_interface(&self.resolved, *def_id, STD_ERROR_FORMAT_INTERFACE)
+            })
+    }
+
+    fn is_std_error_ty(&self, ty: &Ty) -> bool {
+        ty == &std_error_ty()
+            && std_id::module_can_see_std_error(&self.resolved, self.current_module)
+    }
+
+    fn type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
+        self.is_std_error_format_interface_name(STD_ERROR_FORMAT_INTERFACE)
+            && self.type_implements_capability(STD_ERROR_FORMAT_INTERFACE, &[], ty)
     }
 
     fn is_compiler_provided_meta_marker_def(&self, def_id: DefId) -> bool {

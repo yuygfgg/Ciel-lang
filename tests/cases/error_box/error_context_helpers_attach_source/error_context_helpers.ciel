@@ -1,0 +1,81 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+
+enum LoadError {
+    Missing,
+}
+
+impl format_error(*const LoadError error) {
+    switch (*error) {
+        case Missing:
+            return "missing";
+    }
+}
+
+Result<i64, LoadError> load_value() {
+    return Err(Missing);
+}
+
+Result<void, LoadError> load_void() {
+    return Err(Missing);
+}
+
+Result<i64, Error> with_context_value() {
+    i64 value = error_context(load_value(), "load value")?;
+    return Ok(value);
+}
+
+Result<void, Error> with_context_void() {
+    error_context_void(load_void(), "load void")?;
+    return Ok;
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+bool context_matches(Error error, []const char context) {
+    if (same_text(error_message(&error), context) == false) {
+        return false;
+    }
+    ?*const Error source = error.source;
+    if (source == null) {
+        return false;
+    }
+    return same_text(error_message(source), "missing");
+}
+
+i64 main() {
+    Result<i64, Error> value = with_context_value();
+    switch (value) {
+        case Ok(result):
+            return 1;
+        case Err(error):
+            if (context_matches(error, "load value") == false) {
+                return 2;
+            }
+    }
+
+    Result<void, Error> void_result = with_context_void();
+    switch (void_result) {
+        case Ok:
+            return 3;
+        case Err(error):
+            if (context_matches(error, "load void")) {
+                return 0;
+            }
+            return 4;
+    }
+}

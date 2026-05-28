@@ -22,12 +22,13 @@ use crate::{
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
-        ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE, Ty, aggregate_instance_name,
-        contains_generic, is_clone_message_capability, mangle_ty_fragment, meta_array_split_len,
-        meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_message_result_ty,
-        std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains, ty_from_primitive,
-        type_complexity,
+        ConstraintBounds, ConstraintRef, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        Ty, aggregate_instance_name, contains_generic, is_clone_message_capability,
+        mangle_ty_fragment, meta_array_split_len, meta_named, meta_product_ty,
+        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
+        meta_sum_ty, retained_closure_capabilities, std_error_code_ty, std_error_trait_ty,
+        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
+        ty_from_primitive, type_complexity,
     },
 };
 
@@ -593,7 +594,21 @@ impl MonoContext {
                     .map(|expr| self.rewrite_expr(*expr).map(Box::new))
                     .transpose()?,
             },
-            TExprKind::Try(inner) => TExprKind::Try(Box::new(self.rewrite_expr(*inner)?)),
+            TExprKind::Try {
+                expr: inner,
+                propagation,
+            } => {
+                let inner = self.rewrite_expr(*inner)?;
+                if matches!(propagation, crate::thir::TryPropagation::ErrorBox)
+                    && let Some((_, err_ty)) = result_args(&inner.ty)
+                {
+                    self.mark_dynamic_impls(&std_error_trait_ty(), &err_ty);
+                }
+                TExprKind::Try {
+                    expr: Box::new(inner),
+                    propagation,
+                }
+            }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
                 source_ty,
@@ -613,6 +628,7 @@ impl MonoContext {
                 message_ty,
                 handler_ty,
             } => {
+                self.mark_standard_error_code_impl();
                 self.mark_message_clone_impls(&state_ty);
                 self.mark_message_clone_impls(&handler_ty);
                 TExprKind::ActorSpawn {
@@ -628,6 +644,7 @@ impl MonoContext {
                 value,
                 message_ty,
             } => {
+                self.mark_standard_error_code_impl();
                 self.mark_message_clone_impls(&message_ty);
                 TExprKind::ActorSend {
                     actor: Box::new(self.rewrite_expr(*actor)?),
@@ -635,14 +652,20 @@ impl MonoContext {
                     message_ty,
                 }
             }
-            TExprKind::ActorStop { actor, message_ty } => TExprKind::ActorStop {
-                actor: Box::new(self.rewrite_expr(*actor)?),
-                message_ty,
-            },
-            TExprKind::ActorJoin { actor, message_ty } => TExprKind::ActorJoin {
-                actor: Box::new(self.rewrite_expr(*actor)?),
-                message_ty,
-            },
+            TExprKind::ActorStop { actor, message_ty } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::ActorStop {
+                    actor: Box::new(self.rewrite_expr(*actor)?),
+                    message_ty,
+                }
+            }
+            TExprKind::ActorJoin { actor, message_ty } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::ActorJoin {
+                    actor: Box::new(self.rewrite_expr(*actor)?),
+                    message_ty,
+                }
+            }
             TExprKind::TypeSize { ty } => TExprKind::TypeSize { ty },
             TExprKind::TypeAlign { ty } => TExprKind::TypeAlign { ty },
             TExprKind::StructLiteral { type_name, fields } => TExprKind::StructLiteral {
@@ -715,6 +738,26 @@ impl MonoContext {
         }
     }
 
+    fn mark_standard_error_code_impl(&mut self) {
+        let code_ty = std_error_code_ty();
+        let function_def = self
+            .checked
+            .impls
+            .iter()
+            .find(|implementation| {
+                impl_matches_interface_receiver(
+                    implementation,
+                    STD_ERROR_FORMAT_INTERFACE,
+                    &[],
+                    &code_ty,
+                )
+            })
+            .map(|implementation| implementation.function_def);
+        if let Some(function_def) = function_def {
+            self.mark_function(function_def);
+        }
+    }
+
     fn dynamic_view_interfaces(&self, name: &str, args: &[Ty]) -> Vec<CheckedInterfaceRef> {
         checked_interface_view(
             &self.checked.interfaces,
@@ -769,6 +812,17 @@ impl MonoContext {
                     && implementation.interface_args.get(1..) == Some(&[][..])
             })
             .map(|implementation| implementation.function_def)
+    }
+}
+
+fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if name == "Result" && args.len() == 2 {
+        Some((&args[0], &args[1]))
+    } else {
+        None
     }
 }
 
@@ -1029,8 +1083,15 @@ impl<'a> AggregateCollector<'a> {
     fn collect_expr(&mut self, expr: &TExpr) {
         self.collect_ty(&expr.ty);
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => self.collect_expr(expr),
+            TExprKind::Try { expr, propagation } => {
                 self.collect_expr(expr);
+                if matches!(propagation, crate::thir::TryPropagation::ErrorBox) {
+                    self.collect_ty(&std_error_trait_ty());
+                    if let Some((_, err_ty)) = result_args(&expr.ty) {
+                        self.collect_ty(err_ty);
+                    }
+                }
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr(left);
@@ -1113,6 +1174,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(state_ty);
                 self.collect_ty(message_ty);
                 self.collect_ty(handler_ty);
+                self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_message_result_ty(state_ty.clone()));
                 self.collect_ty(&std_message_result_ty(handler_ty.clone()));
                 self.collect_message_clone_result_tys(state_ty);
@@ -1126,6 +1188,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(actor);
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
+                self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_message_result_ty(message_ty.clone()));
                 self.collect_message_clone_result_tys(message_ty);
             }
@@ -1133,6 +1196,7 @@ impl<'a> AggregateCollector<'a> {
             | TExprKind::ActorJoin { actor, message_ty } => {
                 self.collect_expr(actor);
                 self.collect_ty(message_ty);
+                self.collect_ty(&std_error_code_ty());
             }
             TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => self.collect_ty(ty),
             TExprKind::StructLiteral { fields, .. } => {

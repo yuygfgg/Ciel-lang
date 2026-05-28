@@ -335,7 +335,10 @@ pub enum TExprKind {
         start: Option<Box<TExpr>>,
         end: Option<Box<TExpr>>,
     },
-    Try(Box<TExpr>),
+    Try {
+        expr: Box<TExpr>,
+        propagation: TryPropagation,
+    },
     MetaAsRefRepr {
         value: Box<TExpr>,
         source_ty: Ty,
@@ -374,6 +377,12 @@ pub enum TExprKind {
     TypeAlign {
         ty: Ty,
     },
+}
+
+#[derive(Clone, Debug)]
+pub enum TryPropagation {
+    Exact,
+    ErrorBox,
 }
 
 #[derive(Clone, Debug)]
@@ -555,7 +564,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::RetainClosure { expr: inner, .. }
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
-        | TExprKind::Try(inner)
+        | TExprKind::Try { expr: inner, .. }
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),

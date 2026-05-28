@@ -4,6 +4,9 @@ use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
 use crate::types::STD_MESSAGE_CLONE_INTERFACE;
 
 const STD_RESULT_PATH: &str = "std/result.ciel";
+const STD_RESULT_CORE_PATH: &str = "std/result/core.ciel";
+const STD_ERROR_PATH: &str = "std/error.ciel";
+const STD_ERROR_CORE_PATH: &str = "std/error/core.ciel";
 const STD_MESSAGE_PATH: &str = "std/message.ciel";
 const STD_ACTOR_PATH: &str = "std/actor.ciel";
 const STD_META_PATH: &str = "std/meta.ciel";
@@ -25,6 +28,13 @@ fn def_matches(
 
 pub fn is_std_result_enum(resolved: &ResolvedProgram, def_id: DefId) -> bool {
     def_matches(resolved, def_id, DefKind::Enum, "Result", STD_RESULT_PATH)
+        || def_matches(
+            resolved,
+            def_id,
+            DefKind::Enum,
+            "Result",
+            STD_RESULT_CORE_PATH,
+        )
 }
 
 pub fn module_can_see_std_result(resolved: &ResolvedProgram, module: ModuleId) -> bool {
@@ -34,6 +44,49 @@ pub fn module_can_see_std_result(resolved: &ResolvedProgram, module: ModuleId) -
     matches!(
         resolved.lookup_bare(module, "Result", &[DefKind::Enum]),
         Ok(Some(def_id)) if is_std_result_enum(resolved, def_id)
+    )
+}
+
+pub fn is_std_error_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    def_matches(resolved, def_id, DefKind::Struct, "Error", STD_ERROR_PATH)
+        || def_matches(
+            resolved,
+            def_id,
+            DefKind::Struct,
+            "Error",
+            STD_ERROR_CORE_PATH,
+        )
+}
+
+pub fn module_can_see_std_error(resolved: &ResolvedProgram, module: ModuleId) -> bool {
+    if module_path_matches(resolved, module, STD_ERROR_PATH)
+        || module_path_matches(resolved, module, STD_ERROR_CORE_PATH)
+    {
+        return true;
+    }
+    matches!(
+        resolved.lookup_bare(module, "Error", &[DefKind::Struct]),
+        Ok(Some(def_id)) if is_std_error_struct(resolved, def_id)
+    )
+}
+
+pub fn is_std_error_interface(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ERROR_PATH,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ERROR_CORE_PATH,
     )
 }
 

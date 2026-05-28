@@ -254,9 +254,8 @@ impl<'a> FunctionAnalyzer<'a> {
 
     fn scan_expr(&mut self, expr: &TExpr) {
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
-                self.scan_expr(expr)
-            }
+            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => self.scan_expr(expr),
+            TExprKind::Try { expr, .. } => self.scan_expr(expr),
             TExprKind::Binary { left, right, .. } => {
                 self.scan_expr(left);
                 self.scan_expr(right);
@@ -504,9 +503,8 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.collect_storage_sources(value, out);
                 }
             }
-            TExprKind::Cast { expr, .. } | TExprKind::Try(expr) => {
-                self.collect_storage_sources(expr, out);
-            }
+            TExprKind::Cast { expr, .. } => self.collect_storage_sources(expr, out),
+            TExprKind::Try { expr, .. } => self.collect_storage_sources(expr, out),
             TExprKind::Binary { left, right, .. } => {
                 self.collect_storage_sources(left, out);
                 self.collect_storage_sources(right, out);

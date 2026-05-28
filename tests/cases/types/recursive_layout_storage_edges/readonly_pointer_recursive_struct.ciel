@@ -1,0 +1,12 @@
+// ciel-test: compile
+// expect-c-contains: const RNode *next;
+
+struct RNode {
+    i64 data;
+    ?*const RNode next;
+}
+
+i64 main() {
+    RNode value = { data: 7, next: null };
+    return value.data;
+}

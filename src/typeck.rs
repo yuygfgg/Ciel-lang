@@ -4,6 +4,7 @@ use crate::{
     capture::collect_closure_capture_ids,
     diagnostic::{DiagResult, Diagnostic},
     hir::*,
+    layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
     std_id,
     thir::*,
@@ -499,8 +500,10 @@ struct TypeChecker {
     opaque_structs: HashSet<String>,
     unsafe_structs: HashSet<String>,
     structs: HashMap<String, Vec<(String, Ty)>>,
+    visiting_structs: HashSet<String>,
     struct_templates: HashMap<String, StructTemplate>,
     enum_templates: HashMap<String, EnumTemplate>,
+    visiting_enums: HashSet<String>,
     variants: HashMap<DefId, VariantSig>,
     interfaces: HashMap<DefId, InterfaceSig>,
     interface_names: HashMap<String, DefId>,
@@ -538,8 +541,10 @@ impl TypeChecker {
             opaque_structs: HashSet::new(),
             unsafe_structs: HashSet::new(),
             structs: HashMap::new(),
+            visiting_structs: HashSet::new(),
             struct_templates: HashMap::new(),
             enum_templates: HashMap::new(),
+            visiting_enums: HashSet::new(),
             variants: HashMap::new(),
             interfaces: HashMap::new(),
             interface_names: HashMap::new(),
@@ -627,6 +632,7 @@ impl TypeChecker {
             }
         }
         checked_functions.append(&mut self.generated_functions);
+        self.check_by_value_layout_cycles();
 
         if self.diagnostics.is_empty() {
             let mut checked_structs = self
@@ -879,54 +885,17 @@ impl TypeChecker {
     }
 
     fn check_by_value_layout_cycles(&mut self) {
-        let mut graph: HashMap<String, HashSet<String>> = HashMap::new();
-        let modules = self.hir_modules.clone();
-        for module in &modules {
-            for item in &module.items {
-                match &item.kind {
-                    ItemKind::Struct(decl) => {
-                        let edges = graph.entry(decl.name.name.clone()).or_default();
-                        for field in &decl.fields {
-                            collect_layout_edges_from_type(
-                                &field.ty,
-                                &self.resolved,
-                                &self.type_aliases,
-                                edges,
-                                &mut Vec::new(),
-                            );
-                        }
-                    }
-                    ItemKind::Enum(decl) => {
-                        let edges = graph.entry(decl.name.name.clone()).or_default();
-                        for variant in &decl.variants {
-                            for payload in &variant.payload {
-                                collect_layout_edges_from_type(
-                                    payload,
-                                    &self.resolved,
-                                    &self.type_aliases,
-                                    edges,
-                                    &mut Vec::new(),
-                                );
-                            }
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-
-        let mut visiting = Vec::<String>::new();
-        let mut visited = HashSet::<String>::new();
-        let names = graph.keys().cloned().collect::<Vec<_>>();
-        for name in names {
-            detect_layout_cycle(
-                &name,
-                &graph,
-                &mut visiting,
-                &mut visited,
-                &mut self.diagnostics,
-            );
-        }
+        let structs = self
+            .structs
+            .iter()
+            .map(|(name, fields)| CheckedStruct {
+                name: name.clone(),
+                fields: fields.clone(),
+            })
+            .collect::<Vec<_>>();
+        let enums = self.checked_enums.values().cloned().collect::<Vec<_>>();
+        self.diagnostics
+            .extend(check_checked_aggregate_layouts(&structs, &enums));
     }
 
     fn collect_structs(&mut self) {
@@ -2447,7 +2416,9 @@ impl TypeChecker {
                     return;
                 }
                 let instance_name = enum_instance_name(name, args);
-                if self.checked_enums.contains_key(&instance_name) {
+                if self.checked_enums.contains_key(&instance_name)
+                    || self.visiting_enums.contains(&instance_name)
+                {
                     return;
                 }
                 let subst = template
@@ -2456,6 +2427,7 @@ impl TypeChecker {
                     .cloned()
                     .zip(args.iter().cloned())
                     .collect::<HashMap<_, _>>();
+                self.visiting_enums.insert(instance_name.clone());
                 let variants = template
                     .variants
                     .iter()
@@ -2471,6 +2443,7 @@ impl TypeChecker {
                             .collect(),
                     })
                     .collect::<Vec<_>>();
+                self.visiting_enums.remove(&instance_name);
                 self.checked_enums.insert(
                     instance_name.clone(),
                     CheckedEnum {
@@ -2523,7 +2496,9 @@ impl TypeChecker {
                     return;
                 }
                 let instance_name = enum_instance_name(name, args);
-                if self.structs.contains_key(&instance_name) {
+                if self.structs.contains_key(&instance_name)
+                    || self.visiting_structs.contains(&instance_name)
+                {
                     return;
                 }
                 let subst = template
@@ -2532,6 +2507,7 @@ impl TypeChecker {
                     .cloned()
                     .zip(args.iter().cloned())
                     .collect::<HashMap<_, _>>();
+                self.visiting_structs.insert(instance_name.clone());
                 let fields = template
                     .fields
                     .iter()
@@ -2541,6 +2517,7 @@ impl TypeChecker {
                         (field.name.name.clone(), ty)
                     })
                     .collect::<Vec<_>>();
+                self.visiting_structs.remove(&instance_name);
                 self.structs.insert(instance_name, fields);
                 if template.is_unsafe {
                     self.unsafe_structs.insert(enum_instance_name(name, args));
@@ -8297,85 +8274,6 @@ fn lvalue_root_local(expr: &TExpr) -> Option<(LocalId, &str)> {
 
 fn enum_instance_name(name: &str, args: &[Ty]) -> String {
     aggregate_instance_name(name, args)
-}
-
-fn collect_layout_edges_from_type(
-    ty: &Type,
-    resolved: &ResolvedProgram,
-    aliases: &HashMap<DefId, TypeAliasTemplate>,
-    edges: &mut HashSet<String>,
-    alias_stack: &mut Vec<DefId>,
-) {
-    match &ty.kind {
-        TypeKind::Hole | TypeKind::Never => {}
-        TypeKind::Named(type_name, _args) => {
-            let TypeNameKind::Def(def_id) = type_name.kind else {
-                return;
-            };
-            let def = resolved.def(def_id);
-            match def.kind {
-                DefKind::Struct | DefKind::Enum => {
-                    edges.insert(def.name.clone());
-                }
-                DefKind::TypeAlias => {
-                    if alias_stack.contains(&def_id) {
-                        return;
-                    }
-                    if let Some(alias) = aliases.get(&def_id) {
-                        alias_stack.push(def_id);
-                        if let TypeAliasTarget::Type(ty) = &alias.target {
-                            collect_layout_edges_from_type(
-                                ty,
-                                resolved,
-                                aliases,
-                                edges,
-                                alias_stack,
-                            );
-                        }
-                        alias_stack.pop();
-                    }
-                }
-                _ => {}
-            }
-        }
-        TypeKind::Array { elem, .. } => {
-            collect_layout_edges_from_type(elem, resolved, aliases, edges, alias_stack);
-        }
-        TypeKind::Pointer { .. }
-        | TypeKind::Slice { .. }
-        | TypeKind::Function { .. }
-        | TypeKind::Closure { .. } => {}
-        TypeKind::Void | TypeKind::Primitive(_) => {}
-    }
-}
-
-fn detect_layout_cycle(
-    name: &str,
-    graph: &HashMap<String, HashSet<String>>,
-    visiting: &mut Vec<String>,
-    visited: &mut HashSet<String>,
-    diagnostics: &mut Vec<Diagnostic>,
-) {
-    if visited.contains(name) {
-        return;
-    }
-    if let Some(pos) = visiting.iter().position(|entry| entry == name) {
-        let mut cycle = visiting[pos..].to_vec();
-        cycle.push(name.to_string());
-        diagnostics.push(Diagnostic::new(
-            None,
-            format!("by-value recursive layout cycle: {}", cycle.join(" -> ")),
-        ));
-        return;
-    }
-    visiting.push(name.to_string());
-    if let Some(edges) = graph.get(name) {
-        for next in edges {
-            detect_layout_cycle(next, graph, visiting, visited, diagnostics);
-        }
-    }
-    visiting.pop();
-    visited.insert(name.to_string());
 }
 
 fn unify_receiver_param(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {

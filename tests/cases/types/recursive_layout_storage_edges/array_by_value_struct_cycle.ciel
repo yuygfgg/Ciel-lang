@@ -1,8 +1,9 @@
 // ciel-test: error
 // expect-error: recursive by-value type is not supported: `A`
+// expect-error: layout cycle: A -> A
 
 struct A {
-    A a;
+    [1]A items;
 }
 
 i64 main() {

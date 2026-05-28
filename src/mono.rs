@@ -10,6 +10,7 @@ use crate::{
         checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
         impl_matches_interface_receiver, retained_closure_interface_signature,
     },
+    layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ResolvedProgram},
     retained::{
         retained_closure_has_clone_message_capability, retained_closure_missing_capabilities,
@@ -979,6 +980,10 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn finish(mut self) -> DiagResult<(Vec<CheckedStruct>, Vec<CheckedEnum>)> {
+        self.diagnostics.extend(check_checked_aggregate_layouts(
+            &self.checked_structs,
+            &self.checked_enums,
+        ));
         if self.diagnostics.is_empty() {
             Ok((self.checked_structs, self.checked_enums))
         } else {

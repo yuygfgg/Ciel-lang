@@ -657,9 +657,62 @@ Imported C functions must be declared through an unsafe C boundary, normally an
 remain in safe `extern "C"` blocks because they do not create callable unsafe
 operations.
 
-By-value recursive types are illegal. During type layout, if a struct or enum
-contains itself by value through a cycle, semantic analysis reports an error.
-Recursive references must use pointers.
+Recursive layout is checked through storage edges. A struct field or enum
+payload stored by value continues layout expansion. A fixed-size array
+continues layout expansion through its element type. Pointer edges stop layout
+expansion: `*T`, `*const T`, `?*T`, and `?*const T` may refer back to the
+containing aggregate. Slice, function, closure, and dynamic interface values
+are finite handles or descriptors and do not expand the pointed-to or callable
+shape for aggregate layout.
+
+If layout reaches the same concrete struct or enum instance again through only
+by-value storage edges, the program is rejected:
+
+```rust
+struct Node {
+    i64 data;
+    ?*Node next; // ok: pointer edge cuts the cycle
+}
+
+struct BadNode {
+    i64 data;
+    BadNode next; // error
+}
+
+enum List {
+    Cons(i64, List), // error
+    Nil,
+}
+```
+
+Generic aggregate layout depends only on substituted storage types. An unused
+type parameter does not force expansion:
+
+```rust
+struct Wrapper<T> {
+    i64 tag;
+}
+
+struct Outer {
+    Wrapper<Outer> inner; // ok: Wrapper<T> stores no T
+}
+```
+
+If substitution leaves a by-value cycle, the concrete instance is rejected:
+
+```rust
+struct Box<T> {
+    T value;
+}
+
+struct Outer {
+    Box<Outer> inner; // error
+}
+```
+
+Layout validity is separate from policy surfaces such as `Message` and
+structural metaprogramming. A recursive pointer graph has finite in-memory
+layout, but it does not automatically become a safe cross-actor clone format.
 
 Generic calls are resolved by unification over explicit type arguments,
 argument types, constraints, and the expected result type. If any generic
@@ -1645,6 +1698,12 @@ such as `Result<S, Error> |(S, M): Message|` carries the witness explicitly.
 impls for primitive values, `Error`, `Result<T, E>`, and owned `/std/meta` SOP
 nodes. Standard-library handle modules provide their own unsafe impls for actor
 handles, channels, mutexes, atomics, and other synchronized handles.
+
+Layout-valid recursive pointer graphs do not gain `Message` automatically.
+For example, `struct Node { i64 data; ?*Node next; }` has finite layout, but a
+raw pointer graph is not a default cross-actor clone representation. Code must
+use an owned representation or write an explicit `clone_message(*const T)`
+policy for the nominal type.
 
 Compiler-derived `Message` no longer applies to user structs or enums. Programs
 that want structural behavior use the owned representation at the boundary:

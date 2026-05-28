@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: recursive by-value type is not supported: `Outer`
+// expect-error: layout cycle: Outer -> Wrapper<Outer> -> Outer
+
+struct Wrapper<T> {
+    T value;
+}
+
+struct Outer {
+    Wrapper<Outer> inner;
+}
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,18 @@
+// ciel-test: compile
+// expect-c-contains: Outer *value;
+
+struct Wrapper<T> {
+    ?*T value;
+}
+
+struct Outer {
+    Wrapper<Outer> inner;
+}
+
+i64 main() {
+    Outer value = { inner: { value: null } };
+    if (value.inner.value == null) {
+        return 0;
+    }
+    return 1;
+}

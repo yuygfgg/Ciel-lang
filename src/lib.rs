@@ -6,6 +6,7 @@ pub mod driver;
 pub mod escape;
 pub mod hir;
 pub mod interfaces;
+pub mod layout;
 pub mod lexer;
 pub mod mono;
 pub mod parser;

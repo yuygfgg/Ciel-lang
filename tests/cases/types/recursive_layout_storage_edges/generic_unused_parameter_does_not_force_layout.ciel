@@ -1,0 +1,15 @@
+// ciel-test: compile
+// expect-c-contains: typedef struct Wrapper_Outer Wrapper_Outer;
+
+struct Wrapper<T> {
+    i64 tag;
+}
+
+struct Outer {
+    Wrapper<Outer> inner;
+}
+
+i64 main() {
+    Outer value = { inner: { tag: 7 } };
+    return value.inner.tag;
+}

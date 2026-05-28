@@ -31,9 +31,6 @@ capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 
-self-referential-types || metaprogramming[layout expansion boundaries]
-self-referential-types || pure-library-message[layout-valid does not imply Message]
-
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]
 error-box || metaprogramming[owned error erasure and ? propagation]
@@ -47,11 +44,6 @@ capability impls produced through those routes.
 `dispatch-actor-io-runtime` is implemented and moved to `proposal/done/`. Its
 runtime ABI still matters for `monomorphized-c-callbacks`, which owns the later
 stdlib-lowering step that removes actor-specific compiler builtins.
-
-`self-referential-types` covers recursive layout checking through storage edges.
-It is independent from actor/runtime specifics: pointer edges and other future
-indirection carriers may cut layout recursion, while by-value cycles remain
-illegal. It does not grant `Message` semantics to recursive pointer graphs.
 
 `unsafe` owns the source marker for imported C calls and raw handle adoption.
 For message policy, it follows `pure-library-message`: that proposal owns

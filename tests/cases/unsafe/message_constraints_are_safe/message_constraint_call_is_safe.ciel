@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 4
+
+import /std/lib;
+
+Result<T, Error> copy_message<T: Message>(T value) {
+    T local = value;
+    return clone_message(&local);
+}
+
+i32 main() {
+    i64 copied = must(copy_message(4));
+    return copied as i32;
+}

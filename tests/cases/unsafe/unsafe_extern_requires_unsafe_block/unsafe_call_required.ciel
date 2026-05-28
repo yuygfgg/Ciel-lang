@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: call to unsafe function `abs` requires unsafe block
+
+#c_include "stdlib.h"
+
+unsafe extern "C" {
+    i32 abs(i32 value);
+}
+
+i32 main() {
+    return abs(-7);
+}

@@ -10,5 +10,5 @@ struct LocalEnvelope {
 i64 main() {
     LocalEnvelope envelope = { fd: stdout() };
     LocalEnvelope copy = must(clone_message(&envelope));
-    return raw_fd(copy.fd) as i64;
+    return unsafe { raw_fd(copy.fd) } as i64;
 }

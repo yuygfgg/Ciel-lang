@@ -74,6 +74,7 @@ pub enum TypeAliasTarget {
 
 #[derive(Clone, Debug)]
 pub struct StructDecl {
+    pub is_unsafe: bool,
     pub name: ast::Ident,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<FieldDecl>,
@@ -100,6 +101,7 @@ pub struct VariantDecl {
 
 #[derive(Clone, Debug)]
 pub struct InterfaceDecl {
+    pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
     pub signature: FunctionSignature,
 }
@@ -124,6 +126,7 @@ pub struct InterfaceTerm {
 
 #[derive(Clone, Debug)]
 pub struct ImplDecl {
+    pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
     pub name: NameRef,
     pub args: Vec<Type>,
@@ -133,6 +136,7 @@ pub struct ImplDecl {
 
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
+    pub is_unsafe: bool,
     pub abi: Option<String>,
     pub signature: FunctionSignature,
     pub body: Option<Block>,
@@ -148,6 +152,7 @@ pub struct FunctionSignature {
 
 #[derive(Clone, Debug)]
 pub struct ExternBlock {
+    pub is_unsafe: bool,
     pub abi: String,
     pub items: Vec<ExternItem>,
 }
@@ -216,6 +221,7 @@ pub enum TypeKind {
         elem: Box<Type>,
     },
     Function {
+        is_unsafe: bool,
         abi: Option<String>,
         ret: Box<Type>,
         params: Vec<Type>,
@@ -245,6 +251,13 @@ pub enum TypeNameKind {
 pub struct Block {
     pub span: Span,
     pub statements: Vec<Stmt>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExprBlock {
+    pub span: Span,
+    pub statements: Vec<Stmt>,
+    pub value: Option<Box<Expr>>,
 }
 
 #[derive(Clone, Debug)]
@@ -374,6 +387,7 @@ pub enum ExprKind {
         expr: Box<Expr>,
         ty: Type,
     },
+    UnsafeBlock(ExprBlock),
     Call {
         callee: Box<Expr>,
         type_args: Vec<Type>,
@@ -530,6 +544,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     .collect();
                 self.pop_generics();
                 ItemKind::Struct(StructDecl {
+                    is_unsafe: decl.is_unsafe,
                     name: decl.name.clone(),
                     generics,
                     fields,
@@ -563,6 +578,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 let signature = self.lower_signature(&decl.signature, false);
                 self.pop_generics();
                 ItemKind::Interface(InterfaceDecl {
+                    is_unsafe: decl.is_unsafe,
                     generics,
                     signature,
                 })
@@ -592,6 +608,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 self.pop_scope();
                 self.pop_generics();
                 ItemKind::Impl(ImplDecl {
+                    is_unsafe: decl.is_unsafe,
                     generics,
                     name,
                     args,
@@ -615,6 +632,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 });
                 self.pop_generics();
                 ItemKind::Function(FunctionDecl {
+                    is_unsafe: decl.is_unsafe,
                     abi: decl.abi.clone(),
                     signature,
                     body,
@@ -700,6 +718,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             })
             .collect();
         ExternBlock {
+            is_unsafe: block.is_unsafe,
             abi: block.abi.clone(),
             items,
         }
@@ -819,7 +838,13 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 mutability: *mutability,
                 elem: Box::new(self.lower_type(elem)),
             },
-            ast::TypeKind::Function { abi, ret, params } => TypeKind::Function {
+            ast::TypeKind::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => TypeKind::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.lower_type(ret)),
                 params: params.iter().map(|param| self.lower_type(param)).collect(),
@@ -1135,6 +1160,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 expr: Box::new(self.lower_expr(expr)),
                 ty: self.lower_type(ty),
             },
+            ast::ExprKind::UnsafeBlock(block) => {
+                ExprKind::UnsafeBlock(self.lower_expr_block(block))
+            }
             ast::ExprKind::Call {
                 callee,
                 type_args,
@@ -1166,6 +1194,25 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         Expr {
             span: expr.span,
             kind,
+        }
+    }
+
+    fn lower_expr_block(&mut self, block: &ast::ExprBlock) -> ExprBlock {
+        self.push_scope();
+        let statements = block
+            .statements
+            .iter()
+            .map(|stmt| self.lower_stmt(stmt))
+            .collect();
+        let value = block
+            .value
+            .as_ref()
+            .map(|expr| Box::new(self.lower_expr(expr)));
+        self.pop_scope();
+        ExprBlock {
+            span: block.span,
+            statements,
+            value,
         }
     }
 

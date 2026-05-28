@@ -4,12 +4,16 @@
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
 }
 
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
 i32 main() {
-    defer putchar(65);
-    defer putchar(66);
+    defer ciel_test_putchar(65);
+    defer ciel_test_putchar(66);
     return 0;
 }

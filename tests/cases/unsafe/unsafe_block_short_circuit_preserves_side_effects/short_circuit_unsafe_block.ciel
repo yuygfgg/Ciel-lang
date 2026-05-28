@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: R
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    i32 putchar(i32 ch);
+}
+
+bool mark(i32 ch, bool value) {
+    unsafe { putchar(ch) };
+    return value;
+}
+
+i32 main() {
+    bool left = false && unsafe { mark(76, true) };
+    bool right = true || unsafe { mark(82, false) };
+    if (left) {
+        return 1;
+    }
+    if (!right) {
+        return 2;
+    }
+    unsafe { putchar(82) };
+    return 0;
+}

@@ -6,6 +6,6 @@ import /std/lib;
 
 i64 main() {
     Fd fd = stdout();
-    i64 |(i64): ThreadLocal| local = |i64 value| value + (raw_fd(fd) as i64);
+    i64 |(i64): ThreadLocal| local = |i64 value| value + (unsafe { raw_fd(fd) } as i64);
     return local(1);
 }

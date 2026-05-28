@@ -7,11 +7,11 @@ struct PointerBox {
     *i64 value;
 }
 
-impl clone_message(*const PointerBox value) {
+unsafe impl clone_message(*const PointerBox value) {
     return Ok(*value);
 }
 
-impl clone_message(*const PointerBox value) {
+unsafe impl clone_message(*const PointerBox value) {
     return Ok(*value);
 }
 

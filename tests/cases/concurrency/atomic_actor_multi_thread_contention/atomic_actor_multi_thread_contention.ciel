@@ -11,7 +11,7 @@ struct Burst {
     i64 repeats;
 }
 
-impl clone_message(*const Burst value) {
+unsafe impl clone_message(*const Burst value) {
     return Ok(*value);
 }
 

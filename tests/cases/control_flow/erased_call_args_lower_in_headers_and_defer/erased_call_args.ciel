@@ -4,27 +4,31 @@
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
 }
 
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
 bool stop(void marker) {
-    putchar(87);
+    ciel_test_putchar(87);
     return false;
 }
 
 bool keep(void marker) {
-    putchar(67);
+    ciel_test_putchar(67);
     return true;
 }
 
 i64 step(void marker) {
-    putchar(83);
+    ciel_test_putchar(83);
     return 1;
 }
 
 void cleanup(void marker) {
-    putchar(68);
+    ciel_test_putchar(68);
 }
 
 i32 main() {
@@ -34,10 +38,10 @@ i32 main() {
     }
     for (i64 @i = 0; i < 2 && keep(marker); i = i + step(marker)) {
         if (i == 0) {
-            putchar(65);
+            ciel_test_putchar(65);
             continue;
         }
-        putchar(66);
+        ciel_test_putchar(66);
     }
     return 0;
 }

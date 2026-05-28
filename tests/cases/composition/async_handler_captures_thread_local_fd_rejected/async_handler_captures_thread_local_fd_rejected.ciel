@@ -13,7 +13,7 @@ i64 main() {
     Env env = { fd: stdout(), out: must(make_channel<i64>()) };
     Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
         Env local_env = env;
-        channel_send(&local_env.out, raw_fd(local_env.fd) as i64)?;
+        channel_send(&local_env.out, unsafe { raw_fd(local_env.fd) } as i64)?;
         return Ok(state + msg);
     }));
     must(join(&actor));

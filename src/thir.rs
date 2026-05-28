@@ -47,6 +47,7 @@ pub struct CheckedVariant {
 #[derive(Clone, Debug)]
 pub struct CheckedInterface {
     pub name: String,
+    pub is_unsafe: bool,
     pub generics: Vec<String>,
     pub ret: Ty,
     pub params: Vec<Ty>,
@@ -78,6 +79,7 @@ pub struct CheckedImpl {
 pub struct CheckedFunction {
     pub def_id: DefId,
     pub name: String,
+    pub is_unsafe: bool,
     pub abi: Option<String>,
     pub noescape: bool,
     pub exported: bool,
@@ -91,6 +93,7 @@ pub struct CheckedGenericFunction {
     pub def_id: DefId,
     pub module: ModuleId,
     pub name: String,
+    pub is_unsafe: bool,
     pub abi: Option<String>,
     pub noescape: bool,
     pub exported: bool,
@@ -296,6 +299,10 @@ pub enum TExprKind {
     Cast {
         expr: Box<TExpr>,
         ty: Ty,
+    },
+    UnsafeBlock {
+        statements: Vec<TStmt>,
+        value: Option<Box<TExpr>>,
     },
     Call {
         callee: Box<TExpr>,
@@ -568,6 +575,14 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        TExprKind::UnsafeBlock { statements, value } => {
+            for stmt in statements {
+                visitor.visit_stmt(stmt);
+            }
+            if let Some(value) = value {
+                visitor.visit_expr(value);
+            }
+        }
         TExprKind::Binary { left, right, .. } => {
             visitor.visit_expr(left);
             visitor.visit_expr(right);

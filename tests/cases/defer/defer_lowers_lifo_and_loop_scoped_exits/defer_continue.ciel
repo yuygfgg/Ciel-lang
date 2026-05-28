@@ -4,14 +4,18 @@
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
 }
 
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
 i32 main() {
-    defer putchar(79);
+    defer ciel_test_putchar(79);
     for (i64 @i = 0; i < 2; i = i + 1) {
-        defer putchar(65);
+        defer ciel_test_putchar(65);
         continue;
     }
     return 0;

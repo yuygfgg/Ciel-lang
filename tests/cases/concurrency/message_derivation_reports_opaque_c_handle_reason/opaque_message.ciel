@@ -3,7 +3,7 @@
 
 import /std/message;
 
-extern "C" {
+unsafe extern "C" {
     opaque struct NativeHandle;
 }
 

@@ -59,6 +59,7 @@ pub enum TypeAliasTarget {
 
 #[derive(Clone, Debug)]
 pub struct StructDecl {
+    pub is_unsafe: bool,
     pub name: Ident,
     pub generics: Vec<GenericParam>,
     pub fields: Vec<FieldDecl>,
@@ -85,6 +86,7 @@ pub struct VariantDecl {
 
 #[derive(Clone, Debug)]
 pub struct InterfaceDecl {
+    pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
     pub signature: FunctionSignature,
 }
@@ -115,6 +117,7 @@ pub struct InterfaceTerm {
 
 #[derive(Clone, Debug)]
 pub struct ImplDecl {
+    pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
     pub name: Ident,
     pub args: Vec<Type>,
@@ -124,6 +127,7 @@ pub struct ImplDecl {
 
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
+    pub is_unsafe: bool,
     pub abi: Option<String>,
     pub signature: FunctionSignature,
     pub body: Option<Block>,
@@ -139,6 +143,7 @@ pub struct FunctionSignature {
 
 #[derive(Clone, Debug)]
 pub struct ExternBlock {
+    pub is_unsafe: bool,
     pub abi: String,
     pub items: Vec<ExternItem>,
 }
@@ -251,6 +256,7 @@ pub enum TypeKind {
         elem: Box<Type>,
     },
     Function {
+        is_unsafe: bool,
         abi: Option<String>,
         ret: Box<Type>,
         params: Vec<Type>,
@@ -266,6 +272,13 @@ pub enum TypeKind {
 pub struct Block {
     pub span: Span,
     pub statements: Vec<Stmt>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExprBlock {
+    pub span: Span,
+    pub statements: Vec<Stmt>,
+    pub value: Option<Box<Expr>>,
 }
 
 #[derive(Clone, Debug)]
@@ -379,6 +392,7 @@ pub enum ExprKind {
         expr: Box<Expr>,
         ty: Type,
     },
+    UnsafeBlock(ExprBlock),
     Call {
         callee: Box<Expr>,
         type_args: Vec<Type>,

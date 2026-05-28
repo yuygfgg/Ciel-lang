@@ -1,12 +1,12 @@
 // ciel-test: compile
 // expect-c-not-contains: int64_t *value__
 
-extern "C" {
+unsafe extern "C" {
     noescape void observe(*i64 value);
 }
 
 i64 main() {
     i64 @value = 5;
-    observe(&value);
+    unsafe { observe(&value) };
     return value;
 }

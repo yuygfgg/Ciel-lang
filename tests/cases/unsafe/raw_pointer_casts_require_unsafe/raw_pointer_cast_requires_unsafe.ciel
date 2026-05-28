@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: raw pointer casts from `*void` require unsafe block
+
+i64 main() {
+    i64 @value = 9;
+    *void raw = &value as *void;
+    *i64 typed = raw as *i64;
+    return *typed;
+}

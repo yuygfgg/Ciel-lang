@@ -19,15 +19,15 @@ struct Capture<T> {
     Bias<T> bias;
 }
 
-impl<T: Message> clone_message(*const Command<T> value) {
+unsafe impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Bias<T> value) {
+unsafe impl<T: Message> clone_message(*const Bias<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Capture<T> value) {
+unsafe impl<T: Message> clone_message(*const Capture<T> value) {
     return Ok(*value);
 }
 

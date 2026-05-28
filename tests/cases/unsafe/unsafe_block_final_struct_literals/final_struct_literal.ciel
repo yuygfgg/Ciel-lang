@@ -1,0 +1,15 @@
+// ciel-test: run
+// expect-exit: 17
+
+struct Box {
+    i64 value;
+}
+
+Box make_box(i64 value) {
+    return unsafe { { value: value } };
+}
+
+i64 main() {
+    Box box = make_box(17);
+    return box.value;
+}

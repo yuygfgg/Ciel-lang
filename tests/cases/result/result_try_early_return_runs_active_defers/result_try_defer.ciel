@@ -5,8 +5,12 @@
 #c_include "stdio.h"
 import /std/result;
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
+}
+
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
 }
 
 enum Error {
@@ -18,9 +22,9 @@ Result<i64, Error> fail() {
 }
 
 Result<i64, Error> early() {
-    defer putchar(65);
+    defer ciel_test_putchar(65);
     i64 value = fail()?;
-    defer putchar(66);
+    defer ciel_test_putchar(66);
     return Ok(value);
 }
 

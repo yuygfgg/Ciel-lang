@@ -14,11 +14,11 @@ struct Envelope<T> {
     void marker;
 }
 
-impl<T: Message> clone_message(*const Step<T> value) {
+unsafe impl<T: Message> clone_message(*const Step<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Envelope<T> value) {
+unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 

@@ -14,7 +14,7 @@ struct Outer {
     i64 extra;
 }
 
-impl clone_message(*const Handle value) {
+unsafe impl clone_message(*const Handle value) {
     return Ok(*value);
 }
 

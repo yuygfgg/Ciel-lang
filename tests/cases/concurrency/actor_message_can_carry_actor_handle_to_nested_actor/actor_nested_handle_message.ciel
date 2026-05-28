@@ -9,7 +9,7 @@ struct Forward {
     i64 value;
 }
 
-impl clone_message(*const Forward value) {
+unsafe impl clone_message(*const Forward value) {
     return Ok(*value);
 }
 

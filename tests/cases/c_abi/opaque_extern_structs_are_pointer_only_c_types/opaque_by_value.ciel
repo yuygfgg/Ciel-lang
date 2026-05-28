@@ -1,7 +1,7 @@
 // ciel-test: error
 // expect-error: opaque
 
-extern "C" {
+unsafe extern "C" {
     opaque struct FILE;
 }
 

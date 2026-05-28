@@ -3,10 +3,10 @@
 
 #c_include "stdlib.h"
 
-extern "C" {
+unsafe extern "C" {
     never exit(i32 code);
 }
 
 i64 main() {
-    exit(7);
+    unsafe { exit(7) };
 }

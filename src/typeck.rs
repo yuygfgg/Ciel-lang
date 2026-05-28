@@ -24,6 +24,7 @@ struct FunctionSig {
     def_id: DefId,
     module: ModuleId,
     name: String,
+    is_unsafe: bool,
     abi: Option<String>,
     noescape: bool,
     has_body: bool,
@@ -41,6 +42,7 @@ struct GenericInfo {
 
 #[derive(Clone, Debug)]
 struct StructTemplate {
+    is_unsafe: bool,
     generics: Vec<String>,
     fields: Vec<FieldDecl>,
 }
@@ -74,6 +76,7 @@ struct VariantSig {
 #[derive(Clone, Debug)]
 struct InterfaceSig {
     name: String,
+    is_unsafe: bool,
     generics: Vec<String>,
     ret: Type,
     params: Vec<Param>,
@@ -494,6 +497,7 @@ struct TypeChecker {
     functions_by_name: HashMap<String, Vec<DefId>>,
     type_aliases: HashMap<DefId, TypeAliasTemplate>,
     opaque_structs: HashSet<String>,
+    unsafe_structs: HashSet<String>,
     structs: HashMap<String, Vec<(String, Ty)>>,
     struct_templates: HashMap<String, StructTemplate>,
     enum_templates: HashMap<String, EnumTemplate>,
@@ -517,6 +521,7 @@ struct TypeChecker {
     next_type_hole_id: usize,
     type_hole_solutions: HashMap<usize, Ty>,
     current_loop_depth: usize,
+    unsafe_depth: usize,
 }
 
 impl TypeChecker {
@@ -531,6 +536,7 @@ impl TypeChecker {
             functions_by_name: HashMap::new(),
             type_aliases: HashMap::new(),
             opaque_structs: HashSet::new(),
+            unsafe_structs: HashSet::new(),
             structs: HashMap::new(),
             struct_templates: HashMap::new(),
             enum_templates: HashMap::new(),
@@ -554,6 +560,7 @@ impl TypeChecker {
             next_type_hole_id: 0,
             type_hole_solutions: HashMap::new(),
             current_loop_depth: 0,
+            unsafe_depth: 0,
         }
     }
 
@@ -600,6 +607,7 @@ impl TypeChecker {
                                     checked_functions.push(CheckedFunction {
                                         def_id: sig.def_id,
                                         name: signature.name.name.clone(),
+                                        is_unsafe: sig.is_unsafe,
                                         abi: Some(block.abi.clone()),
                                         noescape: *noescape,
                                         exported: item.export,
@@ -677,6 +685,7 @@ impl TypeChecker {
                         .collect::<HashMap<_, _>>();
                     CheckedInterface {
                         name: interface.name.clone(),
+                        is_unsafe: interface.is_unsafe,
                         generics,
                         ret: self.lower_type_with_subst(&interface.ret, &subst),
                         params: interface
@@ -718,6 +727,7 @@ impl TypeChecker {
                         def_id: *def_id,
                         module: sig.module,
                         name: sig.name.clone(),
+                        is_unsafe: sig.is_unsafe,
                         abi: sig.abi.clone(),
                         noescape: sig.noescape,
                         exported: template.exported,
@@ -777,6 +787,7 @@ impl TypeChecker {
                             def_id,
                             InterfaceSig {
                                 name: decl.signature.name.name.clone(),
+                                is_unsafe: decl.is_unsafe,
                                 generics,
                                 ret: decl.signature.ret.clone(),
                                 params: decl.signature.params.clone(),
@@ -939,6 +950,9 @@ impl TypeChecker {
                             })
                             .collect::<Vec<_>>();
                         self.structs.insert(decl.name.name.clone(), fields);
+                        if decl.is_unsafe {
+                            self.unsafe_structs.insert(decl.name.name.clone());
+                        }
                         continue;
                     }
                     let generics = decl
@@ -949,6 +963,7 @@ impl TypeChecker {
                     self.struct_templates.insert(
                         decl.name.name.clone(),
                         StructTemplate {
+                            is_unsafe: decl.is_unsafe,
                             generics,
                             fields: decl.fields.clone(),
                         },
@@ -1183,7 +1198,13 @@ impl TypeChecker {
                 mutability: *mutability,
                 elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
             },
-            TypeKind::Function { abi, ret, params } => Ty::Function {
+            TypeKind::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
                 params: params
@@ -1257,7 +1278,13 @@ impl TypeChecker {
                     .map(|arg| self.resolve_type_holes(arg))
                     .collect(),
             },
-            Ty::Function { abi, ret, params } => Ty::Function {
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.resolve_type_holes(ret)),
                 params: params
@@ -1382,13 +1409,22 @@ impl TypeChecker {
                 .zip(actual_args.iter())
                 .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
             (
-                Ty::Function { abi, ret, params },
                 Ty::Function {
+                    is_unsafe,
+                    abi,
+                    ret,
+                    params,
+                },
+                Ty::Function {
+                    is_unsafe: actual_is_unsafe,
                     abi: actual_abi,
                     ret: actual_ret,
                     params: actual_params,
                 },
-            ) if abi == actual_abi && params.len() == actual_params.len() => {
+            ) if is_unsafe == actual_is_unsafe
+                && abi == actual_abi
+                && params.len() == actual_params.len() =>
+            {
                 self.unify_type_holes(ret, actual_ret)
                     && params
                         .iter()
@@ -1537,12 +1573,21 @@ impl TypeChecker {
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
                 _ => false,
             },
-            Ty::Function { abi, ret, params } => match &actual {
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => match &actual {
                 Ty::Function {
+                    is_unsafe: actual_is_unsafe,
                     abi: actual_abi,
                     ret: actual_ret,
                     params: actual_params,
-                } if abi == actual_abi && params.len() == actual_params.len() => {
+                } if is_unsafe == actual_is_unsafe
+                    && abi == actual_abi
+                    && params.len() == actual_params.len() =>
+                {
                     self.unify_ty_for_inference(ret, actual_ret, subst)
                         && params
                             .iter()
@@ -1936,7 +1981,13 @@ impl TypeChecker {
                     .map(|arg| self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics))
                     .collect(),
             },
-            Ty::Function { abi, ret, params } => Ty::Function {
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
                 params: params
@@ -2443,6 +2494,9 @@ impl TypeChecker {
                     })
                     .collect::<Vec<_>>();
                 self.structs.insert(instance_name, fields);
+                if template.is_unsafe {
+                    self.unsafe_structs.insert(enum_instance_name(name, args));
+                }
             }
             Ty::Pointer { inner, .. } => self.ensure_struct_instance(inner),
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.ensure_struct_instance(elem),
@@ -2556,6 +2610,7 @@ impl TypeChecker {
                             def_id,
                             module.id,
                             &function.signature,
+                            function.is_unsafe,
                             function.abi.clone(),
                             false,
                             function.body.is_some(),
@@ -2590,6 +2645,7 @@ impl TypeChecker {
                                     def_id,
                                     module.id,
                                     signature,
+                                    block.is_unsafe,
                                     Some(block.abi.clone()),
                                     *noescape,
                                     false,
@@ -2624,6 +2680,26 @@ impl TypeChecker {
                 let Some(interface) = self.interfaces.get(&interface_def).cloned() else {
                     continue;
                 };
+                if interface.is_unsafe && !decl.is_unsafe {
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!(
+                            "impl `{}` requires `unsafe impl` because the interface is unsafe",
+                            interface.name
+                        ),
+                    ));
+                    continue;
+                }
+                if !interface.is_unsafe && decl.is_unsafe {
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!(
+                            "`unsafe impl` cannot implement safe interface `{}`",
+                            interface.name
+                        ),
+                    ));
+                    continue;
+                }
                 if self.is_compiler_provided_meta_marker_def(interface_def) {
                     self.diagnostics.push(Diagnostic::new(
                         decl.name.span,
@@ -2946,6 +3022,7 @@ impl TypeChecker {
             def_id: function_def,
             module,
             name: function_name.clone(),
+            is_unsafe: false,
             abi: None,
             noescape: false,
             has_body: true,
@@ -2995,6 +3072,7 @@ impl TypeChecker {
             self.generated_functions.push(CheckedFunction {
                 def_id: function_def,
                 name: function_name,
+                is_unsafe: false,
                 abi: None,
                 noescape: false,
                 exported: false,
@@ -3020,6 +3098,7 @@ impl TypeChecker {
         def_id: DefId,
         module: ModuleId,
         signature: &FunctionSignature,
+        is_unsafe: bool,
         abi: Option<String>,
         noescape: bool,
         has_body: bool,
@@ -3041,6 +3120,7 @@ impl TypeChecker {
             def_id,
             module,
             name: signature.name.name.clone(),
+            is_unsafe,
             abi,
             noescape,
             has_body,
@@ -3070,6 +3150,12 @@ impl TypeChecker {
         for sig in self.functions_by_def.values() {
             if sig.abi.as_deref() != Some("C") {
                 continue;
+            }
+            if !sig.has_body && !sig.is_unsafe {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "imported C function declarations must be in `unsafe extern \"C\"` blocks",
+                ));
             }
             if sig.has_body && !sig.exported {
                 self.diagnostics.push(Diagnostic::new(
@@ -3172,6 +3258,7 @@ impl TypeChecker {
         Some(CheckedFunction {
             def_id: sig.def_id,
             name: sig.name,
+            is_unsafe: sig.is_unsafe,
             abi: sig.abi,
             noescape: sig.noescape,
             exported,
@@ -3189,6 +3276,7 @@ impl TypeChecker {
     ) -> Option<TBlock> {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
+        let previous_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
         let mut scopes = LocalScopes::default();
         scopes.push();
         for (local_id, name, ty, mutability) in params {
@@ -3238,6 +3326,7 @@ impl TypeChecker {
         }
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
+        self.unsafe_depth = previous_unsafe_depth;
         checked.map(|checked| checked.block)
     }
 
@@ -3320,6 +3409,43 @@ impl TypeChecker {
             }
         }
         (statements, flow)
+    }
+
+    fn check_unsafe_block_expr(
+        &mut self,
+        scopes: &mut LocalScopes,
+        block: &ExprBlock,
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        scopes.push();
+        let previous_unsafe_depth = self.unsafe_depth;
+        self.unsafe_depth += 1;
+        let ret_ty = self.current_return_ty.clone();
+        let (statements, flow) = self.check_statement_sequence(scopes, &block.statements, &ret_ty);
+        let value = if flow.can_fallthrough {
+            block
+                .value
+                .as_ref()
+                .and_then(|expr| self.check_expr(scopes, expr, expected))
+                .map(Box::new)
+        } else {
+            None
+        };
+        let ty = if !flow.can_fallthrough {
+            Ty::Never
+        } else {
+            value
+                .as_ref()
+                .map(|expr| expr.ty.clone())
+                .unwrap_or(Ty::Void)
+        };
+        self.unsafe_depth = previous_unsafe_depth;
+        scopes.pop();
+        Some(TExpr {
+            span: block.span,
+            ty,
+            kind: TExprKind::UnsafeBlock { statements, value },
+        })
     }
 
     fn check_stmt(
@@ -4133,9 +4259,19 @@ impl TypeChecker {
                         kind: TExprKind::Local(local_id, name),
                     }
                 } else if let Some(sig) = self.resolve_function_name(name_ref) {
+                    if sig.is_unsafe {
+                        self.require_unsafe(
+                            expr.span,
+                            format!(
+                                "use of unsafe function `{}` as a value requires unsafe block",
+                                sig.name
+                            ),
+                        );
+                    }
                     TExpr {
                         span: expr.span,
                         ty: Ty::Function {
+                            is_unsafe: sig.is_unsafe,
                             abi: sig.abi.clone(),
                             ret: Box::new(sig.ret.clone()),
                             params: sig.params.clone(),
@@ -4212,6 +4348,12 @@ impl TypeChecker {
                     ));
                     return None;
                 };
+                if self.is_unsafe_struct_instance(type_name, args) {
+                    self.require_unsafe(
+                        expr.span,
+                        format!("constructing unsafe struct `{type_name}` requires unsafe block"),
+                    );
+                }
                 let mut seen = HashMap::<String, ()>::new();
                 let mut checked_fields = Vec::new();
                 for init in fields {
@@ -4517,6 +4659,7 @@ impl TypeChecker {
                 }
                 let inner = self.check_expr(scopes, inner, None)?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
+                self.require_unsafe_pointer_cast_through_void(&inner.ty, &target, expr.span);
                 TExpr {
                     span: expr.span,
                     ty: target.clone(),
@@ -4525,6 +4668,9 @@ impl TypeChecker {
                         ty: target,
                     },
                 }
+            }
+            ExprKind::UnsafeBlock(block) => {
+                self.check_unsafe_block_expr(scopes, block, expected)?
             }
             ExprKind::Call {
                 callee,
@@ -4569,6 +4715,18 @@ impl TypeChecker {
                     return None;
                 }
                 let callee = self.check_expr(scopes, callee, None)?;
+                if matches!(
+                    &callee.ty,
+                    Ty::Function {
+                        is_unsafe: true,
+                        ..
+                    }
+                ) {
+                    self.require_unsafe(
+                        callee.span,
+                        "call to unsafe function value requires unsafe block",
+                    );
+                }
                 let (ret, params) = match &callee.ty {
                     Ty::Function { ret, params, .. }
                     | Ty::Closure { ret, params, .. }
@@ -5429,9 +5587,19 @@ impl TypeChecker {
                 self.infer_generic_function_call(scopes, span, &sig, type_args, args, expected)?;
             (call_sig, Some(instance_args))
         };
+        if call_sig.is_unsafe {
+            self.require_unsafe(
+                span,
+                format!(
+                    "call to unsafe function `{}` requires unsafe block",
+                    call_sig.name
+                ),
+            );
+        }
         let callee = TExpr {
             span,
             ty: Ty::Function {
+                is_unsafe: call_sig.is_unsafe,
                 abi: call_sig.abi.clone(),
                 ret: Box::new(call_sig.ret.clone()),
                 params: call_sig.params.clone(),
@@ -5452,11 +5620,23 @@ impl TypeChecker {
     fn check_closure_cast_allowed(&mut self, target: &Ty, span: crate::span::Span) {
         match target {
             Ty::Closure { .. } => {}
-            Ty::Function { abi: None, .. } => {}
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ..
+            } => {}
             Ty::Function { abi: Some(_), .. } => {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     "closure expressions cannot produce extern C function pointers",
+                ));
+            }
+            Ty::Function {
+                is_unsafe: true, ..
+            } => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "closure expressions cannot produce unsafe function pointers",
                 ));
             }
             _ => {
@@ -5488,6 +5668,7 @@ impl TypeChecker {
                 Some(((**ret).clone(), params.clone(), false))
             }
             Some(Ty::Function {
+                is_unsafe: false,
                 abi: None,
                 ret,
                 params,
@@ -5577,6 +5758,7 @@ impl TypeChecker {
 
         let previous_return_ty = self.current_return_ty.clone();
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
+        let previous_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
         let (ret_ty, checked_body) = match body {
             ClosureBody::Expr(body_expr) => {
                 if let Some((expected_ret, _, _)) = &expected_sig {
@@ -5600,6 +5782,7 @@ impl TypeChecker {
                     ));
                     self.current_return_ty = previous_return_ty;
                     self.control_contexts = previous_control_contexts;
+                    self.unsafe_depth = previous_unsafe_depth;
                     return None;
                 };
                 self.current_return_ty = expected_ret.clone();
@@ -5621,6 +5804,7 @@ impl TypeChecker {
         };
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
+        self.unsafe_depth = previous_unsafe_depth;
 
         let capture_ids = collect_closure_capture_ids(&checked_params, &checked_body);
         let mut captures = Vec::new();
@@ -5667,6 +5851,7 @@ impl TypeChecker {
                     ));
                 }
                 Ty::Function {
+                    is_unsafe: false,
                     abi: None,
                     ret: Box::new(expected_ret),
                     params: expected_params,
@@ -5912,6 +6097,7 @@ impl TypeChecker {
                 params,
                 generics: Vec::new(),
                 exported: sig.exported,
+                is_unsafe: sig.is_unsafe,
             },
             instance_args,
         ))
@@ -6034,6 +6220,7 @@ impl TypeChecker {
             def_id,
             module: template.module,
             name: instance_name.clone(),
+            is_unsafe: template.is_unsafe,
             abi: template.abi.clone(),
             noescape: template.noescape,
             has_body: true,
@@ -6056,6 +6243,7 @@ impl TypeChecker {
         body.map(|body| CheckedFunction {
             def_id,
             name: instance_name,
+            is_unsafe: template.is_unsafe,
             abi: template.abi.clone(),
             noescape: template.noescape,
             exported: false,
@@ -6209,6 +6397,7 @@ impl TypeChecker {
             let callee = TExpr {
                 span,
                 ty: Ty::Function {
+                    is_unsafe: false,
                     abi: None,
                     ret: Box::new(implementation.ret.clone()),
                     params: implementation.params.clone(),
@@ -6460,6 +6649,7 @@ impl TypeChecker {
             constraints: expected_constraints,
         } = &expected
             && let Ty::Function {
+                is_unsafe: false,
                 abi: None,
                 ret: actual_ret,
                 params: actual_params,
@@ -7123,7 +7313,14 @@ impl TypeChecker {
                 let instance_name = enum_instance_name(name, args);
                 let fields = self.structs.get(&instance_name)?;
                 if let Some((_, ty)) = fields.iter().find(|(candidate, _)| candidate == field) {
-                    Some(ty.clone())
+                    let ty = ty.clone();
+                    if self.is_unsafe_struct_instance(name, args) {
+                        self.require_unsafe(
+                            span,
+                            format!("field access on unsafe struct `{name}` requires unsafe block"),
+                        );
+                    }
+                    Some(ty)
                 } else {
                     self.diagnostics.push(Diagnostic::new(
                         span,
@@ -7237,6 +7434,40 @@ impl TypeChecker {
         ));
     }
 
+    fn require_unsafe_pointer_cast_through_void(
+        &mut self,
+        source: &Ty,
+        target: &Ty,
+        span: crate::span::Span,
+    ) {
+        let (
+            Ty::Pointer {
+                inner: source_inner,
+                ..
+            },
+            Ty::Pointer {
+                inner: target_inner,
+                ..
+            },
+        ) = (source, target)
+        else {
+            return;
+        };
+        if source == target {
+            return;
+        }
+        if matches!((&**source_inner, &**target_inner), (Ty::Void, target) if !matches!(target, Ty::Void))
+        {
+            self.require_unsafe(span, "raw pointer casts from `*void` require unsafe block");
+        }
+    }
+
+    fn require_unsafe(&mut self, span: crate::span::Span, message: impl Into<String>) {
+        if self.unsafe_depth == 0 {
+            self.diagnostics.push(Diagnostic::new(span, message.into()));
+        }
+    }
+
     fn reject_invalid_plain_value_type(&mut self, ty: &Ty, span: crate::span::Span, context: &str) {
         if ty.is_never() {
             self.diagnostics.push(Diagnostic::new(
@@ -7281,6 +7512,15 @@ impl TypeChecker {
 
     fn is_opaque_by_value(&self, ty: &Ty) -> bool {
         matches!(ty, Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name))
+    }
+
+    fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
+        let instance_name = enum_instance_name(name, args);
+        self.unsafe_structs.contains(&instance_name)
+            || self
+                .struct_templates
+                .get(name)
+                .is_some_and(|template| template.is_unsafe)
     }
 
     fn is_c_aggregate_value(&self, ty: &Ty) -> bool {
@@ -7332,7 +7572,14 @@ impl TypeChecker {
     ) -> bool {
         args.is_empty()
             && ((self.is_std_meta_ciel_fn_value_marker_name(interface_name)
-                && matches!(receiver_ty, Ty::Function { abi: None, .. }))
+                && matches!(
+                    receiver_ty,
+                    Ty::Function {
+                        is_unsafe: false,
+                        abi: None,
+                        ..
+                    }
+                ))
                 || (self.is_std_meta_closure_value_marker_name(interface_name)
                     && matches!(receiver_ty, Ty::ClosureInstance { .. })))
     }
@@ -8212,7 +8459,14 @@ fn marker_impl_domains_disjoint(
 fn ty_can_satisfy_compiler_marker_domain(ty: &Ty, domain: CompilerMarkerDomain) -> bool {
     match (ty, domain) {
         (Ty::Generic(_), _) => true,
-        (Ty::Function { abi: None, .. }, CompilerMarkerDomain::CielFnValue) => true,
+        (
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ..
+            },
+            CompilerMarkerDomain::CielFnValue,
+        ) => true,
         (Ty::ClosureInstance { .. }, CompilerMarkerDomain::ClosureValue) => true,
         _ => false,
     }
@@ -8288,17 +8542,20 @@ fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
         }
         (
             Ty::Function {
+                is_unsafe: left_is_unsafe,
                 abi: left_abi,
                 ret: left_ret,
                 params: left_params,
             },
             Ty::Function {
+                is_unsafe: right_is_unsafe,
                 abi: right_abi,
                 ret: right_ret,
                 params: right_params,
             },
         ) => {
-            left_abi == right_abi
+            left_is_unsafe == right_is_unsafe
+                && left_abi == right_abi
                 && left_params.len() == right_params.len()
                 && marker_ty_patterns_overlap(left_ret, right_ret)
                 && left_params

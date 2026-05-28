@@ -27,15 +27,15 @@ struct SetLast {
 struct ReadLast {
 }
 
-impl clone_message(*const Metrics value) {
+unsafe impl clone_message(*const Metrics value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Step<T> value) {
+unsafe impl<T: Message> clone_message(*const Step<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Envelope<T> value) {
+unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 

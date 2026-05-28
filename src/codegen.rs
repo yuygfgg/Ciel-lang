@@ -919,6 +919,14 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_closures(owner, arg);
                 }
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_closures(owner, stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_closures(owner, value);
+                }
+            }
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_closures(owner, inner)
             }
@@ -1216,6 +1224,14 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_dynamic(arg);
                 }
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_dynamic(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_dynamic(value);
+                }
+            }
             TExprKind::Closure { body, .. } => self.collect_closure_body_dynamic(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_dynamic(inner),
             TExprKind::RetainClosure { expr, source_ty } => {
@@ -1458,6 +1474,14 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_locations(arg);
                 }
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_locations(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_locations(value);
+                }
+            }
             TExprKind::Closure { body, .. } => self.collect_closure_body_locations(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_locations(inner),
             TExprKind::RetainClosure { expr, .. } => self.collect_expr_locations(expr),
@@ -1688,6 +1712,14 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_string_literals(arg);
                 }
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_string_literals(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_string_literals(value);
+                }
+            }
             TExprKind::Closure { body, .. } => self.collect_closure_body_string_literals(body),
             TExprKind::FunctionToClosure(inner) => self.collect_expr_string_literals(inner),
             TExprKind::RetainClosure { expr, .. } => self.collect_expr_string_literals(expr),
@@ -1899,6 +1931,14 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(callee);
                 for arg in args {
                     self.collect_expr_slices(arg);
+                }
+            }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_slices(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_slices(value);
                 }
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body_slices(body),
@@ -2776,6 +2816,15 @@ impl<'a> CGenerator<'a> {
                 }
             }
             TExprKind::Binary { op, left, right } => {
+                if matches!(op, BinaryOp::And | BinaryOp::Or) && expr_needs_stmt_lowering(right) {
+                    let Some(indent) = stmt_indent else {
+                        return Err(vec![Diagnostic::new(
+                            expr.span,
+                            "short-circuit expression needs statement lowering",
+                        )]);
+                    };
+                    return self.emit_short_circuit_expr(expr, *op, left, right, indent);
+                }
                 let op = match op {
                     BinaryOp::Or => "||",
                     BinaryOp::And => "&&",
@@ -2838,6 +2887,15 @@ impl<'a> CGenerator<'a> {
                 let callee = self.gen_expr_with_lowering(callee, stmt_indent)?;
                 let args = self.gen_call_args(args, stmt_indent)?.join(", ");
                 format!("{callee}({args})")
+            }
+            TExprKind::UnsafeBlock { statements, value } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "unsafe block expression needs statement lowering",
+                    )]);
+                };
+                return self.emit_unsafe_block_expr(expr, statements, value.as_deref(), indent);
             }
             TExprKind::ArrayToSlice(inner) => {
                 let Ty::Slice { mutability, elem } = &expr.ty else {
@@ -3110,6 +3168,76 @@ impl<'a> CGenerator<'a> {
             }
         };
         Ok(code)
+    }
+
+    fn emit_short_circuit_expr(
+        &mut self,
+        expr: &TExpr,
+        op: BinaryOp,
+        left: &TExpr,
+        right: &TExpr,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let result = self.next_temp("short_circuit");
+        let left_code = self.gen_expr_with_lowering(left, Some(indent))?;
+        self.line_indent(
+            indent,
+            &format!("{} = {left_code};", self.c_decl(&expr.ty, &result)),
+        );
+        let should_eval_right = match op {
+            BinaryOp::And => result.clone(),
+            BinaryOp::Or => format!("!{result}"),
+            _ => unreachable!("short-circuit lowering only accepts && and ||"),
+        };
+        self.line_indent(indent, &format!("if ({should_eval_right}) {{"));
+        let right_code = self.gen_expr_in_stmt(right, indent + 1)?;
+        self.line_indent(indent + 1, &format!("{result} = {right_code};"));
+        self.line_indent(indent, "}");
+        Ok(result)
+    }
+
+    fn emit_unsafe_block_expr(
+        &mut self,
+        expr: &TExpr,
+        statements: &[TStmt],
+        value: Option<&TExpr>,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let result = if expr.ty.is_erased_value() || expr.ty.is_never() {
+            None
+        } else {
+            let temp = self.next_temp("unsafe_block");
+            self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &temp)));
+            Some(temp)
+        };
+
+        self.line_indent(indent, "{");
+        self.defer_stack.push(Vec::new());
+        let mut falls_through = true;
+        for stmt in statements {
+            if !self.gen_stmt(stmt, indent + 1)? {
+                falls_through = false;
+                break;
+            }
+        }
+        if falls_through {
+            if let Some(value) = value {
+                if value.ty.is_erased_value() || expr.ty.is_erased_value() || value.is_never() {
+                    let value_code = self.gen_expr_in_stmt(value, indent + 1)?;
+                    self.line_indent(indent + 1, &format!("(void)({value_code});"));
+                    falls_through = !value.is_never();
+                } else if let Some(result) = &result {
+                    self.emit_expr_store(result, value, indent + 1)?;
+                }
+            }
+            if falls_through {
+                self.emit_current_defers(indent + 1);
+            }
+        }
+        self.defer_stack.pop();
+        self.line_indent(indent, "}");
+
+        Ok(result.unwrap_or_else(|| "((void)0)".to_string()))
     }
 
     fn emit_meta_as_ref_repr_expr(
@@ -5330,7 +5458,14 @@ impl<'a> CGenerator<'a> {
         source_value: &str,
         indent: usize,
     ) -> DiagResult<String> {
-        if matches!(source_ty, Ty::Function { abi: None, .. }) {
+        if matches!(
+            source_ty,
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ..
+            }
+        ) {
             return self.emit_function_closure_value_from_source(
                 target_ty,
                 source_ty,
@@ -6327,7 +6462,11 @@ impl<'a> CGenerator<'a> {
             &format!("{};", self.c_decl(&witness.source_ty, &source_temp)),
         );
         match &witness.source_ty {
-            Ty::Function { abi: None, .. } => {
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ..
+            } => {
                 self.line_indent(indent, &format!("{source_temp} = *({source_ptr});"));
             }
             Ty::Closure { constraints, .. }
@@ -7239,7 +7378,11 @@ impl<'a> CGenerator<'a> {
         target_ptr: &str,
     ) -> String {
         match witness.source_ty {
-            Ty::Function { abi: None, .. } => {
+            Ty::Function {
+                is_unsafe: false,
+                abi: None,
+                ..
+            } => {
                 let env_name =
                     self.function_closure_env_name(&witness.target_ty, &witness.source_ty);
                 format!("&((({env_name} *)(({target_ptr})->env))->func)")
@@ -7538,7 +7681,8 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::ActorStop { .. }
         | TExprKind::ActorJoin { .. }
         | TExprKind::FunctionToClosure(_)
-        | TExprKind::RetainClosure { .. } => true,
+        | TExprKind::RetainClosure { .. }
+        | TExprKind::UnsafeBlock { .. } => true,
         TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
             expr_needs_stmt_lowering(expr)
         }

@@ -3,70 +3,70 @@ export import /std/result;
 import /std/meta;
 import /std/meta as meta;
 
-export interface<T> Result<T, Error> clone_message(*const T value);
+export unsafe interface<T> Result<T, Error> clone_message(*const T value);
 export interface Message = clone_message;
 
-impl clone_message(*const void value) {
+unsafe impl clone_message(*const void value) {
     return Ok;
 }
 
-impl clone_message(*const bool value) {
+unsafe impl clone_message(*const bool value) {
     return Ok(*value);
 }
 
-impl clone_message(*const char value) {
+unsafe impl clone_message(*const char value) {
     return Ok(*value);
 }
 
-impl clone_message(*const i8 value) {
+unsafe impl clone_message(*const i8 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const i16 value) {
+unsafe impl clone_message(*const i16 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const i32 value) {
+unsafe impl clone_message(*const i32 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const i64 value) {
+unsafe impl clone_message(*const i64 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const u8 value) {
+unsafe impl clone_message(*const u8 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const u16 value) {
+unsafe impl clone_message(*const u16 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const u32 value) {
+unsafe impl clone_message(*const u32 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const u64 value) {
+unsafe impl clone_message(*const u64 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const usize value) {
+unsafe impl clone_message(*const usize value) {
     return Ok(*value);
 }
 
-impl clone_message(*const f32 value) {
+unsafe impl clone_message(*const f32 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const f64 value) {
+unsafe impl clone_message(*const f64 value) {
     return Ok(*value);
 }
 
-impl clone_message(*const Error value) {
+unsafe impl clone_message(*const Error value) {
     return Ok(*value);
 }
 
-impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {
+unsafe impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {
     switch (*value) {
         case Ok(ok):
             T copied = clone_message(&ok)?;
@@ -77,47 +77,47 @@ impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {
     }
 }
 
-impl<F: CielFnValue> clone_message(*const F value) {
+unsafe impl<F: CielFnValue> clone_message(*const F value) {
     return Ok(*value);
 }
 
-impl<C: ClosureValue> clone_message(*const C value) {
+unsafe impl<C: ClosureValue> clone_message(*const C value) {
     meta::Repr<C> repr = meta::into_repr(value);
     meta::Repr<C> copied = clone_message(&repr)?;
     return Ok(meta::from_repr<C>(copied));
 }
 
-impl clone_message(*const meta::HNil value) {
+unsafe impl clone_message(*const meta::HNil value) {
     return Ok({});
 }
 
-impl<T: Message> clone_message(*const meta::Field<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::Field<T> value) {
     T copied = clone_message(&value->value)?;
     return Ok({ name: value->name, value: copied });
 }
 
-impl<Head: Message, Tail: Message> clone_message(*const meta::HCons<Head, Tail> value) {
+unsafe impl<Head: Message, Tail: Message> clone_message(*const meta::HCons<Head, Tail> value) {
     Head head = clone_message(&value->head)?;
     Tail tail = clone_message(&value->tail)?;
     return Ok({ head: head, tail: tail });
 }
 
-impl<T: Message> clone_message(*const meta::Payload<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::Payload<T> value) {
     T copied = clone_message(&value->value)?;
     return Ok({ index: value->index, value: copied });
 }
 
-impl<P: Message> clone_message(*const meta::Variant<P> value) {
+unsafe impl<P: Message> clone_message(*const meta::Variant<P> value) {
     P payload = clone_message(&value->payload)?;
     return Ok({ name: value->name, payload: payload });
 }
 
-impl clone_message(*const meta::CoNil value) {
+unsafe impl clone_message(*const meta::CoNil value) {
     switch (*value) {
     }
 }
 
-impl<Head: Message, Tail: Message> clone_message(*const meta::Coproduct<Head, Tail> value) {
+unsafe impl<Head: Message, Tail: Message> clone_message(*const meta::Coproduct<Head, Tail> value) {
     switch (*value) {
         case meta::This(head):
             Head copied = clone_message(&head)?;
@@ -128,29 +128,29 @@ impl<Head: Message, Tail: Message> clone_message(*const meta::Coproduct<Head, Ta
     }
 }
 
-impl clone_message(*const meta::ArrayNil value) {
+unsafe impl clone_message(*const meta::ArrayNil value) {
     return Ok({});
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk1<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk1<T> value) {
     T item0 = clone_message(&value->item0)?;
     return Ok({ item0: item0 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk2<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk2<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     return Ok({ item0: item0, item1: item1 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk3<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk3<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
     return Ok({ item0: item0, item1: item1, item2: item2 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk4<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk4<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -158,7 +158,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk4<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk5<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk5<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -167,7 +167,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk5<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk6<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk6<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -177,7 +177,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk6<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk7<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk7<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -188,7 +188,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk7<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk8<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk8<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -200,7 +200,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk8<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk9<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk9<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -213,7 +213,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk9<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk10<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk10<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -227,7 +227,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk10<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk11<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk11<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -242,7 +242,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk11<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk12<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk12<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -258,7 +258,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk12<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk13<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk13<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -275,7 +275,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk13<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk14<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk14<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -293,7 +293,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk14<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk15<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk15<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -312,7 +312,7 @@ impl<T: Message> clone_message(*const meta::ArrayChunk15<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13, item14: item14 });
 }
 
-impl<T: Message> clone_message(*const meta::ArrayChunk16<T> value) {
+unsafe impl<T: Message> clone_message(*const meta::ArrayChunk16<T> value) {
     T item0 = clone_message(&value->item0)?;
     T item1 = clone_message(&value->item1)?;
     T item2 = clone_message(&value->item2)?;
@@ -332,16 +332,16 @@ impl<T: Message> clone_message(*const meta::ArrayChunk16<T> value) {
     return Ok({ item0: item0, item1: item1, item2: item2, item3: item3, item4: item4, item5: item5, item6: item6, item7: item7, item8: item8, item9: item9, item10: item10, item11: item11, item12: item12, item13: item13, item14: item14, item15: item15 });
 }
 
-impl<L: Message, R: Message> clone_message(*const meta::ArrayCat<L, R> value) {
+unsafe impl<L: Message, R: Message> clone_message(*const meta::ArrayCat<L, R> value) {
     L left = clone_message(&value->left)?;
     R right = clone_message(&value->right)?;
     return Ok({ left: left, right: right });
 }
 
 // Reserved marker: policy is defined by explicit library/runtime implementations.
-export interface<T> bool share_handle_marker(*const T value);
+export unsafe interface<T> bool share_handle_marker(*const T value);
 export interface ShareHandle = share_handle_marker;
 
 // Reserved marker: policy is defined by explicit library/runtime implementations.
-export interface<T> bool thread_local_marker(*const T value);
+export unsafe interface<T> bool thread_local_marker(*const T value);
 export interface ThreadLocal = thread_local_marker;

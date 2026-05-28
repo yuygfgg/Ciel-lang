@@ -46,6 +46,8 @@ pub enum TokenKind {
     Opaque,
     #[token("noescape")]
     Noescape,
+    #[token("unsafe")]
+    Unsafe,
     #[token("const")]
     Const,
     #[token("defer")]

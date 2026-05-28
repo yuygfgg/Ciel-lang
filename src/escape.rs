@@ -267,6 +267,14 @@ impl<'a> FunctionAnalyzer<'a> {
                 }
                 self.apply_call_escape(callee, args);
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.scan_stmt(stmt);
+                }
+                if let Some(value) = value {
+                    self.scan_expr(value);
+                }
+            }
             TExprKind::Closure { captures, body, .. } => {
                 for capture in captures {
                     let capture_expr = TExpr {
@@ -531,6 +539,7 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
             TExprKind::Call { .. }
+            | TExprKind::UnsafeBlock { value: None, .. }
             | TExprKind::MakeDynamicInterface { .. }
             | TExprKind::DynamicInterfaceCall { .. }
             | TExprKind::RetainedClosureInterfaceCall { .. }
@@ -541,6 +550,9 @@ impl<'a> FunctionAnalyzer<'a> {
             | TExprKind::Function(_, _)
             | TExprKind::GenericFunction { .. }
             | TExprKind::Literal(_) => {}
+            TExprKind::UnsafeBlock {
+                value: Some(value), ..
+            } => self.collect_storage_sources(value, out),
         }
     }
 }

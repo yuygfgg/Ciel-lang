@@ -3,11 +3,11 @@
 
 #c_include "string.h"
 
-extern "C" {
+unsafe extern "C" {
     usize strlen(*const char s);
 }
 
 usize main() {
     []const char text = "abc";
-    return strlen(text.ptr);
+    return unsafe { strlen(text.ptr) };
 }

@@ -1,11 +1,11 @@
 // ciel-test: compile
 
-extern "C" {
+unsafe extern "C" {
     void takes_nullable(?*i32 value);
 }
 
 i32 main() {
     i32 @value = 1;
-    takes_nullable(&value);
+    unsafe { takes_nullable(&value) };
     return value;
 }

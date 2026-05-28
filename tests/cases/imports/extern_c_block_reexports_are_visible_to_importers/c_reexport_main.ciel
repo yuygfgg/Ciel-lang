@@ -4,5 +4,5 @@
 import ./c_reexport as c;
 
 i32 main() {
-    return c::abs(-12);
+    return unsafe { c::abs(-12) };
 }

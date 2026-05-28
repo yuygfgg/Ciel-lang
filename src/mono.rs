@@ -506,6 +506,15 @@ impl MonoContext {
                     .map(|arg| self.rewrite_expr(arg))
                     .collect::<DiagResult<Vec<_>>>()?,
             },
+            TExprKind::UnsafeBlock { statements, value } => TExprKind::UnsafeBlock {
+                statements: statements
+                    .into_iter()
+                    .map(|stmt| self.rewrite_stmt(stmt))
+                    .collect::<DiagResult<Vec<_>>>()?,
+                value: value
+                    .map(|expr| self.rewrite_expr(*expr).map(Box::new))
+                    .transpose()?,
+            },
             TExprKind::Closure {
                 id,
                 params,
@@ -1103,6 +1112,14 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_expr(arg);
                 }
             }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr(value);
+                }
+            }
             TExprKind::Closure { body, .. } => self.collect_closure_body(body),
             TExprKind::FunctionToClosure(inner) => {
                 self.collect_expr(inner);
@@ -1483,7 +1500,13 @@ impl<'a> AggregateCollector<'a> {
                     .map(|arg| self.normalize_meta_repr_markers(arg))
                     .collect(),
             },
-            Ty::Function { abi, ret, params } => Ty::Function {
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.normalize_meta_repr_markers(ret)),
                 params: params
@@ -1867,7 +1890,13 @@ impl<'a> AggregateCollector<'a> {
                 mutability: *mutability,
                 elem: Box::new(self.lower_ast_type(elem, subst)),
             },
-            TypeKind::Function { abi, ret, params } => Ty::Function {
+            TypeKind::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(self.lower_ast_type(ret, subst)),
                 params: params

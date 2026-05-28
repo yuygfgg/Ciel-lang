@@ -3,7 +3,7 @@
 
 import /std/message;
 
-extern "C" {
+unsafe extern "C" {
     type Callback = i32 fn(i32);
 }
 

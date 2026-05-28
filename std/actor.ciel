@@ -6,11 +6,11 @@ export struct Actor<M> {
     *void handle;
 }
 
-impl<M> clone_message(*const Actor<M> value) {
+unsafe impl<M> clone_message(*const Actor<M> value) {
     return Ok(*value);
 }
 
-impl<M> share_handle_marker(*const Actor<M> value) {
+unsafe impl<M> share_handle_marker(*const Actor<M> value) {
     return true;
 }
 

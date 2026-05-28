@@ -8,12 +8,12 @@ import /std/c as c;
 
 #c_include "unistd.h"
 
-extern "C" {
+unsafe extern "C" {
     c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
 }
 
 i32 main() {
     []const char text = "OK";
-    write(1 as c::c_int, text.ptr as *const void, text.len as c::c_size_t);
+    unsafe { write(1 as c::c_int, text.ptr as *const void, text.len as c::c_size_t) };
     return 0;
 }

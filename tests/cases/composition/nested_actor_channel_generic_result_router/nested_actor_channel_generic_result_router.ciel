@@ -9,7 +9,7 @@ enum Route<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*const Route<T> value) {
+unsafe impl<T: Message> clone_message(*const Route<T> value) {
     return Ok(*value);
 }
 

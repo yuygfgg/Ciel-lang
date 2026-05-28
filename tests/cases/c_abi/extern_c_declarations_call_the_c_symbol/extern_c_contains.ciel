@@ -6,10 +6,10 @@
 
 #c_include "stdlib.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 abs(i32 value);
 }
 
 i32 main() {
-    return abs(-3);
+    return unsafe { abs(-3) };
 }

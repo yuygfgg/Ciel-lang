@@ -19,15 +19,15 @@ struct State<T> {
     T total;
 }
 
-impl<T: Message> clone_message(*const Command<T> value) {
+unsafe impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Event<T> value) {
+unsafe impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const State<T> value) {
+unsafe impl<T: Message> clone_message(*const State<T> value) {
     return Ok(*value);
 }
 

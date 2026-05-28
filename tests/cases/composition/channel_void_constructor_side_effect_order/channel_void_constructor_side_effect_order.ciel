@@ -8,7 +8,7 @@ enum Event {
     Done(void),
 }
 
-impl clone_message(*const Event value) {
+unsafe impl clone_message(*const Event value) {
     return Ok(*value);
 }
 

@@ -6,5 +6,5 @@ import /std/lib;
 i64 main() {
     Fd fd = stdout();
     Fd copy = must(clone_message(&fd));
-    return raw_fd(copy) as i64;
+    return unsafe { raw_fd(copy) } as i64;
 }

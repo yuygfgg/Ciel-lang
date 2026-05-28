@@ -1,7 +1,7 @@
 // ciel-test: run
 // expect-exit: 42
 
-extern "C" {
+unsafe extern "C" {
     opaque struct CielRoot;
 
     i32 ciel_thread_attach();
@@ -13,12 +13,12 @@ extern "C" {
 }
 
 i32 main() {
-    ciel_thread_attach();
+    unsafe { ciel_thread_attach() };
     i64 @value = 42;
-    *CielRoot root = ciel_root_pin(&value as *void);
-    *i64 ptr = ciel_root_get(root) as *i64;
+    *CielRoot root = unsafe { ciel_root_pin(&value as *void) };
+    *i64 ptr = unsafe { ciel_root_get(root) as *i64 };
     i64 out = *ptr;
-    ciel_root_unpin(root);
-    ciel_thread_detach();
+    unsafe { ciel_root_unpin(root) };
+    unsafe { ciel_thread_detach() };
     return out as i32;
 }

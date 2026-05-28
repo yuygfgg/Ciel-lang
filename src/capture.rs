@@ -3,8 +3,8 @@ use std::collections::HashSet;
 use crate::{
     hir::LocalId,
     thir::{
-        TClosureBody, TExpr, TExprKind, TForInit, TPattern, ThirVisitor, walk_expr, walk_for_init,
-        walk_pattern,
+        TClosureBody, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, ThirVisitor,
+        walk_expr, walk_for_init, walk_pattern, walk_stmt,
     },
     types::Ty,
 };
@@ -36,6 +36,13 @@ struct DeclaredLocalsCollector<'a> {
 }
 
 impl ThirVisitor for DeclaredLocalsCollector<'_> {
+    fn visit_stmt(&mut self, stmt: &TStmt) {
+        if let TStmtKind::VarDecl { local_id, .. } = &stmt.kind {
+            self.declared.insert(*local_id);
+        }
+        walk_stmt(self, stmt);
+    }
+
     fn visit_for_init(&mut self, init: &TForInit) {
         if let TForInit::VarDecl { local_id, .. } = init {
             self.declared.insert(*local_id);

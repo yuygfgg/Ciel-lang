@@ -24,9 +24,16 @@ binding-mutability < monomorphized-c-callbacks
 binding-mutability || metaprogramming[borrowed representation pointers]
 binding-mutability || pure-library-message[read-only clone source]
 
+unsafe < dispatch-actor-io-runtime[raw descriptors and C runtime hooks]
+unsafe <= monomorphized-c-callbacks[C callback declarations]
+pure-library-message < unsafe[manual policy impls become unsafe]
+
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
+
+dispatch-actor-io-runtime || monomorphized-c-callbacks[runtime ABI]
+dispatch-actor-io-runtime || pure-library-message[async operation payloads]
 
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]
@@ -37,3 +44,13 @@ The main consequence is that SOP structural representation belongs to
 `metaprogramming`. Structural message policy and witness production belong to
 `pure-library-message`. Other proposals consume the representation or ordinary
 capability impls produced through those routes.
+
+`dispatch-actor-io-runtime` can replace the actor scheduler before
+`monomorphized-c-callbacks` lands because it preserves the current
+`ciel_actor_*` runtime ABI. The callback proposal still owns the later
+stdlib-lowering step that removes actor-specific compiler builtins.
+
+`unsafe` owns the source marker for imported C calls and raw handle adoption.
+For message policy, it follows `pure-library-message`: that proposal owns
+`Message` semantics, and `unsafe` later marks manual policy impls as trusted
+implementation sites.

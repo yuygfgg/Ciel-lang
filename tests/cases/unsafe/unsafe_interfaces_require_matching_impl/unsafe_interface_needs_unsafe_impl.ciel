@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: impl `clone_message` requires `unsafe impl` because the interface is unsafe
+
+import /std/lib;
+
+struct Event {
+    i64 value;
+}
+
+impl clone_message(*const Event value) {
+    return Ok(*value);
+}
+
+i32 main() {
+    return 0;
+}

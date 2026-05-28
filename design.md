@@ -90,7 +90,7 @@ Keywords are reserved and cannot be used as identifiers:
 ```text
 as bool break case char const continue default defer else enum export extern
 false for if impl import interface never noescape null opaque return struct switch
-true type void while
+true type unsafe void while
 ```
 
 `fn` is not reserved. It is a contextual token recognized only while parsing a
@@ -208,7 +208,7 @@ bare use cannot choose exactly one declaration, that use is a compile error.
 ## 6. Types
 
 ```ebnf
-Type            ::= [ AbiSpec ] PrefixType { CallableSuffix }
+Type            ::= [ "unsafe" ] [ AbiSpec ] PrefixType { CallableSuffix }
 PrefixType      ::= { PointerConstructor } PrimaryType
 PointerConstructor ::= "*" | "*const" | "?*" | "?*const"
 PrimaryType     ::= NamedType
@@ -392,6 +392,8 @@ SignalHandler fn(i32, SignalHandler) signal2;
 If no `extern "C"` ABI is written and no enclosing `extern "C"` block applies,
 a function type uses the Ciel ABI. The Ciel ABI is an implementation detail.
 `extern "C" T fn(...)` uses the target platform C ABI.
+`unsafe T fn(...)` is a function-pointer type whose calls require
+`unsafe { ... }`.
 
 An ABI specifier in a type is valid only when the resulting type is a
 function-pointer type. At the start of a function declaration, a leading ABI
@@ -505,7 +507,7 @@ TypeAliasDecl       ::= [ AbiSpec ] "type" Identifier [ GenericParamList ]
                         "=" Type ";"
 CSpellingTypeDecl   ::= [ AbiSpec ] "type" Identifier "=" StringLiteral ";"
 
-StructDecl          ::= "struct" Identifier [ GenericParamList ] StructBody
+StructDecl          ::= [ "unsafe" ] "struct" Identifier [ GenericParamList ] StructBody
 StructBody          ::= "{" { FieldDecl } "}"
 FieldDecl           ::= Type Identifier ";"
 
@@ -513,17 +515,18 @@ EnumDecl            ::= "enum" Identifier [ GenericParamList ] EnumBody
 EnumBody            ::= "{" [ VariantDecl { "," VariantDecl } [ "," ] ] "}"
 VariantDecl         ::= Identifier [ "(" TypeList ")" ]
 
-InterfaceDecl       ::= "interface" GenericParamList InterfaceSignature ";"
+InterfaceDecl       ::= [ "unsafe" ] "interface" GenericParamList
+                        InterfaceSignature ";"
 InterfaceSignature  ::= Type Identifier "(" [ ParamList ] ")"
 InterfaceAliasDecl  ::= "interface" Identifier "=" InterfaceExpr ";"
 
 InterfaceExpr       ::= InterfaceTerm { ( "+" | "-" ) InterfaceTerm }
 InterfaceTerm       ::= Identifier [ TypeArgList ]
 
-ImplDecl            ::= "impl" [ GenericParamList ] Identifier [ TypeArgList ]
+ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ TypeArgList ]
                         "(" [ ParamList ] ")" Block
 
-FunctionDecl        ::= [ AbiSpec ] FunctionSignature ( Block | ";" )
+FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] FunctionSignature ( Block | ";" )
 FunctionSignature   ::= Type Identifier [ GenericParamList ]
                         "(" [ ParamList ] ")"
 
@@ -536,7 +539,7 @@ ParamList           ::= Param { "," Param } [ "," ]
 Param               ::= Type BindingName
 BindingName         ::= [ "@" ] Identifier
 
-ExternBlock         ::= "extern" StringLiteral "{" { ExternItem } "}"
+ExternBlock         ::= [ "unsafe" ] "extern" StringLiteral "{" { ExternItem } "}"
 ExternItem          ::= OpaqueStructDecl
                      | [ "noescape" ] FunctionSignature ";"
                      | TypeAliasDecl
@@ -636,10 +639,22 @@ _ @value;               // error
 Struct declarations do not define default field values. A struct value is
 created by a named-field struct literal, by copying another value, by a
 function return, or by C interop according to the declared ABI.
+An `unsafe struct` is still copied and passed like an ordinary struct, but
+constructing it with a struct literal or projecting one of its fields requires
+`unsafe { ... }`.
 
 At most one function body may exist for a given fully qualified name. A
 non-`extern` function declaration ending in `;` is a prototype and must match
 the eventual body exactly. `extern "C"` declarations do not require a Ciel body.
+
+`unsafe` on a function makes calls to that function require an unsafe block.
+The function body is still ordinary checked code; unsafe operations inside it
+must appear in `unsafe { ... }`.
+
+Imported C functions must be declared through an unsafe C boundary, normally an
+`unsafe extern "C"` block. C spelling type aliases and opaque declarations may
+remain in safe `extern "C"` blocks because they do not create callable unsafe
+operations.
 
 By-value recursive types are illegal. During type layout, if a struct or enum
 contains itself by value through a cycle, semantic analysis reports an error.
@@ -729,7 +744,10 @@ PrimaryExpr     ::= Identifier
                  | StructLiteral
                  | ArrayLiteral
                  | ClosureExpr
+                 | UnsafeBlockExpr
                  | "(" Expr ")"
+
+UnsafeBlockExpr ::= "unsafe" "{" { Statement } [ Expr ] "}"
 
 QualifiedName   ::= Identifier "::" Identifier { "::" Identifier }
 Literal         ::= IntegerLiteral | FloatLiteral | CharLiteral
@@ -781,6 +799,12 @@ closure body are read-only snapshots: the closure body cannot reassign them,
 take their binding address, or assign through their fields or indices. If
 mutable shared state is needed, the program must capture an explicit pointer or
 synchronized handle and use that value's API.
+
+`unsafe { ... }` is an expression block. It permits unsafe operations inside the
+block, creates a nested local scope, and evaluates to the final expression when
+one is present or to `void` otherwise. Ordinary type checking, control-flow
+checking, escape analysis, and interface constraints still apply inside the
+block.
 
 Closure parameters may write either `BindingName` or `Type BindingName`. If a
 parameter type is omitted, it must be supplied by an expected callable type.
@@ -1002,6 +1026,15 @@ rejected. When the left-hand side is a closure literal or a parenthesized
 closure literal, `as` may also supply a closure or Ciel-ABI function-pointer
 expected type as specified above.
 
+Pointer casts from a typed pointer to `*void` or `?*void` are safe type erasure.
+Casts from `*void` or `?*void` back to a typed pointer are unsafe operations:
+
+```rust
+i64 value = 1;
+*void raw = &value as *void;
+*i64 typed = unsafe { raw as *i64 };
+```
+
 The pointer and slice view constructors have only these implicit view
 conversions:
 
@@ -1083,6 +1116,12 @@ An `impl` must match exactly one visible interface declaration by name. Its
 parameter and return types must match the interface after substituting the
 receiver type and any supplied or inferred non-receiver type arguments.
 
+An `unsafe interface` marks the implementation as a trusted safety contract.
+Implementations of unsafe interfaces must write `unsafe impl`; `unsafe impl` is
+rejected for safe interfaces. Using an unsafe interface alias as a generic
+constraint remains safe at call sites because the obligation is discharged at
+the implementation site.
+
 Type arguments written on an `impl` also bind only non-receiver generic
 parameters.
 
@@ -1091,7 +1130,7 @@ from the receiver and other interface arguments, then monomorphized like a
 generic function:
 
 ```ciel
-impl<T> clone_message(*const Actor<T> value) {
+unsafe impl<T> clone_message(*const Actor<T> value) {
     return Ok(*value);
 }
 ```
@@ -1508,13 +1547,15 @@ the actor runtime to clone the handler across the actor boundary.
 `Message` is an explicit conversion capability:
 
 ```rust
-interface<T> Result<T, Error> clone_message(*const T value);
+unsafe interface<T> Result<T, Error> clone_message(*const T value);
 interface Message = clone_message;
 ```
 
 `clone_message` constructs the value that will be owned by the receiver. It may
 copy fields, allocate fresh backing storage, serialize and decode, duplicate a
-resource handle, intern immutable data, or report an error.
+resource handle, intern immutable data, or report an error. Implementing it is a
+safety contract, so each implementation uses `unsafe impl`. Calling safe APIs
+that require `T: Message` does not require an unsafe block.
 
 Cross-domain standard-library APIs are ordinary functions that require
 `Message` and call `clone_message` explicitly:
@@ -1576,9 +1617,9 @@ environment. A plain erased closure signature such as
 closures with that signature can capture different values. A retained signature
 such as `Result<S, Error> |(S, M): Message|` carries the witness explicitly.
 
-`Message` is implemented per concrete type. `/std/message` provides ordinary
+`Message` is implemented per concrete type. `/std/message` provides unsafe
 impls for primitive values, `Error`, `Result<T, E>`, and owned `/std/meta` SOP
-nodes. Standard-library handle modules provide their own impls for actor
+nodes. Standard-library handle modules provide their own unsafe impls for actor
 handles, channels, mutexes, atomics, and other synchronized handles.
 
 Compiler-derived `Message` no longer applies to user structs or enums. Programs
@@ -1603,7 +1644,7 @@ An explicit user-defined impl is still the way to make the original nominal
 type itself a message type:
 
 ```rust
-impl clone_message(*const Event value) {
+unsafe impl clone_message(*const Event value) {
     return Ok(*value);
 }
 ```
@@ -1659,7 +1700,7 @@ Result<void, Error> atomic_store<T: AtomicValue>(
 
 Handles can implement `Message` when copying the handle is safe and
 intentional. The implementation is responsible for synchronization and
-lifetime rooting.
+lifetime rooting, and it is written as `unsafe impl`.
 
 Mutexes are a low-level library feature. The safe mutex API uses value
 replacement:
@@ -1687,9 +1728,9 @@ replacement rather than a borrowed interior pointer.
 The actor model uses interfaces for capability classification:
 
 ```rust
-interface<T> Result<T, Error> clone_message(*const T value);
-interface<T> bool share_handle_marker(*const T value);
-interface<T> bool thread_local_marker(*const T value);
+unsafe interface<T> Result<T, Error> clone_message(*const T value);
+unsafe interface<T> bool share_handle_marker(*const T value);
+unsafe interface<T> bool thread_local_marker(*const T value);
 
 interface Message = clone_message;
 interface ShareHandle = share_handle_marker;
@@ -1870,12 +1911,14 @@ export import /std/format/number;
 
 ```rust
 // /std/panic
-extern "C" {
+unsafe extern "C" {
     noescape never ciel_panic(*const char message, usize len);
 }
 
 export never panic([]const char message) {
-    ciel_panic(message.ptr, message.len);
+    unsafe {
+        ciel_panic(message.ptr, message.len);
+    };
 }
 ```
 
@@ -1902,7 +1945,7 @@ export type const_c_string = *const char;
 export import /std/result;
 import /std/c as c;
 
-export struct Fd {
+export unsafe struct Fd {
     c::c_int raw;
 }
 
@@ -1918,8 +1961,8 @@ export interface printable = to_string;
 export Fd stdin();
 export Fd stdout();
 export Fd stderr();
-export Fd from_raw_fd(c::c_int raw);
-export c::c_int raw_fd(Fd fd);
+export unsafe Fd from_raw_fd(c::c_int raw);
+export unsafe c::c_int raw_fd(Fd fd);
 
 export Error last_error();
 
@@ -1955,6 +1998,10 @@ flag values in Ciel source. `open` copies the `[]const char` path into a
 NUL-terminated GC allocation before calling the host `open`. Printable values
 are values that implement `to_string`; printing functions convert values to
 `[]const char` first, then write the resulting slice to the selected descriptor.
+Raw descriptor adoption and extraction are low-level unsafe operations:
+`from_raw_fd` creates an `Fd` from an unvalidated host descriptor, and `raw_fd`
+exposes the descriptor for foreign calls. Safe constructors and I/O functions
+wrap those operations internally.
 Formatted printing uses `{}` placeholders and a `[]printable` slice, so callers
 can pass heterogeneous printable values through dynamic interface erasure:
 
@@ -1967,9 +2014,9 @@ print("{} = {}", ["answer", 42 as usize]);
 import /std/result;
 import /std/meta as meta;
 
-export interface<T> Result<T, Error> clone_message(*const T value);
-export interface<T> bool share_handle_marker(*const T value);
-export interface<T> bool thread_local_marker(*const T value);
+export unsafe interface<T> Result<T, Error> clone_message(*const T value);
+export unsafe interface<T> bool share_handle_marker(*const T value);
+export unsafe interface<T> bool thread_local_marker(*const T value);
 
 export interface Message = clone_message;
 export interface ShareHandle = share_handle_marker;
@@ -2076,10 +2123,10 @@ export struct CompareExchange<T> {
     T previous;
 }
 
-export interface<T> bool atomic_value_marker(*const T value);
+export unsafe interface<T> bool atomic_value_marker(*const T value);
 export interface AtomicValue = atomic_value_marker;
 
-export interface<T> bool atomic_integer_marker(*const T value);
+export unsafe interface<T> bool atomic_integer_marker(*const T value);
 export interface AtomicInteger = atomic_integer_marker;
 
 export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial);
@@ -2165,13 +2212,19 @@ and `?*const T`. Standalone `const T` is not a Ciel source type. Ciel specifies
 functions and `extern "C" ... fn(...)` function-pointer types. Closure values
 use the Ciel ABI.
 
-A top-level `extern "C" T name(...);` declares an external C symbol. A
-top-level `export extern "C" T name(...) { ... }` defines a C ABI symbol
-implemented in Ciel. `export extern "C" { ... }` re-exports imported C
-declarations to Ciel importers; it does not define the C symbols. `noescape`
-is allowed only on imported `extern "C"` function declarations inside an
-extern block. `extern "C"` functions may return `never`; Ciel lowers that C ABI
-return type as `void` while treating calls as non-fallthrough.
+Imported C functions are unsafe functions. They must be declared with an unsafe
+C boundary, either as `unsafe extern "C" T name(...);` or inside an
+`unsafe extern "C"` block. A top-level `export extern "C" T name(...) { ... }`
+defines a C ABI symbol implemented in Ciel; it is not unsafe to call from Ciel
+unless the declaration itself is marked `unsafe`. `export unsafe extern "C" {
+... }` re-exports imported C declarations to Ciel importers; it does not define
+the C symbols. `noescape` is allowed only on imported C function declarations,
+so it appears in an unsafe C boundary. `extern "C"` functions may return
+`never`; Ciel lowers that C ABI return type as `void` while treating calls as
+non-fallthrough.
+When an unsafe function is stored as a value, its function-pointer type keeps
+the unsafe bit. Assigning it to an ordinary function-pointer type is rejected;
+calling it through an unsafe function value requires `unsafe { ... }`.
 
 A top-level `export extern "C" type name = "C spelling";` declares a C
 spelling type. Inside an `extern "C"` block the ABI is inherited, so
@@ -2181,12 +2234,14 @@ exposes prefixed public types such as `c_int`, `c_long`, `c_size_t`, and
 `c_ssize_t` without assuming that they are identical to Ciel fixed-width
 primitives.
 
-Inside an `extern "C"` block, the block ABI applies to declared functions and
-to nested function types in those declarations or type aliases unless a nested
-function type has an explicit ABI.
+Inside an `extern "C"` block, the block ABI applies to declared functions and to
+nested function types in those declarations or type aliases unless a nested
+function type has an explicit ABI. A safe `extern "C"` block may contain C
+spelling type aliases and opaque declarations, but imported functions require
+`unsafe extern "C"`.
 
 ```rust
-extern "C" {
+unsafe extern "C" {
     opaque struct FILE;
 
     ?*FILE fopen(*const char filename, *const char mode);
@@ -2224,19 +2279,19 @@ void takes_mut(char *buffer);      // Ciel: void takes_mut(*char buffer)
 void takes_ro(const char *buffer); // Ciel: void takes_ro(*const char buffer)
 ```
 
-Calls obey the Ciel declaration exactly. A writable view may weaken to a
-read-only C parameter, but a read-only view cannot satisfy a writable C
-parameter:
+Calls to imported C functions require `unsafe { ... }` and obey the Ciel
+declaration exactly. A writable view may weaken to a read-only C parameter, but
+a read-only view cannot satisfy a writable C parameter:
 
 ```rust
-extern "C" {
+unsafe extern "C" {
     void read_only(*const char s);
     void may_write(*char s);
 }
 
 []const char text = "hello";
-read_only(text.ptr); // ok
-may_write(text.ptr); // error
+unsafe { read_only(text.ptr) }; // ok
+unsafe { may_write(text.ptr) }; // error
 ```
 
 Generated C may normalize top-level `const` spelling at ABI boundaries after
@@ -2276,7 +2331,7 @@ import /std/c as c;
 
 #c_include "unistd.h"
 
-extern "C" {
+unsafe extern "C" {
     c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
 }
 ```
@@ -2297,7 +2352,7 @@ parameters.
 Generated Ciel libraries expose a small host ABI:
 
 ```rust
-extern "C" {
+unsafe extern "C" {
     opaque struct CielRoot;
 
     void ciel_runtime_init();

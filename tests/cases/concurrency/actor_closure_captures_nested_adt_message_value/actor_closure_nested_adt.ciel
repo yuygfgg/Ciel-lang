@@ -14,11 +14,11 @@ enum Maybe<T> {
     None,
 }
 
-impl<T: Message> clone_message(*const Pair<T> value) {
+unsafe impl<T: Message> clone_message(*const Pair<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Maybe<T> value) {
+unsafe impl<T: Message> clone_message(*const Maybe<T> value) {
     return Ok(*value);
 }
 

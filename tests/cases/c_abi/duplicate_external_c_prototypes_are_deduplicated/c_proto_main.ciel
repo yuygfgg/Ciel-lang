@@ -6,5 +6,5 @@ import ./c_proto_left as left;
 import ./c_proto_right as right;
 
 i32 main() {
-    return left::abs(-2) + right::abs(-3);
+    return unsafe { left::abs(-2) } + unsafe { right::abs(-3) };
 }

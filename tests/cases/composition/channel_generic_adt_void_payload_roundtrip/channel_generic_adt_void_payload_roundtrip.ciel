@@ -9,7 +9,7 @@ enum Event<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*const Event<T> value) {
+unsafe impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 

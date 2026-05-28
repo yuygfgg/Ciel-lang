@@ -13,11 +13,11 @@ struct Audit {
     Channel<i64> out;
 }
 
-impl<T: Message> clone_message(*const Command<T> value) {
+unsafe impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl clone_message(*const Audit value) {
+unsafe impl clone_message(*const Audit value) {
     return Ok(*value);
 }
 

@@ -3,7 +3,7 @@
 
 import /std/message;
 
-impl clone_message(*const i64 value) {
+unsafe impl clone_message(*const i64 value) {
     return Ok(*value);
 }
 

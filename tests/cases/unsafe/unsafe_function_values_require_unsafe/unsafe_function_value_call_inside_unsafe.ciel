@@ -1,0 +1,13 @@
+// ciel-test: run
+// expect-exit: 5
+
+#c_include "stdlib.h"
+
+unsafe extern "C" {
+    i32 abs(i32 value);
+}
+
+i32 main() {
+    unsafe extern "C" i32 fn(i32) f = unsafe { abs };
+    return unsafe { f(-5) };
+}

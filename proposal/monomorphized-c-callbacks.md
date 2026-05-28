@@ -10,6 +10,7 @@ callback glue an ordinary language and FFI feature.
 ```text
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
+unsafe <= monomorphized-c-callbacks[C callback declarations]
 
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 ```
@@ -17,6 +18,9 @@ monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 The callback feature does not own actor safety. Actor state, handler, and
 message movement remain ordinary `Message` checks owned by `/std/message`.
 Retained closure handler types are provided by `capability-erased-closures`.
+When the unsafe proposal is active, imported C runtime hooks used by this
+proposal are declared in `unsafe extern "C"` blocks and called inside safe
+standard-library wrappers.
 
 ## Problem
 
@@ -145,7 +149,7 @@ runtime hooks:
 import /std/c as c;
 import /std/meta;
 
-extern "C" {
+unsafe extern "C" {
     opaque struct CielActor;
 
     c::c_int ciel_actor_spawn(

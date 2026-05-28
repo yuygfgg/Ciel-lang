@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: expected `extern "C" i32 fn(i32)`, got `unsafe extern "C" i32 fn(i32)`
+
+#c_include "stdlib.h"
+
+unsafe extern "C" {
+    i32 abs(i32 value);
+}
+
+i32 main() {
+    extern "C" i32 fn(i32) f = unsafe { abs };
+    return f(-5);
+}

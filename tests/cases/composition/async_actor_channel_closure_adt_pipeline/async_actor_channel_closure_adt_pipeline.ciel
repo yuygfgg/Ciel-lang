@@ -14,11 +14,11 @@ struct Sink<T> {
     T base;
 }
 
-impl<T: Message> clone_message(*const Job<T> value) {
+unsafe impl<T: Message> clone_message(*const Job<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Sink<T> value) {
+unsafe impl<T: Message> clone_message(*const Sink<T> value) {
     return Ok(*value);
 }
 

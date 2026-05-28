@@ -47,8 +47,17 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item, Diagnostic> {
         let export = self.eat(TokenKind::Export).is_some();
         let start = self.peek().span;
+        let is_unsafe = self.eat(TokenKind::Unsafe).is_some();
 
         let kind = match self.peek().kind {
+            TokenKind::Import | TokenKind::HashCInclude | TokenKind::Type | TokenKind::Enum
+                if is_unsafe =>
+            {
+                return Err(Diagnostic::new(
+                    start,
+                    "`unsafe` is valid only on functions, extern blocks, interfaces, impls, structs, and unsafe blocks",
+                ));
+            }
             TokenKind::Import => ItemKind::Import(self.parse_import_decl()?),
             TokenKind::HashCInclude => {
                 self.advance();
@@ -57,9 +66,9 @@ impl Parser {
                 ItemKind::CInclude(include)
             }
             TokenKind::Type => ItemKind::TypeAlias(self.parse_type_alias_decl(None)?),
-            TokenKind::Struct => ItemKind::Struct(self.parse_struct_decl()?),
+            TokenKind::Struct => ItemKind::Struct(self.parse_struct_decl(is_unsafe)?),
             TokenKind::Enum => ItemKind::Enum(self.parse_enum_decl()?),
-            TokenKind::Interface => self.parse_interface_item()?,
+            TokenKind::Interface => self.parse_interface_item(is_unsafe)?,
             TokenKind::Impl => {
                 if export {
                     return Err(Diagnostic::new(
@@ -67,9 +76,9 @@ impl Parser {
                         "`impl` declarations cannot be exported",
                     ));
                 }
-                ItemKind::Impl(self.parse_impl_decl()?)
+                ItemKind::Impl(self.parse_impl_decl(is_unsafe)?)
             }
-            TokenKind::Extern => self.parse_extern_or_function_item()?,
+            TokenKind::Extern => self.parse_extern_or_function_item(is_unsafe)?,
             TokenKind::Noescape => {
                 return Err(Diagnostic::new(
                     start,
@@ -82,7 +91,7 @@ impl Parser {
                     "configuration gates are not implemented in this compiler slice",
                 ));
             }
-            _ => ItemKind::Function(self.parse_function_decl(None)?),
+            _ => ItemKind::Function(self.parse_function_decl(None, is_unsafe)?),
         };
 
         let end = self.previous().span;
@@ -161,7 +170,7 @@ impl Parser {
         })
     }
 
-    fn parse_struct_decl(&mut self) -> Result<StructDecl, Diagnostic> {
+    fn parse_struct_decl(&mut self, is_unsafe: bool) -> Result<StructDecl, Diagnostic> {
         self.expect(TokenKind::Struct, "expected `struct`")?;
         let name = self.expect_ident("expected struct name")?;
         let generics = self.parse_generic_param_list_opt()?;
@@ -175,6 +184,7 @@ impl Parser {
         }
         self.expect(TokenKind::RBrace, "expected `}` after struct declaration")?;
         Ok(StructDecl {
+            is_unsafe,
             name,
             generics,
             fields,
@@ -216,9 +226,15 @@ impl Parser {
         })
     }
 
-    fn parse_interface_item(&mut self) -> Result<ItemKind, Diagnostic> {
+    fn parse_interface_item(&mut self, is_unsafe: bool) -> Result<ItemKind, Diagnostic> {
         self.expect(TokenKind::Interface, "expected `interface`")?;
         if self.at(TokenKind::Ident) && self.peek_next().kind == TokenKind::Eq {
+            if is_unsafe {
+                return Err(Diagnostic::new(
+                    self.peek().span,
+                    "interface aliases cannot be declared `unsafe`",
+                ));
+            }
             let name = self.expect_ident("expected interface alias name")?;
             self.expect(TokenKind::Eq, "expected `=` in interface alias")?;
             let expr = self.parse_interface_expr()?;
@@ -230,6 +246,7 @@ impl Parser {
         let signature = self.parse_function_signature()?;
         self.expect(TokenKind::Semi, "expected `;` after interface declaration")?;
         Ok(ItemKind::Interface(InterfaceDecl {
+            is_unsafe,
             generics,
             signature,
         }))
@@ -256,7 +273,7 @@ impl Parser {
         Ok(InterfaceTerm { name, args })
     }
 
-    fn parse_impl_decl(&mut self) -> Result<ImplDecl, Diagnostic> {
+    fn parse_impl_decl(&mut self, is_unsafe: bool) -> Result<ImplDecl, Diagnostic> {
         self.expect(TokenKind::Impl, "expected `impl`")?;
         let generics = self.parse_generic_param_list_opt()?;
         let name = self.expect_ident("expected interface name after `impl`")?;
@@ -265,6 +282,7 @@ impl Parser {
         let params = self.parse_param_list_until_rparen()?;
         let body = self.parse_block()?;
         Ok(ImplDecl {
+            is_unsafe,
             generics,
             name,
             args,
@@ -273,7 +291,7 @@ impl Parser {
         })
     }
 
-    fn parse_extern_or_function_item(&mut self) -> Result<ItemKind, Diagnostic> {
+    fn parse_extern_or_function_item(&mut self, is_unsafe: bool) -> Result<ItemKind, Diagnostic> {
         let save = self.pos;
         self.expect(TokenKind::Extern, "expected `extern`")?;
         let abi = self.expect_abi_string("expected ABI string after `extern`")?;
@@ -306,10 +324,20 @@ impl Parser {
                     });
                 }
                 parser.expect(TokenKind::RBrace, "expected `}` after extern block")?;
-                Ok(ItemKind::ExternBlock(ExternBlock { abi, items }))
+                Ok(ItemKind::ExternBlock(ExternBlock {
+                    is_unsafe,
+                    abi,
+                    items,
+                }))
             })
         } else {
             if self.at(TokenKind::Type) {
+                if is_unsafe {
+                    return Err(Diagnostic::new(
+                        self.peek().span,
+                        "C spelling type aliases cannot be declared `unsafe`",
+                    ));
+                }
                 self.with_inherited_type_abi(Some(abi.clone()), |parser| {
                     parser
                         .parse_type_alias_decl(Some(abi))
@@ -317,7 +345,9 @@ impl Parser {
                 })
             } else {
                 self.pos = save;
-                Ok(ItemKind::Function(self.parse_function_decl(None)?))
+                Ok(ItemKind::Function(
+                    self.parse_function_decl(None, is_unsafe)?,
+                ))
             }
         }
     }
@@ -325,6 +355,7 @@ impl Parser {
     fn parse_function_decl(
         &mut self,
         inherited_abi: Option<String>,
+        is_unsafe: bool,
     ) -> Result<FunctionDecl, Diagnostic> {
         let abi = if self.at(TokenKind::Extern) {
             self.expect(TokenKind::Extern, "expected `extern`")?;
@@ -339,6 +370,7 @@ impl Parser {
             Some(self.parse_block()?)
         };
         Ok(FunctionDecl {
+            is_unsafe,
             abi,
             signature,
             body,
@@ -490,6 +522,7 @@ impl Parser {
     }
 
     fn parse_type(&mut self) -> Result<Type, Diagnostic> {
+        let is_unsafe = self.eat(TokenKind::Unsafe).is_some();
         let explicit_abi = if self.at(TokenKind::Extern) {
             self.expect(TokenKind::Extern, "expected `extern`")?;
             Some(self.expect_abi_string("expected ABI string after `extern`")?)
@@ -518,6 +551,7 @@ impl Parser {
                 ty = Type {
                     span,
                     kind: TypeKind::Function {
+                        is_unsafe,
                         abi: abi.clone(),
                         ret: Box::new(ty),
                         params,
@@ -553,6 +587,12 @@ impl Parser {
             return Err(Diagnostic::new(
                 ty.span,
                 "ABI specifier is valid only on function types",
+            ));
+        }
+        if is_unsafe && !matches!(ty.kind, TypeKind::Function { .. }) {
+            return Err(Diagnostic::new(
+                ty.span,
+                "`unsafe` is valid only on function types",
             ));
         }
         Ok(ty)
@@ -1416,8 +1456,92 @@ impl Parser {
                 self.expect(TokenKind::RParen, "expected `)` after expression")?;
                 Ok(expr)
             }
+            TokenKind::Unsafe => self.parse_unsafe_block_expr(),
             _ => Err(Diagnostic::new(token.span, "expected expression")),
         }
+    }
+
+    fn parse_unsafe_block_expr(&mut self) -> Result<Expr, Diagnostic> {
+        let start = self.expect(TokenKind::Unsafe, "expected `unsafe`")?.span;
+        let block = self.parse_expr_block_after_unsafe(start)?;
+        let span = block.span;
+        Ok(Expr {
+            span,
+            kind: ExprKind::UnsafeBlock(block),
+        })
+    }
+
+    fn parse_expr_block_after_unsafe(
+        &mut self,
+        start: crate::span::Span,
+    ) -> Result<ExprBlock, Diagnostic> {
+        self.expect(TokenKind::LBrace, "expected `{` after `unsafe`")?;
+        let mut statements = Vec::new();
+        let mut value = None;
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            if self.expr_block_next_is_statement_head() {
+                statements.push(self.parse_statement()?);
+                continue;
+            }
+            if let Some(stmt) = self.try_parse_var_decl_statement()? {
+                statements.push(stmt);
+                continue;
+            }
+            let expr = self.parse_expr()?;
+            if self.eat(TokenKind::Eq).is_some() {
+                let rhs = self.parse_expr()?;
+                let end = self
+                    .expect(TokenKind::Semi, "expected `;` after assignment")?
+                    .span;
+                statements.push(Stmt {
+                    span: expr.span.merge(end),
+                    kind: StmtKind::Assign {
+                        target: expr,
+                        value: rhs,
+                    },
+                });
+            } else if self.eat(TokenKind::Semi).is_some() {
+                let end = self.previous().span;
+                statements.push(Stmt {
+                    span: expr.span.merge(end),
+                    kind: StmtKind::Expr(expr),
+                });
+            } else {
+                value = Some(Box::new(expr));
+                break;
+            }
+        }
+        let end = self
+            .expect(TokenKind::RBrace, "expected `}` after unsafe block")?
+            .span;
+        Ok(ExprBlock {
+            span: start.merge(end),
+            statements,
+            value,
+        })
+    }
+
+    fn expr_block_next_is_statement_head(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            TokenKind::LBrace if !self.lbrace_starts_struct_literal()
+        ) || matches!(
+            self.peek().kind,
+            TokenKind::If
+                | TokenKind::While
+                | TokenKind::For
+                | TokenKind::Switch
+                | TokenKind::Defer
+                | TokenKind::Return
+                | TokenKind::Break
+                | TokenKind::Continue
+        )
+    }
+
+    fn lbrace_starts_struct_literal(&self) -> bool {
+        self.at(TokenKind::LBrace)
+            && self.peek_next().kind == TokenKind::Ident
+            && self.peek_n(2).kind == TokenKind::Colon
     }
 
     fn parse_closure_expr(&mut self) -> Result<Expr, Diagnostic> {
@@ -1572,7 +1696,8 @@ impl Parser {
     fn can_start_type(&self) -> bool {
         matches!(
             self.peek().kind,
-            TokenKind::Extern
+            TokenKind::Unsafe
+                | TokenKind::Extern
                 | TokenKind::Star
                 | TokenKind::QStar
                 | TokenKind::LParen
@@ -1704,6 +1829,10 @@ impl Parser {
 
     fn peek_next(&self) -> &Token {
         self.tokens.get(self.pos + 1).unwrap_or_else(|| self.peek())
+    }
+
+    fn peek_n(&self, n: usize) -> &Token {
+        self.tokens.get(self.pos + n).unwrap_or_else(|| self.peek())
     }
 
     fn previous(&self) -> &Token {

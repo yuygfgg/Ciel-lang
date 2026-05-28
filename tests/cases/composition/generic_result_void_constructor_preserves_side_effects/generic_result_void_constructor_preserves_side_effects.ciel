@@ -6,8 +6,12 @@ import /std/result;
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
+}
+
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
 }
 
 enum LocalError {
@@ -15,7 +19,7 @@ enum LocalError {
 }
 
 void mark() {
-    putchar(67);
+    ciel_test_putchar(67);
 }
 
 Result<void, LocalError> ok_with_side_effect() {

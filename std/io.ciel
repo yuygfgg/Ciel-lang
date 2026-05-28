@@ -4,7 +4,7 @@ import /std/format as format;
 import /std/message;
 import ./io_posix as posix;
 
-extern "C" {
+unsafe extern "C" {
     c::c_int ciel_errno();
     *char ciel_cstr_from_slice(*const char ptr, usize len);
     usize ciel_f32_to_string(f32 value, *char out, usize cap);
@@ -14,11 +14,11 @@ extern "C" {
     c::c_int ciel_io_open_append(*const char path);
 }
 
-export struct Fd {
+export unsafe struct Fd {
     c::c_int raw;
 }
 
-impl thread_local_marker(*const Fd value) {
+unsafe impl thread_local_marker(*const Fd value) {
     return true;
 }
 
@@ -32,45 +32,45 @@ export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
 export Error last_error() {
-    return code_error(ciel_errno() as i64);
+    return code_error(unsafe { ciel_errno() } as i64);
 }
 
-export Fd from_raw_fd(c::c_int raw) {
-    return { raw: raw };
+export unsafe Fd from_raw_fd(c::c_int raw) {
+    return unsafe { { raw: raw } };
 }
 
-export c::c_int raw_fd(Fd fd) {
-    return fd.raw;
+export unsafe c::c_int raw_fd(Fd fd) {
+    return unsafe { fd.raw };
 }
 
 export Fd stdin() {
-    return from_raw_fd(0 as c::c_int);
+    return unsafe { from_raw_fd(0 as c::c_int) };
 }
 
 export Fd stdout() {
-    return from_raw_fd(1 as c::c_int);
+    return unsafe { from_raw_fd(1 as c::c_int) };
 }
 
 export Fd stderr() {
-    return from_raw_fd(2 as c::c_int);
+    return unsafe { from_raw_fd(2 as c::c_int) };
 }
 
 Result<Fd, Error> fd_result(c::c_int raw) {
     if ((raw as i64) < 0) {
         return Err(last_error());
     }
-    return Ok(from_raw_fd(raw));
+    return Ok(unsafe { from_raw_fd(raw) });
 }
 
 export Result<Fd, Error> open([]const char path, OpenMode mode) {
-    *char c_path = ciel_cstr_from_slice(path.ptr, path.len);
+    *char c_path = unsafe { ciel_cstr_from_slice(path.ptr, path.len) };
     switch (mode) {
         case Read:
-            return fd_result(ciel_io_open_read(c_path));
+            return fd_result(unsafe { ciel_io_open_read(c_path) });
         case Write:
-            return fd_result(ciel_io_open_write(c_path));
+            return fd_result(unsafe { ciel_io_open_write(c_path) });
         case Append:
-            return fd_result(ciel_io_open_append(c_path));
+            return fd_result(unsafe { ciel_io_open_append(c_path) });
     }
 }
 
@@ -87,7 +87,7 @@ export Result<Fd, Error> append([]const char path) {
 }
 
 export Result<void, Error> close(Fd fd) {
-    c::c_int rc = posix::close(fd.raw);
+    c::c_int rc = unsafe { posix::close(fd.raw) };
     if ((rc as i64) < 0) {
         return Err(last_error());
     }
@@ -95,7 +95,7 @@ export Result<void, Error> close(Fd fd) {
 }
 
 export Result<usize, Error> read(Fd fd, []u8 out) {
-    c::c_ssize_t n = posix::read(fd.raw, out.ptr as *void, out.len as c::c_size_t);
+    c::c_ssize_t n = unsafe { posix::read(fd.raw, out.ptr as *void, out.len as c::c_size_t) };
     if ((n as i64) < 0) {
         return Err(last_error());
     }
@@ -103,7 +103,7 @@ export Result<usize, Error> read(Fd fd, []u8 out) {
 }
 
 export Result<usize, Error> write(Fd fd, []const u8 data) {
-    c::c_ssize_t n = posix::write(fd.raw, data.ptr as *const void, data.len as c::c_size_t);
+    c::c_ssize_t n = unsafe { posix::write(fd.raw, data.ptr as *const void, data.len as c::c_size_t) };
     if ((n as i64) < 0) {
         return Err(last_error());
     }
@@ -111,7 +111,7 @@ export Result<usize, Error> write(Fd fd, []const u8 data) {
 }
 
 export Result<usize, Error> write_text_once(Fd fd, []const char text) {
-    c::c_ssize_t n = posix::write(fd.raw, text.ptr as *const void, text.len as c::c_size_t);
+    c::c_ssize_t n = unsafe { posix::write(fd.raw, text.ptr as *const void, text.len as c::c_size_t) };
     if ((n as i64) < 0) {
         return Err(last_error());
     }
@@ -144,13 +144,13 @@ export Result<void, Error> write_text(Fd fd, []const char text) {
 
 export []const char f32_to_string(f32 value) {
     [64]char @buf = ['\0';];
-    usize len = ciel_f32_to_string(value, &buf[0], 64);
+    usize len = unsafe { ciel_f32_to_string(value, &buf[0], 64) };
     return buf[..len];
 }
 
 export []const char f64_to_string(f64 value) {
     [64]char @buf = ['\0';];
-    usize len = ciel_f64_to_string(value, &buf[0], 64);
+    usize len = unsafe { ciel_f64_to_string(value, &buf[0], 64) };
     return buf[..len];
 }
 

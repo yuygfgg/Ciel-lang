@@ -19,15 +19,15 @@ struct Envelope<T> {
     i64 scale;
 }
 
-impl<T: Message> clone_message(*const Pair<T> value) {
+unsafe impl<T: Message> clone_message(*const Pair<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Command<T> value) {
+unsafe impl<T: Message> clone_message(*const Command<T> value) {
     return Ok(*value);
 }
 
-impl<T: Message> clone_message(*const Envelope<T> value) {
+unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 

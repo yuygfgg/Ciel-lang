@@ -1,7 +1,7 @@
 // ciel-test: error
 // expect-error: expected `*i32`, got `?*i32`
 
-extern "C" {
+unsafe extern "C" {
     ?*i32 maybe_ptr();
 }
 

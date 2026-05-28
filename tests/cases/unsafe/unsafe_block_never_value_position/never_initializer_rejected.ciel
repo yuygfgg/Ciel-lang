@@ -1,0 +1,7 @@
+// ciel-test: error
+// expect-error: expected `i32`, got `never`
+
+i32 main() {
+    i32 x = unsafe { return 1; };
+    return x;
+}

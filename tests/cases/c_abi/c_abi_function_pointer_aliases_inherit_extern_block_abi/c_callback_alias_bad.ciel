@@ -1,7 +1,7 @@
 // ciel-test: error
 // expect-error: expected
 
-extern "C" {
+unsafe extern "C" {
     type Callback = i32 fn(i32);
 }
 

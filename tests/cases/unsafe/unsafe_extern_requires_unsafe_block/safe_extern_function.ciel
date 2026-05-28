@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: imported C function declarations must be in `unsafe extern "C"` blocks
+
+extern "C" {
+    i32 abs(i32 value);
+}
+
+i32 main() {
+    return 0;
+}

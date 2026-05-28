@@ -9,7 +9,7 @@ enum Task<T> {
     Flush(void),
 }
 
-impl<T: Message> clone_message(*const Task<T> value) {
+unsafe impl<T: Message> clone_message(*const Task<T> value) {
     return Ok(*value);
 }
 

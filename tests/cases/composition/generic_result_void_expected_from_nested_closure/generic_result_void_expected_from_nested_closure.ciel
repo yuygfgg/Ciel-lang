@@ -6,8 +6,12 @@ import /std/lib;
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
+}
+
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
 }
 
 struct Runner<T> {
@@ -21,7 +25,7 @@ enum Work<T> {
 }
 
 void mark(i32 ch) {
-    putchar(ch);
+    ciel_test_putchar(ch);
     return;
 }
 

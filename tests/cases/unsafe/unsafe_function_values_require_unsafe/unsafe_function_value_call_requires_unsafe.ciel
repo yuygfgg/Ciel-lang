@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: call to unsafe function value requires unsafe block
+
+#c_include "stdlib.h"
+
+unsafe extern "C" {
+    i32 abs(i32 value);
+}
+
+i32 main() {
+    unsafe extern "C" i32 fn(i32) f = unsafe { abs };
+    return f(-5);
+}

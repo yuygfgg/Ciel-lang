@@ -6,8 +6,12 @@ import /std/result;
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
+}
+
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
 }
 
 enum LocalError {
@@ -20,7 +24,7 @@ enum Signal<T> {
 }
 
 void mark() {
-    putchar(86);
+    ciel_test_putchar(86);
 }
 
 Result<void, LocalError> handle<T>(Signal<T> signal, Result<void, LocalError> |(T)| on_hit) {

@@ -1,7 +1,7 @@
 // ciel-test: run
 // expect-exit: 10
 
-extern "C" {
+unsafe extern "C" {
     type Callback = i32 fn(i32);
 }
 

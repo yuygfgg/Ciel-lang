@@ -5,6 +5,6 @@ i64 main() {
     i64 value = 0;
     *i64 ptr = &value;
     ?*void erased = ptr as ?*void;
-    *i64 restored = erased as *i64;
+    *i64 restored = unsafe { erased as *i64 };
     return *restored;
 }

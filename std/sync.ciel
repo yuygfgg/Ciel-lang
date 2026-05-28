@@ -4,7 +4,7 @@ export import /std/result;
 import /std/c as c;
 import /std/meta;
 
-extern "C" {
+unsafe extern "C" {
     opaque struct CielMutex;
 
     c::c_int ciel_errno();
@@ -24,26 +24,30 @@ export struct Update<T, R> {
 
 export interface<F, T, R> Result<Update<T, R>, Error> update_value(*const F updater, T value);
 
-impl<T> clone_message(*const Mutex<T> value) {
+unsafe impl<T> clone_message(*const Mutex<T> value) {
     return Ok(*value);
 }
 
-impl<T> share_handle_marker(*const Mutex<T> value) {
+unsafe impl<T> share_handle_marker(*const Mutex<T> value) {
     return true;
 }
 
 Error runtime_error() {
-    c::c_int code = ciel_errno();
+    c::c_int code = unsafe { ciel_errno() };
     if ((code as i64) == 0) {
         return code_error(5);
     }
     return code_error(code as i64);
 }
 
+void unlock_mutex(*CielMutex mutex) {
+    unsafe { ciel_mutex_unlock(mutex) };
+}
+
 export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
     T local = initial;
     T cloned = clone_message(&local)?;
-    ?*CielMutex raw = ciel_mutex_make(type_size<T>(), type_align<T>(), &cloned as *const void);
+    ?*CielMutex raw = unsafe { ciel_mutex_make(type_size<T>(), type_align<T>(), &cloned as *const void) };
     if (raw == null) {
         return Err(runtime_error());
     }
@@ -51,14 +55,14 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
 }
 
 export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *const F updater) {
-    *CielMutex raw_mutex = mutex->handle as *CielMutex;
-    ?*void raw_slot = ciel_mutex_lock(raw_mutex);
+    *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
+    ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {
         return Err(runtime_error());
     }
-    defer ciel_mutex_unlock(raw_mutex);
+    defer unlock_mutex(raw_mutex);
 
-    *T slot = raw_slot as *T;
+    *T slot = unsafe { raw_slot as *T };
     T current = clone_message(slot)?;
     Update<T, R> next = update_value<T, R>(updater, current)?;
     T replacement_source = next.value;

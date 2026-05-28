@@ -4,8 +4,12 @@
 
 #c_include "stdio.h"
 
-extern "C" {
+unsafe extern "C" {
     i32 putchar(i32 ch);
+}
+
+void ciel_test_putchar(i32 ch) {
+    unsafe { putchar(ch) };
 }
 
 enum Event {
@@ -13,7 +17,7 @@ enum Event {
 }
 
 void mark() {
-    putchar(65);
+    ciel_test_putchar(65);
 }
 
 i32 main() {

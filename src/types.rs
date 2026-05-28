@@ -91,6 +91,7 @@ pub enum Ty {
         args: Vec<Ty>,
     },
     Function {
+        is_unsafe: bool,
         abi: Option<String>,
         ret: Box<Ty>,
         params: Vec<Ty>,
@@ -154,7 +155,13 @@ impl Ty {
                 mutability: *mutability,
                 elem: Box::new(Ty::from_ast(elem)),
             },
-            TypeKind::Function { abi, ret, params } => Ty::Function {
+            TypeKind::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
                 abi: abi.clone(),
                 ret: Box::new(Ty::from_ast(ret)),
                 params: params.iter().map(Ty::from_ast).collect(),
@@ -234,9 +241,6 @@ impl Ty {
         if matches!(self, Ty::Hole(_)) || matches!(source, Ty::Hole(_)) {
             return true;
         }
-        if source.is_never() {
-            return true;
-        }
         if self == source {
             return true;
         }
@@ -284,6 +288,25 @@ impl Ty {
                 },
             ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability)
                 && expected == actual
+        ) || matches!(
+            (self, source),
+            (
+                Ty::Function {
+                    is_unsafe: expected_unsafe,
+                    abi: expected_abi,
+                    ret: expected_ret,
+                    params: expected_params,
+                },
+                Ty::Function {
+                    is_unsafe: actual_unsafe,
+                    abi: actual_abi,
+                    ret: actual_ret,
+                    params: actual_params,
+                },
+            ) if expected_abi == actual_abi
+                && expected_params == actual_params
+                && expected_ret.can_assign_from(actual_ret)
+                && (!actual_unsafe || *expected_unsafe)
         ) || matches!(
             (self, source),
             (
@@ -375,7 +398,13 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
         },
-        Ty::Function { abi, ret, params } => Ty::Function {
+        Ty::Function {
+            is_unsafe,
+            abi,
+            ret,
+            params,
+        } => Ty::Function {
+            is_unsafe: *is_unsafe,
             abi: abi.clone(),
             ret: Box::new(substitute_ty(ret, subst)),
             params: params
@@ -516,12 +545,21 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
             _ => false,
         },
-        Ty::Function { abi, ret, params } => match actual {
+        Ty::Function {
+            is_unsafe,
+            abi,
+            ret,
+            params,
+        } => match actual {
             Ty::Function {
+                is_unsafe: actual_is_unsafe,
                 abi: actual_abi,
                 ret: actual_ret,
                 params: actual_params,
-            } if abi == actual_abi && params.len() == actual_params.len() => {
+            } if is_unsafe == actual_is_unsafe
+                && abi == actual_abi
+                && params.len() == actual_params.len() =>
+            {
                 unify_ty(ret, actual_ret, subst)
                     && params
                         .iter()
@@ -1268,7 +1306,12 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
                 )
             }
         }
-        Ty::Function { abi, ret, params } => {
+        Ty::Function {
+            is_unsafe,
+            abi,
+            ret,
+            params,
+        } => {
             let params = if params.is_empty() {
                 "void".to_string()
             } else {
@@ -1279,7 +1322,8 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
                     .join("_")
             };
             format!(
-                "fn_{}_ret_{}_args_{}",
+                "fn_{}_{}_ret_{}_args_{}",
+                if *is_unsafe { "unsafe" } else { "safe" },
                 mangle_abi_fragment(abi.as_deref()),
                 mangle_ty_fragment(ret),
                 params
@@ -1489,7 +1533,15 @@ impl fmt::Display for Ty {
                     )
                 }
             }
-            Ty::Function { abi, ret, params } => {
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => {
+                if *is_unsafe {
+                    write!(f, "unsafe ")?;
+                }
                 if let Some(abi) = abi {
                     write!(f, "extern \"{abi}\" ")?;
                 }

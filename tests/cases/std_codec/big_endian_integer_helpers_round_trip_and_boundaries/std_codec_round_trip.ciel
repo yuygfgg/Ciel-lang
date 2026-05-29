@@ -1,0 +1,106 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/codec as codec;
+import /std/meta as meta;
+import /std/result;
+
+i64 main() {
+    [16]u8 @buf = [0;];
+    meta::Type<u8> u8_tag = {};
+    meta::Type<u16> u16_tag = {};
+    meta::Type<u32> u32_tag = {};
+    meta::Type<u64> u64_tag = {};
+    meta::Type<usize> usize_tag = {};
+
+    if (codec::encoded_len(0 as u8) != 1) {
+        return 1;
+    }
+    if (codec::encoded_len(0 as u16) != 2) {
+        return 2;
+    }
+    if (codec::encoded_len(0 as u32) != 4) {
+        return 3;
+    }
+    if (codec::encoded_len(0 as u64) != 8) {
+        return 4;
+    }
+
+    must(codec::put_be(buf[..1], 0xab as u8));
+    if (must(codec::get_be(u8_tag, buf[..1])) != (0xab as u8)) {
+        return 5;
+    }
+
+    must(codec::put_be(buf[..2], 0x1234 as u16));
+    if (buf[0] != (0x12 as u8) || buf[1] != (0x34 as u8)) {
+        return 6;
+    }
+    if (must(codec::get_be(u16_tag, buf[..2])) != (0x1234 as u16)) {
+        return 7;
+    }
+
+    must(codec::put_le(buf[..2], 0x1234 as u16));
+    if (buf[0] != (0x34 as u8) || buf[1] != (0x12 as u8)) {
+        return 8;
+    }
+    if (must(codec::get_le(u16_tag, buf[..2])) != (0x1234 as u16)) {
+        return 9;
+    }
+
+    must(codec::put_be(buf[..4], 0x89abcdef as u32));
+    if (
+        buf[0] != (0x89 as u8) ||
+        buf[1] != (0xab as u8) ||
+        buf[2] != (0xcd as u8) ||
+        buf[3] != (0xef as u8)
+    ) {
+        return 10;
+    }
+    if (must(codec::get_be(u32_tag, buf[..4])) != (0x89abcdef as u32)) {
+        return 11;
+    }
+
+    must(codec::put_le(buf[..4], 0x89abcdef as u32));
+    if (
+        buf[0] != (0xef as u8) ||
+        buf[1] != (0xcd as u8) ||
+        buf[2] != (0xab as u8) ||
+        buf[3] != (0x89 as u8)
+    ) {
+        return 12;
+    }
+    if (must(codec::get_le(u32_tag, buf[..4])) != (0x89abcdef as u32)) {
+        return 13;
+    }
+
+    must(codec::put_be(buf[..8], 0x0123456789abcdef as u64));
+    if (must(codec::get_be(u64_tag, buf[..8])) != (0x0123456789abcdef as u64)) {
+        return 14;
+    }
+
+    must(codec::put_le(buf[..8], 0x0123456789abcdef as u64));
+    if (must(codec::get_le(u64_tag, buf[..8])) != (0x0123456789abcdef as u64)) {
+        return 15;
+    }
+
+    []u8 be = must(codec::encode_be(0x01020304 as u32));
+    if (be.len != 4 || be[0] != (1 as u8) || be[3] != (4 as u8)) {
+        return 16;
+    }
+
+    []u8 le = must(codec::encode_le(0x01020304 as u32));
+    if (le.len != 4 || le[0] != (4 as u8) || le[3] != (1 as u8)) {
+        return 17;
+    }
+
+    usize value = 0x34 as usize;
+    []u8 encoded_usize = must(codec::encode_be(value));
+    if (encoded_usize.len != codec::encoded_len(value)) {
+        return 18;
+    }
+    if (must(codec::get_be(usize_tag, encoded_usize)) != value) {
+        return 19;
+    }
+
+    return 0;
+}

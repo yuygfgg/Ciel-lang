@@ -1,0 +1,288 @@
+import /std/result;
+import /std/meta as meta;
+
+export interface<T> usize encoded_len(T value);
+export interface<T> Result<void, Error> put_be([]u8 out, T value);
+export interface<T> Result<void, Error> put_le([]u8 out, T value);
+export interface<T> Result<T, Error> get_be(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
+
+Error short_output_error() {
+    return text_error("codec output buffer too short");
+}
+
+Error short_input_error() {
+    return text_error("codec input buffer too short");
+}
+
+export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value) {
+    usize len = encoded_len(value);
+    if (len == 1) {
+        [1]u8 @out = [0;];
+        put_be(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 2) {
+        [2]u8 @out = [0;];
+        put_be(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 4) {
+        [4]u8 @out = [0;];
+        put_be(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 8) {
+        [8]u8 @out = [0;];
+        put_be(out[..], value)?;
+        return Ok(out[..]);
+    }
+    return Err(text_error("unsupported codec integer width"));
+}
+
+export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value) {
+    usize len = encoded_len(value);
+    if (len == 1) {
+        [1]u8 @out = [0;];
+        put_le(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 2) {
+        [2]u8 @out = [0;];
+        put_le(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 4) {
+        [4]u8 @out = [0;];
+        put_le(out[..], value)?;
+        return Ok(out[..]);
+    }
+    if (len == 8) {
+        [8]u8 @out = [0;];
+        put_le(out[..], value)?;
+        return Ok(out[..]);
+    }
+    return Err(text_error("unsupported codec integer width"));
+}
+
+impl encoded_len(u8 value) {
+    return 1;
+}
+
+impl encoded_len(u16 value) {
+    return 2;
+}
+
+impl encoded_len(u32 value) {
+    return 4;
+}
+
+impl encoded_len(u64 value) {
+    return 8;
+}
+
+impl encoded_len(usize value) {
+    return meta::type_size<usize>();
+}
+
+impl put_be([]u8 out, u8 value) {
+    if (out.len < 1) {
+        return Err(short_output_error());
+    }
+    out[0] = value;
+    return Ok;
+}
+
+impl put_le([]u8 out, u8 value) {
+    if (out.len < 1) {
+        return Err(short_output_error());
+    }
+    out[0] = value;
+    return Ok;
+}
+
+impl get_be(meta::Type<u8> tag, []const u8 data) {
+    if (data.len < 1) {
+        return Err(short_input_error());
+    }
+    return Ok(data[0]);
+}
+
+impl get_le(meta::Type<u8> tag, []const u8 data) {
+    if (data.len < 1) {
+        return Err(short_input_error());
+    }
+    return Ok(data[0]);
+}
+
+impl put_be([]u8 out, u16 value) {
+    if (out.len < 2) {
+        return Err(short_output_error());
+    }
+    out[0] = (value >> (8 as u8)) as u8;
+    out[1] = (value & (0xff as u16)) as u8;
+    return Ok;
+}
+
+impl put_le([]u8 out, u16 value) {
+    if (out.len < 2) {
+        return Err(short_output_error());
+    }
+    out[0] = (value & (0xff as u16)) as u8;
+    out[1] = (value >> (8 as u8)) as u8;
+    return Ok;
+}
+
+impl get_be(meta::Type<u16> tag, []const u8 data) {
+    if (data.len < 2) {
+        return Err(short_input_error());
+    }
+    return Ok(((data[0] as u16) << (8 as u8)) | (data[1] as u16));
+}
+
+impl get_le(meta::Type<u16> tag, []const u8 data) {
+    if (data.len < 2) {
+        return Err(short_input_error());
+    }
+    return Ok(((data[1] as u16) << (8 as u8)) | (data[0] as u16));
+}
+
+impl put_be([]u8 out, u32 value) {
+    if (out.len < 4) {
+        return Err(short_output_error());
+    }
+    out[0] = (value >> (24 as u8)) as u8;
+    out[1] = ((value >> (16 as u8)) & (0xff as u32)) as u8;
+    out[2] = ((value >> (8 as u8)) & (0xff as u32)) as u8;
+    out[3] = (value & (0xff as u32)) as u8;
+    return Ok;
+}
+
+impl put_le([]u8 out, u32 value) {
+    if (out.len < 4) {
+        return Err(short_output_error());
+    }
+    out[0] = (value & (0xff as u32)) as u8;
+    out[1] = ((value >> (8 as u8)) & (0xff as u32)) as u8;
+    out[2] = ((value >> (16 as u8)) & (0xff as u32)) as u8;
+    out[3] = (value >> (24 as u8)) as u8;
+    return Ok;
+}
+
+impl get_be(meta::Type<u32> tag, []const u8 data) {
+    if (data.len < 4) {
+        return Err(short_input_error());
+    }
+    return Ok(
+        ((data[0] as u32) << (24 as u8)) |
+        ((data[1] as u32) << (16 as u8)) |
+        ((data[2] as u32) << (8 as u8)) |
+        (data[3] as u32)
+    );
+}
+
+impl get_le(meta::Type<u32> tag, []const u8 data) {
+    if (data.len < 4) {
+        return Err(short_input_error());
+    }
+    return Ok(
+        ((data[3] as u32) << (24 as u8)) |
+        ((data[2] as u32) << (16 as u8)) |
+        ((data[1] as u32) << (8 as u8)) |
+        (data[0] as u32)
+    );
+}
+
+impl put_be([]u8 out, u64 value) {
+    if (out.len < 8) {
+        return Err(short_output_error());
+    }
+    out[0] = (value >> (56 as u8)) as u8;
+    out[1] = ((value >> (48 as u8)) & (0xff as u64)) as u8;
+    out[2] = ((value >> (40 as u8)) & (0xff as u64)) as u8;
+    out[3] = ((value >> (32 as u8)) & (0xff as u64)) as u8;
+    out[4] = ((value >> (24 as u8)) & (0xff as u64)) as u8;
+    out[5] = ((value >> (16 as u8)) & (0xff as u64)) as u8;
+    out[6] = ((value >> (8 as u8)) & (0xff as u64)) as u8;
+    out[7] = (value & (0xff as u64)) as u8;
+    return Ok;
+}
+
+impl put_le([]u8 out, u64 value) {
+    if (out.len < 8) {
+        return Err(short_output_error());
+    }
+    out[0] = (value & (0xff as u64)) as u8;
+    out[1] = ((value >> (8 as u8)) & (0xff as u64)) as u8;
+    out[2] = ((value >> (16 as u8)) & (0xff as u64)) as u8;
+    out[3] = ((value >> (24 as u8)) & (0xff as u64)) as u8;
+    out[4] = ((value >> (32 as u8)) & (0xff as u64)) as u8;
+    out[5] = ((value >> (40 as u8)) & (0xff as u64)) as u8;
+    out[6] = ((value >> (48 as u8)) & (0xff as u64)) as u8;
+    out[7] = (value >> (56 as u8)) as u8;
+    return Ok;
+}
+
+impl get_be(meta::Type<u64> tag, []const u8 data) {
+    if (data.len < 8) {
+        return Err(short_input_error());
+    }
+    return Ok(
+        ((data[0] as u64) << (56 as u8)) |
+        ((data[1] as u64) << (48 as u8)) |
+        ((data[2] as u64) << (40 as u8)) |
+        ((data[3] as u64) << (32 as u8)) |
+        ((data[4] as u64) << (24 as u8)) |
+        ((data[5] as u64) << (16 as u8)) |
+        ((data[6] as u64) << (8 as u8)) |
+        (data[7] as u64)
+    );
+}
+
+impl get_le(meta::Type<u64> tag, []const u8 data) {
+    if (data.len < 8) {
+        return Err(short_input_error());
+    }
+    return Ok(
+        ((data[7] as u64) << (56 as u8)) |
+        ((data[6] as u64) << (48 as u8)) |
+        ((data[5] as u64) << (40 as u8)) |
+        ((data[4] as u64) << (32 as u8)) |
+        ((data[3] as u64) << (24 as u8)) |
+        ((data[2] as u64) << (16 as u8)) |
+        ((data[1] as u64) << (8 as u8)) |
+        (data[0] as u64)
+    );
+}
+
+impl put_be([]u8 out, usize value) {
+    if (meta::type_size<usize>() == 8) {
+        put_be(out, value as u64)?;
+        return Ok;
+    }
+    put_be(out, value as u32)?;
+    return Ok;
+}
+
+impl put_le([]u8 out, usize value) {
+    if (meta::type_size<usize>() == 8) {
+        put_le(out, value as u64)?;
+        return Ok;
+    }
+    put_le(out, value as u32)?;
+    return Ok;
+}
+
+impl get_be(meta::Type<usize> tag, []const u8 data) {
+    if (meta::type_size<usize>() == 8) {
+        return Ok(get_be({} as meta::Type<u64>, data)? as usize);
+    }
+    return Ok(get_be({} as meta::Type<u32>, data)? as usize);
+}
+
+impl get_le(meta::Type<usize> tag, []const u8 data) {
+    if (meta::type_size<usize>() == 8) {
+        return Ok(get_le({} as meta::Type<u64>, data)? as usize);
+    }
+    return Ok(get_le({} as meta::Type<u32>, data)? as usize);
+}

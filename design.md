@@ -1918,7 +1918,7 @@ import /std/actor;
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
 `/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
-`/std/sync`, and `/std/atomic`.
+`/std/sync`, `/std/atomic`, and `/std/codec`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2156,6 +2156,8 @@ export interface ThreadLocal = thread_local_marker;
 export usize type_size<T>();
 export usize type_align<T>();
 
+export struct Type<T> {}
+
 export struct RefRepr<T> {}
 export struct Repr<T> {}
 
@@ -2330,6 +2332,22 @@ export import /std/actor;
 export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
+export import /std/codec;
+```
+
+```rust
+// /std/codec
+import /std/result;
+import /std/meta as meta;
+
+export interface<T> usize encoded_len(T value);
+export interface<T> Result<void, Error> put_be([]u8 out, T value);
+export interface<T> Result<void, Error> put_le([]u8 out, T value);
+export interface<T> Result<T, Error> get_be(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
+
+export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value);
+export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value);
 ```
 
 ```rust

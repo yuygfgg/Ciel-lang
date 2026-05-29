@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: no impl of `put_be` for this call
+
+import /std/codec as codec;
+import /std/result;
+
+i64 main() {
+    [4]u8 @buf = [0;];
+    must(codec::put_be(buf[..], 1 as i32));
+    return 0;
+}

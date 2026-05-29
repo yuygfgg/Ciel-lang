@@ -11,3 +11,4 @@ export import /std/actor;
 export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
+export import /std/codec;

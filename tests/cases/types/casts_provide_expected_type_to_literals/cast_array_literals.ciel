@@ -1,0 +1,8 @@
+// ciel-test: run
+// expect-exit: 7
+
+i64 main() {
+    [3]u8 values = [1, 2, 3] as [3]u8;
+    []u8 repeated = [2 as u8; 4] as []u8;
+    return values[2] as i64 + repeated.len as i64;
+}

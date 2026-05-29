@@ -564,8 +564,8 @@ pub fn type_check_generic_instance(
     checker.collect_structs();
     checker.collect_enums();
     checker.collect_functions();
-    checker.collect_impls();
     checker.merge_existing_impls(&checked.impls);
+    checker.collect_impls(false);
     checker.next_synthetic_def = checker.next_synthetic_def.max(next_synthetic_def);
     let base_generated = checker.generated_functions.len();
     let base_impls = checker.impls.len();
@@ -701,7 +701,7 @@ impl TypeChecker {
         self.collect_structs();
         self.collect_enums();
         self.collect_functions();
-        self.collect_impls();
+        self.collect_impls(true);
         self.normalize_function_sigs();
         self.validate_c_abi_functions();
         self.check_by_value_layout_cycles();
@@ -3164,7 +3164,7 @@ impl TypeChecker {
         }
     }
 
-    fn collect_impls(&mut self) {
+    fn collect_impls(&mut self, check_concrete_bodies: bool) {
         let modules = self.hir_modules.clone();
         let mut pending_bodies = Vec::new();
         for module in &modules {
@@ -3220,8 +3220,13 @@ impl TypeChecker {
                 else {
                     continue;
                 };
-                self.check_generic_marker_impl_overlap(item.span, &analysis);
+                if check_concrete_bodies {
+                    self.check_generic_marker_impl_overlap(item.span, &analysis);
+                }
                 if analysis.generics.is_empty() {
+                    if !check_concrete_bodies {
+                        continue;
+                    }
                     if self
                         .find_impl_by_full_args(
                             &analysis.interface_name,
@@ -5283,7 +5288,18 @@ impl TypeChecker {
                     };
                     return Some(self.coerce_expr_to_expected(scopes, checked, Some(&target)));
                 }
-                let inner = self.check_expr(scopes, inner, None)?;
+                let literal_expected = matches!(
+                    inner.kind,
+                    ExprKind::StructLiteral(_)
+                        | ExprKind::ArrayLiteral(_)
+                        | ExprKind::ArrayRepeat { .. }
+                        | ExprKind::Literal(Literal::Null)
+                );
+                let inner = self.check_expr(
+                    scopes,
+                    inner,
+                    literal_expected.then_some(&target),
+                )?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
                 self.require_unsafe_pointer_cast_through_void(&inner.ty, &target, expr.span);
                 TExpr {

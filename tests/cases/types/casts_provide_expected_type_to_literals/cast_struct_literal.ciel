@@ -1,0 +1,9 @@
+// ciel-test: run
+// expect-exit: 7
+
+struct Tag<T> {}
+
+i64 main() {
+    Tag<u32> tag = {} as Tag<u32>;
+    return 7;
+}

@@ -2,6 +2,9 @@
 export usize type_size<T>();
 export usize type_align<T>();
 
+// Zero-sized type witness used by APIs that need a type as an input value.
+export struct Type<T> {}
+
 // Compiler-recognized structural representation markers.
 // Type checking normalizes these markers to the ordinary SOP types below.
 export struct RefRepr<T> {}

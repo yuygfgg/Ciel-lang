@@ -1,0 +1,57 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/codec as codec;
+import /std/meta as meta;
+import /std/result;
+
+bool is_err_void(Result<void, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_u16(Result<u16, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_u32(Result<u32, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i64 main() {
+    [4]u8 @buf = [0;];
+    meta::Type<u16> u16_tag = {};
+    meta::Type<u32> u32_tag = {};
+
+    if (!is_err_void(codec::put_be(buf[..1], 1 as u16))) {
+        return 1;
+    }
+    if (!is_err_void(codec::put_le(buf[..3], 1 as u32))) {
+        return 2;
+    }
+    if (!is_err_u16(codec::get_be(u16_tag, buf[..1]))) {
+        return 3;
+    }
+    if (!is_err_u32(codec::get_le(u32_tag, buf[..3]))) {
+        return 4;
+    }
+
+    must(codec::put_be(buf[..2], 0xabcd as u16));
+    must(codec::put_le(buf[..4], 0x01020304 as u32));
+
+    return 0;
+}

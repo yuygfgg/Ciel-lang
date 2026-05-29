@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 52
+
+import /std/lib;
+
+i64 main() {
+    [4]u8 @buf = [0;];
+    Type<u32> u32_tag = {};
+    must(put_be(buf[..], 0x00000034 as u32));
+    return must(get_be(u32_tag, buf[..])) as i64;
+}

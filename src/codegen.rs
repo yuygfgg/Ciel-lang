@@ -227,7 +227,11 @@ impl<'a> CGenerator<'a> {
             self.line("");
         }
 
+        let mut emitted_slice_type = false;
         for (slice, ty) in self.plan.slice_types.clone() {
+            if prelude_defines_slice_type(&slice) {
+                continue;
+            }
             let Ty::Slice { mutability, elem } = ty else {
                 continue;
             };
@@ -242,12 +246,9 @@ impl<'a> CGenerator<'a> {
             self.line(&format!(
                 "typedef struct {{ {ptr_decl}; size_t len; }} {slice};"
             ));
+            emitted_slice_type = true;
         }
-        if !self.plan.slice_types.is_empty() {
-            self.line("");
-        }
-        if self.plan.slice_types.contains_key("CielConstSlice_char") {
-            self.line("#define CIEL_CONST_STR(S) ((CielConstSlice_char){.ptr = (S), .len = sizeof(S) - 1})");
+        if emitted_slice_type {
             self.line("");
         }
 
@@ -339,11 +340,6 @@ impl<'a> CGenerator<'a> {
         self.emit_dynamic_shim_prototypes();
         self.line("");
 
-        self.emit_byte_slice_helpers();
-        if self.plan.slice_types.contains_key("CielSlice_u8") {
-            self.line("");
-        }
-
         self.emit_dynamic_shims_and_tables();
         if !self.plan.dynamic_impls.is_empty() {
             self.line("");
@@ -376,8 +372,9 @@ impl<'a> CGenerator<'a> {
         }
 
         if let Some(main_id) = self.find_ciel_main().map(|main| main.def_id) {
-            self.line("int main(void) {");
+            self.line("int main(int argc, char **argv) {");
             self.line("    ciel_runtime_init();");
+            self.line("    ciel_runtime_set_args(argc, argv);");
             self.line(&format!("    return (int){}();", self.c_name(main_id)));
             self.line("}");
         }
@@ -589,18 +586,6 @@ impl<'a> CGenerator<'a> {
             ));
         }
         self.line("");
-    }
-
-    fn emit_byte_slice_helpers(&mut self) {
-        if !self.plan.slice_types.contains_key("CielSlice_u8") {
-            return;
-        }
-        self.line("CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {");
-        self.line("    CielSlice_u8 out;");
-        self.line("    out.ptr = (uint8_t *)ciel_alloc_array(sizeof(uint8_t), len);");
-        self.line("    out.len = len;");
-        self.line("    return out;");
-        self.line("}");
     }
 
     fn collect_names(&mut self) {
@@ -7836,6 +7821,10 @@ fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
     } else {
         None
     }
+}
+
+fn prelude_defines_slice_type(name: &str) -> bool {
+    matches!(name, "CielSlice_u8" | "CielConstSlice_char")
 }
 
 fn string_literal_len(raw: &str) -> usize {

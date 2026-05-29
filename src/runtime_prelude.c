@@ -37,7 +37,21 @@
 #define CIEL_ALIGNOF(T) sizeof(void *)
 #endif
 
+typedef struct {
+    uint8_t *ptr;
+    size_t len;
+} CielSlice_u8;
+
+typedef struct {
+    const char *ptr;
+    size_t len;
+} CielConstSlice_char;
+
+#define CIEL_CONST_STR(S) ((CielConstSlice_char){.ptr = (S), .len = sizeof(S) - 1})
+
 static int ciel_runtime_initialized = 0;
+static int ciel_runtime_argc = 0;
+static char **ciel_runtime_argv = NULL;
 static __thread int ciel_runtime_callback_depth = 0;
 static __thread int ciel_runtime_callback_registered = 0;
 
@@ -49,6 +63,34 @@ void ciel_runtime_init(void) {
 #if defined(GC_THREADS)
     GC_allow_register_threads();
 #endif
+}
+
+void ciel_runtime_set_args(int argc, char **argv) {
+    ciel_runtime_argc = argc < 0 ? 0 : argc;
+    ciel_runtime_argv = argv;
+}
+
+int ciel_env_args_len(size_t *out) {
+    if (out == NULL)
+        return EINVAL;
+    if (ciel_runtime_argc < 0)
+        return EIO;
+    *out = (size_t)ciel_runtime_argc;
+    return 0;
+}
+
+CielConstSlice_char ciel_env_arg_unchecked(size_t index) {
+    static const char empty[] = "";
+    CielConstSlice_char out;
+    if (ciel_runtime_argc < 0 || ciel_runtime_argv == NULL ||
+        index >= (size_t)ciel_runtime_argc || ciel_runtime_argv[index] == NULL) {
+        out.ptr = empty;
+        out.len = 0;
+        return out;
+    }
+    out.ptr = ciel_runtime_argv[index];
+    out.len = strlen(ciel_runtime_argv[index]);
+    return out;
 }
 
 static CIEL_MAYBE_UNUSED void *ciel_alloc(size_t size) {
@@ -68,6 +110,13 @@ static CIEL_MAYBE_UNUSED void *ciel_alloc_array(size_t elem_size, size_t len) {
     }
     size_t bytes = elem_size * len;
     return ciel_alloc(bytes == 0 ? 1 : bytes);
+}
+
+CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {
+    CielSlice_u8 out;
+    out.ptr = (uint8_t *)ciel_alloc_array(sizeof(uint8_t), len);
+    out.len = len;
+    return out;
 }
 
 static CIEL_MAYBE_UNUSED void *ciel_alloc_uncollectable(size_t size) {

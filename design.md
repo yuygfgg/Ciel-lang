@@ -1918,7 +1918,8 @@ import /std/actor;
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
 `/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
-`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, and `/std/time`.
+`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, `/std/time`, and
+`/std/env`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2335,6 +2336,7 @@ export import /std/atomic;
 export import /std/codec;
 export import /std/buf;
 export import /std/time;
+export import /std/env;
 ```
 
 ```rust
@@ -2392,6 +2394,20 @@ thread until the requested duration has elapsed or a platform error is reported;
 it is intended for simple backoff, tests, and blocking utility code. Actor
 continuations that must stay non-blocking should use an async completion style
 timer API if one is added later.
+
+```rust
+// /std/env
+import /std/result;
+
+export Result<usize, Error> args_len();
+export Result<[]const char, Error> arg(usize index);
+```
+
+`/std/env` exposes process command-line arguments as stable read-only character
+slices. Index `0` is the host-provided executable argument. `arg` returns a
+standard `Error` when the index is outside the current `args_len`. Environment
+variables, working-directory access, process spawning, and path search are
+reserved for later modules.
 
 ```rust
 // /std/async

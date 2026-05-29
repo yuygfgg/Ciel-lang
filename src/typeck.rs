@@ -5295,11 +5295,7 @@ impl TypeChecker {
                         | ExprKind::ArrayRepeat { .. }
                         | ExprKind::Literal(Literal::Null)
                 );
-                let inner = self.check_expr(
-                    scopes,
-                    inner,
-                    literal_expected.then_some(&target),
-                )?;
+                let inner = self.check_expr(scopes, inner, literal_expected.then_some(&target))?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
                 self.require_unsafe_pointer_cast_through_void(&inner.ty, &target, expr.span);
                 TExpr {

@@ -37,6 +37,7 @@ struct Case {
     expect_c_contains: Vec<String>,
     expect_c_not_contains: Vec<String>,
     expect_c_counts: Vec<CCount>,
+    run_args: Vec<String>,
     features: Vec<String>,
     warning_clean: bool,
     host: Option<PathBuf>,
@@ -231,6 +232,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
     let mut expect_c_contains = Vec::new();
     let mut expect_c_not_contains = Vec::new();
     let mut expect_c_counts = Vec::new();
+    let mut run_args = Vec::new();
     let mut features = Vec::new();
     let mut warning_clean = false;
     let mut host = None;
@@ -276,6 +278,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
             "expect-error" => expect_errors.push(value.to_string()),
             "expect-c-contains" => expect_c_contains.push(value.to_string()),
             "expect-c-not-contains" => expect_c_not_contains.push(value.to_string()),
+            "run-arg" => run_args.push(raw_value.trim_start().to_string()),
             "expect-c-count" => {
                 let (needle, count) = value
                     .rsplit_once("=>")
@@ -311,6 +314,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
         expect_c_contains,
         expect_c_not_contains,
         expect_c_counts,
+        run_args,
         features,
         warning_clean,
         host,
@@ -332,6 +336,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
                 || !case.features.is_empty()
+                || !case.run_args.is_empty()
             {
                 return Err("dependency/manual fixtures must not declare expectations".to_string());
             }
@@ -348,6 +353,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "known-fail-compile fixtures cannot declare C, runtime, host, or warning expectations"
@@ -367,6 +373,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "known-fail-cc fixtures cannot declare C, runtime, host, or warning expectations"
@@ -387,6 +394,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "known-fail-run fixtures cannot declare C, error, host, or warning expectations"
@@ -407,6 +415,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "known-fail-accepts fixtures cannot declare C, error, runtime, host, or warning expectations"
@@ -433,8 +442,10 @@ fn validate_case(case: &Case) -> Result<(), String> {
             if !host.exists() {
                 return Err(format!("host fixture `{}` does not exist", host.display()));
             }
-            if !case.expect_errors.is_empty() {
-                return Err("host fixtures cannot declare error expectations".to_string());
+            if !case.expect_errors.is_empty() || !case.run_args.is_empty() {
+                return Err(
+                    "host fixtures cannot declare error expectations or run arguments".to_string(),
+                );
             }
         }
         TestKind::Compile => {
@@ -444,6 +455,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_errors.is_empty()
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "compile fixtures cannot declare runtime, host, or error expectations"
@@ -464,6 +476,7 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
+                || !case.run_args.is_empty()
             {
                 return Err(
                     "error fixtures cannot declare C, runtime, host, or warning expectations"
@@ -493,6 +506,7 @@ fn run_case(case: &Case) -> Result<(), String> {
             }
             let exe = compile_c(&case.path, &c, "run.exe", &[])?;
             let output = Command::new(&exe)
+                .args(&case.run_args)
                 .output()
                 .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
             check_output(case, &output)
@@ -558,6 +572,7 @@ fn run_case(case: &Case) -> Result<(), String> {
             let c = compile_case(case)?;
             let exe = compile_c(&case.path, &c, "known_fail_run.exe", &[])?;
             let output = Command::new(&exe)
+                .args(&case.run_args)
                 .output()
                 .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
             match check_output(case, &output) {

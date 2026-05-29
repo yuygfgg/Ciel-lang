@@ -1,0 +1,69 @@
+// ciel-test: run
+// run-arg: alpha
+// run-arg: beta
+// run-arg: café
+// expect-exit: 0
+
+import /std/env as env;
+import /std/result;
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool is_arg_error(Result<[]const char, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i64 main() {
+    usize len = must(env::args_len());
+    if (len != 4) {
+        return 1;
+    }
+
+    []const char program = must(env::arg(0));
+    if (program.len == 0) {
+        return 2;
+    }
+
+    if (!same_text(must(env::arg(1)), "alpha")) {
+        return 3;
+    }
+    if (!same_text(must(env::arg(2)), "beta")) {
+        return 4;
+    }
+
+    []const char utf8 = must(env::arg(3));
+    if (!same_text(utf8, "caf\xC3\xA9")) {
+        return 5;
+    }
+    if (utf8.len != 5) {
+        return 6;
+    }
+
+    []const char again = must(env::arg(3));
+    if (again.ptr != utf8.ptr || again.len != utf8.len) {
+        return 7;
+    }
+
+    if (!is_arg_error(env::arg(len))) {
+        return 8;
+    }
+
+    return 0;
+}

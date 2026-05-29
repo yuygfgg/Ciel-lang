@@ -38,7 +38,7 @@ host integration.
       Tests: monotonic values do not go backwards; `sleep_ms(1)` returns
       successfully. Keep timing assertions loose.
 
-- [ ] Add `/std/env` process argument access.
+- [x] Add `/std/env` process argument access.
       Implement `args_len` and `arg`.
       Tests: compiler/CLI harness passes known arguments and verifies indexing,
       out-of-range error, and UTF-8 byte slice stability.

@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+
+i64 main() {
+    usize len = must(args_len());
+    if (len == 0) {
+        return 1;
+    }
+    []const char program = must(arg(0));
+    if (program.len == 0) {
+        return 2;
+    }
+    return 0;
+}

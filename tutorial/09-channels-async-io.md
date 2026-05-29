@@ -190,43 +190,94 @@ steps. Its handler is only:
 return step(state);
 ```
 
-`flow::then` connects one operation to the next step. It relies on two generic
-interfaces:
+`flow::then` connects one completion to the next step. Its second argument is a
+`flow::Completion<S, Out>`:
 
 ```ciel
-notify_done(&op, actor_handle, message)?;
-Out value = finish<Out>(op)?;
+flow::Completion<Channel<usize>, aio::Bytes> read =
+    aio::read_bytes_completion<Channel<usize>>(input, 64)?;
 ```
 
-`/std/async_io` implements those interfaces for `AsyncRead` and `AsyncWrite`.
-That means a file-copy pipeline can say "after the read finishes, write the
-bytes; after the write finishes, report the byte count" without exposing a
-state-machine enum:
+`Completion<S, Out>` hides the operation token from application code. It says:
+"this operation can notify a `Step<S>` actor when ready, and later produce an
+`Out` value." `then` is the reusable glue that builds the completion `Step<S>`
+and calls the completion in the right phases.
+
+The raw operation layer still exists for libraries. A library that introduces a
+new async operation type writes an adapter once. For example, `/std/async_io`
+connects `AsyncRead` to the generic adapter like this:
+
+```ciel
+impl<M: Message> notify_done(
+    AsyncRead op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_read_done(&op, &actor_handle, message);
+}
+
+impl finish<Bytes>(AsyncRead op) {
+    return finish_read(op);
+}
+```
+
+The first impl says how to register a typed completion message with the runtime.
+The second impl says how to consume the completed operation token and get the
+result value. The output type is part of the interface instance:
+`AsyncRead` finishes as `Bytes`, while `AsyncWrite` finishes as `usize`.
+
+The public constructor wraps that raw `AsyncRead` token into a `Completion`:
+
+```ciel
+export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
+    AsyncFd fd,
+    usize max_len
+) {
+    AsyncRead op = read_bytes(fd, max_len)?;
+    return Ok(flow::completion_from_op<S, Bytes, AsyncRead>(op));
+}
+```
+
+That split keeps application code on one high-level path. Use
+`read_bytes_completion` and `write_bytes_completion` with `then` for linear
+flows. Drop to `read_bytes`, `notify_read_done`, and `finish_read` only when you
+need a custom actor protocol, cancellation branch, or a message shape that
+`then` should not hide.
+
+With completions, a file-copy pipeline can say "after the read finishes, write
+the bytes; after the write finishes, report the byte count" without exposing a
+state-machine enum or raw operation token:
 
 ```ciel
 flow::Step<Channel<usize>> start = |Channel<usize> done| {
-    aio::AsyncRead read = aio::read_bytes(input, 64)?;
-
-    return flow::then(done, read, worker, |Channel<usize> done, aio::Bytes bytes| {
-        aio::AsyncWrite write = aio::write_bytes(output, bytes)?;
-
-        return flow::then(done, write, worker, |Channel<usize> done, usize written| {
-            channel_send(&done, written)?;
-            return Ok(done);
-        });
-    });
+    return flow::then(
+        done,
+        aio::read_bytes_completion<Channel<usize>>(input, 64)?,
+        worker,
+        |Channel<usize> done, aio::Bytes bytes| {
+            return flow::then(
+                done,
+                aio::write_bytes_completion<Channel<usize>>(output, bytes)?,
+                worker,
+                |Channel<usize> done, usize written| {
+                    channel_send(&done, written)?;
+                    return Ok(done);
+                }
+            );
+        }
+    );
 };
 ```
 
 The call to `then` returns immediately with the unchanged actor state. Later,
 the runtime sends a generated `Step<S>` message to the same actor. That step
-calls `finish` for the completed operation and then runs the continuation.
+finishes the completion and then runs the continuation.
 
 The continuation is still an actor message. Captured values must therefore be
 messageable. Capturing actor handles, channels, async file handles, byte buffers,
-and operation tokens works because those handle types have explicit standard
-library message policy. Capturing a raw pointer or actor-local slice is rejected
-for the same reason it is rejected in a manually written actor message.
+and completion internals works because those handle types have explicit
+standard library message policy. Capturing a raw pointer or actor-local slice is
+rejected for the same reason it is rejected in a manually written actor message.
 
 The complete `then` example is in
 `tutorial/examples/09_async_then_file_copy.ciel`. It copies a small file through

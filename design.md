@@ -2334,43 +2334,61 @@ export import /std/atomic;
 
 ```rust
 // /std/async
+import /std/async/adapter;
 import /std/actor as actor;
 
 export type Step<S> = Result<S, Error> |(S): Message|;
 
-export interface<Op, M> Result<void, Error> notify_done(
-    *const Op op,
-    actor::Actor<M> actor_handle,
-    M message
-);
-
-export interface<Op, Out> Result<Out, Error> finish(Op op);
+export struct Completion<S, Out> {
+    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
+    Result<Out, Error> |(): Message| finish;
+}
 
 export Result<S, Error> run_step<S>(S state, Step<S> step);
 export Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state);
 
-export Result<S, Error> then<
+export Completion<S, Out> completion_from_op<
     S: Message,
     Out,
     Op: Message + notify_done<Step<S>> + finish<Out>
->(
+>(Op op);
+
+export Result<S, Error> then<S: Message, Out>(
     S state,
-    Op op,
+    Completion<S, Out> completion,
     actor::Actor<Step<S>> actor_handle,
     Result<S, Error> |(S, Out): Message| continuation
 );
 ```
 
-`/std/async` provides generic actor-continuation helpers. `notify_done` registers
-a message to send when an operation completes, and `finish` consumes the
-completed operation to produce its result. `then` builds a `Step<S>` completion
-message that calls `finish(op)` and passes the produced value to the supplied
-continuation. The current actor state is returned immediately; no stack frame is
-suspended.
+`/std/async` provides generic actor-continuation helpers. `Completion<S, Out>`
+is a one-shot completion value tied to a `Step<S>` actor and an output type.
+`then` builds a `Step<S>` completion message that calls the completion's
+`finish` closure and passes the produced value to the supplied continuation. The
+current actor state is returned immediately; no stack frame is suspended.
+
+```rust
+// /std/async/adapter
+import /std/actor as actor;
+
+export interface<Op, M> Result<void, Error> notify_done(
+    Op op,
+    actor::Actor<M> actor_handle,
+    M message
+);
+
+export interface<Op, Out> Result<Out, Error> finish(Op op);
+```
+
+`/std/async/adapter` is the operation-adapter layer. Libraries that introduce a
+new runtime operation implement `notify_done` and `finish`, then wrap the raw
+operation with `completion_from_op`. Application code should normally use
+operation-specific constructors that return `Completion<S, Out>`.
 
 ```rust
 // /std/async_io
-import /std/async;
+import /std/async as flow;
+import /std/async/adapter;
 import /std/actor;
 import /std/io;
 import /std/message;
@@ -2405,6 +2423,14 @@ export Result<void, Error> close_async(AsyncFd fd);
 
 export Result<AsyncRead, Error> read_bytes(AsyncFd fd, usize max_len);
 export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data);
+export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
+    AsyncFd fd,
+    usize max_len
+);
+export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
+    AsyncFd fd,
+    Bytes data
+);
 
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncRead op,
@@ -2424,11 +2450,11 @@ export Result<void, Error> cancel_read(AsyncRead op);
 export Result<void, Error> cancel_write(AsyncWrite op);
 
 impl<M: Message> notify_done(
-    *const AsyncRead op,
+    AsyncRead op,
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_read_done(op, &actor_handle, message);
+    return notify_read_done(&op, &actor_handle, message);
 }
 
 impl finish<Bytes>(AsyncRead op) {
@@ -2436,11 +2462,11 @@ impl finish<Bytes>(AsyncRead op) {
 }
 
 impl<M: Message> notify_done(
-    *const AsyncWrite op,
+    AsyncWrite op,
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_write_done(op, &actor_handle, message);
+    return notify_write_done(&op, &actor_handle, message);
 }
 
 impl finish<usize>(AsyncWrite op) {
@@ -2453,10 +2479,10 @@ operations. Starting an operation returns an operation token immediately. The
 caller then registers a completion message for an actor. When the runtime
 observes the final dispatch I/O callback for that operation, it sends the
 preboxed message to the actor mailbox. The actor later calls `finish_read` or
-`finish_write` to consume the result. `AsyncRead` and `AsyncWrite` also
-implement the generic `/std/async` completion interfaces, so callers can use
-`then` instead of spelling a separate completion-message enum for simple
-pipelines.
+`finish_write` to consume the result. `read_bytes_completion` and
+`write_bytes_completion` wrap those raw operations as `Completion<S, Out>`, so
+callers can use `then` instead of spelling a separate completion-message enum
+for simple pipelines.
 
 `Bytes`, `AsyncFd`, `AsyncRead`, and `AsyncWrite` are runtime-backed handle
 types. They are fixed-size handle values and may implement `Message` through

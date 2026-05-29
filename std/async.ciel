@@ -1,17 +1,15 @@
 export import /std/error;
 export import /std/message;
 export import /std/result;
+import /std/async/adapter;
 import /std/actor as actor;
 
 export type Step<S> = Result<S, Error> |(S): Message|;
 
-export interface<Op, M> Result<void, Error> notify_done(
-    *const Op op,
-    actor::Actor<M> actor_handle,
-    M message
-);
-
-export interface<Op, Out> Result<Out, Error> finish(Op op);
+export struct Completion<S, Out> {
+    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
+    Result<Out, Error> |(): Message| finish;
+}
 
 export Result<S, Error> run_step<S>(S state, Step<S> step) {
     return step(state);
@@ -23,22 +21,35 @@ export Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initi
     });
 }
 
-export Result<S, Error> then<
+export Completion<S, Out> completion_from_op<
     S: Message,
     Out,
     Op: Message + notify_done<Step<S>> + finish<Out>
->(
+>(Op op) {
+    Op notify_op = op;
+    Op finish_op = op;
+    return {
+        notify: |actor::Actor<Step<S>> actor_handle, Step<S> message| {
+            return notify_done(notify_op, actor_handle, message);
+        },
+        finish: || {
+            return finish<Out>(finish_op);
+        },
+    };
+}
+
+export Result<S, Error> then<S: Message, Out>(
     S state,
-    Op op,
+    Completion<S, Out> completion,
     actor::Actor<Step<S>> actor_handle,
     Result<S, Error> |(S, Out): Message| continuation
 ) {
-    Op captured_op = op;
+    Result<Out, Error> |(): Message| complete = completion.finish;
     Step<S> resume = |S current| {
-        Out value = finish<Out>(captured_op)?;
+        Out value = complete()?;
         return continuation(current, value);
     };
 
-    notify_done(&op, actor_handle, resume)?;
+    completion.notify(actor_handle, resume)?;
     return Ok(state);
 }

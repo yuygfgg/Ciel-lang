@@ -1,0 +1,12 @@
+export import /std/error;
+export import /std/message;
+export import /std/result;
+import /std/actor as actor;
+
+export interface<Op, M> Result<void, Error> notify_done(
+    Op op,
+    actor::Actor<M> actor_handle,
+    M message
+);
+
+export interface<Op, Out> Result<Out, Error> finish(Op op);

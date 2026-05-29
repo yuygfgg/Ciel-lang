@@ -1,5 +1,6 @@
 export import /std/result;
-import /std/async;
+import /std/async as flow;
+import /std/async/adapter;
 import /std/actor as actor;
 import /std/c as c;
 import /std/io as io;
@@ -192,6 +193,22 @@ export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data) {
     return Ok({ handle: raw as *void });
 }
 
+export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
+    AsyncFd fd,
+    usize max_len
+) {
+    AsyncRead op = read_bytes(fd, max_len)?;
+    return Ok(flow::completion_from_op<S, Bytes, AsyncRead>(op));
+}
+
+export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
+    AsyncFd fd,
+    Bytes data
+) {
+    AsyncWrite op = write_bytes(fd, data)?;
+    return Ok(flow::completion_from_op<S, usize, AsyncWrite>(op));
+}
+
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncRead op,
     *const actor::Actor<M> actor_handle,
@@ -266,11 +283,11 @@ export Result<void, Error> cancel_write(AsyncWrite op) {
 }
 
 impl<M: Message> notify_done(
-    *const AsyncRead op,
+    AsyncRead op,
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_read_done(op, &actor_handle, message);
+    return notify_read_done(&op, &actor_handle, message);
 }
 
 impl finish<Bytes>(AsyncRead op) {
@@ -278,11 +295,11 @@ impl finish<Bytes>(AsyncRead op) {
 }
 
 impl<M: Message> notify_done(
-    *const AsyncWrite op,
+    AsyncWrite op,
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_write_done(op, &actor_handle, message);
+    return notify_write_done(&op, &actor_handle, message);
 }
 
 impl finish<usize>(AsyncWrite op) {

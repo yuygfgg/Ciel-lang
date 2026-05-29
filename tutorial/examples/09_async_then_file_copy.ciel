@@ -23,16 +23,22 @@ i32 main() {
     defer aio::close_async(output);
 
     flow::Step<Channel<usize>> start = |Channel<usize> done| {
-        aio::AsyncRead read = aio::read_bytes(input, 64)?;
-
-        return flow::then(done, read, worker, |Channel<usize> done, aio::Bytes bytes| {
-            aio::AsyncWrite write = aio::write_bytes(output, bytes)?;
-
-            return flow::then(done, write, worker, |Channel<usize> done, usize written| {
-                channel_send(&done, written)?;
-                return Ok(done);
-            });
-        });
+        return flow::then(
+            done,
+            aio::read_bytes_completion<Channel<usize>>(input, 64)?,
+            worker,
+            |Channel<usize> done, aio::Bytes bytes| {
+                return flow::then(
+                    done,
+                    aio::write_bytes_completion<Channel<usize>>(output, bytes)?,
+                    worker,
+                    |Channel<usize> done, usize written| {
+                        channel_send(&done, written)?;
+                        return Ok(done);
+                    }
+                );
+            }
+        );
     };
 
     must(send(&worker, start));

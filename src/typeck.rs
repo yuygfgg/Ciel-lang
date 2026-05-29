@@ -1312,7 +1312,6 @@ impl TypeChecker {
                     }
                 } else if args.is_empty()
                     && let TypeNameKind::Generic(generic_name) = &name.kind
-                    && subst.contains_key(generic_name)
                 {
                     Ty::Generic(generic_name.clone())
                 } else {
@@ -1781,7 +1780,7 @@ impl TypeChecker {
                     ret: actual_ret,
                     params: actual_params,
                     ..
-                } if constraints.is_empty() && params.len() == actual_params.len() => {
+                } if params.len() == actual_params.len() => {
                     self.unify_ty_for_inference(ret, actual_ret, subst)
                         && params
                             .iter()
@@ -2382,39 +2381,176 @@ impl TypeChecker {
             .map(|(name, ty)| (name.clone(), ty.clone()))
             .collect::<HashMap<_, _>>();
         let candidate = self.substitute_ty_normalized_silent(param_ty, &hinted);
+        let mut inference_holes = HashMap::new();
         match candidate {
             Ty::Closure {
+                ret,
                 params,
                 constraints,
-                ..
             } => Some(Ty::Closure {
-                ret: Box::new(Ty::Unknown),
-                params,
-                constraints,
+                ret: Box::new(self.partial_inference_ty(&ret, &mut inference_holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, &mut inference_holes))
+                    .collect(),
+                constraints: self
+                    .partial_inference_constraint_bounds(&constraints, &mut inference_holes),
             }),
             Ty::ClosureInstance {
                 id,
+                ret,
                 params,
                 captures,
-                ..
             } => Some(Ty::ClosureInstance {
                 id,
-                ret: Box::new(Ty::Unknown),
-                params,
-                captures,
+                ret: Box::new(self.partial_inference_ty(&ret, &mut inference_holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, &mut inference_holes))
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| self.partial_inference_ty(capture, &mut inference_holes))
+                    .collect(),
             }),
             Ty::Function {
                 is_unsafe: false,
                 abi: None,
+                ret,
                 params,
-                ..
             } => Some(Ty::Function {
                 is_unsafe: false,
                 abi: None,
-                ret: Box::new(Ty::Unknown),
-                params,
+                ret: Box::new(self.partial_inference_ty(&ret, &mut inference_holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, &mut inference_holes))
+                    .collect(),
             }),
             _ => None,
+        }
+    }
+
+    fn partial_inference_ty(&mut self, ty: &Ty, holes: &mut HashMap<String, Ty>) -> Ty {
+        match ty {
+            Ty::Generic(name) => {
+                if let Some(hole) = holes.get(name) {
+                    return hole.clone();
+                }
+                let hole = Ty::Hole(self.next_type_hole_id);
+                self.next_type_hole_id += 1;
+                holes.insert(name.clone(), hole.clone());
+                hole
+            }
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => Ty::Pointer {
+                nullable: *nullable,
+                mutability: *mutability,
+                inner: Box::new(self.partial_inference_ty(inner, holes)),
+            },
+            Ty::Array { len, elem } => Ty::Array {
+                len: *len,
+                elem: Box::new(self.partial_inference_ty(elem, holes)),
+            },
+            Ty::Slice { mutability, elem } => Ty::Slice {
+                mutability: *mutability,
+                elem: Box::new(self.partial_inference_ty(elem, holes)),
+            },
+            Ty::Named { name, args } => Ty::Named {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.partial_inference_ty(arg, holes))
+                    .collect(),
+            },
+            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+                name: name.clone(),
+                args: args
+                    .iter()
+                    .map(|arg| self.partial_inference_ty(arg, holes))
+                    .collect(),
+            },
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => Ty::Function {
+                is_unsafe: *is_unsafe,
+                abi: abi.clone(),
+                ret: Box::new(self.partial_inference_ty(ret, holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, holes))
+                    .collect(),
+            },
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => Ty::Closure {
+                ret: Box::new(self.partial_inference_ty(ret, holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, holes))
+                    .collect(),
+                constraints: self.partial_inference_constraint_bounds(constraints, holes),
+            },
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => Ty::ClosureInstance {
+                id: *id,
+                ret: Box::new(self.partial_inference_ty(ret, holes)),
+                params: params
+                    .iter()
+                    .map(|param| self.partial_inference_ty(param, holes))
+                    .collect(),
+                captures: captures
+                    .iter()
+                    .map(|capture| self.partial_inference_ty(capture, holes))
+                    .collect(),
+            },
+            other => other.clone(),
+        }
+    }
+
+    fn partial_inference_constraint_bounds(
+        &mut self,
+        bounds: &ConstraintBounds,
+        holes: &mut HashMap<String, Ty>,
+    ) -> ConstraintBounds {
+        ConstraintBounds {
+            positive: bounds
+                .positive
+                .iter()
+                .map(|entry| self.partial_inference_constraint_ref(entry, holes))
+                .collect(),
+            negative: bounds
+                .negative
+                .iter()
+                .map(|entry| self.partial_inference_constraint_ref(entry, holes))
+                .collect(),
+        }
+    }
+
+    fn partial_inference_constraint_ref(
+        &mut self,
+        entry: &ConstraintRef,
+        holes: &mut HashMap<String, Ty>,
+    ) -> ConstraintRef {
+        ConstraintRef {
+            name: entry.name.clone(),
+            args: entry
+                .args
+                .iter()
+                .map(|arg| self.partial_inference_ty(arg, holes))
+                .collect(),
         }
     }
 
@@ -5460,10 +5596,11 @@ impl TypeChecker {
             ));
             return None;
         }
+        let current_subst = self.current_type_subst();
         let explicit_args = type_args
             .iter()
             .map(|arg| {
-                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &HashMap::new(), false)
+                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
             })
             .collect::<Vec<_>>();
         if explicit_args.len() > 2 {
@@ -5582,10 +5719,11 @@ impl TypeChecker {
             ));
             return None;
         }
+        let current_subst = self.current_type_subst();
         let explicit_args = type_args
             .iter()
             .map(|arg| {
-                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &HashMap::new(), false)
+                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
             })
             .collect::<Vec<_>>();
         if explicit_args.len() > 1 {
@@ -5654,8 +5792,9 @@ impl TypeChecker {
             ));
             return None;
         }
+        let current_subst = self.current_type_subst();
         let explicit_message_ty = type_args.first().map(|arg| {
-            self.lower_type_with_subst_preserving_meta_repr_markers(arg, &HashMap::new(), false)
+            self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
         });
         let actor = self.check_expr(scopes, &args[0], None)?;
         let message_ty = explicit_message_ty
@@ -6231,19 +6370,31 @@ impl TypeChecker {
                 let ty = self.lower_type(ty);
                 if let Some((_, expected_params, _)) = &expected_sig
                     && let Some(expected_ty) = expected_params.get(idx)
-                    && ty != *expected_ty
                 {
-                    self.diagnostics.push(Diagnostic::new(
-                        param.name.span,
-                        format!(
-                            "closure parameter `{}` expected `{expected_ty}`, got `{ty}`",
-                            param.name.name
-                        ),
-                    ));
+                    if contains_type_hole(expected_ty) {
+                        self.unify_type_holes(expected_ty, &ty);
+                    } else {
+                        let expected_ty = self.resolve_type_holes(expected_ty);
+                        if !matches!(expected_ty, Ty::Unknown)
+                            && !contains_generic(&expected_ty)
+                            && ty != expected_ty
+                        {
+                            self.diagnostics.push(Diagnostic::new(
+                                param.name.span,
+                                format!(
+                                    "closure parameter `{}` expected `{expected_ty}`, got `{ty}`",
+                                    param.name.name
+                                ),
+                            ));
+                        }
+                    }
                 }
                 ty
             } else if let Some((_, expected_params, _)) = &expected_sig {
-                expected_params.get(idx).cloned().unwrap_or(Ty::Unknown)
+                expected_params
+                    .get(idx)
+                    .map(|ty| self.resolve_type_holes(ty))
+                    .unwrap_or(Ty::Unknown)
             } else {
                 self.diagnostics.push(Diagnostic::new(
                     param.name.span,
@@ -6281,11 +6432,12 @@ impl TypeChecker {
         let (ret_ty, checked_body) = match body {
             ClosureBody::Expr(body_expr) => {
                 if let Some((expected_ret, _, _)) = &expected_sig {
+                    let expected_ret = self.resolve_type_holes(expected_ret);
                     self.current_return_ty = expected_ret.clone();
                     let checked =
-                        self.check_expr(&mut closure_scopes, body_expr, Some(expected_ret))?;
-                    self.require_assignable(expected_ret, &checked.ty, checked.span);
-                    (expected_ret.clone(), TClosureBody::Expr(Box::new(checked)))
+                        self.check_expr(&mut closure_scopes, body_expr, Some(&expected_ret))?;
+                    self.require_assignable(&expected_ret, &checked.ty, checked.span);
+                    (expected_ret, TClosureBody::Expr(Box::new(checked)))
                 } else {
                     self.current_return_ty = Ty::Unknown;
                     let checked = self.check_expr(&mut closure_scopes, body_expr, None)?;
@@ -6304,9 +6456,13 @@ impl TypeChecker {
                     self.unsafe_depth = previous_unsafe_depth;
                     return None;
                 };
+                let expected_ret = self.resolve_type_holes(expected_ret);
                 self.current_return_ty = expected_ret.clone();
-                let checked =
-                    self.check_block_with_existing_scope(&mut closure_scopes, block, expected_ret)?;
+                let checked = self.check_block_with_existing_scope(
+                    &mut closure_scopes,
+                    block,
+                    &expected_ret,
+                )?;
                 if expected_ret.is_never() && checked.flow.can_fallthrough {
                     self.diagnostics.push(Diagnostic::new(
                         block.span,
@@ -6318,7 +6474,7 @@ impl TypeChecker {
                         format!("closure must return `{expected_ret}` on every path"),
                     ));
                 }
-                (expected_ret.clone(), TClosureBody::Block(checked.block))
+                (expected_ret, TClosureBody::Block(checked.block))
             }
         };
         self.current_return_ty = previous_return_ty;
@@ -6362,6 +6518,11 @@ impl TypeChecker {
             .collect::<Vec<_>>();
 
         let result_ty = if let Some((expected_ret, expected_params, target_fn)) = expected_sig {
+            let expected_ret = self.resolve_type_holes(&expected_ret);
+            let expected_params = expected_params
+                .iter()
+                .map(|param| self.resolve_type_holes(param))
+                .collect::<Vec<_>>();
             if target_fn {
                 if !captures.is_empty() {
                     self.diagnostics.push(Diagnostic::new(
@@ -6491,6 +6652,7 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<(FunctionSig, Vec<Ty>)> {
         let mut subst = HashMap::<String, Ty>::new();
+        let current_subst = self.current_type_subst();
         for (idx, ty) in type_args.iter().enumerate() {
             let Some(generic) = sig.generics.get(idx) else {
                 self.diagnostics.push(Diagnostic::new(
@@ -6500,7 +6662,7 @@ impl TypeChecker {
                 return None;
             };
             let concrete =
-                self.lower_type_with_subst_preserving_meta_repr_markers(ty, &HashMap::new(), false);
+                self.lower_type_with_subst_preserving_meta_repr_markers(ty, &current_subst, false);
             subst.insert(generic.name.clone(), concrete);
         }
         let expected_hints = if let Some(expected) = expected {

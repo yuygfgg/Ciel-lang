@@ -1916,8 +1916,9 @@ import /std/actor;
 ```
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
-`/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
-`/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, and `/std/atomic`.
+`/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
+`/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
+`/std/sync`, and `/std/atomic`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2321,7 +2322,9 @@ export import /std/result;
 export import /std/panic;
 export import /std/c;
 export import /std/io;
+export import /std/async;
 export import /std/async_io;
+export import /std/message;
 export import /std/meta;
 export import /std/actor;
 export import /std/channel;
@@ -2330,7 +2333,44 @@ export import /std/atomic;
 ```
 
 ```rust
+// /std/async
+import /std/actor as actor;
+
+export type Step<S> = Result<S, Error> |(S): Message|;
+
+export interface<Op, M> Result<void, Error> notify_done(
+    *const Op op,
+    actor::Actor<M> actor_handle,
+    M message
+);
+
+export interface<Op, Out> Result<Out, Error> finish(Op op);
+
+export Result<S, Error> run_step<S>(S state, Step<S> step);
+export Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state);
+
+export Result<S, Error> then<
+    S: Message,
+    Out,
+    Op: Message + notify_done<Step<S>> + finish<Out>
+>(
+    S state,
+    Op op,
+    actor::Actor<Step<S>> actor_handle,
+    Result<S, Error> |(S, Out): Message| continuation
+);
+```
+
+`/std/async` provides generic actor-continuation helpers. `notify_done` registers
+a message to send when an operation completes, and `finish` consumes the
+completed operation to produce its result. `then` builds a `Step<S>` completion
+message that calls `finish(op)` and passes the produced value to the supplied
+continuation. The current actor state is returned immediately; no stack frame is
+suspended.
+
+```rust
 // /std/async_io
+import /std/async;
 import /std/actor;
 import /std/io;
 import /std/message;
@@ -2382,6 +2422,30 @@ export Result<Bytes, Error> finish_read(AsyncRead op);
 export Result<usize, Error> finish_write(AsyncWrite op);
 export Result<void, Error> cancel_read(AsyncRead op);
 export Result<void, Error> cancel_write(AsyncWrite op);
+
+impl<M: Message> notify_done(
+    *const AsyncRead op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_read_done(op, &actor_handle, message);
+}
+
+impl finish<Bytes>(AsyncRead op) {
+    return finish_read(op);
+}
+
+impl<M: Message> notify_done(
+    *const AsyncWrite op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_write_done(op, &actor_handle, message);
+}
+
+impl finish<usize>(AsyncWrite op) {
+    return finish_write(op);
+}
 ```
 
 `/std/async_io` provides actor-oriented asynchronous file-descriptor
@@ -2389,7 +2453,10 @@ operations. Starting an operation returns an operation token immediately. The
 caller then registers a completion message for an actor. When the runtime
 observes the final dispatch I/O callback for that operation, it sends the
 preboxed message to the actor mailbox. The actor later calls `finish_read` or
-`finish_write` to consume the result.
+`finish_write` to consume the result. `AsyncRead` and `AsyncWrite` also
+implement the generic `/std/async` completion interfaces, so callers can use
+`then` instead of spelling a separate completion-message enum for simple
+pipelines.
 
 `Bytes`, `AsyncFd`, `AsyncRead`, and `AsyncWrite` are runtime-backed handle
 types. They are fixed-size handle values and may implement `Message` through

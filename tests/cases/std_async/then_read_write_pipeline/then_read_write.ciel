@@ -1,0 +1,46 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 4
+
+import /std/lib;
+import /std/async as flow;
+import /std/async_io as aio;
+
+i32 main() {
+    must(with_create<void>("/tmp/ciel_then_input.txt", |file| {
+        write_text(file, "ping")?;
+        return Ok;
+    }));
+
+    Channel<usize> done = must(make_channel<usize>());
+    Actor<flow::Step<Channel<usize>>> worker =
+        must(flow::spawn_step_actor<Channel<usize>>(done));
+
+    aio::AsyncFd input = must(aio::open_async_read("/tmp/ciel_then_input.txt"));
+    defer aio::close_async(input);
+
+    aio::AsyncFd output = must(aio::create_async("/tmp/ciel_then_output.txt"));
+    defer aio::close_async(output);
+
+    flow::Step<Channel<usize>> start = |Channel<usize> done| {
+        aio::AsyncRead read = aio::read_bytes(input, 16)?;
+
+        return flow::then(done, read, worker, |Channel<usize> done, aio::Bytes bytes| {
+            aio::AsyncWrite write = aio::write_bytes(output, bytes)?;
+
+            return flow::then(done, write, worker, |Channel<usize> done, usize written| {
+                channel_send(&done, written)?;
+                return Ok(done);
+            });
+        });
+    };
+
+    must(send(&worker, start));
+
+    usize written = must(channel_recv(&done));
+    must(print_value(written));
+
+    must(join(&worker));
+    must(channel_close(&done));
+    return 0;
+}

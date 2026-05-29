@@ -166,6 +166,72 @@ compiler can prove that the owned structural representation is safe to move
 across the actor boundary. The async handle types used here are standard-library
 handle values with explicit message policy.
 
+## Chaining Operations With `then`
+
+The explicit message-enum style above is the most general actor shape. For a
+linear workflow, `/std/async` can keep the same runtime model while hiding the
+completion-message enum.
+
+`flow::Step<S>` is a messageable closure that takes the actor state and returns
+the next state:
+
+```ciel
+import /std/async as flow;
+
+flow::Step<Channel<usize>> step = |Channel<usize> done| {
+    return Ok(done);
+};
+```
+
+`flow::spawn_step_actor<S>(state)` starts an actor whose mailbox receives those
+steps. Its handler is only:
+
+```ciel
+return step(state);
+```
+
+`flow::then` connects one operation to the next step. It relies on two generic
+interfaces:
+
+```ciel
+notify_done(&op, actor_handle, message)?;
+Out value = finish<Out>(op)?;
+```
+
+`/std/async_io` implements those interfaces for `AsyncRead` and `AsyncWrite`.
+That means a file-copy pipeline can say "after the read finishes, write the
+bytes; after the write finishes, report the byte count" without exposing a
+state-machine enum:
+
+```ciel
+flow::Step<Channel<usize>> start = |Channel<usize> done| {
+    aio::AsyncRead read = aio::read_bytes(input, 64)?;
+
+    return flow::then(done, read, worker, |Channel<usize> done, aio::Bytes bytes| {
+        aio::AsyncWrite write = aio::write_bytes(output, bytes)?;
+
+        return flow::then(done, write, worker, |Channel<usize> done, usize written| {
+            channel_send(&done, written)?;
+            return Ok(done);
+        });
+    });
+};
+```
+
+The call to `then` returns immediately with the unchanged actor state. Later,
+the runtime sends a generated `Step<S>` message to the same actor. That step
+calls `finish` for the completed operation and then runs the continuation.
+
+The continuation is still an actor message. Captured values must therefore be
+messageable. Capturing actor handles, channels, async file handles, byte buffers,
+and operation tokens works because those handle types have explicit standard
+library message policy. Capturing a raw pointer or actor-local slice is rejected
+for the same reason it is rejected in a manually written actor message.
+
+The complete `then` example is in
+`tutorial/examples/09_async_then_file_copy.ciel`. It copies a small file through
+async read and async write, then reports the number of bytes written.
+
 ## Full Program
 
 The complete example is also in `tutorial/examples/09_channels_async_io.ciel`.

@@ -1,4 +1,5 @@
 export import /std/result;
+import /std/async;
 import /std/actor as actor;
 import /std/c as c;
 import /std/io as io;
@@ -262,4 +263,28 @@ export Result<void, Error> cancel_write(AsyncWrite op) {
         return Err(code_error(rc as i64));
     }
     return Ok;
+}
+
+impl<M: Message> notify_done(
+    *const AsyncRead op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_read_done(op, &actor_handle, message);
+}
+
+impl finish<Bytes>(AsyncRead op) {
+    return finish_read(op);
+}
+
+impl<M: Message> notify_done(
+    *const AsyncWrite op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_write_done(op, &actor_handle, message);
+}
+
+impl finish<usize>(AsyncWrite op) {
+    return finish_write(op);
 }

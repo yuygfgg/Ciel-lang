@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/lib;
+
+struct Cell<T> {
+    T value;
+}
+
+Cell<T> make_cell<T>(T value) {
+    return { value: value };
+}
+
+Cell<T> wrap_cell<T>(T value) {
+    return make_cell<T>(value);
+}
+
+i32 main() {
+    Cell<i64> cell = wrap_cell<i64>(42);
+    must(print_value(cell.value));
+    return 0;
+}

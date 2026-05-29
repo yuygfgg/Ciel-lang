@@ -2333,6 +2333,7 @@ export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
+export import /std/buf;
 ```
 
 ```rust
@@ -2349,6 +2350,31 @@ export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
 export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value);
 export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value);
 ```
+
+```rust
+// /std/buf
+import /std/result;
+
+export unsafe struct ByteBuf {
+    []u8 storage;
+    usize len;
+}
+
+export Result<ByteBuf, Error> byte_buf_new(usize capacity);
+export usize byte_buf_len(*const ByteBuf buf);
+export void byte_buf_clear(*ByteBuf buf);
+export []const u8 byte_buf_slice(*const ByteBuf buf);
+export []u8 byte_buf_mut_slice(*ByteBuf buf);
+export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional);
+export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data);
+```
+
+`/std/buf` provides a GC-backed growable byte buffer. `ByteBuf` is an unsafe
+struct so safe application code cannot construct invalid internal descriptors;
+callers use `byte_buf_new` and the exported operations. Slice-returning
+functions expose views into the buffer's initialized prefix. `byte_buf_clear`
+sets the initialized length to zero without releasing capacity, and
+`byte_buf_reserve` grows while preserving existing bytes.
 
 ```rust
 // /std/async

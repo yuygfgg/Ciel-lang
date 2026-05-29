@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 42
+
+import /std/lib;
+
+i64 main() {
+    ByteBuf @bytes = must(byte_buf_new(2));
+    must(byte_buf_push_slice(&bytes, [40 as u8, 2 as u8]));
+    []const u8 view = byte_buf_slice(&bytes);
+    return (view[0] + view[1]) as i64;
+}

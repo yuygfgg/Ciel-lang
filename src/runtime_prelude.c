@@ -99,6 +99,16 @@ void *ciel_box_copy(size_t size, size_t align, const void *source) {
     return out;
 }
 
+int ciel_u8_copy(uint8_t *dst, const uint8_t *src, size_t len) {
+    if ((dst == NULL || src == NULL) && len > 0) {
+        errno = EINVAL;
+        return EINVAL;
+    }
+    if (len > 0)
+        memmove(dst, src, len);
+    return 0;
+}
+
 void ciel_panic_at(const char *message, size_t len, const char *file,
                    size_t line) {
     fputs("panic", stderr);

@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/buf as buf;
+import /std/result;
+
+i64 main() {
+    buf::ByteBuf @bytes = must(buf::byte_buf_new(1));
+    must(buf::byte_buf_push_slice(&bytes, [1 as u8]));
+    must(buf::byte_buf_push_slice(&bytes, [2 as u8, 3 as u8, 4 as u8]));
+
+    []const u8 first = buf::byte_buf_slice(&bytes);
+    if (first.len != 4 || first[0] != (1 as u8) || first[3] != (4 as u8)) {
+        return 1;
+    }
+
+    must(buf::byte_buf_reserve(&bytes, 20));
+    []const u8 after_reserve = buf::byte_buf_slice(&bytes);
+    if (after_reserve.len != 4 || after_reserve[1] != (2 as u8) || after_reserve[2] != (3 as u8)) {
+        return 2;
+    }
+
+    must(buf::byte_buf_reserve(&bytes, 2));
+    []const u8 repeated_reserve = buf::byte_buf_slice(&bytes);
+    if (repeated_reserve.len != 4 || repeated_reserve[0] != (1 as u8) || repeated_reserve[3] != (4 as u8)) {
+        return 3;
+    }
+
+    must(buf::byte_buf_push_slice(&bytes, [5 as u8, 6 as u8, 7 as u8, 8 as u8, 9 as u8]));
+    []const u8 grown = buf::byte_buf_slice(&bytes);
+    if (grown.len != 9 || grown[0] != (1 as u8) || grown[4] != (5 as u8) || grown[8] != (9 as u8)) {
+        return 4;
+    }
+
+    return 0;
+}

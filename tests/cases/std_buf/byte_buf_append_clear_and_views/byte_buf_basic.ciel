@@ -1,0 +1,49 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/buf as buf;
+import /std/result;
+
+i64 main() {
+    buf::ByteBuf @bytes = must(buf::byte_buf_new(4));
+    if (buf::byte_buf_len(&bytes) != 0) {
+        return 1;
+    }
+
+    must(buf::byte_buf_push_slice(&bytes, [1 as u8, 2 as u8, 3 as u8]));
+    if (buf::byte_buf_len(&bytes) != 3) {
+        return 2;
+    }
+
+    []const u8 readonly = buf::byte_buf_slice(&bytes);
+    if (readonly.len != 3 || readonly[0] != (1 as u8) || readonly[2] != (3 as u8)) {
+        return 3;
+    }
+
+    []u8 writable = buf::byte_buf_mut_slice(&bytes);
+    if (writable.len != 3) {
+        return 4;
+    }
+    writable[1] = 9 as u8;
+
+    []const u8 after_write = buf::byte_buf_slice(&bytes);
+    if (after_write[1] != (9 as u8)) {
+        return 5;
+    }
+
+    buf::byte_buf_clear(&bytes);
+    if (buf::byte_buf_len(&bytes) != 0) {
+        return 6;
+    }
+    if (buf::byte_buf_slice(&bytes).len != 0 || buf::byte_buf_mut_slice(&bytes).len != 0) {
+        return 7;
+    }
+
+    must(buf::byte_buf_push_slice(&bytes, [7 as u8, 8 as u8, 9 as u8, 10 as u8]));
+    []const u8 reused = buf::byte_buf_slice(&bytes);
+    if (reused.len != 4 || reused[0] != (7 as u8) || reused[3] != (10 as u8)) {
+        return 8;
+    }
+
+    return 0;
+}

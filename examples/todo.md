@@ -22,13 +22,13 @@ host integration.
       rejection, boundary values, little-endian ordering, allocating encode,
       and signed integer rejection.
 
-- [ ] Add `/std/buf` fixed-capacity `ByteBuf` shell.
+- [x] Add `/std/buf` fixed-capacity `ByteBuf` shell.
       Implement construction, length, clear, const slice view, mutable slice
       view, and append within current capacity.
-      Tests: append success, append overflow, clear preserves capacity, const
+      Tests: append success, reserve overflow, clear preserves capacity, const
       and mutable slice lengths match.
 
-- [ ] Add `/std/buf` reserve/growth behavior.
+- [x] Add `/std/buf` reserve/growth behavior.
       Implement `byte_buf_reserve` and growing append.
       Tests: append across initial capacity, repeated reserve, preserved
       contents after growth.

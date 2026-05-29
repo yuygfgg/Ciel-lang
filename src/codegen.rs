@@ -339,6 +339,11 @@ impl<'a> CGenerator<'a> {
         self.emit_dynamic_shim_prototypes();
         self.line("");
 
+        self.emit_byte_slice_helpers();
+        if self.plan.slice_types.contains_key("CielSlice_u8") {
+            self.line("");
+        }
+
         self.emit_dynamic_shims_and_tables();
         if !self.plan.dynamic_impls.is_empty() {
             self.line("");
@@ -584,6 +589,18 @@ impl<'a> CGenerator<'a> {
             ));
         }
         self.line("");
+    }
+
+    fn emit_byte_slice_helpers(&mut self) {
+        if !self.plan.slice_types.contains_key("CielSlice_u8") {
+            return;
+        }
+        self.line("CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {");
+        self.line("    CielSlice_u8 out;");
+        self.line("    out.ptr = (uint8_t *)ciel_alloc_array(sizeof(uint8_t), len);");
+        self.line("    out.len = len;");
+        self.line("    return out;");
+        self.line("}");
     }
 
     fn collect_names(&mut self) {

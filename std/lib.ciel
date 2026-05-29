@@ -12,3 +12,4 @@ export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
+export import /std/buf;

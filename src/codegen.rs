@@ -5978,7 +5978,7 @@ impl<'a> CGenerator<'a> {
             .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
             .collect::<Vec<_>>()
             .join(", ");
-        self.c_return_decl(
+        self.c_static_return_decl(
             &ret,
             &format!(
                 "{}({})",
@@ -6985,7 +6985,7 @@ impl<'a> CGenerator<'a> {
         } else {
             decls.join(", ")
         };
-        self.c_return_decl(
+        self.c_static_return_decl(
             &ret,
             &format!(
                 "{}({params})",
@@ -7006,7 +7006,7 @@ impl<'a> CGenerator<'a> {
                 .enumerate()
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
-        self.c_return_decl(
+        self.c_static_return_decl(
             &ret,
             &format!(
                 "{}({})",
@@ -7028,7 +7028,7 @@ impl<'a> CGenerator<'a> {
                 .enumerate()
                 .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}"))),
         );
-        self.c_return_decl(
+        self.c_static_return_decl(
             &ret,
             &format!(
                 "{}({})",
@@ -7095,20 +7095,14 @@ impl<'a> CGenerator<'a> {
                         .map(|(idx, ty)| self.c_decl(ty, &format!("arg{idx}")))
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let name = self.dynamic_shim_name(
+                        &dynamic_use.dyn_ty,
+                        &dynamic_use.concrete_ty,
+                        &interface.name,
+                    );
                     self.line(&format!(
                         "{};",
-                        self.c_return_decl(
-                            &ret,
-                            &format!(
-                                "{}({})",
-                                self.dynamic_shim_name(
-                                    &dynamic_use.dyn_ty,
-                                    &dynamic_use.concrete_ty,
-                                    &interface.name
-                                ),
-                                params
-                            )
-                        )
+                        self.c_static_return_decl(&ret, &format!("{name}({params})"))
                     ));
                 }
             }
@@ -7141,7 +7135,7 @@ impl<'a> CGenerator<'a> {
                 );
                 self.line(&format!(
                     "{} {{",
-                    self.c_return_decl(&ret, &format!("{shim_name}({params_decl})"))
+                    self.c_static_return_decl(&ret, &format!("{shim_name}({params_decl})"))
                 ));
                 let mut args = Vec::new();
                 let first_param = implementation
@@ -7205,7 +7199,16 @@ impl<'a> CGenerator<'a> {
         } else {
             params.join(", ")
         };
-        self.c_return_decl(&function.ret, &format!("{name}({params})"))
+        let decl = self.c_return_decl(&function.ret, &format!("{name}({params})"));
+        if self.function_has_internal_linkage(function) {
+            format!("static {decl}")
+        } else {
+            decl
+        }
+    }
+
+    fn function_has_internal_linkage(&self, function: &CheckedFunction) -> bool {
+        function.body.is_some() && !(function.abi.as_deref() == Some("C") && function.exported)
     }
 
     fn c_name(&self, def_id: DefId) -> String {
@@ -7222,6 +7225,10 @@ impl<'a> CGenerator<'a> {
         } else {
             self.c_decl(ty, name)
         }
+    }
+
+    fn c_static_return_decl(&self, ty: &Ty, name: &str) -> String {
+        format!("static {}", self.c_return_decl(ty, name))
     }
 
     fn c_decl(&self, ty: &Ty, name: &str) -> String {

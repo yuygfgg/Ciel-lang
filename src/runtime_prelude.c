@@ -32,8 +32,23 @@
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CIEL_MAYBE_UNUSED __attribute__((unused))
+#define CIEL_COLD __attribute__((cold))
+#define CIEL_NORETURN __attribute__((noreturn))
+#define CIEL_MALLOC_LIKE __attribute__((malloc))
+#define CIEL_ALLOC_SIZE1 __attribute__((alloc_size(1)))
+#define CIEL_ALLOC_SIZE2 __attribute__((alloc_size(1, 2)))
+#define CIEL_ALLOC_SIZE_ARG2 __attribute__((alloc_size(2)))
+#define CIEL_RETURNS_NONNULL __attribute__((returns_nonnull))
+#pragma GCC visibility push(hidden)
 #else
 #define CIEL_MAYBE_UNUSED
+#define CIEL_COLD
+#define CIEL_NORETURN
+#define CIEL_MALLOC_LIKE
+#define CIEL_ALLOC_SIZE1
+#define CIEL_ALLOC_SIZE2
+#define CIEL_ALLOC_SIZE_ARG2
+#define CIEL_RETURNS_NONNULL
 #endif
 
 #define CIEL_PANIC_EXIT_CODE 101
@@ -104,7 +119,9 @@ CielConstSlice_char ciel_env_arg_unchecked(size_t index) {
     return out;
 }
 
-static CIEL_MAYBE_UNUSED void *ciel_alloc(size_t size) {
+static CIEL_MAYBE_UNUSED
+    CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void *
+    ciel_alloc(size_t size) {
     ciel_runtime_init();
     void *ptr = GC_MALLOC(size);
     if (ptr == NULL) {
@@ -114,7 +131,9 @@ static CIEL_MAYBE_UNUSED void *ciel_alloc(size_t size) {
     return ptr;
 }
 
-static CIEL_MAYBE_UNUSED void *ciel_alloc_array(size_t elem_size, size_t len) {
+static CIEL_MAYBE_UNUSED
+    CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE2 CIEL_RETURNS_NONNULL void *
+    ciel_alloc_array(size_t elem_size, size_t len) {
     if (elem_size != 0 && len > SIZE_MAX / elem_size) {
         fputs("allocation size overflow\n", stderr);
         exit(0);
@@ -130,7 +149,9 @@ CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {
     return out;
 }
 
-static CIEL_MAYBE_UNUSED void *ciel_alloc_uncollectable(size_t size) {
+static CIEL_MAYBE_UNUSED
+    CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void *
+    ciel_alloc_uncollectable(size_t size) {
     ciel_runtime_init();
     void *ptr = GC_MALLOC_UNCOLLECTABLE(size == 0 ? 1 : size);
     if (ptr == NULL) {
@@ -141,14 +162,17 @@ static CIEL_MAYBE_UNUSED void *ciel_alloc_uncollectable(size_t size) {
     return ptr;
 }
 
-static CIEL_MAYBE_UNUSED void *ciel_box_value(const void *value, size_t size) {
+static CIEL_MAYBE_UNUSED
+    CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void *
+    ciel_box_value(const void *value, size_t size) {
     void *out = ciel_alloc(size == 0 ? 1 : size);
     if (size > 0)
         memcpy(out, value, size);
     return out;
 }
 
-void *ciel_box_copy(size_t size, size_t align, const void *source) {
+CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 void *ciel_box_copy(size_t size, size_t align,
+                                                      const void *source) {
     (void)align;
     if (source == NULL && size > 0) {
         errno = EINVAL;
@@ -170,8 +194,8 @@ int ciel_u8_copy(uint8_t *dst, const uint8_t *src, size_t len) {
     return 0;
 }
 
-void ciel_panic_at(const char *message, size_t len, const char *file,
-                   size_t line) {
+CIEL_COLD CIEL_NORETURN void ciel_panic_at(const char *message, size_t len,
+                                           const char *file, size_t line) {
     fputs("panic", stderr);
     if (file != NULL && file[0] != '\0')
         fprintf(stderr, " at %s:%zu", file, line);
@@ -183,13 +207,14 @@ void ciel_panic_at(const char *message, size_t len, const char *file,
     exit(CIEL_PANIC_EXIT_CODE);
 }
 
-void ciel_panic(const char *message, size_t len) {
+CIEL_COLD CIEL_NORETURN void ciel_panic(const char *message, size_t len) {
     ciel_panic_at(message, len, "<runtime>", 0);
 }
 
 int ciel_errno(void) { return errno; }
 
-char *ciel_cstr_from_slice(const char *ptr, size_t len) {
+CIEL_MALLOC_LIKE CIEL_RETURNS_NONNULL char *
+ciel_cstr_from_slice(const char *ptr, size_t len) {
     char *out = (char *)ciel_alloc_array(sizeof(char), len + 1);
     for (size_t i = 0; i < len; i++)
         out[i] = ptr[i];
@@ -2859,5 +2884,9 @@ __attribute__((constructor))
 static CIEL_MAYBE_UNUSED void ciel_internal_constructor(void) {
     ciel_runtime_init();
 }
+
+#if defined(__GNUC__) || defined(__clang__)
+#pragma GCC visibility pop
+#endif
 
 #endif /* linux || macOS */

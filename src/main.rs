@@ -201,7 +201,7 @@ fn invoke_c_compiler(
 ) -> Result<(), String> {
     let (pkg_compile_flags, pkg_link_flags) = bdwgc_cc_args();
     let mut args = Vec::<String>::new();
-    args.extend(profile_c_flags(cli.profile));
+    args.extend(profile_c_flags(cli.profile, target_os));
     args.extend(pkg_compile_flags);
     args.extend(cli.c_flags.clone());
 
@@ -218,6 +218,7 @@ fn invoke_c_compiler(
             args.push(shared_library_flag(target_os).to_string());
             args.push("-o".to_string());
             args.push(output.display().to_string());
+            args.extend(profile_link_flags(cli.profile, target_os));
             args.extend(pkg_link_flags);
             args.extend(cli.link_flags.clone());
         }
@@ -225,6 +226,7 @@ fn invoke_c_compiler(
             args.push(c_path.display().to_string());
             args.push("-o".to_string());
             args.push(output.display().to_string());
+            args.extend(profile_link_flags(cli.profile, target_os));
             args.extend(pkg_link_flags);
             args.extend(cli.link_flags.clone());
         }
@@ -248,18 +250,36 @@ fn invoke_c_compiler(
     ))
 }
 
-fn profile_c_flags(profile: BuildProfile) -> Vec<String> {
+fn profile_c_flags(profile: BuildProfile, target_os: &str) -> Vec<String> {
     match profile {
         BuildProfile::Debug => vec![
             "-g".to_string(),
             "-O0".to_string(),
             "-DCIEL_DEBUG=1".to_string(),
         ],
-        BuildProfile::Release => vec![
-            "-O3".to_string(),
-            "-DNDEBUG".to_string(),
-            "-DCIEL_RELEASE=1".to_string(),
-        ],
+        BuildProfile::Release => {
+            let mut flags = vec![
+                "-O3".to_string(),
+                "-DNDEBUG".to_string(),
+                "-DCIEL_RELEASE=1".to_string(),
+            ];
+            if is_linux_target(target_os) {
+                flags.push("-ffunction-sections".to_string());
+                flags.push("-fdata-sections".to_string());
+            }
+            flags
+        }
+    }
+}
+
+fn profile_link_flags(profile: BuildProfile, target_os: &str) -> Vec<String> {
+    match profile {
+        BuildProfile::Debug => Vec::new(),
+        BuildProfile::Release if is_macos_target(target_os) => vec!["-Wl,-dead_strip".to_string()],
+        BuildProfile::Release if is_linux_target(target_os) => {
+            vec!["-Wl,--gc-sections".to_string()]
+        }
+        BuildProfile::Release => Vec::new(),
     }
 }
 
@@ -322,11 +342,19 @@ fn is_link_arg(arg: &str) -> bool {
 }
 
 fn shared_library_flag(target_os: &str) -> &'static str {
-    if target_os == "macos" || target_os == "darwin" {
+    if is_macos_target(target_os) {
         "-dynamiclib"
     } else {
         "-shared"
     }
+}
+
+fn is_macos_target(target_os: &str) -> bool {
+    target_os == "macos" || target_os == "darwin"
+}
+
+fn is_linux_target(target_os: &str) -> bool {
+    target_os == "linux"
 }
 
 fn temp_c_path(input: &Path, mode: EmitMode) -> PathBuf {

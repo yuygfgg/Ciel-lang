@@ -1,5 +1,6 @@
 // ciel-test: compile
 // expect-c-contains: typedef struct Point Point;
+// expect-c-contains: static int64_t ciel_
 // expect-c-contains: return (int)ciel_
 
 struct Point {

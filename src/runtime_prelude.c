@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdatomic.h>
+#include <time.h>
 #include <unistd.h>
 #endif
 
@@ -460,6 +461,49 @@ void ciel_root_unpin(CielRoot *root) {
     if (root != NULL)
         GC_FREE(root);
 }
+
+#if defined(_WIN32)
+int32_t ciel_time_monotonic_ms(uint64_t *out) {
+    (void)out;
+    return ENOSYS;
+}
+
+int32_t ciel_time_sleep_ms(uint64_t ms) {
+    (void)ms;
+    return ENOSYS;
+}
+#else
+int32_t ciel_time_monotonic_ms(uint64_t *out) {
+    if (out == NULL)
+        return EINVAL;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return errno == 0 ? EIO : errno;
+    if (now.tv_sec < 0)
+        return EIO;
+    uint64_t sec = (uint64_t)now.tv_sec;
+    uint64_t msec = (uint64_t)(now.tv_nsec / 1000000L);
+    if (sec > (UINT64_MAX - msec) / 1000ULL)
+        return EOVERFLOW;
+    *out = sec * 1000ULL + msec;
+    return 0;
+}
+
+int32_t ciel_time_sleep_ms(uint64_t ms) {
+    uint64_t seconds = ms / 1000ULL;
+    if (seconds > (uint64_t)LONG_MAX)
+        return EOVERFLOW;
+    struct timespec remaining;
+    remaining.tv_sec = (time_t)seconds;
+    remaining.tv_nsec = (long)((ms % 1000ULL) * 1000000ULL);
+
+    while (nanosleep(&remaining, &remaining) != 0) {
+        if (errno != EINTR)
+            return errno == 0 ? EIO : errno;
+    }
+    return 0;
+}
+#endif
 
 typedef struct CielActor CielActor;
 typedef void (*CielActorDispatchFn)(void *state, void *handler, void *message,

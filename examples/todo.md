@@ -33,7 +33,7 @@ host integration.
       Tests: append across initial capacity, repeated reserve, preserved
       contents after growth.
 
-- [ ] Add `/std/time` monotonic clock and sleep wrappers.
+- [x] Add `/std/time` monotonic clock and sleep wrappers.
       Implement `monotonic_ms` and `sleep_ms`.
       Tests: monotonic values do not go backwards; `sleep_ms(1)` returns
       successfully. Keep timing assertions loose.

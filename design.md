@@ -1918,7 +1918,7 @@ import /std/actor;
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
 `/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
-`/std/sync`, `/std/atomic`, and `/std/codec`.
+`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, and `/std/time`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2334,6 +2334,7 @@ export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
 export import /std/buf;
+export import /std/time;
 ```
 
 ```rust
@@ -2375,6 +2376,22 @@ callers use `byte_buf_new` and the exported operations. Slice-returning
 functions expose views into the buffer's initialized prefix. `byte_buf_clear`
 sets the initialized length to zero without releasing capacity, and
 `byte_buf_reserve` grows while preserving existing bytes.
+
+```rust
+// /std/time
+import /std/result;
+
+export Result<u64, Error> monotonic_ms();
+export Result<void, Error> sleep_ms(u64 ms);
+```
+
+`/std/time` provides blocking wall-clock-independent timing helpers. The
+monotonic clock reports milliseconds from an unspecified steady epoch and must
+not go backwards during one process run. `sleep_ms` blocks the current OS worker
+thread until the requested duration has elapsed or a platform error is reported;
+it is intended for simple backoff, tests, and blocking utility code. Actor
+continuations that must stay non-blocking should use an async completion style
+timer API if one is added later.
 
 ```rust
 // /std/async

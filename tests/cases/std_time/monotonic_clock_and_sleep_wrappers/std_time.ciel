@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/time as time;
+import /std/result;
+
+i64 main() {
+    u64 before = must(time::monotonic_ms());
+    must(time::sleep_ms(1));
+    u64 after = must(time::monotonic_ms());
+    if (after < before) {
+        return 1;
+    }
+
+    u64 zero_before = must(time::monotonic_ms());
+    must(time::sleep_ms(0));
+    u64 zero_after = must(time::monotonic_ms());
+    if (zero_after < zero_before) {
+        return 2;
+    }
+
+    return 0;
+}

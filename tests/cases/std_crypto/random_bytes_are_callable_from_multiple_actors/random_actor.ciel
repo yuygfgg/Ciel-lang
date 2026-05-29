@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/crypto as crypto;
+import /std/lib;
+
+Result<Channel<usize>, Error> worker(Channel<usize> done, usize label) {
+    [16]u8 @out = [0;];
+    crypto::random_bytes(out[..])?;
+    channel_send(&done, label)?;
+    return Ok(done);
+}
+
+i64 main() {
+    Channel<usize> done = must(make_channel<usize>());
+    Actor<usize> left = must(spawn_actor<Channel<usize>, usize>(done, worker));
+    Actor<usize> right = must(spawn_actor<Channel<usize>, usize>(done, worker));
+
+    must(send(&left, 1 as usize));
+    must(send(&right, 2 as usize));
+
+    usize first = must(channel_recv(&done));
+    usize second = must(channel_recv(&done));
+    must(join(&left));
+    must(join(&right));
+
+    if ((first + second) != (3 as usize) || first == second) {
+        return 1;
+    }
+    return 0;
+}

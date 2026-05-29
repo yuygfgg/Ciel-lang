@@ -1,0 +1,44 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/crypto as crypto;
+import /std/lib;
+import /std/message;
+
+Result<void, Error> accept_message<T: Message>(T value) {
+    T copied = clone_message(&value)?;
+    T ignored = copied;
+    return Ok;
+}
+
+Result<void, Error> accept_shared<T: ShareHandle>(T value) {
+    T copied = value;
+    if (share_handle_marker(&copied)) {
+        return Ok;
+    }
+    return Err(code_error(1));
+}
+
+Result<Channel<usize>, Error> worker(Channel<usize> done, crypto::SystemRng rng) {
+    [16]u8 @out = [0;];
+    crypto::rng_random_bytes(rng, out[..])?;
+    channel_send(&done, 1 as usize)?;
+    return Ok(done);
+}
+
+i64 main() {
+    crypto::SystemRng rng = must(crypto::system_rng());
+    must(accept_message(rng));
+    must(accept_shared(rng));
+
+    Channel<usize> done = must(make_channel<usize>());
+    Actor<crypto::SystemRng> actor = must(spawn_actor<Channel<usize>, crypto::SystemRng>(done, worker));
+    must(send(&actor, rng));
+
+    usize value = must(channel_recv(&done));
+    must(join(&actor));
+    if (value != (1 as usize)) {
+        return 1;
+    }
+    return 0;
+}

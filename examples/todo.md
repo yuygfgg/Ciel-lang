@@ -45,49 +45,49 @@ host integration.
 
 ## Phase 2: Botan-Backed `/std/crypto`
 
-- [ ] Add the private Botan C shim skeleton.
+- [x] Add the private Botan C shim skeleton.
       Expose initialization, error-code conversion, and CSPRNG fill to Ciel.
       Tests: build/link with Botan, CSPRNG fill writes a buffer, zero-length
       output succeeds.
 
-- [ ] Add `/std/crypto` CSPRNG APIs.
+- [x] Add `/std/crypto` CSPRNG APIs.
       Implement `random_bytes`, `system_rng`, and `rng_random_bytes`.
       Tests: two calls produce valid filled buffers; explicit `SystemRng` can
       fill multiple buffers; concurrent actor calls complete without shared
       Botan handle exposure.
 
-- [ ] Add `/std/crypto::hash_once`.
+- [x] Add `/std/crypto::hash_once`.
       Support `SHA-256`, `SHA-384`, and `SHA-512`.
       Tests: known-answer vectors, short output buffer error, unknown algorithm
       error.
 
-- [ ] Add streaming `Hash`.
+- [x] Add streaming `Hash`.
       Implement `hash_new`, `hash_update`, `hash_finish`, and `hash_clear`.
       Tests: streaming and one-shot results match; finish after multiple
       updates; clear releases the handle; use-after-clear reports an error or is
       rejected by the wrapper design.
 
-- [ ] Enforce `Hash` actor-local semantics.
+- [x] Enforce `Hash` actor-local semantics.
       Ensure stateful hash handles do not implement `Message`.
       Tests: a fixture attempting to send `Hash` through an actor or channel is
       rejected; passing digest bytes succeeds.
 
-- [ ] Add `/std/crypto::mac_once`.
+- [x] Add `/std/crypto::mac_once`.
       Support `HMAC(SHA-256)`, `HMAC(SHA-384)`, and `HMAC(SHA-512)`.
       Tests: known-answer vectors, short output buffer error, wrong key
       produces a different tag.
 
-- [ ] Add streaming `Mac`.
+- [x] Add streaming `Mac`.
       Implement `mac_new`, `mac_update`, `mac_finish`, and `mac_clear`.
       Tests: streaming and one-shot results match; split updates match a single
       update; clear releases the handle.
 
-- [ ] Enforce `Mac` actor-local semantics.
+- [x] Enforce `Mac` actor-local semantics.
       Ensure stateful MAC handles do not implement `Message`.
       Tests: a fixture attempting to send `Mac` through an actor or channel is
       rejected; passing completed MAC bytes succeeds.
 
-- [ ] Add `/std/crypto::constant_time_eq`.
+- [x] Add `/std/crypto::constant_time_eq`.
       Tests: equal slices, different slices with same length, different lengths,
       and empty slices.
 

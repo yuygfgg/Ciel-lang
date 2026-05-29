@@ -15,3 +15,4 @@ export import /std/codec;
 export import /std/buf;
 export import /std/time;
 export import /std/env;
+export import /std/crypto;

@@ -723,19 +723,9 @@ fn run_cc(c_path: &Path, output: &Path, extra_flags: &[&str]) -> Result<(), Stri
 }
 
 fn bdwgc_cc_args() -> Vec<String> {
-    let output = Command::new("pkg-config")
-        .arg("--cflags")
-        .arg("--libs")
-        .arg("bdw-gc")
-        .output();
-    let mut args = match output {
-        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
-            .unwrap_or_default()
-            .split_whitespace()
-            .map(str::to_string)
-            .collect(),
-        _ => vec!["-lgc".to_string()],
-    };
+    let mut args = Vec::new();
+    args.extend(pkg_config_args("bdw-gc", &["-lgc"]));
+    args.extend(pkg_config_args("botan-3", &["-lbotan-3"]));
     if !cfg!(windows) && !args.iter().any(|arg| arg == "-pthread") {
         args.push("-pthread".to_string());
     }
@@ -749,11 +739,28 @@ fn bdwgc_cc_args() -> Vec<String> {
     args
 }
 
+fn pkg_config_args(package: &str, fallback: &[&str]) -> Vec<String> {
+    let output = Command::new("pkg-config")
+        .arg("--cflags")
+        .arg("--libs")
+        .arg(package)
+        .output();
+    match output {
+        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
+            .unwrap_or_default()
+            .split_whitespace()
+            .filter(|arg| !arg.starts_with("-stdlib="))
+            .map(str::to_string)
+            .collect(),
+        _ => fallback.iter().map(|arg| (*arg).to_string()).collect(),
+    }
+}
+
 fn split_c_and_link_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
     let mut compile = Vec::new();
     let mut link = Vec::new();
     for arg in args {
-        if arg == "-pthread" {
+        if arg == "-pthread" || arg.starts_with("-stdlib=") {
             compile.push(arg.clone());
             link.push(arg);
         } else if is_link_arg(&arg) {

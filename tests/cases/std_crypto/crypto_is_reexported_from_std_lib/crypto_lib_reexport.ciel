@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 32
+
+import /std/lib;
+
+i64 main() {
+    [3]u8 data = [0x61 as u8, 0x62 as u8, 0x63 as u8];
+    [64]u8 @out = [0;];
+    return must(hash_once("SHA-256", data[..], out[..])) as i64;
+}

@@ -2337,6 +2337,7 @@ export import /std/codec;
 export import /std/buf;
 export import /std/time;
 export import /std/env;
+export import /std/crypto;
 ```
 
 ```rust
@@ -2408,6 +2409,107 @@ slices. Index `0` is the host-provided executable argument. `arg` returns a
 standard `Error` when the index is outside the current `args_len`. Environment
 variables, working-directory access, process spawning, and path search are
 reserved for later modules.
+
+```rust
+// /std/crypto
+import /std/result;
+
+export unsafe struct SystemRng {
+    *void handle;
+}
+
+export type Rng = SystemRng;
+
+export unsafe struct Hash {
+    *void handle;
+}
+
+export unsafe struct Mac {
+    *void handle;
+}
+
+export enum HashAlgorithm {
+    Sha256,
+    Sha384,
+    Sha512,
+}
+
+export enum MacAlgorithm {
+    HmacSha256,
+    HmacSha384,
+    HmacSha512,
+}
+
+export []const char hash_algorithm_name(HashAlgorithm algorithm);
+export []const char mac_algorithm_name(MacAlgorithm algorithm);
+
+export Result<void, Error> random_bytes([]u8 out);
+export Result<SystemRng, Error> system_rng();
+export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out);
+
+export Result<usize, Error> hash_once(
+    []const char algorithm,
+    []const u8 data,
+    []u8 out
+);
+
+export Result<usize, Error> hash_once_alg(
+    HashAlgorithm algorithm,
+    []const u8 data,
+    []u8 out
+);
+
+export Result<Hash, Error> hash_new([]const char algorithm);
+export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm);
+export Result<void, Error> hash_update(Hash hash, []const u8 data);
+export Result<usize, Error> hash_finish(Hash hash, []u8 out);
+export Result<void, Error> hash_clear(Hash hash);
+
+export Result<usize, Error> mac_once(
+    []const char algorithm,
+    []const u8 key,
+    []const u8 data,
+    []u8 out
+);
+
+export Result<usize, Error> mac_once_alg(
+    MacAlgorithm algorithm,
+    []const u8 key,
+    []const u8 data,
+    []u8 out
+);
+
+export Result<Mac, Error> mac_new([]const char algorithm, []const u8 key);
+export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key);
+export Result<void, Error> mac_update(Mac mac, []const u8 data);
+export Result<usize, Error> mac_finish(Mac mac, []u8 out);
+export Result<void, Error> mac_clear(Mac mac);
+
+export bool constant_time_eq([]const u8 left, []const u8 right);
+```
+
+`/std/crypto` exposes backend-neutral cryptographic operations backed by Botan's
+C FFI in the first runtime. `random_bytes` uses the system CSPRNG directly.
+`SystemRng` is an explicit reusable CSPRNG handle. One-shot and streaming hash
+and MAC APIs write into caller-provided output buffers and return the number of
+bytes written. A too-small output buffer returns a standard `Error`.
+
+The recommended algorithm names are `SHA-256`, `SHA-384`, `SHA-512`,
+`HMAC(SHA-256)`, `HMAC(SHA-384)`, and `HMAC(SHA-512)`. Application code should
+prefer the enum-based `*_alg` helpers for those common algorithms. The
+string-based entry points are still available for backend-neutral protocol
+surfaces and compatibility with older peers; after rejecting empty names,
+embedded NUL bytes, and overly long algorithm names, the runtime passes the
+algorithm name through to Botan. HMAC keys shorter than 16 bytes are rejected.
+When Botan reports an error, `/std/crypto` surfaces Botan's error description as
+a standard text error.
+
+`SystemRng` implements `Message` as a shareable handle because Botan's system
+RNG is thread-safe. `Hash` and `Mac` are unsafe runtime-backed handle structs
+and do not implement `Message`; application code should pass byte slices or
+completed digest/MAC values across actor boundaries instead of live streaming
+crypto contexts. `hash_clear` and `mac_clear` release their runtime handles;
+later use of the cleared value returns an error.
 
 ```rust
 // /std/async

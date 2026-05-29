@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 215
+
+import /std/lib;
+
+void mark(i64 value) {
+    // This makes the defer order visible when the example runs.
+    must(print("{}", [value]));
+}
+
+Result<i64, Error> half(i64 value) {
+    // Recoverable failure returns Err.
+    if ((value % 2) != 0) {
+        return Err(text_error("odd value"));
+    }
+
+    return Ok(value / 2);
+}
+
+Result<i64, Error> pipeline() {
+    // This runs when `pipeline` exits through return or `?`.
+    defer mark(1);
+
+    // `?` unwraps Ok or returns Err from `pipeline`.
+    i64 first = half(20)?;
+
+    {
+        // This defer belongs to the inner block, so it runs before mark(1).
+        defer mark(2);
+
+        // If this line returned Err, both active defers would still run.
+        i64 second = half(first)?;
+        return Ok(second);
+    }
+}
+
+i32 main() {
+    // Examples use `must` when failure should abort the sample.
+    i64 value = must(pipeline());
+    must(print("{}", [value]));
+    return 0;
+}

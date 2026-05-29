@@ -12,12 +12,11 @@ use crate::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_ERROR_FORMAT_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE, Ty,
         aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
-        closure_shape_satisfies, contains_any_generic_name, contains_generic,
-        contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
-        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
-        meta_sum_ty, receiver_ty_from_value_ty, retained_closure_proves_capability,
-        std_actor_ty, std_error_ty, std_meta_repr_marker_ty, std_result_ty, substitute_ty,
-        ty_from_primitive, unify_ty,
+        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
+        mangle_ty_fragment, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
+        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty, std_error_ty,
+        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -570,14 +569,14 @@ pub fn type_check_generic_instance(
     checker.next_synthetic_def = checker.next_synthetic_def.max(next_synthetic_def);
     let base_generated = checker.generated_functions.len();
     let base_impls = checker.impls.len();
-        let function = checker.instantiate_generic_template_for_mono(
-            template,
-            instance_args,
-            def_id,
-            instance_name,
-        );
-        checker.drain_pending_impl_bodies();
-        if checker.diagnostics.is_empty() {
+    let function = checker.instantiate_generic_template_for_mono(
+        template,
+        instance_args,
+        def_id,
+        instance_name,
+    );
+    checker.drain_pending_impl_bodies();
+    if checker.diagnostics.is_empty() {
         let function = function.ok_or_else(|| {
             vec![Diagnostic::new(
                 template.function.signature.name.span,
@@ -1911,7 +1910,8 @@ impl TypeChecker {
                 self.require_assignable(&ty, &init.ty, span);
             }
             return CheckedLocalInit {
-                assigned: init.as_ref().is_some_and(|init| !init.is_never()) || ty.is_erased_value(),
+                assigned: init.as_ref().is_some_and(|init| !init.is_never())
+                    || ty.is_erased_value(),
                 ty,
                 init,
             };
@@ -2176,11 +2176,25 @@ impl TypeChecker {
                     .map(|capture| self.meta_repr_storage_ty(capture, span))
                     .collect(),
             },
-            Ty::Hole(_) | Ty::Never | Ty::Void | Ty::Bool | Ty::Char | Ty::I8 | Ty::I16
-            | Ty::I32 | Ty::I64 | Ty::U8 | Ty::U16 | Ty::U32 | Ty::U64 | Ty::Usize
-            | Ty::F32 | Ty::F64 | Ty::CSpelling { .. } | Ty::Generic(_) | Ty::Unknown => {
-                ty.clone()
-            }
+            Ty::Hole(_)
+            | Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Generic(_)
+            | Ty::Unknown => ty.clone(),
         }
     }
 
@@ -3522,7 +3536,8 @@ impl TypeChecker {
         {
             return;
         }
-        self.pending_impl_bodies.push(QueuedImplBody { pending, subst });
+        self.pending_impl_bodies
+            .push(QueuedImplBody { pending, subst });
     }
 
     fn drain_pending_impl_bodies(&mut self) {
@@ -5901,11 +5916,8 @@ impl TypeChecker {
             return None;
         }
         let subst = self.current_type_subst();
-        let lowered = self.lower_type_with_subst_preserving_meta_repr_markers(
-            &type_args[0],
-            &subst,
-            false,
-        );
+        let lowered =
+            self.lower_type_with_subst_preserving_meta_repr_markers(&type_args[0], &subst, false);
         let ty = self.meta_repr_storage_ty(&lowered, type_args[0].span);
         self.ensure_struct_instance(&ty);
         self.ensure_enum_instance(&ty);

@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 20 4 5
+
 import /std/lib;
 
 i64 read_value(*const i64 value) {

@@ -32,7 +32,7 @@ done
 
 ## Stage 4: Advanced
 
-10. [Errors and Panic](10-errors-panic.md)
+10. [Errors, Defer, and Panic](10-errors-defer-panic.md)
 11. [C Interop](11-c-interop.md)
 12. [Inside SOP](12-inside-sop.md)
 13. [Error Boxes](13-error-boxes.md)

@@ -240,11 +240,11 @@ fn parse_case(path: &Path) -> Result<Case, String> {
         let Some(comment) = line.trim_start().strip_prefix("//") else {
             continue;
         };
-        let Some((key, value)) = comment.trim_start().split_once(':') else {
+        let Some((key, raw_value)) = comment.trim_start().split_once(':') else {
             continue;
         };
         let key = key.trim();
-        let value = value.trim();
+        let value = raw_value.trim();
         match key {
             "ciel-test" => {
                 if kind.is_some() {
@@ -271,7 +271,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
                         .map_err(|error| format!("invalid expect-exit `{value}`: {error}"))?,
                 );
             }
-            "expect-stdout" => expect_stdout = Some(value.to_string()),
+            "expect-stdout" => expect_stdout = Some(raw_value.trim_start().to_string()),
             "expect-stderr-contains" => expect_stderr_contains.push(value.to_string()),
             "expect-error" => expect_errors.push(value.to_string()),
             "expect-c-contains" => expect_c_contains.push(value.to_string()),

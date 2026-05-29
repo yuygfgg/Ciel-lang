@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
 import /std/lib;
 
 // A struct groups named fields into one value.

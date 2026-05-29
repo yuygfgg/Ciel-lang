@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 33
+
 import /std/lib;
 
 // Two small capabilities. A value may support either one or both.

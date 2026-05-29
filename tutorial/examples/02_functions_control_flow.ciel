@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 10
+
 import /std/lib;
 
 i64 add_bonus(i64 score, i64 bonus) {

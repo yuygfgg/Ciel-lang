@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 2 7 
+
 import /std/lib;
 
 Result<i64, Error> handle(i64 total, i64 amount) {

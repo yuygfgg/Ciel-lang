@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 15
+
 import /std/lib;
 
 i32 main() {

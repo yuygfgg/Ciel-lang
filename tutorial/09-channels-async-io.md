@@ -57,6 +57,24 @@ usize len = must(channel_recv(&done));
 That call blocks `main` until a value arrives. It does not mean the reader actor
 is blocked on the file read. `main` is simply waiting for the final reply.
 
+## Close Handles With `defer`
+
+The async file handle is a runtime resource. Open it, then register the close
+next to the open:
+
+```ciel
+aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_tutorial_async_read.txt"));
+defer aio::close_async(fd);
+```
+
+`defer` runs the direct function call when the current block exits through
+normal control flow. Its return value is ignored, so it is a cleanup tool, not
+an error-handling tool.
+
+Putting `defer` next to the open keeps the lifetime visible. The rest of `main`
+can focus on the actor workflow instead of remembering to close the handle at
+the bottom of the function.
+
 ## Why The Actor Starts I/O
 
 The example lets `main` create the input file and open the async file handle so
@@ -214,6 +232,7 @@ i32 main() {
 
     // Open an async file handle. The read itself starts inside the actor handler.
     aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_tutorial_async_read.txt"));
+    defer aio::close_async(fd);
 
     // Tell the actor to begin the read. The actor handle is part of the command so
     // the actor can ask the runtime to send the completion message back to itself.
@@ -227,7 +246,6 @@ i32 main() {
 
     must(join(&reader));
     must(channel_close(&done));
-    must(aio::close_async(fd));
     return 0;
 }
 ```
@@ -238,16 +256,18 @@ Read the program in this order:
 
 1. `main` creates `done`, a `Channel<usize>` for the final answer.
 2. `main` spawns `reader`, whose mailbox type is `meta::Repr<ReaderMsg>`.
-3. `main` sends `Start(fd, reader)` after sealing it with `meta::into_repr`.
-4. `reader` opens the envelope with `meta::from_repr<ReaderMsg>`.
-5. `reader` starts the async read and gets an `AsyncRead` token.
-6. `reader` registers `ReadDone(op)` as the completion message.
-7. `reader` returns to the runtime; no user code is running for that read.
-8. `main` waits on `channel_recv(&done)`.
-9. The runtime later sends `ReadDone(op)` to `reader`.
-10. `reader` calls `finish_read(op)`, measures the byte length, and sends it
+3. `main` opens the async handle and registers `defer aio::close_async(fd)`.
+4. `main` sends `Start(fd, reader)` after sealing it with `meta::into_repr`.
+5. `reader` opens the envelope with `meta::from_repr<ReaderMsg>`.
+6. `reader` starts the async read and gets an `AsyncRead` token.
+7. `reader` registers `ReadDone(op)` as the completion message.
+8. `reader` returns to the runtime; no user code is running for that read.
+9. `main` waits on `channel_recv(&done)`.
+10. The runtime later sends `ReadDone(op)` to `reader`.
+11. `reader` calls `finish_read(op)`, measures the byte length, and sends it
     through `done`.
-11. `main` receives the length and prints it.
+12. `main` receives the length and prints it.
+13. `main` returns, then the deferred async close runs.
 
 The intentional blocking point in this program is `channel_recv(&done)` in
 `main`. The actor is free between the `Start` handler returning and the later

@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7 7 7
+
 import /std/lib;
 
 interface<T> i64 score(*T value);

@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
 import /std/lib;
 import /std/async_io as aio;
 import /std/meta as meta;
@@ -59,6 +63,7 @@ i32 main() {
 
     // Open an async file handle. The read itself starts inside the actor handler.
     aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_tutorial_async_read.txt"));
+    defer aio::close_async(fd);
 
     // Tell the actor to begin the read. The actor handle is part of the command so
     // the actor can ask the runtime to send the completion message back to itself.
@@ -72,6 +77,5 @@ i32 main() {
 
     must(join(&reader));
     must(channel_close(&done));
-    must(aio::close_async(fd));
     return 0;
 }

@@ -1,3 +1,7 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7 load config
+
 import /std/lib;
 import /std/format as format;
 

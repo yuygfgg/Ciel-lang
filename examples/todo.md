@@ -93,30 +93,32 @@ host integration.
 
 ## Phase 3: Blocking TCP Foundation
 
-- [ ] Add `/std/net::SocketAddr` and loopback address parsing.
-      Implement `parse_addr` for the demo-required `host:port` shape.
-      Tests: valid `127.0.0.1:port`, invalid host, invalid port, and missing
-      port.
+- [x] Add `/std/net::SocketAddr` and address parsing.
+      Implement `parse_addr` for numeric IPv4 and bracketed numeric IPv6
+      `host:port` shapes, plus explicit `resolve_tcp` for DNS.
+      Tests: valid `127.0.0.1:port`, valid `[::1]:port`, invalid host,
+      invalid port, missing port, and `localhost` resolution.
 
-- [ ] Add private TCP listener and stream handles.
-      Implement safe wrappers around raw descriptors or C shim handles.
-      Tests: safe code cannot construct fake handles; close is available only
-      through standard-library APIs.
+- [x] Add private TCP listener and stream handles.
+      Implement safe wrappers around generation-checked runtime descriptor
+      slots.
+      Tests: safe code cannot construct fake handles; stale generation use is
+      rejected after close.
 
-- [ ] Add blocking `tcp_listen`, `tcp_accept`, and `tcp_connect`.
+- [x] Add blocking `tcp_listen`, `tcp_accept`, and `tcp_connect`.
       Tests: loopback connect/accept smoke test with dynamic local ports.
 
-- [ ] Add blocking `tcp_read` and `tcp_write`.
+- [x] Add blocking `tcp_read` and `tcp_write`.
       Tests: echo one small payload, handle EOF, handle zero-length write.
 
-- [ ] Add `tcp_shutdown_read`, `tcp_shutdown_write`, `tcp_close`, and
+- [x] Add `tcp_shutdown_read`, `tcp_shutdown_write`, `tcp_close`, and
       `listener_close`.
       Tests: close twice reports a stable error or safe no-op policy; shutdown
       write produces EOF on peer; listener close releases the port.
 
-- [ ] Add optional scoped TCP helpers.
-      Implement scoped connect/listen helpers only if they match existing
-      `/std/io` handle style cleanly.
+- [x] Add optional scoped TCP helpers.
+      Implement scoped connect/listen helpers matching the existing `/std/io`
+      handle style.
       Tests: `defer` or scoped body closes streams on success and error paths.
 
 ## Phase 4: Actor-Friendly `/std/async_net`

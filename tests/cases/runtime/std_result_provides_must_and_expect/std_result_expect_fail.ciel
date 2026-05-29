@@ -1,5 +1,5 @@
 // ciel-test: run
-// expect-exit: 0
+// expect-exit: 101
 // expect-stderr-contains: expected failure
 // expect-stderr-contains: .ciel
 

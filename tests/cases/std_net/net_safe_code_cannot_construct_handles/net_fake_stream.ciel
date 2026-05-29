@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: constructing unsafe struct `TcpStream` requires unsafe block
+
+import /std/net as net;
+
+i32 main() {
+    net::TcpStream stream = { slot: 0, generation: 1 };
+    return 0;
+}

@@ -1,5 +1,5 @@
 // ciel-test: run
-// expect-exit: 0
+// expect-exit: 101
 // expect-stderr-contains: integer overflow
 // expect-stderr-contains: debug_overflow.ciel
 

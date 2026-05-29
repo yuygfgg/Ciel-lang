@@ -281,25 +281,39 @@ accepted demo requires the relevant public APIs to live in `std/`.
 
 `/std/net` is the core networking layer. It owns socket addresses, safe handle
 wrappers, lifecycle operations, and optional blocking convenience APIs.
+The standard-library surface is intentionally broader than the tunnel MVP:
+numeric IPv4, numeric bracketed IPv6, and explicit DNS resolution are supported.
 
 Minimum public API:
 
 ```text
+enum AddressFamily
 struct TcpListener
 struct TcpStream
 struct SocketAddr
 
 parse_addr(text: []const char) -> Result<SocketAddr, Error>
+resolve_tcp(host: []const char, port: u16) -> Result<SocketAddr, Error>
+addr_family(addr: SocketAddr) -> Result<AddressFamily, Error>
+addr_port(addr: SocketAddr) -> Result<u16, Error>
+addr_to_string(addr: SocketAddr) -> Result<[]const char, Error>
 tcp_listen(addr: SocketAddr) -> Result<TcpListener, Error>
 tcp_accept(listener: TcpListener) -> Result<TcpStream, Error>
 tcp_connect(addr: SocketAddr) -> Result<TcpStream, Error>
+tcp_connect_host(host: []const char, port: u16) -> Result<TcpStream, Error>
 tcp_read(stream: TcpStream, out: []u8) -> Result<usize, Error>
 tcp_write(stream: TcpStream, data: []const u8) -> Result<usize, Error>
+tcp_write_all(stream: TcpStream, data: []const u8) -> Result<void, Error>
 tcp_shutdown_read(stream: TcpStream) -> Result<void, Error>
 tcp_shutdown_write(stream: TcpStream) -> Result<void, Error>
+tcp_shutdown(stream: TcpStream) -> Result<void, Error>
 tcp_close(stream: TcpStream) -> Result<void, Error>
 listener_close(listener: TcpListener) -> Result<void, Error>
+listener_addr(listener: TcpListener) -> Result<SocketAddr, Error>
 ```
+
+`parse_addr` is deterministic and does not perform DNS. Domain-name lookup is
+explicit through `resolve_tcp` and `tcp_connect_host`.
 
 These blocking calls are acceptable for:
 
@@ -315,6 +329,8 @@ fit:
 
 ```text
 with_tcp_connect<R: Message>(addr: SocketAddr, Result<R, Error> |(TcpStream)| body)
+with_tcp_connect_host<R: Message>(host: []const char, port: u16, Result<R, Error> |(TcpStream)| body)
+with_tcp_listen<R: Message>(addr: SocketAddr, Result<R, Error> |(TcpListener)| body)
 ```
 
 ### 10.2 `/std/async_net`
@@ -595,8 +611,8 @@ Required C shim responsibilities:
 - create, bind, listen, accept, connect, read, write, shutdown, and close TCP
   sockets.
 - convert OS errors into stable integer error codes.
-- parse loopback `host:port` strings or accept already parsed host and port
-  pieces from Ciel.
+- parse numeric IPv4 and bracketed numeric IPv6 endpoints, and perform explicit
+  DNS resolution for host/port APIs.
 - keep raw OS descriptors private to safe Ciel APIs.
 
 Required async network shim responsibilities:
@@ -906,5 +922,3 @@ The demo is accepted when:
   stop at authenticated cleartext?
 - Should route names be part of the authenticated message, or should the server
   choose a single configured route before authentication?
-- Should the socket C shim parse addresses, or should Ciel own host and port
-  parsing once `/std/text` exists?

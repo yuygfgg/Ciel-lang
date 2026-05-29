@@ -1,0 +1,9 @@
+// ciel-test: run
+// expect-exit: 42
+
+import /std/lib;
+
+i32 main() {
+    SocketAddr addr = must(parse_addr("127.0.0.1:42"));
+    return must(addr_port(addr)) as i32;
+}

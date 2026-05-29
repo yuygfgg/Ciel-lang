@@ -1918,8 +1918,8 @@ import /std/actor;
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
 `/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
-`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, `/std/time`, and
-`/std/env`.
+`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, `/std/time`,
+`/std/env`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2019,6 +2019,10 @@ export never panic([]const char message) {
     };
 }
 ```
+
+`panic` prints a diagnostic to standard error and terminates the process with a
+nonzero exit status. The current runtime uses exit code `101` for panic
+termination.
 
 ```rust
 // /std/c
@@ -2338,6 +2342,7 @@ export import /std/buf;
 export import /std/time;
 export import /std/env;
 export import /std/crypto;
+export import /std/net;
 ```
 
 ```rust
@@ -2510,6 +2515,84 @@ and do not implement `Message`; application code should pass byte slices or
 completed digest/MAC values across actor boundaries instead of live streaming
 crypto contexts. `hash_clear` and `mac_clear` release their runtime handles;
 later use of the cleared value returns an error.
+
+```rust
+// /std/net
+import /std/result;
+
+export enum AddressFamily {
+    Ip4,
+    Ip6,
+}
+
+export unsafe struct SocketAddr {
+    *void handle;
+}
+
+export unsafe struct TcpListener {
+    u32 slot;
+    u32 generation;
+}
+
+export unsafe struct TcpStream {
+    u32 slot;
+    u32 generation;
+}
+
+export Result<SocketAddr, Error> parse_addr([]const char text);
+export Result<SocketAddr, Error> resolve_tcp([]const char host, u16 port);
+export Result<AddressFamily, Error> addr_family(SocketAddr addr);
+export Result<u16, Error> addr_port(SocketAddr addr);
+export Result<usize, Error> addr_write(SocketAddr addr, []char out);
+export Result<[]const char, Error> addr_to_string(SocketAddr addr);
+
+export Result<TcpListener, Error> tcp_listen(SocketAddr addr);
+export Result<TcpStream, Error> tcp_accept(TcpListener listener);
+export Result<TcpStream, Error> tcp_connect(SocketAddr addr);
+export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port);
+export Result<usize, Error> tcp_read(TcpStream stream, []u8 out);
+export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data);
+export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data);
+export Result<void, Error> tcp_shutdown_read(TcpStream stream);
+export Result<void, Error> tcp_shutdown_write(TcpStream stream);
+export Result<void, Error> tcp_shutdown(TcpStream stream);
+export Result<void, Error> tcp_close(TcpStream stream);
+export Result<void, Error> listener_close(TcpListener listener);
+export Result<SocketAddr, Error> listener_addr(TcpListener listener);
+export Result<SocketAddr, Error> stream_local_addr(TcpStream stream);
+export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream);
+
+export Result<R, Error> with_tcp_connect<R: Message>(
+    SocketAddr addr,
+    Result<R, Error> |(TcpStream)| body
+);
+
+export Result<R, Error> with_tcp_connect_host<R: Message>(
+    []const char host,
+    u16 port,
+    Result<R, Error> |(TcpStream)| body
+);
+
+export Result<R, Error> with_tcp_listen<R: Message>(
+    SocketAddr addr,
+    Result<R, Error> |(TcpListener)| body
+);
+```
+
+`/std/net` provides a blocking TCP socket layer over the platform socket API.
+It does not introduce a third-party networking dependency. `parse_addr` parses
+numeric IPv4 and bracketed numeric IPv6 endpoints such as `127.0.0.1:8080` and
+`[::1]:8080`; it does not perform DNS. Domain-name lookup is explicit through
+`resolve_tcp`, and `tcp_connect_host` resolves a host name and tries the
+returned TCP addresses until one connects.
+
+`SocketAddr` is an immutable runtime-backed address value and implements
+`Message` as a shareable handle. `TcpListener` and `TcpStream` are
+runtime-backed descriptor handles and are actor-local blocking resources. The
+runtime stores real descriptors in a generation-checked slot table, so stale
+copies of a closed listener or stream cannot accidentally operate on a reused
+descriptor. The scoped `with_tcp_*` helpers follow the `/std/io` pattern and
+close the opened resource on normal and error returns from the body.
 
 ```rust
 // /std/async

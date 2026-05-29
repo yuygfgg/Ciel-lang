@@ -89,7 +89,7 @@ fn cli_full_compile_debug_and_release_control_overflow() {
         .unwrap();
     assert_cli_success(&debug_build);
     let debug_run = Command::new(&debug_exe).output().unwrap();
-    assert_eq!(debug_run.status.code(), Some(0));
+    assert_eq!(debug_run.status.code(), Some(101));
     assert!(
         String::from_utf8_lossy(&debug_run.stderr).contains("integer overflow"),
         "stderr:\n{}",

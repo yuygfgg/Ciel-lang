@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/net as net;
+import /std/result;
+
+bool is_void_err(Result<void, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_stream_err(Result<net::TcpStream, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i32 main() {
+    net::TcpListener listener = must(net::tcp_listen(must(net::parse_addr("127.0.0.1:0"))));
+    must(net::listener_close(listener));
+    if (!is_void_err(net::listener_close(listener))) {
+        return 1;
+    }
+    if (!is_stream_err(net::tcp_accept(listener))) {
+        return 2;
+    }
+    return 0;
+}

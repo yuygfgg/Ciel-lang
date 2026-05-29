@@ -16,3 +16,4 @@ export import /std/buf;
 export import /std/time;
 export import /std/env;
 export import /std/crypto;
+export import /std/net;

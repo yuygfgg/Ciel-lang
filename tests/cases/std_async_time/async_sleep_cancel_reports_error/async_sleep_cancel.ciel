@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async_time as atime;
+import /std/result;
+
+bool is_err(Result<void, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i32 main() {
+    atime::AsyncSleep op = must(atime::sleep_ms_async(1000));
+    must(atime::cancel_sleep(op));
+    if (!is_err(atime::finish_sleep(op))) {
+        return 1;
+    }
+    return 0;
+}

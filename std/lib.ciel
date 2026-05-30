@@ -6,6 +6,7 @@ export import /std/io;
 export import /std/async;
 export import /std/async_io;
 export import /std/async_net;
+export import /std/async_time;
 export import /std/message;
 export import /std/meta;
 export import /std/actor;

@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 3
+
+import /std/lib;
+
+i32 main() {
+    Channel<i64> done = must(make_channel<i64>());
+    AsyncRunner<Channel<i64>> runner =
+        must(spawn_runner<Channel<i64>>(done));
+    AsyncTask<Channel<i64>, void> task =
+        must(sleep_ms_task<Channel<i64>>(0));
+
+    must(start(runner, task, |Channel<i64> ch, void marker| {
+        marker;
+        channel_send(&ch, 3)?;
+        return Ok(ch);
+    }));
+
+    i64 value = must(channel_recv(&done));
+    must(print_value(value));
+
+    must(join_runner(&runner));
+    must(channel_close(&done));
+    return 0;
+}

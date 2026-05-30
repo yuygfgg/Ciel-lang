@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 2
+
+import /std/actor;
+import /std/async_time as atime;
+import /std/channel;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+Result<Channel<i64>, Error> handle(Channel<i64> done, atime::AsyncSleep op) {
+    atime::finish_sleep(op)?;
+    channel_send(&done, 1)?;
+    return Ok(done);
+}
+
+i32 main() {
+    Channel<i64> done = must(make_channel<i64>());
+    Actor<atime::AsyncSleep> actor =
+        must(spawn_actor<Channel<i64>, atime::AsyncSleep>(done, handle));
+
+    atime::AsyncSleep fast = must(atime::sleep_ms_async(0));
+    atime::AsyncSleep slow = must(atime::sleep_ms_async(1));
+    must(atime::notify_sleep_done(&fast, &actor, fast));
+    must(atime::notify_sleep_done(&slow, &actor, slow));
+
+    i64 total = must(channel_recv(&done)) + must(channel_recv(&done));
+    must(print_value(total));
+
+    must(join(&actor));
+    must(channel_close(&done));
+    return 0;
+}

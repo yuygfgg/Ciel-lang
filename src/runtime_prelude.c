@@ -2530,6 +2530,7 @@ typedef enum {
     CIEL_ASYNC_WRITE,
     CIEL_ASYNC_ACCEPT,
     CIEL_ASYNC_CONNECT,
+    CIEL_ASYNC_SLEEP,
 } CielAsyncKind;
 
 struct CielAsyncOp {
@@ -3240,6 +3241,41 @@ CielAsyncOp *ciel_async_tcp_connect(CielSocketAddr *addr) {
     return op;
 }
 
+CielAsyncOp *ciel_async_sleep_ms(uint64_t ms) {
+    uint64_t max_ms = (uint64_t)INT64_MAX / 1000000ULL;
+    if (ms > max_ms) {
+        errno = EOVERFLOW;
+        return NULL;
+    }
+    CielAsyncOp *op = ciel_async_op_new(CIEL_ASYNC_SLEEP, NULL);
+    if (op == NULL)
+        return NULL;
+    dispatch_source_t source = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_TIMER, 0, 0, ciel_async_queue());
+    if (source == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    op->source = source;
+    int64_t delta_ns = (int64_t)(ms * 1000000ULL);
+    dispatch_source_set_timer(source,
+                              dispatch_time(DISPATCH_TIME_NOW, delta_ns),
+                              DISPATCH_TIME_FOREVER, 1000000ULL);
+    dispatch_source_set_event_handler(source, ^{
+      int32_t attach_rc = ciel_runtime_enter_callback();
+      if (attach_rc != 0) {
+          ciel_async_cancel_source(op);
+          ciel_async_complete(op, attach_rc, NULL, 0);
+          return;
+      }
+      ciel_async_cancel_source(op);
+      ciel_async_complete(op, 0, NULL, 0);
+      ciel_runtime_leave_callback();
+    });
+    dispatch_resume(source);
+    return op;
+}
+
 static int32_t ciel_async_finish_stream(CielAsyncOp *op, CielAsyncKind kind,
                                         CielAsyncFd **out) {
     if (op == NULL || out == NULL)
@@ -3382,6 +3418,11 @@ int32_t ciel_async_tcp_notify_connect(CielAsyncOp *op, CielActor *actor,
     return ciel_async_notify(op, CIEL_ASYNC_CONNECT, actor, message);
 }
 
+int32_t ciel_async_notify_sleep(CielAsyncOp *op, CielActor *actor,
+                                void *message) {
+    return ciel_async_notify(op, CIEL_ASYNC_SLEEP, actor, message);
+}
+
 int32_t ciel_async_finish_read(CielAsyncOp *op, CielBytes **out) {
     if (op == NULL || out == NULL)
         return EINVAL;
@@ -3444,6 +3485,38 @@ int32_t ciel_async_finish_write(CielAsyncOp *op, size_t *written) {
     }
     op->finished = 1;
     *written = op->written;
+    pthread_mutex_unlock(&op->mutex);
+    return 0;
+}
+
+int32_t ciel_async_finish_sleep(CielAsyncOp *op) {
+    if (op == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&op->mutex);
+    if (op->kind != CIEL_ASYNC_SLEEP) {
+        pthread_mutex_unlock(&op->mutex);
+        return EINVAL;
+    }
+    if (op->finished) {
+        pthread_mutex_unlock(&op->mutex);
+        return EALREADY;
+    }
+    if (op->canceled) {
+        op->finished = 1;
+        pthread_mutex_unlock(&op->mutex);
+        return ECANCELED;
+    }
+    if (!op->complete) {
+        pthread_mutex_unlock(&op->mutex);
+        return EAGAIN;
+    }
+    if (op->error != 0) {
+        int err = op->error;
+        op->finished = 1;
+        pthread_mutex_unlock(&op->mutex);
+        return err;
+    }
+    op->finished = 1;
     pthread_mutex_unlock(&op->mutex);
     return 0;
 }

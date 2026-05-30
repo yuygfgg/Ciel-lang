@@ -1934,16 +1934,23 @@ impl TypeChecker {
         init: Option<&Expr>,
     ) -> CheckedLocalInit {
         if !hir_type_contains_hole(ty) {
+            let erased_after_generic_subst = hir_type_contains_generic(ty);
             let ty = self.lower_type(ty);
             self.reject_invalid_plain_value_type(&ty, span, "local variable");
             let init = if ty.is_erased_value() {
-                if init.is_some() {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        "void values are implicit and cannot be explicitly initialized",
-                    ));
+                if let Some(expr) = init {
+                    if erased_after_generic_subst {
+                        self.check_expr(scopes, expr, Some(&ty))
+                    } else {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            "void values are implicit and cannot be explicitly initialized",
+                        ));
+                        None
+                    }
+                } else {
+                    None
                 }
-                None
             } else {
                 init.and_then(|expr| self.check_expr(scopes, expr, Some(&ty)))
             };
@@ -9137,6 +9144,23 @@ fn hir_type_contains_hole(ty: &Type) -> bool {
         TypeKind::Named(_, args) => args.iter().any(hir_type_contains_hole),
         TypeKind::Function { ret, params, .. } | TypeKind::Closure { ret, params, .. } => {
             hir_type_contains_hole(ret) || params.iter().any(hir_type_contains_hole)
+        }
+        _ => false,
+    }
+}
+
+fn hir_type_contains_generic(ty: &Type) -> bool {
+    match &ty.kind {
+        TypeKind::Named(name, args) => {
+            matches!(name.kind, TypeNameKind::Generic(_))
+                || args.iter().any(hir_type_contains_generic)
+        }
+        TypeKind::Pointer { inner, .. } | TypeKind::Slice { elem: inner, .. } => {
+            hir_type_contains_generic(inner)
+        }
+        TypeKind::Array { elem, .. } => hir_type_contains_generic(elem),
+        TypeKind::Function { ret, params, .. } | TypeKind::Closure { ret, params, .. } => {
+            hir_type_contains_generic(ret) || params.iter().any(hir_type_contains_generic)
         }
         _ => false,
     }

@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: V
+
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    i32 putchar(i32 ch);
+}
+
+void mark() {
+    unsafe { putchar(86) };
+}
+
+T run<T>(T |()| action) {
+    T value = action();
+    return value;
+}
+
+i32 main() {
+    run<void>(|| mark());
+    return 0;
+}

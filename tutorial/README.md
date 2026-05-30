@@ -3,8 +3,8 @@
 This tutorial is the guided path. `design.md` is the language contract; these
 chapters teach the parts a working programmer needs in order.
 
-Each chapter has one complete program under `examples/`. Explanatory snippets
-inside the prose may show only the relevant lines.
+Each chapter has one or more complete programs under `examples/`. Explanatory
+snippets inside the prose may show only the relevant lines.
 
 ```sh
 for file in tutorial/examples/*.ciel; do
@@ -28,7 +28,7 @@ done
 
 7. [Actor Basics](07-actor-basics.md)
 8. [Sending Complex Data Across Actors](08-actor-envelopes.md)
-9. [Channels and Async I/O](09-channels-async-io.md)
+9. [Channels and Async Flows](09-channels-async-io.md)
 
 ## Stage 4: Advanced
 

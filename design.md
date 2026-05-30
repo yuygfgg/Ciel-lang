@@ -1917,9 +1917,10 @@ import /std/actor;
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
-`/std/async_io`, `/std/async_net`, `/std/message`, `/std/meta`, `/std/actor`,
-`/std/channel`, `/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`,
-`/std/time`, `/std/env`, `/std/crypto`, and `/std/net`.
+`/std/async_io`, `/std/async_net`, `/std/async_time`, `/std/message`,
+`/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
+`/std/codec`, `/std/buf`, `/std/time`, `/std/env`, `/std/crypto`, and
+`/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2332,6 +2333,7 @@ export import /std/io;
 export import /std/async;
 export import /std/async_io;
 export import /std/async_net;
+export import /std/async_time;
 export import /std/message;
 export import /std/meta;
 export import /std/actor;
@@ -2946,6 +2948,55 @@ Async TCP reads complete with up to `max_len` bytes once data or EOF is
 available; a zero-length `Bytes` value represents EOF. Async TCP writes take
 `Bytes`, not a borrowed slice, because the runtime may hold the data after the
 caller's actor handler has returned.
+
+```rust
+// /std/async_time
+import /std/async as flow;
+import /std/async/adapter;
+import /std/actor;
+
+export struct AsyncSleep {
+    *void handle;
+}
+
+export Result<AsyncSleep, Error> sleep_ms_async(u64 ms);
+export Result<void, Error> notify_sleep_done<M: Message>(
+    *const AsyncSleep op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> finish_sleep(AsyncSleep op);
+export Result<void, Error> cancel_sleep(AsyncSleep op);
+export Result<flow::Completion<S, void>, Error> sleep_ms_completion<S: Message>(u64 ms);
+export Result<flow::AsyncTask<S, void>, Error> sleep_ms_task<S: Message>(u64 ms);
+
+impl<M: Message> notify_done(
+    AsyncSleep op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_sleep_done(&op, &actor_handle, message);
+}
+
+impl finish<void>(AsyncSleep op) {
+    return finish_sleep(op);
+}
+```
+
+`/std/async_time` provides actor-oriented monotonic timers. `sleep_ms_async`
+returns a one-shot `AsyncSleep` operation token immediately; registering a
+completion message does not block the actor handler or a flow runner. A
+zero-delay sleep still completes through the async completion path. `finish_sleep`
+consumes a completed operation exactly once, and `cancel_sleep` cancels a
+pending timer token and suppresses its completion message if cancellation wins.
+`sleep_ms_completion` and `sleep_ms_task` expose the usual `/std/async` flow
+shape with `void` output.
+
+Timer policy is deliberately narrow. `/std/async_time` provides timer and
+cancellation building blocks, but protocol-specific heartbeat, missed-pong,
+retry, and timeout policy belongs in application code. A generic timeout helper
+should be added only if it can cancel the losing operation without leaving a
+late completion queued for an actor.
 
 These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime

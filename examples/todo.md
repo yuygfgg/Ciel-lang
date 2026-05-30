@@ -154,19 +154,19 @@ host integration.
 
 ## Phase 5: Actor-Friendly `/std/async_time`
 
-- [ ] Add async sleep operation support.
+- [x] Add async sleep operation support.
       Define `AsyncSleep`; implement `sleep_ms_async`, `notify_sleep_done`,
       `finish_sleep`, and `cancel_sleep` using a monotonic runtime timer.
       Tests: zero-delay sleep completes; short sleep completes through an actor;
       canceling a pending sleep reports a stable cancellation error.
 
-- [ ] Add `/std/async` integration for timers.
+- [x] Add `/std/async` integration for timers.
       Implement `sleep_ms_completion<S>` and `sleep_ms_task<S>` so actor code can
       schedule deadlines without blocking a runner thread.
       Tests: `flow::then` can delay a continuation; multiple concurrent sleeps
       complete independently and do not reorder actor state incorrectly.
 
-- [ ] Define the timeout composition boundary.
+- [x] Define the timeout composition boundary.
       Document that `/std/async_time` provides timers and cancellation
       building blocks, while tunnel heartbeat frames and missed-pong policy stay
       in the application protocol. Add a generic timeout helper only if it can

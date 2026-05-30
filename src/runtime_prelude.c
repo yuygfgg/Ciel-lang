@@ -167,6 +167,24 @@ CielSlice_u8 ciel_runtime_u8_realloc_slice(CielSlice_u8 old, size_t len) {
     return out;
 }
 
+void *ciel_map_alloc_buckets(size_t capacity) {
+    void **buckets = (void **)ciel_alloc_array(sizeof(void *), capacity);
+    memset(buckets, 0, sizeof(void *) * capacity);
+    return buckets;
+}
+
+void *ciel_map_bucket_get(void *buckets, size_t index) {
+    if (buckets == NULL)
+        return NULL;
+    return ((void **)buckets)[index];
+}
+
+void ciel_map_bucket_set(void *buckets, size_t index, void *value) {
+    if (buckets == NULL)
+        return;
+    ((void **)buckets)[index] = value;
+}
+
 static CIEL_MAYBE_UNUSED
     CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void *
     ciel_alloc_uncollectable(size_t size) {

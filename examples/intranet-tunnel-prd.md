@@ -487,6 +487,15 @@ hash_map_with<K: map_key, V, R: Message>(
 ) -> Result<R, Error>
 ```
 
+Application code should usually write the key/value types at construction and
+let generic inference handle later operations:
+
+```text
+_ @streams = must(hash_map_new<u32, ServerStream>())
+must(hash_map_insert(&streams, stream_id, stream))
+hash_map_len(&streams)
+```
+
 `hash_map_with` provides scoped mutable access to an existing entry without
 returning a long-lived pointer into the table. Missing keys should report a
 stable map error. Insertions may rehash and invalidate any internal storage, so

@@ -1,0 +1,54 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/map;
+import /std/meta as meta;
+import /std/result;
+
+struct Pair {
+    u32 left;
+    u32 right;
+}
+
+impl hash_key(*const Pair value, u64 seed) {
+    meta::RefRepr<Pair> repr = meta::as_ref_repr(value);
+    return hash_key(&repr, seed);
+}
+
+impl key_eq(*const Pair left, *const Pair right) {
+    meta::RefRepr<Pair> left_repr = meta::as_ref_repr(left);
+    meta::RefRepr<Pair> right_repr = meta::as_ref_repr(right);
+    return key_eq(&left_repr, &right_repr);
+}
+
+i64 main() {
+    _ @table = must(hash_map_new<Pair, i64>());
+
+    Pair first = { left: 1 as u32, right: 2 as u32 };
+    Pair same = { left: 1 as u32, right: 2 as u32 };
+    Pair other = { left: 1 as u32, right: 3 as u32 };
+
+    must(hash_map_insert(&table, first, 12));
+    must(hash_map_insert(&table, other, 13));
+
+    if (!must(hash_map_contains_key(&table, same))) {
+        return 1;
+    }
+
+    i64 value = must(hash_map_with(&table, same, |slot| {
+        return Ok(*slot);
+    }));
+    if (value != 12) {
+        return 2;
+    }
+
+    i64 other_value = must(hash_map_with(&table, other, |slot| {
+        *slot = *slot + 10;
+        return Ok(*slot);
+    }));
+    if (other_value != 23) {
+        return 3;
+    }
+
+    return 0;
+}

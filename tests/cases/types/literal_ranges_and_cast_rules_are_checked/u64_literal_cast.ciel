@@ -1,0 +1,7 @@
+// ciel-test: run
+// expect-exit: 9
+
+i64 main() {
+    u64 value = 0x9e3779b97f4a7c15 as u64;
+    return (value >> (60 as u8)) as i64;
+}

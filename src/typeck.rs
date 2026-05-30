@@ -15,9 +15,9 @@ use crate::{
         closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
         contains_generic, contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
         meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
-        meta_sum_ty, receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty,
-        std_error_ty, std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive,
-        unify_ty,
+        meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
+        retained_closure_proves_capability, std_actor_ty, std_error_ty, std_meta_repr_marker_ty,
+        std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -1741,7 +1741,9 @@ impl TypeChecker {
                     nullable: actual_nullable,
                     mutability: actual_mutability,
                     inner: actual_inner,
-                } if nullable == actual_nullable && mutability == actual_mutability => {
+                } if (*nullable || !*actual_nullable)
+                    && pointer_view_can_weaken(*mutability, *actual_mutability) =>
+                {
                     self.unify_ty_for_inference(pattern_inner, actual_inner, subst)
                 }
                 _ => false,
@@ -1765,7 +1767,7 @@ impl TypeChecker {
                 Ty::Slice {
                     mutability: actual_mutability,
                     elem: actual_elem,
-                } if mutability == actual_mutability => {
+                } if pointer_view_can_weaken(*mutability, *actual_mutability) => {
                     self.unify_ty_for_inference(pattern_elem, actual_elem, subst)
                 }
                 Ty::Array {
@@ -5372,13 +5374,21 @@ impl TypeChecker {
                     };
                     return Some(self.coerce_expr_to_expected(scopes, checked, Some(&target)));
                 }
-                let literal_expected = matches!(
-                    inner.kind,
-                    ExprKind::StructLiteral(_)
+                let literal_expected = match (&inner.kind, &target) {
+                    (ExprKind::Literal(Literal::Integer(_)), ty)
+                        if ty.is_integer() || matches!(ty, Ty::Char | Ty::CSpelling { .. }) =>
+                    {
+                        true
+                    }
+                    (
+                        ExprKind::StructLiteral(_)
                         | ExprKind::ArrayLiteral(_)
                         | ExprKind::ArrayRepeat { .. }
-                        | ExprKind::Literal(Literal::Null)
-                );
+                        | ExprKind::Literal(Literal::Null),
+                        _,
+                    ) => true,
+                    _ => false,
+                };
                 let inner = self.check_expr(scopes, inner, literal_expected.then_some(&target))?;
                 self.check_cast_allowed(&inner.ty, &target, expr.span);
                 self.require_unsafe_pointer_cast_through_void(&inner.ty, &target, expr.span);
@@ -7936,10 +7946,10 @@ impl TypeChecker {
         let ty = match literal {
             Literal::Integer(raw) => {
                 let ty = expected
-                    .filter(|ty| ty.is_integer() || matches!(ty, Ty::CSpelling { .. }))
+                    .filter(|ty| ty.is_integer() || matches!(ty, Ty::Char | Ty::CSpelling { .. }))
                     .cloned()
                     .unwrap_or(Ty::I64);
-                if ty.is_integer() {
+                if ty.is_integer() || matches!(ty, Ty::Char) {
                     self.check_integer_literal_range(span, raw, &ty, false);
                 }
                 ty
@@ -9333,6 +9343,7 @@ fn integer_abs_limits(ty: &Ty) -> Option<(u128, u128)> {
         Ty::I16 => (32768, 32767),
         Ty::I32 => (2147483648, 2147483647),
         Ty::I64 => (9223372036854775808, 9223372036854775807),
+        Ty::Char => (0, u8::MAX as u128),
         Ty::U8 => (0, u8::MAX as u128),
         Ty::U16 => (0, u16::MAX as u128),
         Ty::U32 => (0, u32::MAX as u128),

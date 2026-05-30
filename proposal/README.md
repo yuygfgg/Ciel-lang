@@ -27,6 +27,9 @@ binding-mutability || pure-library-message[read-only clone source]
 unsafe <= monomorphized-c-callbacks[C callback declarations]
 pure-library-message < unsafe[manual policy impls become unsafe]
 
+unsafe <= generic-growable-storage[trusted raw storage construction]
+metaprogramming <= generic-growable-storage[type size and alignment]
+
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]

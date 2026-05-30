@@ -1,0 +1,99 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/map as map;
+import /std/result;
+
+i64 insert_code(map::InsertResult<i64> result) {
+    switch (result) {
+        case map::Inserted:
+            return 0;
+        case map::Replaced(value):
+            return value;
+    }
+}
+
+i64 remove_code(map::RemoveResult<i64> result) {
+    switch (result) {
+        case map::Removed(value):
+            return value;
+        case map::Missing:
+            return -1;
+    }
+}
+
+bool is_err(Result<i64, Error> value) {
+    switch (value) {
+        case Ok(ok):
+            return false;
+        case Err(error):
+            return true;
+    }
+}
+
+i64 main() {
+    _ @table = must(map::hash_map_new<u32, i64>());
+    if (map::hash_map_len(&table) != 0) {
+        return 1;
+    }
+
+    if (insert_code(must(map::hash_map_insert(&table, 7 as u32, 10))) != 0) {
+        return 2;
+    }
+    if (map::hash_map_len(&table) != 1) {
+        return 3;
+    }
+    if (!must(map::hash_map_contains_key(&table, 7 as u32))) {
+        return 4;
+    }
+    if (must(map::hash_map_contains_key(&table, 8 as u32))) {
+        return 5;
+    }
+
+    if (insert_code(must(map::hash_map_insert(&table, 7 as u32, 20))) != 10) {
+        return 6;
+    }
+    if (map::hash_map_len(&table) != 1) {
+        return 7;
+    }
+
+    i64 after_update = must(map::hash_map_with(&table, 7 as u32, |value| {
+        *value = *value + 5;
+        return Ok(*value);
+    }));
+    if (after_update != 25) {
+        return 8;
+    }
+
+    i64 read_back = must(map::hash_map_with(&table, 7 as u32, |value| {
+        return Ok(*value);
+    }));
+    if (read_back != 25) {
+        return 9;
+    }
+
+    if (!is_err(map::hash_map_with(&table, 9 as u32, |value| {
+        return Ok(*value);
+    }))) {
+        return 10;
+    }
+
+    if (remove_code(must(map::hash_map_remove(&table, 7 as u32))) != 25) {
+        return 11;
+    }
+    if (remove_code(must(map::hash_map_remove(&table, 7 as u32))) != -1) {
+        return 12;
+    }
+
+    must(map::hash_map_insert(&table, 1 as u32, 100));
+    must(map::hash_map_insert(&table, 2 as u32, 200));
+    map::hash_map_clear(&table);
+    if (map::hash_map_len(&table) != 0) {
+        return 13;
+    }
+    if (must(map::hash_map_contains_key(&table, 1 as u32))) {
+        return 14;
+    }
+
+    return 0;
+}

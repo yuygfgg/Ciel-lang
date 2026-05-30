@@ -1,0 +1,12 @@
+// ciel-test: run
+// expect-exit: 33
+
+import /std/lib;
+
+i64 main() {
+    _ @table = must(hash_map_new<u32, i64>());
+    must(hash_map_insert(&table, 3 as u32, 33));
+    return must(hash_map_with(&table, 3 as u32, |value| {
+        return Ok(*value);
+    }));
+}

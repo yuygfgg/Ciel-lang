@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+i64 main() {
+    _ table = must(hash_map_new<u32, i64>());
+    HashMap<u32, i64> copy = must(clone_message(&table));
+    return hash_map_len(&copy) as i64;
+}

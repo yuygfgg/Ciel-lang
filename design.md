@@ -1943,8 +1943,8 @@ import /std/actor;
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
 `/std/async_io`, `/std/async_net`, `/std/async_time`, `/std/message`,
 `/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
-`/std/codec`, `/std/buf`, `/std/time`, `/std/env`, `/std/crypto`, and
-`/std/net`.
+`/std/codec`, `/std/buf`, `/std/map`, `/std/time`, `/std/env`,
+`/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2370,6 +2370,7 @@ export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
 export import /std/buf;
+export import /std/map;
 export import /std/time;
 export import /std/env;
 export import /std/crypto;
@@ -2415,6 +2416,77 @@ callers use `byte_buf_new` and the exported operations. Slice-returning
 functions expose views into the buffer's initialized prefix. `byte_buf_clear`
 sets the initialized length to zero without releasing capacity, and
 `byte_buf_reserve` grows while preserving existing bytes.
+
+```rust
+// /std/map
+import /std/result;
+import /std/message;
+
+export interface<T> u64 hash_key(*const T value, u64 seed);
+export interface<T> bool key_eq(*const T left, *const T right);
+export interface map_key = hash_key + key_eq;
+
+export unsafe struct HashMap<K, V> {
+    *void buckets;
+    usize capacity;
+    usize len;
+    u64 seed;
+}
+
+export enum InsertResult<V> {
+    Inserted,
+    Replaced(V),
+}
+
+export enum RemoveResult<V> {
+    Removed(V),
+    Missing,
+}
+
+export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>();
+export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map);
+export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map);
+export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
+    *const HashMap<K, V> map,
+    K key
+);
+export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
+    *HashMap<K, V> map,
+    K key,
+    V value
+);
+export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
+    *HashMap<K, V> map,
+    K key
+);
+export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
+    *HashMap<K, V> map,
+    K key,
+    Result<R, Error> |(*V)| body
+);
+```
+
+Typical call sites write the key/value types at construction and rely on
+generic inference from the typed map receiver afterward:
+
+```rust
+_ @table = must(hash_map_new<u32, i64>());
+must(hash_map_insert(&table, 7 as u32, 10));
+usize count = hash_map_len(&table);
+```
+
+`HashMap<K, V>` itself is the type witness for operations that take the map;
+ordinary map operations do not need separate `meta::Type<T>` tag values.
+
+`/std/map` provides an actor-local mutable hash table. It uses separate
+chaining with GC-backed nodes and a runtime-allocated bucket array. `HashMap`
+does not implement `Message`; code should send keys, values, snapshots, or
+explicit messages rather than live map storage. Primitive key policies cover
+`bool`, `char`, signed integer types, unsigned integer types, and `usize`.
+Structural policies cover `/std/meta` product and sum nodes used by
+`meta::RefRepr<T>` and `meta::Repr<T>`, so visible structs and enums can opt in
+with explicit `hash_key` and `key_eq` wrappers that delegate to the structural
+representation.
 
 ```rust
 // /std/time

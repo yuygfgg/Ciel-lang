@@ -1,0 +1,88 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/map;
+import /std/result;
+
+struct BadKey {
+    i64 id;
+}
+
+impl hash_key(*const BadKey value, u64 seed) {
+    return seed;
+}
+
+impl key_eq(*const BadKey left, *const BadKey right) {
+    return left->id == right->id;
+}
+
+i64 removed_value(RemoveResult<i64> result) {
+    switch (result) {
+        case Removed(value):
+            return value;
+        case Missing:
+            return -1;
+    }
+}
+
+i64 main() {
+    _ @table = must(hash_map_new<BadKey, i64>());
+
+    i64 @i = 0;
+    while (i < 40) {
+        BadKey key = { id: i };
+        must(hash_map_insert(&table, key, i * 2));
+        i = i + 1;
+    }
+    if (hash_map_len(&table) != 40) {
+        return 1;
+    }
+
+    i = 0;
+    while (i < 10) {
+        BadKey key = { id: i };
+        if (removed_value(must(hash_map_remove(&table, key))) != (i * 2)) {
+            return 2;
+        }
+        i = i + 1;
+    }
+
+    i = 10;
+    while (i < 40) {
+        BadKey key = { id: i };
+        if (!must(hash_map_contains_key(&table, key))) {
+            return 3;
+        }
+        i = i + 1;
+    }
+
+    i = 0;
+    while (i < 10) {
+        BadKey key = { id: i };
+        if (must(hash_map_contains_key(&table, key))) {
+            return 4;
+        }
+        i = i + 1;
+    }
+
+    i = 40;
+    while (i < 70) {
+        BadKey key = { id: i };
+        must(hash_map_insert(&table, key, i * 2));
+        i = i + 1;
+    }
+
+    BadKey probe = { id: 65 };
+    i64 value = must(hash_map_with(&table, probe, |slot| {
+        return Ok(*slot);
+    }));
+    if (value != 130) {
+        return 5;
+    }
+
+    if (hash_map_len(&table) != 60) {
+        return 6;
+    }
+
+    return 0;
+}

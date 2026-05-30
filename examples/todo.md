@@ -33,7 +33,7 @@ host integration.
       Tests: append across initial capacity, repeated reserve, preserved
       contents after growth.
 
-- [ ] Add `/std/map` actor-local `HashMap` shell.
+- [x] Add `/std/map` actor-local `HashMap` shell.
       Define `hash_key`, `key_eq`, and `map_key`, then implement
       construction, length, clear, `contains_key`, insert, remove, and scoped
       mutable entry access for `K: map_key`. Start with primitive scalar key
@@ -43,7 +43,7 @@ host integration.
       lookup error, replacement returns the old value, removal returns the old
       value, and clear drops all entries.
 
-- [ ] Add `/std/map` collision, deletion, and key-policy coverage.
+- [x] Add `/std/map` collision, deletion, and key-policy coverage.
       Implement deterministic hashing/equality for primitive scalar keys and
       a structural `meta::RefRepr<T>` wrapper, then add table growth, tombstone
       or deletion repair policy, and stable errors for missing entries. Keep

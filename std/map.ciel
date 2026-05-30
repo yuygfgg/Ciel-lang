@@ -1,0 +1,527 @@
+export import /std/result;
+import /std/message;
+import /std/meta as meta;
+import /std/panic;
+
+unsafe extern "C" {
+    ?*void ciel_box_copy(usize size, usize align, *const void source);
+    *void ciel_map_alloc_buckets(usize capacity);
+    ?*void ciel_map_bucket_get(*void buckets, usize index);
+    void ciel_map_bucket_set(*void buckets, usize index, ?*void value);
+}
+
+export interface<T> u64 hash_key(*const T value, u64 seed);
+export interface<T> bool key_eq(*const T left, *const T right);
+export interface map_key = hash_key + key_eq;
+
+struct Node<K, V> {
+    u64 hash;
+    K key;
+    V value;
+    ?*Node<K, V> next;
+}
+
+export unsafe struct HashMap<K, V> {
+    *void buckets;
+    usize capacity;
+    usize len;
+    u64 seed;
+}
+
+export enum InsertResult<V> {
+    Inserted,
+    Replaced(V),
+}
+
+export enum RemoveResult<V> {
+    Removed(V),
+    Missing,
+}
+
+u64 mix_u64(u64 value, u64 seed) {
+    u64 @x = value ^ seed ^ (0x517cc1b727220a95 as u64);
+    x = x ^ (x >> (30 as u8));
+    x = x ^ (x >> (16 as u8));
+    x = x ^ (x >> (7 as u8));
+    return x;
+}
+
+usize start_index(u64 hash, usize capacity) {
+    return (hash as usize) % capacity;
+}
+
+usize initial_capacity() {
+    return 8;
+}
+
+u64 default_seed() {
+    return 0x123456789abcdef as u64;
+}
+
+Error map_missing_error() {
+    return text_error("hash map key not found");
+}
+
+Error map_overflow_error() {
+    return text_error("hash map capacity overflow");
+}
+
+Error map_runtime_error() {
+    return code_error(5);
+}
+
+?*void node_to_raw<K, V>(?*Node<K, V> node) {
+    if (node == null) {
+        return null;
+    }
+    *Node<K, V> typed = unsafe { node as *Node<K, V> };
+    return typed as ?*void;
+}
+
+?*Node<K, V> raw_to_node<K, V>(?*void raw) {
+    if (raw == null) {
+        return null;
+    }
+    return unsafe { raw as *Node<K, V> };
+}
+
+*Node<K, V> expect_node<K, V>(?*Node<K, V> node) {
+    if (node == null) {
+        panic("hash map internal null node");
+    }
+    return unsafe { node as *Node<K, V> };
+}
+
+*Node<K, V> expect_raw_node<K, V>(?*void raw) {
+    if (raw == null) {
+        panic("hash map internal null node");
+    }
+    return unsafe { raw as *Node<K, V> };
+}
+
+?*Node<K, V> bucket_head<K, V>(*const HashMap<K, V> map, usize index) {
+    ?*void raw = unsafe { ciel_map_bucket_get(map->buckets, index) };
+    return raw_to_node<K, V>(raw);
+}
+
+void set_bucket_head<K, V>(*HashMap<K, V> map, usize index, ?*Node<K, V> node) {
+    unsafe { ciel_map_bucket_set(map->buckets, index, node_to_raw<K, V>(node)) };
+}
+
+Result<*Node<K, V>, Error> make_node<K, V>(
+    u64 hash,
+    K key,
+    V value,
+    ?*Node<K, V> next
+) {
+    Node<K, V> local = { hash: hash, key: key, value: value, next: next };
+    ?*void raw = unsafe {
+        ciel_box_copy(
+            meta::type_size<Node<K, V>>(),
+            meta::type_align<Node<K, V>>(),
+            &local as *const void
+        )
+    };
+    if (raw == null) {
+        return Err(map_runtime_error());
+    }
+    return Ok(unsafe { raw as *Node<K, V> });
+}
+
+Result<void, Error> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize requested_capacity) {
+    usize @capacity = requested_capacity;
+    if (capacity < initial_capacity()) {
+        capacity = initial_capacity();
+    }
+
+    *void next_buckets = unsafe { ciel_map_alloc_buckets(capacity) };
+    *void old_buckets = unsafe { map->buckets };
+    usize old_capacity = unsafe { map->capacity };
+
+    usize @i = 0;
+    while (i < old_capacity) {
+        ?*void @raw = unsafe { ciel_map_bucket_get(old_buckets, i) };
+        while (true) {
+            if (raw == null) {
+                break;
+            }
+            *Node<K, V> node = expect_raw_node<K, V>(raw);
+            ?*Node<K, V> next = node->next;
+            usize index = start_index(node->hash, capacity);
+            ?*Node<K, V> head = raw_to_node<K, V>(unsafe {
+                ciel_map_bucket_get(next_buckets, index)
+            });
+            node->next = head;
+            unsafe { ciel_map_bucket_set(next_buckets, index, node as ?*void) };
+            raw = node_to_raw<K, V>(next);
+        }
+        i = i + 1;
+    }
+
+    unsafe {
+        map->buckets = next_buckets;
+        map->capacity = capacity;
+    };
+    return Ok;
+}
+
+Result<void, Error> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return hash_map_rehash<K, V>(map, initial_capacity());
+    }
+
+    usize len = unsafe { map->len };
+    usize limit = capacity - (capacity / 4);
+    if (len < limit) {
+        return Ok;
+    }
+    if (capacity > ((~(0 as usize)) / (2 as usize))) {
+        return Err(map_overflow_error());
+    }
+    return hash_map_rehash<K, V>(map, capacity * 2);
+}
+
+export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>() {
+    usize capacity = initial_capacity();
+    *void buckets = unsafe { ciel_map_alloc_buckets(capacity) };
+    return Ok(unsafe { { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() } });
+}
+
+export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) {
+    return unsafe { map->len };
+}
+
+export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) {
+    usize @capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        capacity = initial_capacity();
+    }
+    *void buckets = unsafe { ciel_map_alloc_buckets(capacity) };
+    unsafe {
+        map->buckets = buckets;
+        map->capacity = capacity;
+        map->len = 0;
+    };
+}
+
+export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
+    *const HashMap<K, V> map,
+    K key
+) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return Ok(false);
+    }
+
+    u64 hash = hash_key(&key, unsafe { map->seed });
+    ?*Node<K, V> @current = bucket_head<K, V>(map, start_index(hash, capacity));
+    while (true) {
+        if (current == null) {
+            return Ok(false);
+        }
+        *Node<K, V> node = expect_node<K, V>(current);
+        if (node->hash == hash && key_eq(&node->key, &key)) {
+            return Ok(true);
+        }
+        current = node->next;
+    }
+}
+
+export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
+    *HashMap<K, V> map,
+    K key,
+    V value
+) {
+    ensure_insert_capacity<K, V>(map)?;
+
+    usize capacity = unsafe { map->capacity };
+    u64 hash = hash_key(&key, unsafe { map->seed });
+    usize index = start_index(hash, capacity);
+    ?*Node<K, V> @current = bucket_head<K, V>(map, index);
+    while (true) {
+        if (current == null) {
+            break;
+        }
+        *Node<K, V> node = expect_node<K, V>(current);
+        if (node->hash == hash && key_eq(&node->key, &key)) {
+            V old = node->value;
+            node->key = key;
+            node->value = value;
+            return Ok(Replaced(old));
+        }
+        current = node->next;
+    }
+
+    *Node<K, V> node = make_node<K, V>(hash, key, value, bucket_head<K, V>(map, index))?;
+    set_bucket_head<K, V>(map, index, node);
+    unsafe {
+        map->len = map->len + 1;
+    };
+    return Ok(Inserted);
+}
+
+export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
+    *HashMap<K, V> map,
+    K key
+) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return Ok(Missing);
+    }
+
+    u64 hash = hash_key(&key, unsafe { map->seed });
+    usize index = start_index(hash, capacity);
+    ?*Node<K, V> @previous = null;
+    ?*Node<K, V> @current = bucket_head<K, V>(map, index);
+    while (true) {
+        if (current == null) {
+            return Ok(Missing);
+        }
+        *Node<K, V> node = expect_node<K, V>(current);
+        if (node->hash == hash && key_eq(&node->key, &key)) {
+            ?*Node<K, V> next = node->next;
+            if (previous == null) {
+                set_bucket_head<K, V>(map, index, next);
+            } else {
+                *Node<K, V> prev = expect_node<K, V>(previous);
+                prev->next = next;
+            }
+            unsafe {
+                map->len = map->len - 1;
+            };
+            return Ok(Removed(node->value));
+        }
+        previous = current;
+        current = node->next;
+    }
+}
+
+export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
+    *HashMap<K, V> map,
+    K key,
+    Result<R, Error> |(*V)| body
+) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return Err(map_missing_error());
+    }
+
+    u64 hash = hash_key(&key, unsafe { map->seed });
+    ?*Node<K, V> @current = bucket_head<K, V>(map, start_index(hash, capacity));
+    while (true) {
+        if (current == null) {
+            return Err(map_missing_error());
+        }
+        *Node<K, V> node = expect_node<K, V>(current);
+        if (node->hash == hash && key_eq(&node->key, &key)) {
+            return body(&node->value);
+        }
+        current = node->next;
+    }
+}
+
+impl hash_key(*const bool value, u64 seed) {
+    if (*value) {
+        return mix_u64(1, seed);
+    }
+    return mix_u64(0, seed);
+}
+
+impl key_eq(*const bool left, *const bool right) {
+    return *left == *right;
+}
+
+impl hash_key(*const char value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const char left, *const char right) {
+    return *left == *right;
+}
+
+impl hash_key(*const i8 value, u64 seed) {
+    return mix_u64(((*value) as i64) as u64, seed);
+}
+
+impl key_eq(*const i8 left, *const i8 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const i16 value, u64 seed) {
+    return mix_u64(((*value) as i64) as u64, seed);
+}
+
+impl key_eq(*const i16 left, *const i16 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const i32 value, u64 seed) {
+    return mix_u64(((*value) as i64) as u64, seed);
+}
+
+impl key_eq(*const i32 left, *const i32 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const i64 value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const i64 left, *const i64 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const u8 value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const u8 left, *const u8 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const u16 value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const u16 left, *const u16 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const u32 value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const u32 left, *const u32 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const u64 value, u64 seed) {
+    return mix_u64(*value, seed);
+}
+
+impl key_eq(*const u64 left, *const u64 right) {
+    return *left == *right;
+}
+
+impl hash_key(*const usize value, u64 seed) {
+    return mix_u64((*value) as u64, seed);
+}
+
+impl key_eq(*const usize left, *const usize right) {
+    return *left == *right;
+}
+
+impl hash_key(*const meta::HNil value, u64 seed) {
+    return mix_u64(0, seed);
+}
+
+impl key_eq(*const meta::HNil left, *const meta::HNil right) {
+    return true;
+}
+
+impl<Head: map_key, Tail: map_key> hash_key(*const meta::HCons<Head, Tail> value, u64 seed) {
+    u64 head_hash = hash_key(&value->head, mix_u64(1, seed));
+    return hash_key(&value->tail, head_hash);
+}
+
+impl<Head: map_key, Tail: map_key> key_eq(
+    *const meta::HCons<Head, Tail> left,
+    *const meta::HCons<Head, Tail> right
+) {
+    return key_eq(&left->head, &right->head) && key_eq(&left->tail, &right->tail);
+}
+
+impl<T: map_key> hash_key(*const meta::FieldRef<T> value, u64 seed) {
+    return hash_key(value->value, seed);
+}
+
+impl<T: map_key> key_eq(*const meta::FieldRef<T> left, *const meta::FieldRef<T> right) {
+    return key_eq(left->value, right->value);
+}
+
+impl<T: map_key> hash_key(*const meta::Field<T> value, u64 seed) {
+    return hash_key(&value->value, seed);
+}
+
+impl<T: map_key> key_eq(*const meta::Field<T> left, *const meta::Field<T> right) {
+    return key_eq(&left->value, &right->value);
+}
+
+impl<T: map_key> hash_key(*const meta::PayloadRef<T> value, u64 seed) {
+    u64 index_hash = hash_key(&value->index, seed);
+    return hash_key(value->value, index_hash);
+}
+
+impl<T: map_key> key_eq(*const meta::PayloadRef<T> left, *const meta::PayloadRef<T> right) {
+    return left->index == right->index && key_eq(left->value, right->value);
+}
+
+impl<T: map_key> hash_key(*const meta::Payload<T> value, u64 seed) {
+    u64 index_hash = hash_key(&value->index, seed);
+    return hash_key(&value->value, index_hash);
+}
+
+impl<T: map_key> key_eq(*const meta::Payload<T> left, *const meta::Payload<T> right) {
+    return left->index == right->index && key_eq(&left->value, &right->value);
+}
+
+impl<P: map_key> hash_key(*const meta::VariantRef<P> value, u64 seed) {
+    return hash_key(&value->payload, mix_u64(2, seed));
+}
+
+impl<P: map_key> key_eq(*const meta::VariantRef<P> left, *const meta::VariantRef<P> right) {
+    return key_eq(&left->payload, &right->payload);
+}
+
+impl<P: map_key> hash_key(*const meta::Variant<P> value, u64 seed) {
+    return hash_key(&value->payload, mix_u64(2, seed));
+}
+
+impl<P: map_key> key_eq(*const meta::Variant<P> left, *const meta::Variant<P> right) {
+    return key_eq(&left->payload, &right->payload);
+}
+
+impl hash_key(*const meta::CoNil value, u64 seed) {
+    switch (*value) {
+    }
+}
+
+impl key_eq(*const meta::CoNil left, *const meta::CoNil right) {
+    switch (*left) {
+    }
+}
+
+impl<Head: map_key, Tail: map_key> hash_key(
+    *const meta::Coproduct<Head, Tail> value,
+    u64 seed
+) {
+    switch (*value) {
+        case meta::This(head):
+            return hash_key(&head, mix_u64(3, seed));
+        case meta::Next(tail):
+            return hash_key(&tail, mix_u64(4, seed));
+    }
+}
+
+impl<Head: map_key, Tail: map_key> key_eq(
+    *const meta::Coproduct<Head, Tail> left,
+    *const meta::Coproduct<Head, Tail> right
+) {
+    switch (*left) {
+        case meta::This(left_head):
+            switch (*right) {
+                case meta::This(right_head):
+                    return key_eq(&left_head, &right_head);
+                case meta::Next(right_tail):
+                    return false;
+            }
+        case meta::Next(left_tail):
+            switch (*right) {
+                case meta::This(right_head):
+                    return false;
+                case meta::Next(right_tail):
+                    return key_eq(&left_tail, &right_tail);
+            }
+    }
+}

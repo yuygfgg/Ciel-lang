@@ -37,6 +37,11 @@ monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]
 error-box || metaprogramming[owned error erasure and ? propagation]
+
+binding-mutability <= actor-owned-state[consumed state locals]
+dispatch-actor-io-runtime <= actor-owned-state[actor runtime state storage]
+pure-library-message || actor-owned-state[message payload policy]
+monomorphized-c-callbacks || actor-owned-state[runtime callback ABI]
 ```
 
 The main consequence is that SOP structural representation belongs to

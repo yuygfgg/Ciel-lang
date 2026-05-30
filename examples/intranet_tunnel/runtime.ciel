@@ -1,0 +1,190 @@
+import /std/async_net as anet;
+import /std/actor as actor;
+import /std/buf as buf;
+import /std/c as c;
+import /std/message;
+import /std/meta as meta;
+import /std/panic;
+import /std/result;
+import ./protocol/codec as tunnel_codec;
+import ./protocol/error as tunnel_error;
+import ./protocol/frame as frame;
+
+unsafe extern "C" {
+    ?*void ciel_box_copy(usize size, usize align, *const void source);
+}
+
+export struct AsyncFrame {
+    frame::FrameKind kind;
+    u32 stream_id;
+    anet::Bytes payload;
+}
+
+export enum FrameReadResult {
+    NeedMore,
+    FrameReady(AsyncFrame),
+}
+
+export struct FrameReader {
+    buf::ByteBuf buffer;
+}
+
+struct BytesNode {
+    anet::Bytes bytes;
+    ?*BytesNode next;
+}
+
+export struct BytesQueue {
+    ?*BytesNode head;
+    ?*BytesNode tail;
+}
+
+export enum BytesQueuePop {
+    BytesQueueEmpty,
+    BytesQueueItem(anet::Bytes),
+}
+
+// Actor-local allocation helpers. Callers keep the boxed values private to one
+// actor; this lets the demo hold live HashMap state without making HashMap a
+// Message type.
+export Result<*T, Error> box_copy<T>(T value) {
+    T local = value;
+    ?*void raw = unsafe {
+        ciel_box_copy(meta::type_size<T>(), meta::type_align<T>(), &local as *const void)
+    };
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok(unsafe { raw as *T });
+}
+
+// Placeholders are installed only during actor core construction. The matching
+// has_* flag must be true before application code uses the handle.
+export Result<anet::AsyncTcpStream, Error> placeholder_stream() {
+    *u8 marker = box_copy<u8>(0 as u8)?;
+    return Ok(unsafe { { handle: marker as *void } });
+}
+
+export Result<actor::Actor<M>, Error> placeholder_actor<M>() {
+    *u8 marker = box_copy<u8>(0 as u8)?;
+    return Ok(unsafe { { handle: marker as *void } });
+}
+
+export Result<FrameReader, Error> frame_reader_new() {
+    return Ok({ buffer: buf::byte_buf_new(1024)? });
+}
+
+export BytesQueue bytes_queue_new() {
+    return { head: null, tail: null };
+}
+
+*BytesNode expect_bytes_node(?*BytesNode node) {
+    if (node == null) {
+        panic("bytes queue internal null node");
+    }
+    return unsafe { node as *BytesNode };
+}
+
+export Result<void, Error> bytes_queue_push(*BytesQueue queue, anet::Bytes bytes) {
+    BytesNode local = { bytes: bytes, next: null };
+    *BytesNode node = box_copy<BytesNode>(local)?;
+    if (queue->tail == null) {
+        queue->head = node;
+        queue->tail = node;
+        return Ok;
+    }
+    *BytesNode tail = expect_bytes_node(queue->tail);
+    tail->next = node;
+    queue->tail = node;
+    return Ok;
+}
+
+export BytesQueuePop bytes_queue_pop(*BytesQueue queue) {
+    if (queue->head == null) {
+        return BytesQueueEmpty;
+    }
+    *BytesNode node = expect_bytes_node(queue->head);
+    queue->head = node->next;
+    if (queue->head == null) {
+        queue->tail = null;
+    }
+    return BytesQueueItem(node->bytes);
+}
+
+export bool bytes_queue_is_empty(*const BytesQueue queue) {
+    return queue->head == null;
+}
+
+export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
+    usize len = anet::bytes_len(bytes);
+    if (len > frame::max_payload_len()) {
+        return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
+    }
+    [65536]u8 @out = [0;];
+    usize copied = anet::bytes_copy_to(bytes, out[..])?;
+    if (copied != len) {
+        return Err(text_error("short async byte copy"));
+    }
+    return Ok(out[..len]);
+}
+
+export Result<void, Error> frame_reader_push(*FrameReader reader, anet::Bytes bytes) {
+    []u8 chunk = bytes_to_slice(bytes)?;
+    buf::byte_buf_push_slice(&reader->buffer, chunk)?;
+    return Ok;
+}
+
+export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
+    []const u8 input = buf::byte_buf_slice(&reader->buffer);
+    if (input.len < frame::header_len()) {
+        return Ok(NeedMore);
+    }
+
+    frame::FrameHeader header = tunnel_codec::decode_header(input[..frame::header_len()])?;
+    usize payload_len = header.length as usize;
+    usize total_len = frame::header_len() + payload_len;
+    if (input.len < total_len) {
+        return Ok(NeedMore);
+    }
+
+    anet::Bytes payload = anet::bytes_copy(input[frame::header_len()..total_len])?;
+    buf::byte_buf_discard_prefix(&reader->buffer, total_len)?;
+    return Ok(FrameReady({ kind: header.kind, stream_id: header.stream_id, payload: payload }));
+}
+
+export Result<anet::Bytes, Error> empty_bytes() {
+    [1]u8 empty = [0;];
+    return anet::bytes_copy(empty[..0]);
+}
+
+export Result<anet::Bytes, Error> encode_frame_from_slice(
+    frame::FrameKind kind,
+    u32 stream_id,
+    []const u8 payload
+) {
+    frame::validate_stream_id(kind, stream_id)?;
+    frame::validate_payload_len(payload.len)?;
+    frame::FrameHeader header = {
+        kind: kind,
+        stream_id: stream_id,
+        length: payload.len as u32
+    };
+    []u8 encoded_header = tunnel_codec::encode_header(header)?;
+    buf::ByteBuf @out = buf::byte_buf_new(frame::header_len() + payload.len)?;
+    buf::byte_buf_push_slice(&out, encoded_header)?;
+    buf::byte_buf_push_slice(&out, payload)?;
+    return anet::bytes_copy(buf::byte_buf_slice(&out));
+}
+
+export Result<anet::Bytes, Error> encode_frame_from_bytes(
+    frame::FrameKind kind,
+    u32 stream_id,
+    anet::Bytes payload
+) {
+    []u8 slice = bytes_to_slice(payload)?;
+    return encode_frame_from_slice(kind, stream_id, slice);
+}
+
+export bool kind_is(frame::FrameKind left, frame::FrameKind right) {
+    return frame::frame_kind_code(left) == frame::frame_kind_code(right);
+}

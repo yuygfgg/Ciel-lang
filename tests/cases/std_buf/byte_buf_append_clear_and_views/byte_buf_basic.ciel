@@ -4,6 +4,15 @@
 import /std/buf as buf;
 import /std/result;
 
+bool is_err_void(Result<void, Error> value) {
+    switch (value) {
+        case Ok:
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
 i64 main() {
     buf::ByteBuf @bytes = must(buf::byte_buf_new(4));
     if (buf::byte_buf_len(&bytes) != 0) {
@@ -43,6 +52,26 @@ i64 main() {
     []const u8 reused = buf::byte_buf_slice(&bytes);
     if (reused.len != 4 || reused[0] != (7 as u8) || reused[3] != (10 as u8)) {
         return 8;
+    }
+
+    must(buf::byte_buf_discard_prefix(&bytes, 2));
+    []const u8 discarded = buf::byte_buf_slice(&bytes);
+    if (discarded.len != 2 || discarded[0] != (9 as u8) || discarded[1] != (10 as u8)) {
+        return 9;
+    }
+
+    must(buf::byte_buf_discard_prefix(&bytes, 0));
+    if (buf::byte_buf_len(&bytes) != 2) {
+        return 10;
+    }
+
+    if (!is_err_void(buf::byte_buf_discard_prefix(&bytes, 3))) {
+        return 11;
+    }
+
+    must(buf::byte_buf_discard_prefix(&bytes, 2));
+    if (buf::byte_buf_len(&bytes) != 0 || buf::byte_buf_slice(&bytes).len != 0) {
+        return 12;
     }
 
     return 0;

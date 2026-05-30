@@ -1,0 +1,23 @@
+import /std/io as io;
+import /std/result;
+import /intranet_tunnel/agent as agent;
+import /intranet_tunnel/cli as cli;
+
+i32 main() {
+    Result<cli::AgentConfig, Error> parsed = cli::parse_agent_args();
+    switch (parsed) {
+        case Ok(config):
+            Result<void, Error> run = agent::run_agent(config);
+            switch (run) {
+                case Ok:
+                    return 0;
+                case Err(error):
+                    io::eprintln("tunnel-agent: {}", [error]);
+                    return 1;
+            }
+        case Err(error):
+            io::eprintln("{}", [error]);
+            io::eprintln_value(cli::agent_usage());
+            return 2;
+    }
+}

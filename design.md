@@ -2408,6 +2408,7 @@ export []const u8 byte_buf_slice(*const ByteBuf buf);
 export []u8 byte_buf_mut_slice(*ByteBuf buf);
 export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional);
 export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data);
+export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count);
 ```
 
 `/std/buf` provides a GC-backed growable byte buffer. `ByteBuf` is an unsafe
@@ -2416,6 +2417,9 @@ callers use `byte_buf_new` and the exported operations. Slice-returning
 functions expose views into the buffer's initialized prefix. `byte_buf_clear`
 sets the initialized length to zero without releasing capacity, and
 `byte_buf_reserve` grows while preserving existing bytes.
+`byte_buf_discard_prefix` removes an initialized prefix and shifts the
+remaining bytes down, which supports frame parsers that retain partial input
+between async reads.
 
 ```rust
 // /std/map

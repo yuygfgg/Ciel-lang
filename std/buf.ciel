@@ -98,3 +98,24 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
     };
     return Ok;
 }
+
+export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) {
+    usize len = byte_buf_len(buf);
+    if (count > len) {
+        return Err(text_error("byte buffer discard exceeds length"));
+    }
+    if (count == 0) {
+        return Ok;
+    }
+    usize remaining = len - count;
+    if (remaining > 0) {
+        c::c_int rc = unsafe { ciel_u8_copy(buf->storage.ptr, &buf->storage[count], remaining) };
+        if ((rc as i64) != 0) {
+            return Err(copy_error(rc));
+        }
+    }
+    unsafe {
+        buf->len = remaining;
+    };
+    return Ok;
+}

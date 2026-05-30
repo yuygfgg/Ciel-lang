@@ -1,8 +1,38 @@
 import /std/codec as binary;
+import /std/buf as buf;
 import /std/meta as meta;
 import /std/result;
 import ./error as tunnel_error;
 import ./frame as frame;
+
+export struct OpenResultPayload {
+    bool ok;
+    u16 code;
+    []const u8 message;
+}
+
+export struct CloseReason {
+    u16 code;
+    []const u8 message;
+}
+
+Result<void, Error> push_u16(*buf::ByteBuf out, u16 value) {
+    [2]u8 @part = [0;];
+    binary::put_be(part[..], value)?;
+    buf::byte_buf_push_slice(out, part[..])?;
+    return Ok;
+}
+
+Result<void, Error> push_chars(*buf::ByteBuf out, []const char text) {
+    [1]u8 @one = [0;];
+    usize @i = 0;
+    while (i < text.len) {
+        one[0] = text[i] as u8;
+        buf::byte_buf_push_slice(out, one[..])?;
+        i = i + 1;
+    }
+    return Ok;
+}
 
 export Result<[]u8, Error> encode_header(frame::FrameHeader header) {
     frame::validate_stream_id(header.kind, header.stream_id)?;
@@ -40,4 +70,97 @@ export Result<frame::FrameHeader, Error> decode_header([]const u8 input) {
     frame::validate_payload_len(length as usize)?;
     frame::validate_stream_id(kind, stream_id)?;
     return Ok({ kind: kind, stream_id: stream_id, length: length });
+}
+
+export Result<[]u8, Error> encode_open_result_success() {
+    [1]u8 @out = [0 as u8];
+    return Ok(out[..]);
+}
+
+export Result<[]u8, Error> encode_open_result_error(u16 code, []const char message) {
+    if (message.len > (0xffff as usize)) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("open result message too long")
+        ));
+    }
+    buf::ByteBuf @out = buf::byte_buf_new((5 as usize) + message.len)?;
+    [1]u8 status = [1 as u8];
+    buf::byte_buf_push_slice(&out, status[..])?;
+    push_u16(&out, code)?;
+    push_u16(&out, message.len as u16)?;
+    push_chars(&out, message)?;
+    return Ok(buf::byte_buf_mut_slice(&out));
+}
+
+export Result<OpenResultPayload, Error> decode_open_result([]const u8 input) {
+    if (input.len == 0) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("empty open result")
+        ));
+    }
+    if (input[0] == (0 as u8)) {
+        if (input.len == 1) {
+            return Ok({ ok: true, code: 0 as u16, message: input[1..1] });
+        }
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("success open result has trailing bytes")
+        ));
+    }
+    if (input[0] != (1 as u8)) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("unknown open result status")
+        ));
+    }
+    if (input.len < 5) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("short error open result")
+        ));
+    }
+    u16 code = binary::get_be({} as meta::Type<u16>, input[1..3])?;
+    usize message_len = binary::get_be({} as meta::Type<u16>, input[3..5])? as usize;
+    if (input.len != ((5 as usize) + message_len)) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("open result length mismatch")
+        ));
+    }
+    return Ok({ ok: false, code: code, message: input[5..] });
+}
+
+export Result<[]u8, Error> encode_close_reason(u16 code, []const char message) {
+    if (message.len > (0xffff as usize)) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("close message too long")
+        ));
+    }
+    buf::ByteBuf @out = buf::byte_buf_new((4 as usize) + message.len)?;
+    push_u16(&out, code)?;
+    push_u16(&out, message.len as u16)?;
+    push_chars(&out, message)?;
+    return Ok(buf::byte_buf_mut_slice(&out));
+}
+
+export Result<CloseReason, Error> decode_close_reason([]const u8 input) {
+    if (input.len == 0) {
+        return Ok({ code: 0 as u16, message: input });
+    }
+    if (input.len < 4) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("short close reason")
+        ));
+    }
+    u16 code = binary::get_be({} as meta::Type<u16>, input[..2])?;
+    usize message_len = binary::get_be({} as meta::Type<u16>, input[2..4])? as usize;
+    if (input.len != ((4 as usize) + message_len)) {
+        return Err(tunnel_error::protocol_error(
+            tunnel_error::MalformedPayload("close reason length mismatch")
+        ));
+    }
+    return Ok({ code: code, message: input[4..] });
+}
+
+export Result<[]u8, Error> encode_error_message([]const char message) {
+    frame::validate_payload_len(message.len)?;
+    buf::ByteBuf @out = buf::byte_buf_new(message.len)?;
+    push_chars(&out, message)?;
+    return Ok(buf::byte_buf_mut_slice(&out));
 }

@@ -232,38 +232,38 @@ driven by `test.sh`; they are not part of the repository-wide fixture harness.
 
 ## Phase 7: Single-Stream Tunnel Demo
 
-- [ ] Add `main_server.ciel` and `main_agent.ciel` skeletons.
+- [x] Add `main_server.ciel` and `main_agent.ciel` skeletons.
       Hardcode loopback addresses if `/std/env` is not ready in the branch.
       Tests: both programs compile and print startup diagnostics.
 
-- [ ] Add server control connection accept path.
+- [x] Add server control connection accept path.
       Server accepts one agent, reads Hello, validates authentication, and
       replies HelloOk.
       Tests: good PSK succeeds; wrong PSK closes the control connection.
 
-- [ ] Add agent control connection path.
+- [x] Add agent control connection path.
       Agent connects to server, sends Hello, receives HelloOk, and enters the
       control loop.
       Tests: agent reports success with good PSK; reports authentication error
       with wrong PSK.
 
-- [ ] Add server public listener for one client.
+- [x] Add server public listener for one client.
       Server accepts one public client and allocates one stream id.
       Tests: client connection creates `OpenStream`.
 
-- [ ] Add agent target dial for one stream.
+- [x] Add agent target dial for one stream.
       Agent receives `OpenStream`, connects to target, and sends `OpenResult`.
       Tests: target available succeeds; target unavailable sends error result.
 
-- [ ] Add client-to-target data relay for one stream.
+- [x] Add client-to-target data relay for one stream.
       Server reads public client bytes, sends `Data`; agent writes to target.
       Tests: target echo service receives the payload.
 
-- [ ] Add target-to-client data relay for one stream.
+- [x] Add target-to-client data relay for one stream.
       Agent reads target bytes, sends `Data`; server writes to public client.
       Tests: loopback echo through tunnel returns the original payload.
 
-- [ ] Add one-stream close handling.
+- [x] Add one-stream close handling.
       Implement `CloseWrite` and `CloseStream` for client EOF, target EOF, and
       fatal socket errors.
       Tests: early public client close, target close, and repeated close frames
@@ -271,30 +271,30 @@ driven by `test.sh`; they are not part of the repository-wide fixture harness.
 
 ## Phase 8: Multiplexed Tunnel Demo
 
-- [ ] Add server stream table.
+- [x] Add server stream table.
       Use `/std/map::HashMap<u32, ServerStream>` to track stream id, public
       client handle, and server-side stream state.
       Tests: two stream ids allocate distinctly and close independently.
 
-- [ ] Add agent stream table.
+- [x] Add agent stream table.
       Use `/std/map::HashMap<u32, AgentStream>` to track stream id, target
       handle, and agent-side stream state.
       Tests: two target connections stay independent.
 
-- [ ] Route incoming `Data` frames by stream id.
+- [x] Route incoming `Data` frames by stream id.
       Tests: interleaved frames for two streams deliver to the correct peer.
 
-- [ ] Route close frames by stream id.
+- [x] Route close frames by stream id.
       Tests: closing one stream leaves the other stream open.
 
-- [ ] Add concurrent client integration test.
+- [x] Add concurrent client integration test.
       Start one server, one agent, one echo target, and two public clients.
       Tests: both clients receive their own echoed payloads over one control
       connection.
 
 ## Phase 9: Product Cleanup
 
-- [ ] Replace hardcoded options with `/std/env` parsing.
+- [x] Replace hardcoded options with `/std/env` parsing.
       Support `--control`, `--public`, `--server`, `--target`, `--route`, and
       `--psk`.
       Tests: valid options parse; missing value and unknown flag report errors.
@@ -309,7 +309,7 @@ driven by `test.sh`; they are not part of the repository-wide fixture harness.
       Tests: ping receives pong; missed pong closes or marks the control
       connection according to the documented policy.
 
-- [ ] Add manual run documentation.
+- [x] Add manual run documentation.
       Document local echo target, server command, agent command, and client
       command.
       Tests: documentation-only task; run `git diff --check`.
@@ -319,13 +319,13 @@ driven by `test.sh`; they are not part of the repository-wide fixture harness.
 - [ ] Run focused standard-library tests for codec, buffer, map, time,
       async_time, env, crypto, net, and async_net.
 - [ ] Run discovered Ciel fixture tests for all added fixtures.
-- [ ] Run loopback tunnel integration tests:
+- [x] Run loopback tunnel integration tests:
       echo, sequential clients, concurrent clients, wrong PSK, target
       unavailable, early public client close, and large payload split across
       multiple data frames.
-- [ ] Confirm application code imports `/std/crypto` portable APIs.
-- [ ] Confirm application code uses `/std/map` for server and agent stream
+- [x] Confirm application code imports `/std/crypto` portable APIs.
+- [x] Confirm application code uses `/std/map` for server and agent stream
       tables instead of demo-local keyed arrays.
-- [ ] Confirm stateful crypto handles and raw socket/async handles stay private
+- [x] Confirm stateful crypto handles and raw socket/async handles stay private
       to their owning standard-library modules.
 - [ ] Run `git diff --check`.

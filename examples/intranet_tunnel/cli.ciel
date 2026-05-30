@@ -1,0 +1,132 @@
+import /std/buf as buf;
+import /std/env as env;
+import /std/net as net;
+import /std/result;
+
+export struct ServerConfig {
+    net::SocketAddr control_addr;
+    net::SocketAddr public_addr;
+    []const char route;
+    []u8 psk;
+}
+
+export struct AgentConfig {
+    net::SocketAddr server_addr;
+    net::SocketAddr target_addr;
+    []const char route;
+    []u8 psk;
+}
+
+export []const char server_usage() {
+    return "usage: tunnel-server --control 127.0.0.1:7000 --public 127.0.0.1:7001 --route dev --psk secret-tunnel-key";
+}
+
+export []const char agent_usage() {
+    return "usage: tunnel-agent --server 127.0.0.1:7000 --target 127.0.0.1:9000 --route dev --psk secret-tunnel-key";
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool is_server_flag([]const char flag) {
+    return same_text(flag, "--control") ||
+        same_text(flag, "--public") ||
+        same_text(flag, "--route") ||
+        same_text(flag, "--psk");
+}
+
+bool is_agent_flag([]const char flag) {
+    return same_text(flag, "--server") ||
+        same_text(flag, "--target") ||
+        same_text(flag, "--route") ||
+        same_text(flag, "--psk");
+}
+
+Result<void, Error> validate_pairs(bool server) {
+    usize len = env::args_len()?;
+    usize @i = 1;
+    while (i < len) {
+        []const char flag = env::arg(i)?;
+        if (server) {
+            if (!is_server_flag(flag)) {
+                return Err(text_error("unknown tunnel-server flag"));
+            }
+        } else {
+            if (!is_agent_flag(flag)) {
+                return Err(text_error("unknown tunnel-agent flag"));
+            }
+        }
+        if ((i + 1) >= len) {
+            return Err(text_error("missing flag value"));
+        }
+        []const char value = env::arg(i + 1)?;
+        if (value.len >= 2 && value[0] == '-' && value[1] == '-') {
+            return Err(text_error("missing flag value"));
+        }
+        i = i + 2;
+    }
+    return Ok;
+}
+
+Result<[]const char, Error> required_flag([]const char flag) {
+    usize len = env::args_len()?;
+    usize @i = 1;
+    while ((i + 1) < len) {
+        if (same_text(env::arg(i)?, flag)) {
+            return env::arg(i + 1);
+        }
+        i = i + 2;
+    }
+    return Err(text_error("missing required flag"));
+}
+
+Result<[]u8, Error> chars_to_bytes([]const char text) {
+    buf::ByteBuf @out = buf::byte_buf_new(text.len)?;
+    [1]u8 @one = [0;];
+    usize @i = 0;
+    while (i < text.len) {
+        one[0] = text[i] as u8;
+        buf::byte_buf_push_slice(&out, one[..])?;
+        i = i + 1;
+    }
+    return Ok(buf::byte_buf_mut_slice(&out));
+}
+
+export Result<ServerConfig, Error> parse_server_args() {
+    validate_pairs(true)?;
+    []const char control = required_flag("--control")?;
+    []const char public = required_flag("--public")?;
+    []const char route = required_flag("--route")?;
+    []const char psk = required_flag("--psk")?;
+    return Ok({
+        control_addr: net::parse_addr(control)?,
+        public_addr: net::parse_addr(public)?,
+        route: route,
+        psk: chars_to_bytes(psk)?
+    });
+}
+
+export Result<AgentConfig, Error> parse_agent_args() {
+    validate_pairs(false)?;
+    []const char server = required_flag("--server")?;
+    []const char target = required_flag("--target")?;
+    []const char route = required_flag("--route")?;
+    []const char psk = required_flag("--psk")?;
+    return Ok({
+        server_addr: net::parse_addr(server)?,
+        target_addr: net::parse_addr(target)?,
+        route: route,
+        psk: chars_to_bytes(psk)?
+    });
+}

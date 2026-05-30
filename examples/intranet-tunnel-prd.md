@@ -420,6 +420,7 @@ byte_buf_slice(*const ByteBuf) -> []const u8
 byte_buf_mut_slice(*ByteBuf) -> []u8
 byte_buf_reserve(*ByteBuf, additional: usize) -> Result<void, Error>
 byte_buf_push_slice(*ByteBuf, data: []const u8) -> Result<void, Error>
+byte_buf_discard_prefix(*ByteBuf, count: usize) -> Result<void, Error>
 ```
 
 The first implementation may use fixed-size stack buffers inside the standard
@@ -840,7 +841,7 @@ tunnel-server \
   --control 127.0.0.1:7000 \
   --public 127.0.0.1:7001 \
   --route dev \
-  --psk secret
+  --psk secret-tunnel-key
 ```
 
 Agent:
@@ -850,7 +851,7 @@ tunnel-agent \
   --server 127.0.0.1:7000 \
   --target 127.0.0.1:9000 \
   --route dev \
-  --psk secret
+  --psk secret-tunnel-key
 ```
 
 If `/std/env` is not ready, the first checked-in demo may hardcode these values

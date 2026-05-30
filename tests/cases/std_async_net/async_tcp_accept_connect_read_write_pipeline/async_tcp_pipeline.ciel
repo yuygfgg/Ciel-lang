@@ -1,0 +1,139 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 4
+
+import /std/async as flow;
+import /std/async_net as anet;
+import /std/channel;
+import /std/io;
+import /std/net as net;
+import /std/panic;
+import /std/result;
+
+bool same_prefix([]u8 got, []const u8 want) {
+    if (got.len < want.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < want.len) {
+        if (got[i] != want[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i32 main() {
+    anet::AsyncTcpListener listener =
+        must(anet::listen_async(must(net::parse_addr("127.0.0.1:0"))));
+    net::SocketAddr bound = must(anet::listener_addr(listener));
+
+    Channel<anet::AsyncTcpStream> accepted_ch = must(make_channel<anet::AsyncTcpStream>());
+    flow::AsyncRunner<Channel<anet::AsyncTcpStream>> accept_runner =
+        must(flow::spawn_runner<Channel<anet::AsyncTcpStream>>(accepted_ch));
+    flow::AsyncTask<Channel<anet::AsyncTcpStream>, anet::AsyncTcpStream> accept =
+        must(anet::accept_task<Channel<anet::AsyncTcpStream>>(listener));
+    must(flow::start(accept_runner, accept, |Channel<anet::AsyncTcpStream> ch, anet::AsyncTcpStream stream| {
+        channel_send(&ch, stream)?;
+        return Ok(ch);
+    }));
+
+    Channel<anet::AsyncTcpStream> connected_ch = must(make_channel<anet::AsyncTcpStream>());
+    flow::AsyncRunner<Channel<anet::AsyncTcpStream>> connect_runner =
+        must(flow::spawn_runner<Channel<anet::AsyncTcpStream>>(connected_ch));
+    flow::AsyncTask<Channel<anet::AsyncTcpStream>, anet::AsyncTcpStream> connect =
+        must(anet::connect_task<Channel<anet::AsyncTcpStream>>(bound));
+    must(flow::start(connect_runner, connect, |Channel<anet::AsyncTcpStream> ch, anet::AsyncTcpStream stream| {
+        channel_send(&ch, stream)?;
+        return Ok(ch);
+    }));
+
+    anet::AsyncTcpStream client = must(channel_recv(&connected_ch));
+    anet::AsyncTcpStream server = must(channel_recv(&accepted_ch));
+
+    Channel<usize> echo_done = must(make_channel<usize>());
+    flow::AsyncRunner<Channel<usize>> echo_runner =
+        must(flow::spawn_runner<Channel<usize>>(echo_done));
+    flow::AsyncTask<Channel<usize>, anet::Bytes> server_read =
+        must(anet::read_bytes_task<Channel<usize>>(server, 8));
+    flow::AsyncTask<Channel<usize>, usize> echo = flow::then(server_read, |anet::Bytes bytes| {
+        return anet::write_bytes_task<Channel<usize>>(server, bytes);
+    });
+    must(flow::start(echo_runner, echo, |Channel<usize> ch, usize written| {
+        channel_send(&ch, written)?;
+        return Ok(ch);
+    }));
+
+    [4]u8 payload = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
+    Channel<usize> write_done = must(make_channel<usize>());
+    flow::AsyncRunner<Channel<usize>> write_runner =
+        must(flow::spawn_runner<Channel<usize>>(write_done));
+    anet::Bytes out = must(anet::bytes_copy(payload[..]));
+    flow::AsyncTask<Channel<usize>, usize> write =
+        must(anet::write_bytes_task<Channel<usize>>(client, out));
+    must(flow::start(write_runner, write, |Channel<usize> ch, usize written| {
+        channel_send(&ch, written)?;
+        return Ok(ch);
+    }));
+    if (must(channel_recv(&write_done)) != 4) {
+        return 1;
+    }
+    if (must(channel_recv(&echo_done)) != 4) {
+        return 2;
+    }
+
+    Channel<anet::Bytes> read_done = must(make_channel<anet::Bytes>());
+    flow::AsyncRunner<Channel<anet::Bytes>> read_runner =
+        must(flow::spawn_runner<Channel<anet::Bytes>>(read_done));
+    flow::AsyncTask<Channel<anet::Bytes>, anet::Bytes> client_read =
+        must(anet::read_bytes_task<Channel<anet::Bytes>>(client, 8));
+    must(flow::start(read_runner, client_read, |Channel<anet::Bytes> ch, anet::Bytes bytes| {
+        channel_send(&ch, bytes)?;
+        return Ok(ch);
+    }));
+    anet::Bytes echoed = must(channel_recv(&read_done));
+    if (anet::bytes_len(echoed) != 4) {
+        return 3;
+    }
+    [4]u8 @got = [0;];
+    usize copied = must(anet::bytes_copy_to(echoed, got[..]));
+    if (copied != 4 || !same_prefix(got[..], payload[..])) {
+        return 4;
+    }
+
+    must(anet::shutdown_write(client));
+    Channel<anet::Bytes> eof_done = must(make_channel<anet::Bytes>());
+    flow::AsyncRunner<Channel<anet::Bytes>> eof_runner =
+        must(flow::spawn_runner<Channel<anet::Bytes>>(eof_done));
+    flow::AsyncTask<Channel<anet::Bytes>, anet::Bytes> server_eof =
+        must(anet::read_bytes_task<Channel<anet::Bytes>>(server, 8));
+    must(flow::start(eof_runner, server_eof, |Channel<anet::Bytes> ch, anet::Bytes bytes| {
+        channel_send(&ch, bytes)?;
+        return Ok(ch);
+    }));
+    anet::Bytes eof = must(channel_recv(&eof_done));
+    if (anet::bytes_len(eof) != 0) {
+        return 5;
+    }
+
+    must(print_value(copied));
+
+    must(flow::join_runner(&eof_runner));
+    must(flow::join_runner(&read_runner));
+    must(flow::join_runner(&write_runner));
+    must(flow::join_runner(&echo_runner));
+    must(flow::join_runner(&connect_runner));
+    must(flow::join_runner(&accept_runner));
+    must(channel_close(&eof_done));
+    must(channel_close(&read_done));
+    must(channel_close(&write_done));
+    must(channel_close(&echo_done));
+    must(channel_close(&connected_ch));
+    must(channel_close(&accepted_ch));
+    must(anet::shutdown_read(client));
+    must(anet::close_stream(client));
+    must(anet::close_stream(server));
+    must(anet::close_listener(listener));
+    return 0;
+}

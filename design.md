@@ -1917,9 +1917,9 @@ import /std/actor;
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
-`/std/async_io`, `/std/message`, `/std/meta`, `/std/actor`, `/std/channel`,
-`/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`, `/std/time`,
-`/std/env`, and `/std/net`.
+`/std/async_io`, `/std/async_net`, `/std/message`, `/std/meta`, `/std/actor`,
+`/std/channel`, `/std/sync`, `/std/atomic`, `/std/codec`, `/std/buf`,
+`/std/time`, `/std/env`, `/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2331,6 +2331,7 @@ export import /std/c;
 export import /std/io;
 export import /std/async;
 export import /std/async_io;
+export import /std/async_net;
 export import /std/message;
 export import /std/meta;
 export import /std/actor;
@@ -2780,6 +2781,171 @@ types. They are fixed-size handle values and may implement `Message` through
 explicit standard-library policy impls. `Bytes` represents immutable owned byte
 storage. `AsyncRead` and `AsyncWrite` are one-shot operation handles whose
 results may be finished exactly once.
+
+```rust
+// /std/async_net
+import /std/async as flow;
+import /std/async/adapter;
+import /std/actor;
+import /std/net;
+export import /std/async/bytes;
+
+export struct AsyncTcpListener {
+    *void handle;
+}
+
+export struct AsyncTcpStream {
+    *void handle;
+}
+
+export struct AsyncAccept {
+    *void handle;
+}
+
+export struct AsyncConnect {
+    *void handle;
+}
+
+export struct AsyncTcpRead {
+    *void handle;
+}
+
+export struct AsyncTcpWrite {
+    *void handle;
+}
+
+export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr);
+export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener);
+export Result<void, Error> close_listener(AsyncTcpListener listener);
+export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener);
+export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr);
+export Result<void, Error> close_stream(AsyncTcpStream stream);
+export Result<void, Error> shutdown_read(AsyncTcpStream stream);
+export Result<void, Error> shutdown_write(AsyncTcpStream stream);
+export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream);
+export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream);
+
+export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len);
+export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data);
+export Result<void, Error> notify_accept_done<M: Message>(
+    *const AsyncAccept op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_connect_done<M: Message>(
+    *const AsyncConnect op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_read_done<M: Message>(
+    *const AsyncTcpRead op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_write_done<M: Message>(
+    *const AsyncTcpWrite op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op);
+export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op);
+export Result<Bytes, Error> finish_read(AsyncTcpRead op);
+export Result<usize, Error> finish_write(AsyncTcpWrite op);
+export Result<void, Error> cancel_accept(AsyncAccept op);
+export Result<void, Error> cancel_connect(AsyncConnect op);
+export Result<void, Error> cancel_read(AsyncTcpRead op);
+export Result<void, Error> cancel_write(AsyncTcpWrite op);
+export Result<flow::Completion<S, AsyncTcpStream>, Error> accept_completion<S: Message>(
+    AsyncTcpListener listener
+);
+export Result<flow::Completion<S, AsyncTcpStream>, Error> connect_completion<S: Message>(
+    net::SocketAddr addr
+);
+export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
+    AsyncTcpStream stream,
+    usize max_len
+);
+export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
+    AsyncTcpStream stream,
+    Bytes data
+);
+export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> accept_task<S: Message>(
+    AsyncTcpListener listener
+);
+export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> connect_task<S: Message>(
+    net::SocketAddr addr
+);
+export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
+    AsyncTcpStream stream,
+    usize max_len
+);
+export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
+    AsyncTcpStream stream,
+    Bytes data
+);
+
+impl<M: Message> notify_done(
+    AsyncAccept op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_accept_done(&op, &actor_handle, message);
+}
+
+impl finish<AsyncTcpStream>(AsyncAccept op) {
+    return finish_accept(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncConnect op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_connect_done(&op, &actor_handle, message);
+}
+
+impl finish<AsyncTcpStream>(AsyncConnect op) {
+    return finish_connect(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncTcpRead op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_read_done(&op, &actor_handle, message);
+}
+
+impl finish<Bytes>(AsyncTcpRead op) {
+    return finish_read(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncTcpWrite op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_write_done(&op, &actor_handle, message);
+}
+
+impl finish<usize>(AsyncTcpWrite op) {
+    return finish_write(op);
+}
+```
+
+`/std/async_net` provides actor-oriented asynchronous TCP operations. It uses
+`/std/net::SocketAddr` for address values, but it does not reuse blocking
+`TcpListener` or `TcpStream` handles. Async TCP listeners, streams, and
+operation tokens are runtime-backed shareable handles with explicit
+standard-library `Message` policy. `accept_async`, `connect_async`,
+`read_bytes`, and `write_bytes` return one-shot operation tokens. The
+corresponding `finish_*` functions consume each result exactly once, and the
+`*_completion` / `*_task` helpers expose the usual `/std/async` flow shape.
+
+Async TCP reads complete with up to `max_len` bytes once data or EOF is
+available; a zero-length `Bytes` value represents EOF. Async TCP writes take
+`Bytes`, not a borrowed slice, because the runtime may hold the data after the
+caller's actor handler has returned.
 
 These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime

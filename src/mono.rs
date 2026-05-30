@@ -42,6 +42,25 @@ pub fn monomorphize(checked: CheckedProgram) -> DiagResult<MonoProgram> {
     MonoContext::new(checked).run()
 }
 
+fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
+    matches!(kind, DefKind::Struct | DefKind::Enum)
+}
+
+fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
+    let def = resolved.def(def_id);
+    if !is_nominal_type_def_kind(&def.kind) {
+        return def.name.clone();
+    }
+    let has_same_named_nominal = resolved.defs.iter().any(|other| {
+        other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
+    });
+    if has_same_named_nominal {
+        format!("{}__def{}", def.name, def.id.0)
+    } else {
+        def.name.clone()
+    }
+}
+
 struct MonoContext {
     checked: CheckedProgram,
     functions_by_def: HashMap<DefId, CheckedFunction>,
@@ -892,8 +911,15 @@ impl<'a> AggregateCollector<'a> {
                         );
                     }
                     ItemKind::Struct(decl) => {
+                        let Some(def_id) = checked.resolved.local_def(
+                            module.id,
+                            &decl.name.name,
+                            &[DefKind::Struct],
+                        ) else {
+                            continue;
+                        };
                         structs.insert(
-                            decl.name.name.clone(),
+                            nominal_type_name(&checked.resolved, def_id),
                             StructTemplate {
                                 generics: decl
                                     .generics
@@ -905,8 +931,15 @@ impl<'a> AggregateCollector<'a> {
                         );
                     }
                     ItemKind::Enum(decl) => {
+                        let Some(def_id) = checked.resolved.local_def(
+                            module.id,
+                            &decl.name.name,
+                            &[DefKind::Enum],
+                        ) else {
+                            continue;
+                        };
                         enums.insert(
-                            decl.name.name.clone(),
+                            nominal_type_name(&checked.resolved, def_id),
                             EnumTemplate {
                                 generics: decl
                                     .generics
@@ -1892,7 +1925,11 @@ impl<'a> AggregateCollector<'a> {
                 let (name, def_kind, def_id) = match &type_name.kind {
                     TypeNameKind::Def(def_id) => {
                         let def = self.checked.resolved.def(*def_id);
-                        (def.name.clone(), Some(def.kind.clone()), Some(*def_id))
+                        (
+                            nominal_type_name(&self.checked.resolved, *def_id),
+                            Some(def.kind.clone()),
+                            Some(*def_id),
+                        )
                     }
                     TypeNameKind::Generic(generic) => (generic.clone(), None, None),
                     TypeNameKind::Error => return Ty::Unknown,

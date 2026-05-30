@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 11
+
+import /std/message;
+import /std/panic;
+import ./facade;
+
+i64 main() {
+    left::Item left_item = { value: 4 };
+    right::Item right_item = { value: 7 };
+    left::Item left_copy = must(clone_message(&left_item));
+    right::Item right_copy = must(clone_message(&right_item));
+    return left::value(left_copy) + right::value(right_copy);
+}

@@ -1,0 +1,4 @@
+// ciel-test: dependency
+
+export import ./left_item as left;
+export import ./right_item as right;

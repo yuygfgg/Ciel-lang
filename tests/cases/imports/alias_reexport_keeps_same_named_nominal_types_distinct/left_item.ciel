@@ -1,0 +1,15 @@
+// ciel-test: dependency
+
+import /std/message;
+
+export struct Item {
+    i64 value;
+}
+
+unsafe impl clone_message(*const Item value) {
+    return Ok(*value);
+}
+
+export i64 value(Item item) {
+    return item.value;
+}

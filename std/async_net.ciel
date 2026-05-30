@@ -1,0 +1,515 @@
+export import /std/result;
+export import /std/async/bytes;
+import /std/async as flow;
+import /std/async/adapter;
+import /std/actor as actor;
+import /std/c as c;
+import /std/message;
+import /std/meta;
+import /std/net as net;
+
+unsafe extern "C" {
+    opaque struct CielActor;
+    opaque struct CielAsyncFd;
+    opaque struct CielAsyncOp;
+    opaque struct CielAsyncTcpListener;
+    opaque struct CielBytes;
+    opaque struct CielSocketAddr;
+
+    c::c_int ciel_errno();
+    ?*void ciel_box_copy(usize size, usize align, *const void source);
+
+    ?*CielAsyncTcpListener ciel_async_tcp_listen(*CielSocketAddr addr);
+    c::c_int ciel_async_tcp_listener_addr(*CielAsyncTcpListener listener, *?*CielSocketAddr out);
+    c::c_int ciel_async_tcp_close_listener(*CielAsyncTcpListener listener);
+    ?*CielAsyncOp ciel_async_tcp_accept(*CielAsyncTcpListener listener);
+    ?*CielAsyncOp ciel_async_tcp_connect(*CielSocketAddr addr);
+    c::c_int ciel_async_tcp_finish_accept(*CielAsyncOp op, *?*CielAsyncFd out);
+    c::c_int ciel_async_tcp_finish_connect(*CielAsyncOp op, *?*CielAsyncFd out);
+    c::c_int ciel_async_tcp_notify_accept(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_tcp_notify_connect(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_tcp_stream_local_addr(*CielAsyncFd stream, *?*CielSocketAddr out);
+    c::c_int ciel_async_tcp_stream_peer_addr(*CielAsyncFd stream, *?*CielSocketAddr out);
+    c::c_int ciel_async_tcp_shutdown_read(*CielAsyncFd stream);
+    c::c_int ciel_async_tcp_shutdown_write(*CielAsyncFd stream);
+
+    c::c_int ciel_async_close(*CielAsyncFd fd);
+    ?*CielAsyncOp ciel_async_tcp_read_bytes(*CielAsyncFd fd, usize max_len);
+    ?*CielAsyncOp ciel_async_tcp_write_bytes(*CielAsyncFd fd, *CielBytes bytes);
+    c::c_int ciel_async_notify_read(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_notify_write(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_finish_read(*CielAsyncOp op, *?*CielBytes out);
+    c::c_int ciel_async_finish_write(*CielAsyncOp op, *usize written);
+    c::c_int ciel_async_cancel(*CielAsyncOp op);
+}
+
+export struct AsyncTcpListener {
+    *void handle;
+}
+
+export struct AsyncTcpStream {
+    *void handle;
+}
+
+export struct AsyncAccept {
+    *void handle;
+}
+
+export struct AsyncConnect {
+    *void handle;
+}
+
+export struct AsyncTcpRead {
+    *void handle;
+}
+
+export struct AsyncTcpWrite {
+    *void handle;
+}
+
+unsafe impl clone_message(*const AsyncTcpListener value) {
+    return Ok(*value);
+}
+
+unsafe impl clone_message(*const AsyncTcpStream value) {
+    return Ok(*value);
+}
+
+unsafe impl clone_message(*const AsyncAccept value) {
+    return Ok(*value);
+}
+
+unsafe impl clone_message(*const AsyncConnect value) {
+    return Ok(*value);
+}
+
+unsafe impl clone_message(*const AsyncTcpRead value) {
+    return Ok(*value);
+}
+
+unsafe impl clone_message(*const AsyncTcpWrite value) {
+    return Ok(*value);
+}
+
+unsafe impl share_handle_marker(*const AsyncTcpListener value) {
+    return true;
+}
+
+unsafe impl share_handle_marker(*const AsyncTcpStream value) {
+    return true;
+}
+
+unsafe impl share_handle_marker(*const AsyncAccept value) {
+    return true;
+}
+
+unsafe impl share_handle_marker(*const AsyncConnect value) {
+    return true;
+}
+
+unsafe impl share_handle_marker(*const AsyncTcpRead value) {
+    return true;
+}
+
+unsafe impl share_handle_marker(*const AsyncTcpWrite value) {
+    return true;
+}
+
+Error runtime_error() {
+    c::c_int code = unsafe { ciel_errno() };
+    if ((code as i64) == 0) {
+        return code_error(5);
+    }
+    return code_error(code as i64);
+}
+
+*CielSocketAddr raw_addr(net::SocketAddr addr) {
+    return unsafe { addr.handle as *CielSocketAddr };
+}
+
+net::SocketAddr addr_from_raw(*CielSocketAddr raw) {
+    return unsafe { { handle: raw as *void } };
+}
+
+*CielAsyncTcpListener raw_listener(AsyncTcpListener listener) {
+    return unsafe { listener.handle as *CielAsyncTcpListener };
+}
+
+*CielAsyncFd raw_stream(AsyncTcpStream stream) {
+    return unsafe { stream.handle as *CielAsyncFd };
+}
+
+*CielAsyncOp raw_accept(AsyncAccept op) {
+    return unsafe { op.handle as *CielAsyncOp };
+}
+
+*CielAsyncOp raw_connect(AsyncConnect op) {
+    return unsafe { op.handle as *CielAsyncOp };
+}
+
+*CielAsyncOp raw_read(AsyncTcpRead op) {
+    return unsafe { op.handle as *CielAsyncOp };
+}
+
+*CielAsyncOp raw_write(AsyncTcpWrite op) {
+    return unsafe { op.handle as *CielAsyncOp };
+}
+
+*CielBytes raw_bytes(Bytes bytes) {
+    return unsafe { bytes.handle as *CielBytes };
+}
+
+Result<*void, Error> box_message<M: Message>(M message) {
+    M local = message;
+    M cloned = clone_message(&local)?;
+    ?*void boxed = unsafe { ciel_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
+    if (boxed == null) {
+        return Err(code_error(5));
+    }
+    return Ok(boxed);
+}
+
+export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) {
+    ?*CielAsyncTcpListener raw = unsafe { ciel_async_tcp_listen(raw_addr(addr)) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener) {
+    ?*CielSocketAddr @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_listener_addr(raw_listener(listener), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+}
+
+export Result<void, Error> close_listener(AsyncTcpListener listener) {
+    c::c_int rc = unsafe { ciel_async_tcp_close_listener(raw_listener(listener)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener) {
+    ?*CielAsyncOp raw = unsafe { ciel_async_tcp_accept(raw_listener(listener)) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) {
+    ?*CielAsyncOp raw = unsafe { ciel_async_tcp_connect(raw_addr(addr)) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<void, Error> close_stream(AsyncTcpStream stream) {
+    c::c_int rc = unsafe { ciel_async_close(raw_stream(stream)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> shutdown_read(AsyncTcpStream stream) {
+    c::c_int rc = unsafe { ciel_async_tcp_shutdown_read(raw_stream(stream)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> shutdown_write(AsyncTcpStream stream) {
+    c::c_int rc = unsafe { ciel_async_tcp_shutdown_write(raw_stream(stream)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream) {
+    ?*CielSocketAddr @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_stream_local_addr(raw_stream(stream), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+}
+
+export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream) {
+    ?*CielSocketAddr @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_stream_peer_addr(raw_stream(stream), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+}
+
+export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len) {
+    ?*CielAsyncOp raw = unsafe { ciel_async_tcp_read_bytes(raw_stream(stream), max_len) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data) {
+    ?*CielAsyncOp raw = unsafe { ciel_async_tcp_write_bytes(raw_stream(stream), raw_bytes(data)) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<void, Error> notify_accept_done<M: Message>(
+    *const AsyncAccept op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) {
+    *void boxed = box_message(message)?;
+    c::c_int rc = unsafe { ciel_async_tcp_notify_accept(raw_accept(*op), actor_handle->handle as *CielActor, boxed) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> notify_connect_done<M: Message>(
+    *const AsyncConnect op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) {
+    *void boxed = box_message(message)?;
+    c::c_int rc = unsafe { ciel_async_tcp_notify_connect(raw_connect(*op), actor_handle->handle as *CielActor, boxed) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> notify_read_done<M: Message>(
+    *const AsyncTcpRead op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) {
+    *void boxed = box_message(message)?;
+    c::c_int rc = unsafe { ciel_async_notify_read(raw_read(*op), actor_handle->handle as *CielActor, boxed) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> notify_write_done<M: Message>(
+    *const AsyncTcpWrite op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) {
+    *void boxed = box_message(message)?;
+    c::c_int rc = unsafe { ciel_async_notify_write(raw_write(*op), actor_handle->handle as *CielActor, boxed) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op) {
+    ?*CielAsyncFd @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_finish_accept(raw_accept(op), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op) {
+    ?*CielAsyncFd @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_finish_connect(raw_connect(op), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<Bytes, Error> finish_read(AsyncTcpRead op) {
+    ?*CielBytes @raw = null;
+    c::c_int rc = unsafe { ciel_async_finish_read(raw_read(op), &raw) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    if (raw == null) {
+        return Err(code_error(5));
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<usize, Error> finish_write(AsyncTcpWrite op) {
+    usize @written = 0;
+    c::c_int rc = unsafe { ciel_async_finish_write(raw_write(op), &written) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok(written);
+}
+
+export Result<void, Error> cancel_accept(AsyncAccept op) {
+    c::c_int rc = unsafe { ciel_async_cancel(raw_accept(op)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> cancel_connect(AsyncConnect op) {
+    c::c_int rc = unsafe { ciel_async_cancel(raw_connect(op)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> cancel_read(AsyncTcpRead op) {
+    c::c_int rc = unsafe { ciel_async_cancel(raw_read(op)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<void, Error> cancel_write(AsyncTcpWrite op) {
+    c::c_int rc = unsafe { ciel_async_cancel(raw_write(op)) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(rc as i64));
+    }
+    return Ok;
+}
+
+export Result<flow::Completion<S, AsyncTcpStream>, Error> accept_completion<S: Message>(
+    AsyncTcpListener listener
+) {
+    AsyncAccept op = accept_async(listener)?;
+    return Ok(flow::completion_from_op<S, AsyncTcpStream, AsyncAccept>(op));
+}
+
+export Result<flow::Completion<S, AsyncTcpStream>, Error> connect_completion<S: Message>(
+    net::SocketAddr addr
+) {
+    AsyncConnect op = connect_async(addr)?;
+    return Ok(flow::completion_from_op<S, AsyncTcpStream, AsyncConnect>(op));
+}
+
+export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
+    AsyncTcpStream stream,
+    usize max_len
+) {
+    AsyncTcpRead op = read_bytes(stream, max_len)?;
+    return Ok(flow::completion_from_op<S, Bytes, AsyncTcpRead>(op));
+}
+
+export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
+    AsyncTcpStream stream,
+    Bytes data
+) {
+    AsyncTcpWrite op = write_bytes(stream, data)?;
+    return Ok(flow::completion_from_op<S, usize, AsyncTcpWrite>(op));
+}
+
+export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> accept_task<S: Message>(
+    AsyncTcpListener listener
+) {
+    flow::Completion<S, AsyncTcpStream> completion = accept_completion<S>(listener)?;
+    return Ok(flow::from_completion<S, AsyncTcpStream>(completion));
+}
+
+export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> connect_task<S: Message>(
+    net::SocketAddr addr
+) {
+    flow::Completion<S, AsyncTcpStream> completion = connect_completion<S>(addr)?;
+    return Ok(flow::from_completion<S, AsyncTcpStream>(completion));
+}
+
+export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
+    AsyncTcpStream stream,
+    usize max_len
+) {
+    flow::Completion<S, Bytes> completion = read_bytes_completion<S>(stream, max_len)?;
+    return Ok(flow::from_completion<S, Bytes>(completion));
+}
+
+export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
+    AsyncTcpStream stream,
+    Bytes data
+) {
+    flow::Completion<S, usize> completion = write_bytes_completion<S>(stream, data)?;
+    return Ok(flow::from_completion<S, usize>(completion));
+}
+
+impl<M: Message> notify_done(
+    AsyncAccept op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_accept_done(&op, &actor_handle, message);
+}
+
+impl finish<AsyncTcpStream>(AsyncAccept op) {
+    return finish_accept(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncConnect op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_connect_done(&op, &actor_handle, message);
+}
+
+impl finish<AsyncTcpStream>(AsyncConnect op) {
+    return finish_connect(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncTcpRead op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_read_done(&op, &actor_handle, message);
+}
+
+impl finish<Bytes>(AsyncTcpRead op) {
+    return finish_read(op);
+}
+
+impl<M: Message> notify_done(
+    AsyncTcpWrite op,
+    actor::Actor<M> actor_handle,
+    M message
+) {
+    return notify_write_done(&op, &actor_handle, message);
+}
+
+impl finish<usize>(AsyncTcpWrite op) {
+    return finish_write(op);
+}

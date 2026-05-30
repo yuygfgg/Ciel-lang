@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/actor;
+import /std/async_net as anet;
+import /std/channel;
+import /std/net as net;
+import /std/panic;
+import /std/result;
+
+Result<Channel<bool>, Error> handle(Channel<bool> out, anet::AsyncConnect op) {
+    Result<anet::AsyncTcpStream, Error> result = anet::finish_connect(op);
+    switch (result) {
+        case Ok(stream):
+            anet::close_stream(stream)?;
+            channel_send(&out, false)?;
+        case Err(_):
+            channel_send(&out, true)?;
+    }
+    return Ok(out);
+}
+
+i32 main() {
+    anet::AsyncTcpListener listener =
+        must(anet::listen_async(must(net::parse_addr("127.0.0.1:0"))));
+    net::SocketAddr addr = must(anet::listener_addr(listener));
+    must(anet::close_listener(listener));
+
+    Channel<bool> done = must(make_channel<bool>());
+    Actor<anet::AsyncConnect> actor =
+        must(spawn_actor<Channel<bool>, anet::AsyncConnect>(done, handle));
+    anet::AsyncConnect op = must(anet::connect_async(addr));
+    must(anet::notify_connect_done(&op, &actor, op));
+    bool refused = must(channel_recv(&done));
+    must(join(&actor));
+    must(channel_close(&done));
+    if (!refused) {
+        return 1;
+    }
+    return 0;
+}

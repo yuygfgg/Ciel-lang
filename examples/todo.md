@@ -12,7 +12,7 @@ host integration.
 
 - [ ] Confirm the standard-library module names and import paths.
       Scope: `/std/codec`, `/std/buf`, `/std/time`, `/std/env`, `/std/crypto`,
-      `/std/net`, and `/std/async_net`.
+      `/std/net`, `/std/async_net`, and `/std/async_time`.
       Tests: documentation-only task; run `git diff --check`.
 
 - [x] Add `/std/codec` endian-aware unsigned integer helpers.
@@ -123,20 +123,20 @@ host integration.
 
 ## Phase 4: Actor-Friendly `/std/async_net`
 
-- [ ] Extract shared async `Bytes`.
+- [x] Extract shared async `Bytes`.
       Move the existing async I/O byte ownership model into a shared module and
       re-export it from `/std/async_io` and `/std/async_net`.
       Tests: existing async I/O byte tests still pass; async networking can use
       `flow::Completion<S, Bytes>` without defining a second byte type.
 
-- [ ] Add async TCP listener support.
+- [x] Add async TCP listener support.
       Define `AsyncTcpListener` and `AsyncAccept`; implement `listen_async`,
       `accept_async`, `close_listener`, `accept_completion`, and the matching
       `notify_done`/`finish` impls.
       Tests: an actor receives an accept completion, finishes to an
       `AsyncTcpStream`, and closing the listener releases the port.
 
-- [ ] Add async TCP connect support.
+- [x] Add async TCP connect support.
       Define `AsyncTcpStream` and `AsyncConnect`; implement `connect_async`,
       `close_stream`, `connect_completion`, and the matching
       `notify_done`/`finish` impls.
@@ -144,14 +144,36 @@ host integration.
       refused connection returns a stable `Error`; closing the stream releases
       the connection.
 
-- [ ] Add async TCP stream I/O support.
-      Define `AsyncRead` and `AsyncWrite`; implement `read_bytes`,
-      `write_bytes`, `shutdown_read`, `shutdown_write`, `read_completion`,
-      `write_completion`, and the matching `notify_done`/`finish` impls.
+- [x] Add async TCP stream I/O support.
+      Define `AsyncTcpRead` and `AsyncTcpWrite`; implement `read_bytes`,
+      `write_bytes`, `shutdown_read`, `shutdown_write`,
+      `read_bytes_completion`, `write_bytes_completion`, and the matching
+      `notify_done`/`finish` impls.
       Tests: a `flow::then` pipeline accepts, connects, reads, writes, shuts
       down write, observes EOF, and closes a loopback connection.
 
-## Phase 5: Tunnel Protocol Library
+## Phase 5: Actor-Friendly `/std/async_time`
+
+- [ ] Add async sleep operation support.
+      Define `AsyncSleep`; implement `sleep_ms_async`, `notify_sleep_done`,
+      `finish_sleep`, and `cancel_sleep` using a monotonic runtime timer.
+      Tests: zero-delay sleep completes; short sleep completes through an actor;
+      canceling a pending sleep reports a stable cancellation error.
+
+- [ ] Add `/std/async` integration for timers.
+      Implement `sleep_ms_completion<S>` and `sleep_ms_task<S>` so actor code can
+      schedule deadlines without blocking a runner thread.
+      Tests: `flow::then` can delay a continuation; multiple concurrent sleeps
+      complete independently and do not reorder actor state incorrectly.
+
+- [ ] Define the timeout composition boundary.
+      Document that `/std/async_time` provides timers and cancellation
+      building blocks, while tunnel heartbeat frames and missed-pong policy stay
+      in the application protocol. Add a generic timeout helper only if it can
+      cancel the losing operation without leaving a late completion queued.
+      Tests: documentation-only unless the helper lands; run `git diff --check`.
+
+## Phase 6: Tunnel Protocol Library
 
 - [ ] Create `examples/intranet_tunnel/protocol/frame.ciel`.
       Define frame constants, frame kind enum, `FrameHeader`, and maximum
@@ -184,7 +206,7 @@ host integration.
       Tests: matching PSK verifies; wrong PSK rejects; repeated nonce/message
       computes the same tag.
 
-## Phase 6: Single-Stream Tunnel Demo
+## Phase 7: Single-Stream Tunnel Demo
 
 - [ ] Add `main_server.ciel` and `main_agent.ciel` skeletons.
       Hardcode loopback addresses if `/std/env` is not ready in the branch.
@@ -223,7 +245,7 @@ host integration.
       Tests: early public client close, target close, and repeated close frames
       follow the documented state machine.
 
-## Phase 7: Multiplexed Tunnel Demo
+## Phase 8: Multiplexed Tunnel Demo
 
 - [ ] Add server stream table.
       Track stream id, public client handle, and server-side stream state.
@@ -244,7 +266,7 @@ host integration.
       Tests: both clients receive their own echoed payloads over one control
       connection.
 
-## Phase 8: Product Cleanup
+## Phase 9: Product Cleanup
 
 - [ ] Replace hardcoded options with `/std/env` parsing.
       Support `--control`, `--public`, `--server`, `--target`, `--route`, and
@@ -252,10 +274,12 @@ host integration.
       Tests: valid options parse; missing value and unknown flag report errors.
 
 - [ ] Add reconnect backoff for the agent.
-      Use `/std/time::sleep_ms` and bounded retry state.
+      Use `/std/async_time::sleep_ms_task` and bounded retry state.
       Tests: failed first connect retries; successful later connect proceeds.
 
 - [ ] Add ping/pong keepalive frames.
+      Use `/std/async_time` for idle deadlines and missed-pong timers; keep the
+      Ping/Pong frame format and policy in the tunnel protocol.
       Tests: ping receives pong; missed pong closes or marks the control
       connection according to the documented policy.
 
@@ -266,8 +290,8 @@ host integration.
 
 ## Final Acceptance
 
-- [ ] Run focused standard-library tests for codec, buffer, time, env, crypto,
-      net, and async_net.
+- [ ] Run focused standard-library tests for codec, buffer, time, async_time,
+      env, crypto, net, and async_net.
 - [ ] Run discovered Ciel fixture tests for all added fixtures.
 - [ ] Run loopback tunnel integration tests:
       echo, sequential clients, concurrent clients, wrong PSK, target

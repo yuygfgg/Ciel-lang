@@ -21,8 +21,8 @@ C shim code.
   agent.
 - Exercise Ciel modules, errors, enums, pattern matching, slices, buffers,
   resource cleanup, actors or channels, unsafe FFI, and C-backed runtime hooks.
-- Establish reusable standard-library APIs for sockets, time, byte buffers,
-  binary codecs, command-line arguments, and cryptography.
+- Establish reusable standard-library APIs for sockets, monotonic time, async
+  timers, byte buffers, binary codecs, command-line arguments, and cryptography.
 - Use Botan as the first `/std/crypto` backend through its C FFI, while keeping
   the public Ciel API backend-neutral.
 - Sequence the work standard-library first and application second, so the demo
@@ -40,8 +40,8 @@ C shim code.
 - `/std/crypto` uses Botan through its C FFI as the first backend.
 - The first Botan-backed crypto surface covers application-grade RNG, hash, MAC,
   constant-time comparison, and later AEAD.
-- Async work focuses on the TCP operations needed by the tunnel and actor
-  integration.
+- Async work focuses on the TCP and timer operations needed by the tunnel and
+  actor integration.
 - CLI polish is limited to the options required to run local tests and manual
   demos.
 
@@ -124,6 +124,7 @@ The MVP implements:
 - Multiplexed logical streams identified by `u32 stream_id`.
 - Pre-shared-key authentication.
 - Actor-friendly TCP operations that compose with `/std/async`.
+- Actor-friendly timer operations that compose with `/std/async`.
 - Clean shutdown of sockets and stream state.
 - Local integration tests using loopback addresses.
 
@@ -268,6 +269,8 @@ Required modules:
   wrappers.
 - `/std/async_net`: actor-friendly TCP operations aligned with the existing
   `/std/async_io` design.
+- `/std/async_time`: actor-friendly timers and deadline building blocks aligned
+  with `/std/async`.
 - `/std/buf`: reusable byte buffers.
 - `/std/codec`: endian-aware binary encoding helpers.
 - `/std/time`: monotonic clock and sleep.
@@ -353,19 +356,22 @@ struct AsyncTcpListener
 struct AsyncTcpStream
 struct AsyncAccept
 struct AsyncConnect
-struct AsyncRead
-struct AsyncWrite
+struct AsyncTcpRead
+struct AsyncTcpWrite
 
 listen_async(addr: net::SocketAddr) -> Result<AsyncTcpListener, Error>
+listener_addr(listener: AsyncTcpListener) -> Result<net::SocketAddr, Error>
 accept_async(listener: AsyncTcpListener) -> Result<AsyncAccept, Error>
 connect_async(addr: net::SocketAddr) -> Result<AsyncConnect, Error>
 close_listener(listener: AsyncTcpListener) -> Result<void, Error>
 close_stream(stream: AsyncTcpStream) -> Result<void, Error>
 shutdown_read(stream: AsyncTcpStream) -> Result<void, Error>
 shutdown_write(stream: AsyncTcpStream) -> Result<void, Error>
+stream_local_addr(stream: AsyncTcpStream) -> Result<net::SocketAddr, Error>
+stream_peer_addr(stream: AsyncTcpStream) -> Result<net::SocketAddr, Error>
 
-read_bytes(stream: AsyncTcpStream, max_len: usize) -> Result<AsyncRead, Error>
-write_bytes(stream: AsyncTcpStream, data: []const u8) -> Result<AsyncWrite, Error>
+read_bytes(stream: AsyncTcpStream, max_len: usize) -> Result<AsyncTcpRead, Error>
+write_bytes(stream: AsyncTcpStream, data: Bytes) -> Result<AsyncTcpWrite, Error>
 ```
 
 Required `/std/async` integration:
@@ -379,22 +385,21 @@ connect_completion<S: Message>(
     addr: net::SocketAddr
 ) -> Result<flow::Completion<S, AsyncTcpStream>, Error>
 
-read_completion<S: Message>(
+read_bytes_completion<S: Message>(
     stream: AsyncTcpStream,
     max_len: usize
 ) -> Result<flow::Completion<S, Bytes>, Error>
 
-write_completion<S: Message>(
+write_bytes_completion<S: Message>(
     stream: AsyncTcpStream,
     data: Bytes
 ) -> Result<flow::Completion<S, usize>, Error>
 ```
 
-Async networking reuses the existing async I/O `Bytes` ownership model. If the
-current `Bytes` type is still physically defined in `/std/async_io`, the
-standard-library work should extract it into a shared module and re-export it
-from both async I/O and async networking. This keeps async file reads and async
-TCP reads compatible with the same `flow::Completion<S, Bytes>` shape.
+Async networking reuses the shared async `Bytes` ownership model from
+`/std/async/bytes`, re-exported by both async I/O and async networking. This
+keeps async file reads and async TCP reads compatible with the same
+`flow::Completion<S, Bytes>` shape.
 
 ### 10.3 `/std/buf`
 
@@ -446,10 +451,54 @@ sleep_ms(ms: u64) -> Result<void, Error>
 monotonic_ms() -> Result<u64, Error>
 ```
 
-The MVP can avoid timeouts if socket tests stay deterministic, but reconnect
-backoff and ping/pong tests should use this API once available.
+`/std/time` is the synchronous clock layer. It is useful for direct utilities
+and low-level tests. Actor-driven code should use `/std/async_time` instead of
+blocking a runner thread with `sleep_ms`.
 
-### 10.6 `/std/env`
+### 10.6 `/std/async_time`
+
+`/std/async_time` is the standard timer layer for actor-oriented code. It
+provides generic sleep/deadline building blocks; it does not define tunnel
+heartbeat frames or missed-pong policy.
+
+Minimum public API:
+
+```text
+struct AsyncSleep
+
+sleep_ms_async(ms: u64) -> Result<AsyncSleep, Error>
+notify_sleep_done<M: Message>(
+    op: *const AsyncSleep,
+    actor: *const actor::Actor<M>,
+    message: M
+) -> Result<void, Error>
+finish_sleep(op: AsyncSleep) -> Result<void, Error>
+cancel_sleep(op: AsyncSleep) -> Result<void, Error>
+
+sleep_ms_completion<S: Message>(
+    ms: u64
+) -> Result<flow::Completion<S, void>, Error>
+
+sleep_ms_task<S: Message>(
+    ms: u64
+) -> Result<flow::AsyncTask<S, void>, Error>
+```
+
+Required behavior:
+
+- Timers use monotonic time, not wall-clock time.
+- A zero-delay sleep completes asynchronously but promptly.
+- Canceling a pending timer prevents its completion message from being sent.
+- Finishing a sleep consumes the operation exactly once.
+- Multiple timers may be active concurrently and complete independently.
+
+Timeout policy is layered above this primitive. A generic timeout combinator may
+be added to `/std/async` or `/std/async_time` only if the losing operation can
+be canceled without leaving a late completion in the actor mailbox. The tunnel
+application should implement Ping/Pong and idle-deadline policy in its protocol
+code using these timer primitives.
+
+### 10.7 `/std/env`
 
 Minimum public API:
 
@@ -462,7 +511,7 @@ The first implementation only needs process argument access. Environment
 variables, current directory, process spawning, and path search are future
 `/std/env` extensions.
 
-### 10.7 `/std/crypto`
+### 10.8 `/std/crypto`
 
 `/std/crypto` is a general standard-library module. Botan is the selected first
 backend because it provides a stable C FFI, opaque handles, broad algorithm
@@ -765,6 +814,7 @@ Compiler fixture tests should cover:
   process.
 - `/std/net` address parse and safe close behavior.
 - `/std/async_net` completion shape for accept, connect, read, and write.
+- `/std/async_time` timer completion, cancellation, and task composition.
 - authentication tag success and failure through `/std/crypto`.
 
 ### 16.2 Integration Tests
@@ -798,6 +848,7 @@ Deliverables:
 - `/std/codec` first public API.
 - `/std/buf` first public API or a clearly bounded shared byte-container API.
 - `/std/time` first public API.
+- `/std/async_time` first public API for actor-friendly timers.
 - `/std/env` argument access API.
 - Botan-backed `/std/crypto` with RNG, hash, MAC, and constant-time comparison.
 
@@ -805,6 +856,7 @@ Exit criteria:
 
 - each public API lives under `std/`, not under `examples/`.
 - focused standard-library tests pass.
+- actor code can wait on timers without blocking a runner thread.
 - `/std/crypto` application code uses backend-neutral names only.
 - stateful crypto handles remain actor-local and are not messageable.
 
@@ -863,8 +915,8 @@ Exit criteria:
 Deliverables:
 
 - final CLI flow through `/std/env`.
-- reconnect backoff using `/std/time`.
-- basic ping/pong keepalive.
+- reconnect backoff using `/std/async_time`.
+- basic ping/pong keepalive driven by `/std/async_time` idle timers.
 - documented run commands.
 
 Exit criteria:
@@ -909,8 +961,8 @@ The demo is accepted when:
 - The program has no raw Botan handle exposure in safe application code.
 - Stateful crypto handles are actor-local; cross-actor crypto work uses values
   or a dedicated crypto actor.
-- `/std/net`, `/std/async_net`, `/std/codec`, and the used subset of
-  `/std/crypto` are documented and tested as standard-library APIs.
+- `/std/net`, `/std/async_net`, `/std/async_time`, `/std/codec`, and the used
+  subset of `/std/crypto` are documented and tested as standard-library APIs.
 - `/std/crypto` uses Botan as its first backend while exposing a backend-neutral
   Ciel API.
 - The demo remains within the intended scale: roughly 3000 lines of Ciel

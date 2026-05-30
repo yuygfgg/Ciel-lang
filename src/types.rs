@@ -1281,6 +1281,16 @@ pub fn aggregate_instance_name(name: &str, args: &[Ty]) -> String {
     }
 }
 
+fn display_nominal_name(name: &str) -> &str {
+    let Some((base, suffix)) = name.rsplit_once("__def") else {
+        return name;
+    };
+    if suffix.is_empty() || !suffix.chars().all(|ch| ch.is_ascii_digit()) {
+        return name;
+    }
+    base
+}
+
 pub fn mangle_ty_fragment(ty: &Ty) -> String {
     match ty {
         Ty::Hole(_) => "hole".to_string(),
@@ -1538,7 +1548,7 @@ impl fmt::Display for Ty {
                 let display_name = match name.as_str() {
                     "__ciel_std_meta_RefRepr" => "meta::RefRepr",
                     "__ciel_std_meta_Repr" => "meta::Repr",
-                    _ => name,
+                    _ => display_nominal_name(name),
                 };
                 if args.is_empty() {
                     write!(f, "{display_name}")

@@ -448,7 +448,7 @@ fn lower_ast_type_static(ty: &Type, subst: &HashMap<String, Ty>, resolved: &Reso
         TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
         TypeKind::Named(type_name, args) => {
             let name = match &type_name.kind {
-                TypeNameKind::Def(def_id) => resolved.def(*def_id).name.clone(),
+                TypeNameKind::Def(def_id) => nominal_type_name(resolved, *def_id),
                 TypeNameKind::Generic(generic) => generic.clone(),
                 TypeNameKind::Error => return Ty::Unknown,
             };
@@ -504,6 +504,25 @@ fn lower_ast_type_static(ty: &Type, subst: &HashMap<String, Ty>, resolved: &Reso
                 .collect(),
             constraints: ConstraintBounds::default(),
         },
+    }
+}
+
+fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
+    matches!(kind, DefKind::Struct | DefKind::Enum)
+}
+
+fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
+    let def = resolved.def(def_id);
+    if !is_nominal_type_def_kind(&def.kind) {
+        return def.name.clone();
+    }
+    let has_same_named_nominal = resolved.defs.iter().any(|other| {
+        other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
+    });
+    if has_same_named_nominal {
+        format!("{}__def{}", def.name, def.id.0)
+    } else {
+        def.name.clone()
     }
 }
 
@@ -983,7 +1002,15 @@ impl TypeChecker {
                         for extern_item in &block.items {
                             match extern_item {
                                 ExternItem::OpaqueStruct(name) => {
-                                    self.opaque_structs.insert(name.name.clone());
+                                    let Some(def_id) = self.resolved.local_def(
+                                        module.id,
+                                        &name.name,
+                                        &[DefKind::OpaqueStruct],
+                                    ) else {
+                                        continue;
+                                    };
+                                    self.opaque_structs
+                                        .insert(nominal_type_name(&self.resolved, def_id));
                                 }
                                 ExternItem::TypeAlias(decl) => {
                                     let Some(def_id) = self.resolved.local_def(
@@ -1036,6 +1063,13 @@ impl TypeChecker {
             self.current_module = module.id;
             for item in &module.items {
                 if let ItemKind::Struct(decl) = &item.kind {
+                    let Some(def_id) =
+                        self.resolved
+                            .local_def(module.id, &decl.name.name, &[DefKind::Struct])
+                    else {
+                        continue;
+                    };
+                    let nominal_name = nominal_type_name(&self.resolved, def_id);
                     if decl.generics.is_empty() {
                         let previous_defer_meta_repr_expansion =
                             std::mem::replace(&mut self.defer_meta_repr_expansion, true);
@@ -1053,9 +1087,9 @@ impl TypeChecker {
                             })
                             .collect::<Vec<_>>();
                         self.defer_meta_repr_expansion = previous_defer_meta_repr_expansion;
-                        self.structs.insert(decl.name.name.clone(), fields);
+                        self.structs.insert(nominal_name.clone(), fields);
                         if decl.is_unsafe {
-                            self.unsafe_structs.insert(decl.name.name.clone());
+                            self.unsafe_structs.insert(nominal_name);
                         }
                         continue;
                     }
@@ -1065,7 +1099,7 @@ impl TypeChecker {
                         .map(|param| param.name.name.clone())
                         .collect::<Vec<_>>();
                     self.struct_templates.insert(
-                        decl.name.name.clone(),
+                        nominal_name,
                         StructTemplate {
                             is_unsafe: decl.is_unsafe,
                             generics,
@@ -1104,6 +1138,13 @@ impl TypeChecker {
             self.current_module = module.id;
             for item in &module.items {
                 if let ItemKind::Enum(decl) = &item.kind {
+                    let Some(enum_def_id) =
+                        self.resolved
+                            .local_def(module.id, &decl.name.name, &[DefKind::Enum])
+                    else {
+                        continue;
+                    };
+                    let enum_name = nominal_type_name(&self.resolved, enum_def_id);
                     let generics = decl
                         .generics
                         .iter()
@@ -1128,7 +1169,7 @@ impl TypeChecker {
                         self.variants.insert(
                             def_id,
                             VariantSig {
-                                enum_name: decl.name.name.clone(),
+                                enum_name: enum_name.clone(),
                                 enum_generics: generics.clone(),
                                 variant_index,
                                 payload: variant.payload.clone(),
@@ -1136,10 +1177,10 @@ impl TypeChecker {
                         );
                     }
                     self.enum_templates
-                        .insert(decl.name.name.clone(), EnumTemplate { generics, variants });
+                        .insert(enum_name.clone(), EnumTemplate { generics, variants });
                     if decl.generics.is_empty() {
                         self.ensure_enum_instance(&Ty::Named {
-                            name: decl.name.name.clone(),
+                            name: enum_name,
                             args: Vec::new(),
                         });
                     }
@@ -1283,6 +1324,7 @@ impl TypeChecker {
                                 .collect(),
                         }
                     } else {
+                        let nominal_name = nominal_type_name(&self.resolved, def_id);
                         let preserved_args = args
                             .iter()
                             .map(|arg| {
@@ -1294,14 +1336,14 @@ impl TypeChecker {
                             })
                             .collect::<Vec<_>>();
                         let preserved_candidate = Ty::Named {
-                            name: def.name.clone(),
+                            name: nominal_name.clone(),
                             args: preserved_args,
                         };
                         if self.type_implements_share_handle(&preserved_candidate) {
                             return preserved_candidate;
                         }
                         Ty::Named {
-                            name: def.name,
+                            name: nominal_name,
                             args: args
                                 .iter()
                                 .map(|arg| {

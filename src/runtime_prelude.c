@@ -142,9 +142,27 @@ static CIEL_MAYBE_UNUSED
     return ciel_alloc(bytes == 0 ? 1 : bytes);
 }
 
+static CIEL_MAYBE_UNUSED CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void *
+ciel_realloc(void *old, size_t size) {
+    ciel_runtime_init();
+    void *ptr = GC_REALLOC(old, size == 0 ? 1 : size);
+    if (ptr == NULL) {
+        fputs("out of memory\n", stderr);
+        exit(0);
+    }
+    return ptr;
+}
+
 CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {
     CielSlice_u8 out;
     out.ptr = (uint8_t *)ciel_alloc_array(sizeof(uint8_t), len);
+    out.len = len;
+    return out;
+}
+
+CielSlice_u8 ciel_runtime_u8_realloc_slice(CielSlice_u8 old, size_t len) {
+    CielSlice_u8 out;
+    out.ptr = (uint8_t *)ciel_realloc(old.ptr, len);
     out.len = len;
     return out;
 }

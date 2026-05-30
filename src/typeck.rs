@@ -8109,7 +8109,43 @@ impl TypeChecker {
             Ty::Slice { .. } if field == "len" => Some(Ty::Usize),
             Ty::Named { name, args } => {
                 let instance_name = enum_instance_name(name, args);
-                let fields = self.structs.get(&instance_name)?;
+                let fields = if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    fields
+                } else if let Some(template) = self.struct_templates.get(name).cloned() {
+                    if template.generics.len() != args.len() {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "struct `{name}` expects {} type arguments, got {}",
+                                template.generics.len(),
+                                args.len()
+                            ),
+                        ));
+                        return None;
+                    }
+                    let subst = template
+                        .generics
+                        .iter()
+                        .cloned()
+                        .zip(args.iter().cloned())
+                        .collect::<HashMap<_, _>>();
+                    template
+                        .fields
+                        .iter()
+                        .map(|field| {
+                            (
+                                field.name.name.clone(),
+                                self.lower_type_with_subst_allowing_holes(&field.ty, &subst),
+                            )
+                        })
+                        .collect()
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("type `{base}` has no field `{field}`"),
+                    ));
+                    return None;
+                };
                 if let Some((_, ty)) = fields.iter().find(|(candidate, _)| candidate == field) {
                     let ty = ty.clone();
                     if self.is_unsafe_struct_instance(name, args) {

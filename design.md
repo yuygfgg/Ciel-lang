@@ -2600,14 +2600,19 @@ import /std/async/adapter;
 import /std/actor as actor;
 
 export type Step<S> = Result<S, Error> |(S): Message|;
+export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
+export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
+
+export struct AsyncRunner<S> {
+    actor::Actor<Step<S>> actor_handle;
+}
 
 export struct Completion<S, Out> {
     Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
     Result<Out, Error> |(): Message| finish;
 }
 
-export Result<S, Error> run_step<S>(S state, Step<S> step);
-export Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state);
+export Result<AsyncRunner<S>, Error> spawn_runner<S: Message>(S initial_state);
 
 export Completion<S, Out> completion_from_op<
     S: Message,
@@ -2615,19 +2620,34 @@ export Completion<S, Out> completion_from_op<
     Op: Message + notify_done<Step<S>> + finish<Out>
 >(Op op);
 
-export Result<S, Error> then<S: Message, Out>(
-    S state,
-    Completion<S, Out> completion,
-    actor::Actor<Step<S>> actor_handle,
-    Result<S, Error> |(S, Out): Message| continuation
+export AsyncTask<S, Out> from_completion<S: Message, Out>(Completion<S, Out> completion);
+
+export AsyncTask<S, Next> then<S: Message, Out, Next>(
+    AsyncTask<S, Out> task,
+    Result<AsyncTask<S, Next>, Error> |(Out): Message| continuation
 );
+
+export Result<void, Error> start<S: Message, Out>(
+    AsyncRunner<S> runner,
+    AsyncTask<S, Out> task,
+    TaskFinish<S, Out> finish
+);
+
+export Result<void, Error> stop_runner<S: Message>(*const AsyncRunner<S> runner);
+export Result<void, Error> join_runner<S: Message>(*const AsyncRunner<S> runner);
 ```
 
-`/std/async` provides generic actor-continuation helpers. `Completion<S, Out>`
-is a one-shot completion value tied to a `Step<S>` actor and an output type.
-`then` builds a `Step<S>` completion message that calls the completion's
-`finish` closure and passes the produced value to the supplied continuation. The
-current actor state is returned immediately; no stack frame is suspended.
+`/std/async` provides generic actor-continuation helpers. `AsyncRunner<S>` owns
+the step actor that stores state `S`. `AsyncTask<S, Out>` is a one-shot async
+flow that eventually produces `Out`. `then` composes task values by feeding the
+first task's output to a continuation that returns the next task. `start` sends
+the composed task to the runner and supplies the final state-updating callback.
+No stack frame is suspended.
+
+`Completion<S, Out>` is the lower-level one-shot completion value used by
+operation adapters. `from_completion` wraps a completion as a task. Application
+code should normally use operation-specific task constructors such as
+`read_bytes_task` and `write_bytes_task`.
 
 ```rust
 // /std/async/adapter
@@ -2644,8 +2664,8 @@ export interface<Op, Out> Result<Out, Error> finish(Op op);
 
 `/std/async/adapter` is the operation-adapter layer. Libraries that introduce a
 new runtime operation implement `notify_done` and `finish`, then wrap the raw
-operation with `completion_from_op`. Application code should normally use
-operation-specific constructors that return `Completion<S, Out>`.
+operation with `completion_from_op` and usually expose an operation-specific
+constructor that returns `AsyncTask<S, Out>`.
 
 ```rust
 // /std/async_io
@@ -2690,6 +2710,14 @@ export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Messag
     usize max_len
 );
 export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
+    AsyncFd fd,
+    Bytes data
+);
+export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
+    AsyncFd fd,
+    usize max_len
+);
+export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
     AsyncFd fd,
     Bytes data
 );
@@ -2742,9 +2770,10 @@ caller then registers a completion message for an actor. When the runtime
 observes the final dispatch I/O callback for that operation, it sends the
 preboxed message to the actor mailbox. The actor later calls `finish_read` or
 `finish_write` to consume the result. `read_bytes_completion` and
-`write_bytes_completion` wrap those raw operations as `Completion<S, Out>`, so
-callers can use `then` instead of spelling a separate completion-message enum
-for simple pipelines.
+`write_bytes_completion` wrap those raw operations as `Completion<S, Out>`.
+`read_bytes_task` and `write_bytes_task` expose the usual high-level task API,
+so callers can use `flow::then` instead of spelling a separate
+completion-message enum for simple pipelines.
 
 `Bytes`, `AsyncFd`, `AsyncRead`, and `AsyncWrite` are runtime-backed handle
 types. They are fixed-size handle values and may implement `Message` through

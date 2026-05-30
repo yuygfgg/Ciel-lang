@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/lib;
+
+struct Box<T> {
+    T value;
+}
+
+T read_box<T>(Box<T> box) {
+    return box.value;
+}
+
+i32 main() {
+    Box<i64> box = { value: 7 };
+    must(print_value(read_box<i64>(box)));
+    return 0;
+}

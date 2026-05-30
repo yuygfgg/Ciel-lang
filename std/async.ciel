@@ -5,20 +5,39 @@ import /std/async/adapter;
 import /std/actor as actor;
 
 export type Step<S> = Result<S, Error> |(S): Message|;
+export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
+export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
+
+export struct AsyncRunner<S> {
+    actor::Actor<Step<S>> actor_handle;
+}
 
 export struct Completion<S, Out> {
     Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
     Result<Out, Error> |(): Message| finish;
 }
 
-export Result<S, Error> run_step<S>(S state, Step<S> step) {
+unsafe impl<S> clone_message(*const AsyncRunner<S> value) {
+    return Ok(*value);
+}
+
+unsafe impl<S> share_handle_marker(*const AsyncRunner<S> value) {
+    return true;
+}
+
+Result<S, Error> run_step<S>(S state, Step<S> step) {
     return step(state);
 }
 
-export Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state) {
+Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state) {
     return actor::spawn_actor<S, Step<S>>(initial_state, |S state, Step<S> step| {
         return step(state);
     });
+}
+
+export Result<AsyncRunner<S>, Error> spawn_runner<S: Message>(S initial_state) {
+    actor::Actor<Step<S>> actor_handle = spawn_step_actor<S>(initial_state)?;
+    return Ok({ actor_handle: actor_handle });
 }
 
 export Completion<S, Out> completion_from_op<
@@ -38,18 +57,58 @@ export Completion<S, Out> completion_from_op<
     };
 }
 
-export Result<S, Error> then<S: Message, Out>(
+Result<S, Error> schedule_completion<S: Message, Out>(
     S state,
-    Completion<S, Out> completion,
+    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify,
+    Result<Out, Error> |(): Message| finish,
     actor::Actor<Step<S>> actor_handle,
-    Result<S, Error> |(S, Out): Message| continuation
+    TaskFinish<S, Out> continuation
 ) {
-    Result<Out, Error> |(): Message| complete = completion.finish;
     Step<S> resume = |S current| {
-        Out value = complete()?;
+        Out value = finish()?;
         return continuation(current, value);
     };
 
-    completion.notify(actor_handle, resume)?;
+    notify(actor_handle, resume)?;
     return Ok(state);
+}
+
+export AsyncTask<S, Out> from_completion<S: Message, Out>(Completion<S, Out> completion) {
+    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify = completion.notify;
+    Result<Out, Error> |(): Message| finish = completion.finish;
+    return |S state, actor::Actor<Step<S>> actor_handle, TaskFinish<S, Out> continuation| {
+        return schedule_completion<S, Out>(state, notify, finish, actor_handle, continuation);
+    };
+}
+
+export AsyncTask<S, Next> then<S: Message, Out, Next>(
+    AsyncTask<S, Out> task,
+    Result<AsyncTask<S, Next>, Error> |(Out): Message| continuation
+) {
+    return |S state, actor::Actor<Step<S>> actor_handle, TaskFinish<S, Next> finish| {
+        return task(state, actor_handle, |S current, Out value| {
+            AsyncTask<S, Next> next = continuation(value)?;
+            return next(current, actor_handle, finish);
+        });
+    };
+}
+
+export Result<void, Error> start<S: Message, Out>(
+    AsyncRunner<S> runner,
+    AsyncTask<S, Out> task,
+    TaskFinish<S, Out> finish
+) {
+    actor::Actor<Step<S>> actor_handle = runner.actor_handle;
+    Step<S> step = |S state| {
+        return task(state, actor_handle, finish);
+    };
+    return actor::send(&actor_handle, step);
+}
+
+export Result<void, Error> stop_runner<S: Message>(*const AsyncRunner<S> runner) {
+    return actor::stop(&runner->actor_handle);
+}
+
+export Result<void, Error> join_runner<S: Message>(*const AsyncRunner<S> runner) {
+    return actor::join(&runner->actor_handle);
 }

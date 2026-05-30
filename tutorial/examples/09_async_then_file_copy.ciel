@@ -13,8 +13,8 @@ i32 main() {
     }));
 
     Channel<usize> done = must(make_channel<usize>());
-    Actor<flow::Step<Channel<usize>>> worker =
-        must(flow::spawn_step_actor<Channel<usize>>(done));
+    flow::AsyncRunner<Channel<usize>> worker =
+        must(flow::spawn_runner<Channel<usize>>(done));
 
     aio::AsyncFd input = must(aio::open_async_read("/tmp/ciel_tutorial_then_input.txt"));
     defer aio::close_async(input);
@@ -22,31 +22,21 @@ i32 main() {
     aio::AsyncFd output = must(aio::create_async("/tmp/ciel_tutorial_then_output.txt"));
     defer aio::close_async(output);
 
-    flow::Step<Channel<usize>> start = |Channel<usize> done| {
-        return flow::then(
-            done,
-            aio::read_bytes_completion<Channel<usize>>(input, 64)?,
-            worker,
-            |Channel<usize> done, aio::Bytes bytes| {
-                return flow::then(
-                    done,
-                    aio::write_bytes_completion<Channel<usize>>(output, bytes)?,
-                    worker,
-                    |Channel<usize> done, usize written| {
-                        channel_send(&done, written)?;
-                        return Ok(done);
-                    }
-                );
-            }
-        );
-    };
+    flow::AsyncTask<Channel<usize>, aio::Bytes> read =
+        must(aio::read_bytes_task<Channel<usize>>(input, 64));
+    flow::AsyncTask<Channel<usize>, usize> copy = flow::then(read, |aio::Bytes bytes| {
+        return aio::write_bytes_task<Channel<usize>>(output, bytes);
+    });
 
-    must(send(&worker, start));
+    must(flow::start(worker, copy, |Channel<usize> done, usize written| {
+        channel_send(&done, written)?;
+        return Ok(done);
+    }));
 
     usize written = must(channel_recv(&done));
     must(print_value(written));
 
-    must(join(&worker));
+    must(flow::join_runner(&worker));
     must(channel_close(&done));
     return 0;
 }

@@ -6,23 +6,12 @@ import /std/async as flow;
 import /std/async_io as aio;
 
 i32 main() {
-    Channel<usize> done = must(make_channel<usize>());
-    Actor<flow::Step<Channel<usize>>> worker =
-        must(flow::spawn_step_actor<Channel<usize>>(done));
-
     aio::AsyncFd input = must(aio::open_async_read("/tmp/ciel_then_input.txt"));
     defer aio::close_async(input);
 
-    flow::Step<Channel<usize>> start = |Channel<usize> done| {
-        aio::AsyncRead read = aio::read_bytes(input, 16)?;
-
-        return flow::then(done, read, worker, |Channel<usize> done, aio::Bytes bytes| {
-            return Ok(done);
-        });
-    };
-
-    must(send(&worker, start));
-    must(join(&worker));
-    must(channel_close(&done));
+    aio::AsyncRead read = must(aio::read_bytes(input, 16));
+    flow::AsyncTask<Channel<usize>, aio::Bytes> task =
+        flow::from_completion<Channel<usize>, aio::Bytes>(read);
+    task;
     return 0;
 }

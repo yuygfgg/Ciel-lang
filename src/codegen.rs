@@ -65,6 +65,7 @@ struct CGenerator<'a> {
 
 #[derive(Clone, Debug, Default)]
 struct CodegenPlanData {
+    array_return_types: BTreeMap<String, Ty>,
     slice_types: BTreeMap<String, Ty>,
     dynamic_types: BTreeMap<String, Ty>,
     dynamic_impls: BTreeMap<String, DynamicImplUse>,
@@ -310,9 +311,19 @@ impl<'a> CGenerator<'a> {
         for enm in &self.program.checked.enums {
             self.line(&format!("typedef struct {} {};", enm.name, enm.name));
         }
+        for name in self
+            .plan
+            .array_return_types
+            .keys()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!("typedef struct {name} {name};"));
+        }
         if !self.program.checked.opaque_structs.is_empty()
             || !self.program.checked.structs.is_empty()
             || !self.program.checked.enums.is_empty()
+            || !self.plan.array_return_types.is_empty()
         {
             self.line("");
         }
@@ -325,6 +336,7 @@ impl<'a> CGenerator<'a> {
                 AggregateLayoutRef::Enum(idx) => self.emit_enum_layout(idx),
             }
         }
+        self.emit_array_return_type_layouts();
 
         self.emit_closure_environment_layouts();
 
@@ -390,6 +402,7 @@ impl<'a> CGenerator<'a> {
         self.collect_slice_types();
         self.collect_dynamic_interfaces();
         self.collect_closures();
+        self.collect_array_return_types();
         self.collect_string_literals();
         self.collect_source_locations();
     }
@@ -544,6 +557,16 @@ impl<'a> CGenerator<'a> {
         self.line("");
     }
 
+    fn emit_array_return_type_layouts(&mut self) {
+        let array_return_types = self.plan.array_return_types.clone();
+        for (name, ty) in array_return_types {
+            self.line(&format!("struct {name} {{"));
+            self.line(&format!("    {};", self.c_decl(&ty, "value")));
+            self.line("};");
+            self.line("");
+        }
+    }
+
     fn emit_c_includes(&mut self) {
         let mut includes = Vec::new();
         for module in &self.program.checked.hir_modules {
@@ -683,6 +706,306 @@ impl<'a> CGenerator<'a> {
             if let Some(body) = &function.body {
                 collect_body(self, body, function.def_id);
             }
+        }
+    }
+
+    fn collect_array_return_types(&mut self) {
+        for strukt in &self.program.checked.structs {
+            for (_, ty) in &strukt.fields {
+                self.collect_ty_array_returns(ty);
+            }
+        }
+        for enm in &self.program.checked.enums {
+            for variant in &enm.variants {
+                for ty in &variant.payload {
+                    self.collect_ty_array_returns(ty);
+                }
+            }
+        }
+        for interface in &self.program.checked.interfaces {
+            self.collect_return_ty_array_return(&interface.ret);
+            for param in &interface.params {
+                self.collect_ty_array_returns(param);
+            }
+        }
+        for implementation in &self.program.checked.impls {
+            self.collect_return_ty_array_return(&implementation.ret);
+            for param in &implementation.params {
+                self.collect_ty_array_returns(param);
+            }
+        }
+        let functions = self.program.checked.functions.clone();
+        for function in &functions {
+            self.collect_return_ty_array_return(&function.ret);
+            for (_, _, ty) in &function.params {
+                self.collect_ty_array_returns(ty);
+            }
+            if let Some(body) = &function.body {
+                self.collect_block_array_returns(body);
+            }
+        }
+        let closure_defs = self.plan.closure_defs.clone();
+        for closure in closure_defs.values() {
+            self.collect_ty_array_returns(&closure.ty);
+            for (_, _, ty) in &closure.params {
+                self.collect_ty_array_returns(ty);
+            }
+        }
+        let dynamic_types = self.plan.dynamic_types.clone();
+        for (_, ty) in dynamic_types {
+            let Ty::DynamicInterface { name, args } = &ty else {
+                continue;
+            };
+            for interface_ref in self.dynamic_view_interfaces(name, args) {
+                let ret = self.dynamic_interface_ret(&interface_ref);
+                self.collect_return_ty_array_return(&ret);
+                for param in self.dynamic_interface_params(&interface_ref) {
+                    self.collect_ty_array_returns(&param);
+                }
+            }
+        }
+    }
+
+    fn collect_return_ty_array_return(&mut self, ty: &Ty) {
+        if self.ty_needs_array_return_wrapper(ty) {
+            self.plan
+                .array_return_types
+                .insert(self.array_return_type_name(ty), ty.clone());
+        }
+        self.collect_ty_array_returns(ty);
+    }
+
+    fn collect_ty_array_returns(&mut self, ty: &Ty) {
+        match ty {
+            Ty::Pointer { inner, .. }
+            | Ty::Array { elem: inner, .. }
+            | Ty::Slice { elem: inner, .. } => {
+                self.collect_ty_array_returns(inner);
+            }
+            Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+                for arg in args {
+                    self.collect_ty_array_returns(arg);
+                }
+            }
+            Ty::Function { ret, params, .. }
+            | Ty::Closure { ret, params, .. }
+            | Ty::ClosureInstance { ret, params, .. } => {
+                self.collect_return_ty_array_return(ret);
+                for param in params {
+                    self.collect_ty_array_returns(param);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn collect_block_array_returns(&mut self, block: &TBlock) {
+        for stmt in &block.statements {
+            self.collect_stmt_array_returns(stmt);
+        }
+    }
+
+    fn collect_stmt_array_returns(&mut self, stmt: &TStmt) {
+        match &stmt.kind {
+            TStmtKind::Block(block) => self.collect_block_array_returns(block),
+            TStmtKind::VarDecl { ty, init, .. } => {
+                self.collect_ty_array_returns(ty);
+                if let Some(init) = init {
+                    self.collect_expr_array_returns(init);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_expr_array_returns(target);
+                self.collect_expr_array_returns(value);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_expr_array_returns(cond);
+                self.collect_block_array_returns(then_block);
+                if let Some(else_branch) = else_branch {
+                    self.collect_stmt_array_returns(else_branch);
+                }
+            }
+            TStmtKind::While { cond, body } => {
+                self.collect_expr_array_returns(cond);
+                self.collect_block_array_returns(body);
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_for_init_array_returns(init);
+                }
+                if let Some(cond) = cond {
+                    self.collect_expr_array_returns(cond);
+                }
+                if let Some(step) = step {
+                    self.collect_for_init_array_returns(step);
+                }
+                self.collect_block_array_returns(body);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_expr_array_returns(expr);
+                for case in cases {
+                    for stmt in &case.statements {
+                        self.collect_stmt_array_returns(stmt);
+                    }
+                }
+                for stmt in default {
+                    self.collect_stmt_array_returns(stmt);
+                }
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => self.collect_expr_array_returns(expr),
+            TStmtKind::Return(expr) => {
+                if let Some(expr) = expr {
+                    self.collect_expr_array_returns(expr);
+                }
+            }
+            TStmtKind::Break | TStmtKind::Continue | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_for_init_array_returns(&mut self, init: &TForInit) {
+        match init {
+            TForInit::VarDecl { ty, init, .. } => {
+                self.collect_ty_array_returns(ty);
+                if let Some(init) = init {
+                    self.collect_expr_array_returns(init);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_expr_array_returns(target);
+                self.collect_expr_array_returns(value);
+            }
+            TForInit::Expr(expr) => self.collect_expr_array_returns(expr),
+        }
+    }
+
+    fn collect_expr_array_returns(&mut self, expr: &TExpr) {
+        self.collect_ty_array_returns(&expr.ty);
+        match &expr.kind {
+            TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. }
+            | TExprKind::ArrayToSlice(expr)
+            | TExprKind::SliceToConst(expr)
+            | TExprKind::FunctionToClosure(expr) => self.collect_expr_array_returns(expr),
+            TExprKind::Binary { left, right, .. } => {
+                self.collect_expr_array_returns(left);
+                self.collect_expr_array_returns(right);
+            }
+            TExprKind::Call { callee, args, .. } => {
+                self.collect_expr_array_returns(callee);
+                for arg in args {
+                    self.collect_expr_array_returns(arg);
+                }
+            }
+            TExprKind::Closure { captures, .. } => {
+                for capture in captures {
+                    self.collect_ty_array_returns(&capture.ty);
+                }
+            }
+            TExprKind::RetainClosure { expr, source_ty } => {
+                self.collect_expr_array_returns(expr);
+                self.collect_ty_array_returns(source_ty);
+            }
+            TExprKind::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    self.collect_expr_array_returns(value);
+                }
+            }
+            TExprKind::EnumLiteral { payload, .. } => {
+                for value in payload {
+                    self.collect_expr_array_returns(value);
+                }
+            }
+            TExprKind::ArrayLiteral(elements) => {
+                for element in elements {
+                    self.collect_expr_array_returns(element);
+                }
+            }
+            TExprKind::ArrayRepeat { element, .. } => self.collect_expr_array_returns(element),
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_stmt_array_returns(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_expr_array_returns(value);
+                }
+            }
+            TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
+                self.collect_expr_array_returns(expr);
+                self.collect_ty_array_returns(concrete_ty);
+            }
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
+                self.collect_expr_array_returns(receiver);
+                for arg in args {
+                    self.collect_expr_array_returns(arg);
+                }
+            }
+            TExprKind::Field { base, .. }
+            | TExprKind::Arrow { base, .. }
+            | TExprKind::MetaAsRefRepr { value: base, .. }
+            | TExprKind::MetaIntoRepr { value: base, .. }
+            | TExprKind::MetaFromRepr { value: base, .. }
+            | TExprKind::ActorStop { actor: base, .. }
+            | TExprKind::ActorJoin { actor: base, .. } => self.collect_expr_array_returns(base),
+            TExprKind::Index { base, index } => {
+                self.collect_expr_array_returns(base);
+                self.collect_expr_array_returns(index);
+            }
+            TExprKind::Slice { base, start, end } => {
+                self.collect_expr_array_returns(base);
+                if let Some(start) = start {
+                    self.collect_expr_array_returns(start);
+                }
+                if let Some(end) = end {
+                    self.collect_expr_array_returns(end);
+                }
+            }
+            TExprKind::Try { expr, .. } => self.collect_expr_array_returns(expr),
+            TExprKind::ActorSpawn {
+                initial_state,
+                handler,
+                state_ty,
+                handle_message_ty,
+                message_ty,
+                handler_ty,
+            } => {
+                self.collect_expr_array_returns(initial_state);
+                self.collect_expr_array_returns(handler);
+                self.collect_ty_array_returns(state_ty);
+                self.collect_ty_array_returns(handle_message_ty);
+                self.collect_ty_array_returns(message_ty);
+                self.collect_ty_array_returns(handler_ty);
+            }
+            TExprKind::ActorSend {
+                actor,
+                value,
+                message_ty,
+            } => {
+                self.collect_expr_array_returns(actor);
+                self.collect_expr_array_returns(value);
+                self.collect_ty_array_returns(message_ty);
+            }
+            TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => {
+                self.collect_ty_array_returns(ty);
+            }
+            TExprKind::Local(..)
+            | TExprKind::Function(_, _)
+            | TExprKind::GenericFunction { .. }
+            | TExprKind::Literal(_) => {}
         }
     }
 
@@ -2085,7 +2408,10 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "ciel_panic(NULL, 0);");
         } else if falls_through && !function.ret.is_erased_value() {
             self.line_indent(1, "ciel_panic(NULL, 0);");
-            self.line_indent(1, &format!("return {};", self.zero_value(&function.ret)));
+            self.line_indent(
+                1,
+                &format!("return {};", self.zero_return_value(&function.ret)),
+            );
         }
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
@@ -2343,8 +2669,10 @@ impl<'a> CGenerator<'a> {
                         return Ok(false);
                     }
                     let temp = self.emit_temp_value("return", expr, indent)?;
+                    let return_ty = self.current_return_ty.clone();
+                    let value = self.emit_return_value(&return_ty, &temp, indent);
                     self.emit_all_defers(indent);
-                    self.line_indent(indent, &format!("return {temp};"));
+                    self.line_indent(indent, &format!("return {value};"));
                 } else {
                     self.emit_all_defers(indent);
                     self.line_indent(indent, "return;");
@@ -2435,12 +2763,10 @@ impl<'a> CGenerator<'a> {
                             self.c_sizeof_type(ty)
                         ),
                     );
-                    self.line_indent(indent, &format!("*{cname} = {value_expr};"));
+                    self.emit_value_copy(&format!("*{cname}"), value_expr, ty, indent);
                 } else {
-                    self.line_indent(
-                        indent,
-                        &format!("{} = {value_expr};", self.c_decl(ty, &cname)),
-                    );
+                    self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
+                    self.emit_value_copy(&cname, value_expr, ty, indent);
                 }
             }
             TPattern::Variant {
@@ -2911,11 +3237,12 @@ impl<'a> CGenerator<'a> {
                     ));
                 }
                 if matches!(callee.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. }) {
-                    return self.emit_closure_call(callee, args, stmt_indent);
+                    let call = self.emit_closure_call(callee, args, stmt_indent)?;
+                    return self.emit_array_call_value(expr, call, stmt_indent);
                 }
                 let callee = self.gen_expr_with_lowering(callee, stmt_indent)?;
                 let args = self.gen_call_args(args, stmt_indent)?.join(", ");
-                format!("{callee}({args})")
+                self.emit_array_call_value(expr, format!("{callee}({args})"), stmt_indent)?
             }
             TExprKind::UnsafeBlock { statements, value } => {
                 let Some(indent) = stmt_indent else {
@@ -3002,24 +3329,28 @@ impl<'a> CGenerator<'a> {
                 };
                 let mut call_args = vec![format!("({receiver_code}).data")];
                 call_args.extend(self.gen_call_args(args, stmt_indent)?);
-                format!(
+                let call = format!(
                     "({receiver_code}).vtable->{}({})",
                     interface_name,
                     call_args.join(", ")
-                )
+                );
+                self.emit_array_call_value(expr, call, stmt_indent)?
             }
             TExprKind::RetainedClosureInterfaceCall {
                 interface_name,
                 interface_args,
                 receiver,
                 args,
-            } => self.emit_retained_closure_interface_call(
-                interface_name,
-                interface_args,
-                receiver,
-                args,
-                stmt_indent,
-            )?,
+            } => {
+                let call = self.emit_retained_closure_interface_call(
+                    interface_name,
+                    interface_args,
+                    receiver,
+                    args,
+                    stmt_indent,
+                )?;
+                self.emit_array_call_value(expr, call, stmt_indent)?
+            }
             TExprKind::Field { base, field } => {
                 if expr.ty.is_erased_value() {
                     let base = self.gen_expr_with_lowering(base, stmt_indent)?;
@@ -3454,6 +3785,61 @@ impl<'a> CGenerator<'a> {
         let temp = self.next_temp(prefix);
         self.emit_local_decl_with_init(&expr.ty, &temp, expr, indent)?;
         Ok(temp)
+    }
+
+    fn emit_array_return_value(
+        &mut self,
+        prefix: &str,
+        ty: &Ty,
+        source: &str,
+        indent: usize,
+    ) -> String {
+        let temp = self.next_temp(prefix);
+        self.line_indent(
+            indent,
+            &format!("{} {temp};", self.array_return_type_name(ty)),
+        );
+        self.emit_value_copy(&format!("{temp}.value"), source, ty, indent);
+        temp
+    }
+
+    fn emit_return_value(&mut self, ty: &Ty, source: &str, indent: usize) -> String {
+        if self.ty_needs_array_return_wrapper(ty) {
+            self.emit_array_return_value("array_return", ty, source, indent)
+        } else {
+            source.to_string()
+        }
+    }
+
+    fn zero_return_value(&self, ty: &Ty) -> String {
+        if self.ty_needs_array_return_wrapper(ty) {
+            format!("({}){{0}}", self.array_return_type_name(ty))
+        } else {
+            self.zero_value(ty)
+        }
+    }
+
+    fn emit_array_call_value(
+        &mut self,
+        expr: &TExpr,
+        call: String,
+        stmt_indent: Option<usize>,
+    ) -> DiagResult<String> {
+        if !self.ty_needs_array_return_wrapper(&expr.ty) {
+            return Ok(call);
+        }
+        let Some(indent) = stmt_indent else {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                "array-returning call needs statement lowering",
+            )]);
+        };
+        let temp = self.next_temp("array_call");
+        self.line_indent(
+            indent,
+            &format!("{} {temp} = {call};", self.array_return_type_name(&expr.ty)),
+        );
+        Ok(format!("{temp}.value"))
     }
 
     fn emit_meta_owned_leaf_repr_expr(
@@ -5356,18 +5742,26 @@ impl<'a> CGenerator<'a> {
             }
             SliceBase::Array { len, elem } => {
                 let base_temp = self.next_temp("slice_array");
-                let array_ty = Ty::Array {
-                    len,
-                    elem: Box::new(elem),
-                };
-                self.line_indent(
-                    indent,
-                    &format!(
-                        "{} = &({base_code});",
-                        self.c_pointer_decl(&array_ty, &base_temp)
-                    ),
-                );
-                (format!("(*{base_temp})"), len.to_string())
+                if self.expr_is_decayed_array_parameter(base) {
+                    self.line_indent(
+                        indent,
+                        &format!("{} *{base_temp} = {base_code};", self.c_type(&elem)),
+                    );
+                    (base_temp, len.to_string())
+                } else {
+                    let array_ty = Ty::Array {
+                        len,
+                        elem: Box::new(elem),
+                    };
+                    self.line_indent(
+                        indent,
+                        &format!(
+                            "{} = &({base_code});",
+                            self.c_pointer_decl(&array_ty, &base_temp)
+                        ),
+                    );
+                    (format!("(*{base_temp})"), len.to_string())
+                }
             }
         };
 
@@ -5410,6 +5804,11 @@ impl<'a> CGenerator<'a> {
             ),
         );
         Ok(slice_temp)
+    }
+
+    fn expr_is_decayed_array_parameter(&self, expr: &TExpr) -> bool {
+        matches!(expr.ty, Ty::Array { .. })
+            && matches!(&expr.kind, TExprKind::Local(local_id, _) if self.current_param_locals.contains_key(local_id))
     }
 
     fn emit_array_literal_init(
@@ -6852,6 +7251,7 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(1, &format!("(void)({value});"));
                     self.line_indent(1, "return;");
                 } else {
+                    let value = self.emit_return_value(&ret, &value, 1);
                     self.line_indent(1, &format!("return {value};"));
                 }
             }
@@ -6861,7 +7261,7 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(1, "ciel_panic(NULL, 0);");
                 } else if falls_through && !ret.is_erased_value() {
                     self.line_indent(1, "ciel_panic(NULL, 0);");
-                    self.line_indent(1, &format!("return {};", self.zero_value(&ret)));
+                    self.line_indent(1, &format!("return {};", self.zero_return_value(&ret)));
                 }
             }
         }
@@ -7246,6 +7646,8 @@ impl<'a> CGenerator<'a> {
     fn c_return_decl(&self, ty: &Ty, name: &str) -> String {
         if ty.is_erased_value() {
             c_base_decl("void", name)
+        } else if self.ty_needs_array_return_wrapper(ty) {
+            c_base_decl(&self.array_return_type_name(ty), name)
         } else {
             self.c_decl(ty, name)
         }
@@ -7405,6 +7807,14 @@ impl<'a> CGenerator<'a> {
                     .join("_")
             )
         }
+    }
+
+    fn array_return_type_name(&self, ty: &Ty) -> String {
+        format!("CielArrayReturn_{}", mangle_ty_fragment(ty))
+    }
+
+    fn ty_needs_array_return_wrapper(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Array { .. }) && !ty.is_erased_value()
     }
 
     fn zero_value(&self, ty: &Ty) -> String {

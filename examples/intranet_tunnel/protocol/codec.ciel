@@ -1,0 +1,43 @@
+import /std/codec as binary;
+import /std/meta as meta;
+import /std/result;
+import ./error as tunnel_error;
+import ./frame as frame;
+
+export Result<[]u8, Error> encode_header(frame::FrameHeader header) {
+    frame::validate_stream_id(header.kind, header.stream_id)?;
+    frame::validate_payload_len(header.length as usize)?;
+
+    [16]u8 @out = [0;];
+    binary::put_be(out[..4], frame::magic())?;
+    binary::put_be(out[4..6], frame::protocol_version())?;
+    binary::put_be(out[6..8], frame::frame_kind_code(header.kind))?;
+    binary::put_be(out[8..12], header.stream_id)?;
+    binary::put_be(out[12..16], header.length)?;
+    return Ok(out[..]);
+}
+
+export Result<frame::FrameHeader, Error> decode_header([]const u8 input) {
+    if (input.len < frame::header_len()) {
+        return Err(tunnel_error::protocol_error(tunnel_error::UnexpectedEof));
+    }
+
+    u32 magic = binary::get_be({} as meta::Type<u32>, input[..4])?;
+    if (magic != frame::magic()) {
+        return Err(tunnel_error::protocol_error(tunnel_error::BadMagic(magic)));
+    }
+
+    u16 version = binary::get_be({} as meta::Type<u16>, input[4..6])?;
+    if (version != frame::protocol_version()) {
+        return Err(tunnel_error::protocol_error(tunnel_error::UnsupportedVersion(version)));
+    }
+
+    u16 kind_code = binary::get_be({} as meta::Type<u16>, input[6..8])?;
+    frame::FrameKind kind = frame::frame_kind_from_code(kind_code)?;
+    u32 stream_id = binary::get_be({} as meta::Type<u32>, input[8..12])?;
+    u32 length = binary::get_be({} as meta::Type<u32>, input[12..16])?;
+
+    frame::validate_payload_len(length as usize)?;
+    frame::validate_stream_id(kind, stream_id)?;
+    return Ok({ kind: kind, stream_id: stream_id, length: length });
+}

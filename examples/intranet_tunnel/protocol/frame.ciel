@@ -1,0 +1,144 @@
+import /std/result;
+import ./error as tunnel_error;
+
+export enum FrameKind {
+    Hello,
+    HelloOk,
+    OpenStream,
+    OpenResult,
+    Data,
+    CloseWrite,
+    CloseStream,
+    Ping,
+    Pong,
+    ErrorFrame,
+}
+
+export struct FrameHeader {
+    FrameKind kind;
+    u32 stream_id;
+    u32 length;
+}
+
+export u32 magic() {
+    return 0x4349544e as u32;
+}
+
+export u16 protocol_version() {
+    return 1 as u16;
+}
+
+export usize header_len() {
+    return 16;
+}
+
+export usize max_payload_len() {
+    return 65536;
+}
+
+export u16 frame_kind_code(FrameKind kind) {
+    switch (kind) {
+        case Hello:
+            return 1 as u16;
+        case HelloOk:
+            return 2 as u16;
+        case OpenStream:
+            return 3 as u16;
+        case OpenResult:
+            return 4 as u16;
+        case Data:
+            return 5 as u16;
+        case CloseWrite:
+            return 6 as u16;
+        case CloseStream:
+            return 7 as u16;
+        case Ping:
+            return 8 as u16;
+        case Pong:
+            return 9 as u16;
+        case ErrorFrame:
+            return 10 as u16;
+    }
+}
+
+export Result<FrameKind, tunnel_error::ProtocolError> frame_kind_from_code(u16 code) {
+    if (code == (1 as u16)) {
+        return Ok(Hello);
+    }
+    if (code == (2 as u16)) {
+        return Ok(HelloOk);
+    }
+    if (code == (3 as u16)) {
+        return Ok(OpenStream);
+    }
+    if (code == (4 as u16)) {
+        return Ok(OpenResult);
+    }
+    if (code == (5 as u16)) {
+        return Ok(Data);
+    }
+    if (code == (6 as u16)) {
+        return Ok(CloseWrite);
+    }
+    if (code == (7 as u16)) {
+        return Ok(CloseStream);
+    }
+    if (code == (8 as u16)) {
+        return Ok(Ping);
+    }
+    if (code == (9 as u16)) {
+        return Ok(Pong);
+    }
+    if (code == (10 as u16)) {
+        return Ok(ErrorFrame);
+    }
+    return Err(tunnel_error::UnknownFrameKind(code));
+}
+
+export bool frame_kind_requires_zero_stream(FrameKind kind) {
+    switch (kind) {
+        case Hello:
+            return true;
+        case HelloOk:
+            return true;
+        case OpenStream:
+            return false;
+        case OpenResult:
+            return false;
+        case Data:
+            return false;
+        case CloseWrite:
+            return false;
+        case CloseStream:
+            return false;
+        case Ping:
+            return true;
+        case Pong:
+            return true;
+        case ErrorFrame:
+            return true;
+    }
+}
+
+export Result<void, tunnel_error::ProtocolError> validate_stream_id(
+    FrameKind kind,
+    u32 stream_id
+) {
+    if (frame_kind_requires_zero_stream(kind)) {
+        if (stream_id == (0 as u32)) {
+            return Ok;
+        }
+        return Err(tunnel_error::InvalidStreamId(frame_kind_code(kind), stream_id));
+    }
+    if (stream_id != (0 as u32)) {
+        return Ok;
+    }
+    return Err(tunnel_error::InvalidStreamId(frame_kind_code(kind), stream_id));
+}
+
+export Result<void, tunnel_error::ProtocolError> validate_payload_len(usize len) {
+    if (len <= max_payload_len()) {
+        return Ok;
+    }
+    return Err(tunnel_error::OversizedPayload(len));
+}

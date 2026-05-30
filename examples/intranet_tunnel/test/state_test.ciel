@@ -1,0 +1,109 @@
+import /std/result;
+import /intranet_tunnel/protocol/error as terr;
+import /intranet_tunnel/protocol/state as state;
+
+i64 server_state_code(state::ServerStreamState item) {
+    switch (item) {
+        case state::ServerPendingAgentOpen:
+            return 1;
+        case state::ServerOpen:
+            return 2;
+        case state::ServerClientWriteClosed:
+            return 3;
+        case state::ServerAgentWriteClosed:
+            return 4;
+        case state::ServerClosed:
+            return 5;
+    }
+}
+
+i64 agent_state_code(state::AgentStreamState item) {
+    switch (item) {
+        case state::AgentDialingTarget:
+            return 1;
+        case state::AgentOpen:
+            return 2;
+        case state::AgentServerWriteClosed:
+            return 3;
+        case state::AgentTargetWriteClosed:
+            return 4;
+        case state::AgentClosed:
+            return 5;
+    }
+}
+
+bool is_err_server(Result<state::ServerStreamState, terr::ProtocolError> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_agent(Result<state::AgentStreamState, terr::ProtocolError> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i32 main() {
+    state::ServerStreamState @server =
+        must(state::server_transition(
+            state::ServerPendingAgentOpen,
+            state::ServerAgentOpenSucceeded
+        ));
+    if (server_state_code(server) != 2) {
+        return 1;
+    }
+    server = must(state::server_transition(server, state::ServerClientEof));
+    if (server_state_code(server) != 3) {
+        return 2;
+    }
+    server = must(state::server_transition(server, state::ServerAgentEof));
+    if (server_state_code(server) != 5) {
+        return 3;
+    }
+    server = must(state::server_transition(server, state::ServerClientEof));
+    if (server_state_code(server) != 5) {
+        return 4;
+    }
+    if (!is_err_server(state::server_transition(
+        state::ServerPendingAgentOpen,
+        state::ServerClientEof
+    ))) {
+        return 5;
+    }
+
+    state::AgentStreamState @agent =
+        must(state::agent_transition(
+            state::AgentDialingTarget,
+            state::AgentTargetOpenSucceeded
+        ));
+    if (agent_state_code(agent) != 2) {
+        return 6;
+    }
+    agent = must(state::agent_transition(agent, state::AgentServerEof));
+    if (agent_state_code(agent) != 3) {
+        return 7;
+    }
+    agent = must(state::agent_transition(agent, state::AgentTargetEof));
+    if (agent_state_code(agent) != 5) {
+        return 8;
+    }
+    agent = must(state::agent_transition(agent, state::AgentTargetEof));
+    if (agent_state_code(agent) != 5) {
+        return 9;
+    }
+    if (!is_err_agent(state::agent_transition(
+        state::AgentDialingTarget,
+        state::AgentServerEof
+    ))) {
+        return 10;
+    }
+
+    return 0;
+}

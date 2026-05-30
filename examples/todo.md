@@ -196,33 +196,36 @@ host integration.
 
 ## Phase 6: Tunnel Protocol Library
 
-- [ ] Create `examples/intranet_tunnel/protocol/frame.ciel`.
+Protocol library tests live under `examples/intranet_tunnel/test/` and are
+driven by `test.sh`; they are not part of the repository-wide fixture harness.
+
+- [x] Create `examples/intranet_tunnel/protocol/frame.ciel`.
       Define frame constants, frame kind enum, `FrameHeader`, and maximum
       payload length.
       Tests: enum switches are exhaustive; invalid kind conversion returns a
       protocol error.
 
-- [ ] Create `examples/intranet_tunnel/protocol/codec.ciel`.
+- [x] Create `examples/intranet_tunnel/protocol/codec.ciel`.
       Implement frame header encode/decode using `/std/codec`.
       Tests: header round trip, short header rejection, bad magic rejection,
       unsupported version rejection, oversized payload length rejection.
 
-- [ ] Add protocol error types and formatting.
+- [x] Add protocol error types and formatting.
       Implement precise protocol errors with `format_error`.
       Tests: each error variant formats to a non-empty message; `?` boxes into
       `/std/error::Error`.
 
-- [ ] Add stream state transition helpers.
+- [x] Add stream state transition helpers.
       Implement server and agent stream-state enums and transition functions.
       Tests: valid transitions succeed; invalid transitions return protocol
       errors; terminal `Closed` transitions are stable.
 
-- [ ] Add authentication payload encoding.
+- [x] Add authentication payload encoding.
       Encode the Hello fields needed by the PRD: version, nonce, route name, and
       tag.
       Tests: round trip, wrong length rejection, route name length bounds.
 
-- [ ] Add authentication tag computation.
+- [x] Add authentication tag computation.
       Use `/std/crypto::mac_once("HMAC(SHA-256)", ...)`.
       Tests: matching PSK verifies; wrong PSK rejects; repeated nonce/message
       computes the same tag.

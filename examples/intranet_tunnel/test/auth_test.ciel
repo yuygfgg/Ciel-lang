@@ -1,0 +1,160 @@
+import /std/result;
+import /intranet_tunnel/protocol/auth as auth;
+import /intranet_tunnel/protocol/frame as frame;
+
+bool bytes_eq([]const u8 left, []const u8 right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool bytes_eq_text([]const u8 left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != (right[i] as u8)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool is_err_hello(Result<auth::Hello, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_bytes(Result<[]u8, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_void(Result<void, Error> value) {
+    switch (value) {
+        case Ok:
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i32 main() {
+    [16]u8 psk = [
+        0x73 as u8, 0x65 as u8, 0x63 as u8, 0x72 as u8,
+        0x65 as u8, 0x74 as u8, 0x2d as u8, 0x74 as u8,
+        0x75 as u8, 0x6e as u8, 0x6e as u8, 0x65 as u8,
+        0x6c as u8, 0x2d as u8, 0x6b as u8, 0x31 as u8
+    ];
+    [16]u8 wrong_psk = [
+        0x77 as u8, 0x72 as u8, 0x6f as u8, 0x6e as u8,
+        0x67 as u8, 0x2d as u8, 0x74 as u8, 0x75 as u8,
+        0x6e as u8, 0x6e as u8, 0x65 as u8, 0x6c as u8,
+        0x2d as u8, 0x6b as u8, 0x65 as u8, 0x79 as u8
+    ];
+    [32]u8 nonce = [7 as u8;];
+
+    [32]u8 accepted_key_probe = expect(auth::compute_auth_tag(
+        psk[..],
+        frame::protocol_version(),
+        "dev",
+        nonce
+    ), "auth test PSK must be accepted by /std/crypto HMAC");
+
+    Result<[]u8, Error> payload_result =
+        auth::encode_hello_with_nonce("dev", psk[..], nonce);
+    if (is_err_bytes(payload_result)) {
+        return 101;
+    }
+    []u8 payload = must(payload_result);
+
+    Result<auth::Hello, Error> hello_result = auth::decode_hello(payload);
+    if (is_err_hello(hello_result)) {
+        return 102;
+    }
+    auth::Hello hello = must(hello_result);
+    if (hello.version != frame::protocol_version()) {
+        return 1;
+    }
+    if (!bytes_eq_text(hello.route, "dev")) {
+        return 2;
+    }
+    if (!bytes_eq(hello.nonce[..], nonce[..])) {
+        return 3;
+    }
+    if (auth::tag_len() != 32) {
+        return 4;
+    }
+    Result<void, Error> verify_result = auth::verify_hello(hello, "dev", psk[..]);
+    if (is_err_void(verify_result)) {
+        return 103;
+    }
+    must(verify_result);
+    if (!is_err_void(auth::verify_hello(hello, "dev", wrong_psk[..]))) {
+        return 5;
+    }
+
+    [2]u8 short = [0;];
+    if (!is_err_hello(auth::decode_hello(short[..]))) {
+        return 6;
+    }
+
+    []u8 mismatched = must(auth::encode_hello_with_nonce("dev", psk[..], nonce));
+    mismatched[3] = 4 as u8;
+    if (!is_err_hello(auth::decode_hello(mismatched))) {
+        return 7;
+    }
+
+    [65536]char long_route = ['x';];
+    if (!is_err_bytes(auth::encode_hello_with_nonce(long_route[..], psk[..], nonce))) {
+        return 8;
+    }
+
+    [32]u8 tag_a = must(auth::compute_auth_tag(
+        psk[..],
+        frame::protocol_version(),
+        "dev",
+        nonce
+    ));
+    [32]u8 tag_b = must(auth::compute_auth_tag(
+        psk[..],
+        frame::protocol_version(),
+        "dev",
+        nonce
+    ));
+    if (!bytes_eq(tag_a[..], tag_b[..])) {
+        return 9;
+    }
+    if (!bytes_eq(tag_a[..], hello.tag[..])) {
+        return 10;
+    }
+
+    []u8 hello_ok = must(auth::encode_hello_ok_with_nonce(frame::protocol_version(), nonce));
+    auth::HelloOk ok = must(auth::decode_hello_ok(hello_ok));
+    if (ok.selected_version != frame::protocol_version()) {
+        return 11;
+    }
+    if (!bytes_eq(ok.server_nonce[..], nonce[..])) {
+        return 12;
+    }
+
+    return 0;
+}

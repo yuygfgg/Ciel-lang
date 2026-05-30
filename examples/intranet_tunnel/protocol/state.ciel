@@ -1,0 +1,166 @@
+import /std/result;
+import ./error as tunnel_error;
+
+export enum ServerStreamState {
+    ServerPendingAgentOpen,
+    ServerOpen,
+    ServerClientWriteClosed,
+    ServerAgentWriteClosed,
+    ServerClosed,
+}
+
+export enum AgentStreamState {
+    AgentDialingTarget,
+    AgentOpen,
+    AgentServerWriteClosed,
+    AgentTargetWriteClosed,
+    AgentClosed,
+}
+
+export enum ServerTransition {
+    ServerAgentOpenSucceeded,
+    ServerAgentOpenFailed,
+    ServerClientEof,
+    ServerAgentEof,
+    ServerFatalClose,
+}
+
+export enum AgentTransition {
+    AgentTargetOpenSucceeded,
+    AgentTargetOpenFailed,
+    AgentServerEof,
+    AgentTargetEof,
+    AgentFatalClose,
+}
+
+tunnel_error::ProtocolError invalid_server_transition() {
+    return tunnel_error::InvalidTransition("server stream state");
+}
+
+tunnel_error::ProtocolError invalid_agent_transition() {
+    return tunnel_error::InvalidTransition("agent stream state");
+}
+
+export Result<ServerStreamState, tunnel_error::ProtocolError> server_transition(
+    ServerStreamState state,
+    ServerTransition transition
+) {
+    switch (state) {
+        case ServerPendingAgentOpen:
+            switch (transition) {
+                case ServerAgentOpenSucceeded:
+                    return Ok(ServerOpen);
+                case ServerAgentOpenFailed:
+                    return Ok(ServerClosed);
+                case ServerClientEof:
+                    return Err(invalid_server_transition());
+                case ServerAgentEof:
+                    return Err(invalid_server_transition());
+                case ServerFatalClose:
+                    return Ok(ServerClosed);
+            }
+        case ServerOpen:
+            switch (transition) {
+                case ServerAgentOpenSucceeded:
+                    return Err(invalid_server_transition());
+                case ServerAgentOpenFailed:
+                    return Err(invalid_server_transition());
+                case ServerClientEof:
+                    return Ok(ServerClientWriteClosed);
+                case ServerAgentEof:
+                    return Ok(ServerAgentWriteClosed);
+                case ServerFatalClose:
+                    return Ok(ServerClosed);
+            }
+        case ServerClientWriteClosed:
+            switch (transition) {
+                case ServerAgentOpenSucceeded:
+                    return Err(invalid_server_transition());
+                case ServerAgentOpenFailed:
+                    return Err(invalid_server_transition());
+                case ServerClientEof:
+                    return Ok(ServerClientWriteClosed);
+                case ServerAgentEof:
+                    return Ok(ServerClosed);
+                case ServerFatalClose:
+                    return Ok(ServerClosed);
+            }
+        case ServerAgentWriteClosed:
+            switch (transition) {
+                case ServerAgentOpenSucceeded:
+                    return Err(invalid_server_transition());
+                case ServerAgentOpenFailed:
+                    return Err(invalid_server_transition());
+                case ServerClientEof:
+                    return Ok(ServerClosed);
+                case ServerAgentEof:
+                    return Ok(ServerAgentWriteClosed);
+                case ServerFatalClose:
+                    return Ok(ServerClosed);
+            }
+        case ServerClosed:
+            return Ok(ServerClosed);
+    }
+}
+
+export Result<AgentStreamState, tunnel_error::ProtocolError> agent_transition(
+    AgentStreamState state,
+    AgentTransition transition
+) {
+    switch (state) {
+        case AgentDialingTarget:
+            switch (transition) {
+                case AgentTargetOpenSucceeded:
+                    return Ok(AgentOpen);
+                case AgentTargetOpenFailed:
+                    return Ok(AgentClosed);
+                case AgentServerEof:
+                    return Err(invalid_agent_transition());
+                case AgentTargetEof:
+                    return Err(invalid_agent_transition());
+                case AgentFatalClose:
+                    return Ok(AgentClosed);
+            }
+        case AgentOpen:
+            switch (transition) {
+                case AgentTargetOpenSucceeded:
+                    return Err(invalid_agent_transition());
+                case AgentTargetOpenFailed:
+                    return Err(invalid_agent_transition());
+                case AgentServerEof:
+                    return Ok(AgentServerWriteClosed);
+                case AgentTargetEof:
+                    return Ok(AgentTargetWriteClosed);
+                case AgentFatalClose:
+                    return Ok(AgentClosed);
+            }
+        case AgentServerWriteClosed:
+            switch (transition) {
+                case AgentTargetOpenSucceeded:
+                    return Err(invalid_agent_transition());
+                case AgentTargetOpenFailed:
+                    return Err(invalid_agent_transition());
+                case AgentServerEof:
+                    return Ok(AgentServerWriteClosed);
+                case AgentTargetEof:
+                    return Ok(AgentClosed);
+                case AgentFatalClose:
+                    return Ok(AgentClosed);
+            }
+        case AgentTargetWriteClosed:
+            switch (transition) {
+                case AgentTargetOpenSucceeded:
+                    return Err(invalid_agent_transition());
+                case AgentTargetOpenFailed:
+                    return Err(invalid_agent_transition());
+                case AgentServerEof:
+                    return Ok(AgentClosed);
+                case AgentTargetEof:
+                    return Ok(AgentTargetWriteClosed);
+                case AgentFatalClose:
+                    return Ok(AgentClosed);
+            }
+        case AgentClosed:
+            return Ok(AgentClosed);
+    }
+}

@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+
+[4]u8 make_array() {
+    [4]u8 value = [1 as u8, 2 as u8, 3 as u8, 4 as u8];
+    return value;
+}
+
+Result<[4]u8, Error> make_result_array() {
+    return Ok(make_array());
+}
+
+usize sum_array([4]u8 value) {
+    []const u8 view = value[..];
+    usize @sum = 0;
+    usize @i = 0;
+    while (i < view.len) {
+        sum = sum + (view[i] as usize);
+        i = i + 1;
+    }
+    return sum;
+}
+
+i32 main() {
+    [4]u8 direct = make_array();
+    if (direct[0] != (1 as u8) || direct[3] != (4 as u8)) {
+        return 1;
+    }
+
+    [4]u8 from_result = must(make_result_array());
+    if (from_result[1] != (2 as u8) || from_result[2] != (3 as u8)) {
+        return 2;
+    }
+
+    if (sum_array(make_array()) != 10) {
+        return 3;
+    }
+
+    return 0;
+}

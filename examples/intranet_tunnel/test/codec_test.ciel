@@ -1,0 +1,89 @@
+import /std/codec as binary;
+import /std/result;
+import /intranet_tunnel/protocol/codec as tunnel_codec;
+import /intranet_tunnel/protocol/frame as frame;
+
+bool is_err_header(Result<frame::FrameHeader, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_bytes(Result<[]u8, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+i32 main() {
+    frame::FrameHeader header = {
+        kind: frame::Data,
+        stream_id: 7 as u32,
+        length: 1024 as u32
+    };
+    []u8 encoded = must(tunnel_codec::encode_header(header));
+    if (encoded.len != frame::header_len()) {
+        return 1;
+    }
+    frame::FrameHeader decoded = must(tunnel_codec::decode_header(encoded));
+    if (frame::frame_kind_code(decoded.kind) != frame::frame_kind_code(header.kind)) {
+        return 2;
+    }
+    if (decoded.stream_id != header.stream_id || decoded.length != header.length) {
+        return 3;
+    }
+
+    [15]u8 short = [0;];
+    if (!is_err_header(tunnel_codec::decode_header(short[..]))) {
+        return 4;
+    }
+
+    frame::FrameHeader ping = {
+        kind: frame::Ping,
+        stream_id: 0 as u32,
+        length: 0 as u32
+    };
+    []u8 bad_magic = must(tunnel_codec::encode_header(ping));
+    bad_magic[3] = bad_magic[3] ^ (0x55 as u8);
+    if (!is_err_header(tunnel_codec::decode_header(bad_magic))) {
+        return 5;
+    }
+
+    []u8 bad_version = must(tunnel_codec::encode_header(ping));
+    bad_version[5] = 2 as u8;
+    if (!is_err_header(tunnel_codec::decode_header(bad_version))) {
+        return 6;
+    }
+
+    []u8 oversized = must(tunnel_codec::encode_header(header));
+    must(binary::put_be(oversized[12..16], (frame::max_payload_len() + 1) as u32));
+    if (!is_err_header(tunnel_codec::decode_header(oversized))) {
+        return 7;
+    }
+
+    frame::FrameHeader too_big = {
+        kind: frame::Data,
+        stream_id: 1 as u32,
+        length: (frame::max_payload_len() + 1) as u32
+    };
+    if (!is_err_bytes(tunnel_codec::encode_header(too_big))) {
+        return 8;
+    }
+
+    frame::FrameHeader bad_stream = {
+        kind: frame::Ping,
+        stream_id: 1 as u32,
+        length: 0 as u32
+    };
+    if (!is_err_bytes(tunnel_codec::encode_header(bad_stream))) {
+        return 9;
+    }
+
+    return 0;
+}

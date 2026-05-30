@@ -1,0 +1,141 @@
+import /std/result;
+import /intranet_tunnel/protocol/error as terr;
+import /intranet_tunnel/protocol/frame as frame;
+
+u16 exhaustive_kind_code(frame::FrameKind kind) {
+    switch (kind) {
+        case frame::Hello:
+            return 1 as u16;
+        case frame::HelloOk:
+            return 2 as u16;
+        case frame::OpenStream:
+            return 3 as u16;
+        case frame::OpenResult:
+            return 4 as u16;
+        case frame::Data:
+            return 5 as u16;
+        case frame::CloseWrite:
+            return 6 as u16;
+        case frame::CloseStream:
+            return 7 as u16;
+        case frame::Ping:
+            return 8 as u16;
+        case frame::Pong:
+            return 9 as u16;
+        case frame::ErrorFrame:
+            return 10 as u16;
+    }
+}
+
+bool is_err_kind(Result<frame::FrameKind, terr::ProtocolError> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool is_err_void(Result<void, Error> value) {
+    switch (value) {
+        case Ok:
+            return false;
+        case Err(error):
+            return error_message(&error).len > 0;
+    }
+}
+
+Result<void, terr::ProtocolError> fail_precise_protocol() {
+    return Err(terr::UnknownFrameKind(99 as u16));
+}
+
+Result<void, terr::AuthError> fail_precise_auth() {
+    return Err(terr::TagMismatch);
+}
+
+Result<void, Error> box_protocol_error() {
+    fail_precise_protocol()?;
+    return Ok;
+}
+
+Result<void, Error> box_auth_error() {
+    fail_precise_auth()?;
+    return Ok;
+}
+
+bool protocol_text_nonempty(terr::ProtocolError error) {
+    return format_error(&error).len > 0;
+}
+
+bool auth_text_nonempty(terr::AuthError error) {
+    return format_error(&error).len > 0;
+}
+
+i32 main() {
+    if (exhaustive_kind_code(frame::ErrorFrame) != (10 as u16)) {
+        return 1;
+    }
+    if (frame::frame_kind_code(frame::Data) != (5 as u16)) {
+        return 2;
+    }
+    if (!is_err_kind(frame::frame_kind_from_code(99 as u16))) {
+        return 3;
+    }
+    if (frame::frame_kind_requires_zero_stream(frame::Ping) == false) {
+        return 4;
+    }
+    if (frame::frame_kind_requires_zero_stream(frame::Data) == true) {
+        return 5;
+    }
+    if (is_err_void(box_protocol_error()) == false) {
+        return 6;
+    }
+    if (is_err_void(box_auth_error()) == false) {
+        return 7;
+    }
+
+    if (!protocol_text_nonempty(terr::UnexpectedEof)) {
+        return 8;
+    }
+    if (!protocol_text_nonempty(terr::BadMagic(0 as u32))) {
+        return 9;
+    }
+    if (!protocol_text_nonempty(terr::UnsupportedVersion(2 as u16))) {
+        return 10;
+    }
+    if (!protocol_text_nonempty(terr::UnknownFrameKind(11 as u16))) {
+        return 11;
+    }
+    if (!protocol_text_nonempty(terr::OversizedPayload(frame::max_payload_len() + 1))) {
+        return 12;
+    }
+    if (!protocol_text_nonempty(terr::InvalidStreamId(8 as u16, 7 as u32))) {
+        return 13;
+    }
+    if (!protocol_text_nonempty(terr::InvalidTransition("bad state"))) {
+        return 14;
+    }
+    if (!protocol_text_nonempty(terr::MalformedPayload("bad payload"))) {
+        return 15;
+    }
+    if (!auth_text_nonempty(terr::RouteMismatch)) {
+        return 16;
+    }
+    if (!auth_text_nonempty(terr::TagMismatch)) {
+        return 17;
+    }
+    if (!auth_text_nonempty(terr::AuthUnsupportedVersion(2 as u16))) {
+        return 18;
+    }
+    if (!auth_text_nonempty(terr::MalformedHello)) {
+        return 19;
+    }
+    if (!auth_text_nonempty(terr::RouteNameTooLong(frame::max_payload_len()))) {
+        return 20;
+    }
+    if (!auth_text_nonempty(terr::TagLengthMismatch(31))) {
+        return 21;
+    }
+
+    return 0;
+}

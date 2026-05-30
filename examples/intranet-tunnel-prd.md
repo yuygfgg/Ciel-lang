@@ -802,6 +802,9 @@ examples/intranet_tunnel/
   protocol/codec.ciel
   protocol/auth.ciel
   protocol/error.ciel
+  protocol/state.ciel
+  test/test.sh
+  test/*_test.ciel
   server/control.ciel
   server/listener.ciel
   server/streams.ciel
@@ -816,6 +819,8 @@ Module responsibilities:
 - `protocol/codec`: encode/decode frame headers and payload structs.
 - `protocol/auth`: handshake payloads and `/std/crypto` calls.
 - `protocol/error`: protocol-specific error enum and formatting impl.
+- `protocol/state`: server-side and agent-side stream transition helpers.
+- `test`: demo-local shell-driven checks for protocol modules.
 - `server/control`: authenticated agent control connection.
 - `server/listener`: public listener and stream id allocation through
   `/std/async_net`.

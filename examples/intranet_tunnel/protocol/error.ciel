@@ -1,0 +1,67 @@
+import /std/error;
+
+export enum ProtocolError {
+    UnexpectedEof,
+    BadMagic(u32),
+    UnsupportedVersion(u16),
+    UnknownFrameKind(u16),
+    OversizedPayload(usize),
+    InvalidStreamId(u16, u32),
+    InvalidTransition([]const char),
+    MalformedPayload([]const char),
+}
+
+export enum AuthError {
+    RouteMismatch,
+    TagMismatch,
+    AuthUnsupportedVersion(u16),
+    MalformedHello,
+    RouteNameTooLong(usize),
+    TagLengthMismatch(usize),
+}
+
+export Error protocol_error(ProtocolError error) {
+    return error_box(error);
+}
+
+export Error auth_error(AuthError error) {
+    return error_box(error);
+}
+
+impl format_error(*const ProtocolError error) {
+    switch (*error) {
+        case UnexpectedEof:
+            return "unexpected eof";
+        case BadMagic(_):
+            return "bad protocol magic";
+        case UnsupportedVersion(_):
+            return "unsupported protocol version";
+        case UnknownFrameKind(_):
+            return "unknown frame kind";
+        case OversizedPayload(_):
+            return "payload length exceeds maximum";
+        case InvalidStreamId(_, _):
+            return "invalid stream id for frame kind";
+        case InvalidTransition(reason):
+            return reason;
+        case MalformedPayload(reason):
+            return reason;
+    }
+}
+
+impl format_error(*const AuthError error) {
+    switch (*error) {
+        case RouteMismatch:
+            return "route mismatch";
+        case TagMismatch:
+            return "authentication tag mismatch";
+        case AuthUnsupportedVersion(_):
+            return "unsupported authentication version";
+        case MalformedHello:
+            return "malformed hello payload";
+        case RouteNameTooLong(_):
+            return "route name too long";
+        case TagLengthMismatch(_):
+            return "authentication tag length mismatch";
+    }
+}

@@ -23,11 +23,12 @@ use crate::{
     },
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE,
-        STD_MESSAGE_SHARE_HANDLE_INTERFACE, Ty, clone_message_capability,
-        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
-        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_error_code_ty,
-        std_error_trait_ty, std_error_ty, std_meta_repr_marker_ty, std_result_ty, unify_ty,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
+        clone_message_capability, is_clone_message_capability, mangle_constraint_ref,
+        mangle_ty_fragment, meta_array_split_len, meta_named, meta_product_ty,
+        meta_ref_array_repr_ty, meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities,
+        std_error_code_ty, std_error_trait_ty, std_error_ty, std_meta_repr_marker_ty,
+        std_result_ty, unify_ty,
     },
 };
 
@@ -59,6 +60,7 @@ struct CGenerator<'a> {
     current_return_ty: Ty,
     temp_counter: usize,
     share_handle_templates: Vec<Ty>,
+    thread_local_templates: Vec<Ty>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -190,6 +192,7 @@ impl<'a> CGenerator<'a> {
             current_return_ty: Ty::Void,
             temp_counter: 0,
             share_handle_templates: program.checked.share_handle_templates.clone(),
+            thread_local_templates: program.checked.thread_local_templates.clone(),
         }
     }
 
@@ -3817,12 +3820,15 @@ impl<'a> CGenerator<'a> {
     }
 
     fn is_owned_meta_policy_leaf(&self, ty: &Ty, root_ty: &Ty) -> bool {
-        if ty == root_ty {
+        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        let is_thread_local = self.type_matches_thread_local_template(&leaf_ty)
+            || self.thread_local_impl(&leaf_ty).is_some();
+        if ty == root_ty && !is_thread_local {
             return false;
         }
-        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
         matches!(ty, Ty::Named { .. })
-            && (self.type_matches_share_handle_template(&leaf_ty)
+            && (is_thread_local
+                || self.type_matches_share_handle_template(&leaf_ty)
                 || self.share_handle_impl(&leaf_ty).is_some()
                 || self.clone_message_impl(&leaf_ty).is_some())
     }
@@ -3929,6 +3935,13 @@ impl<'a> CGenerator<'a> {
 
     fn type_matches_share_handle_template(&self, ty: &Ty) -> bool {
         self.share_handle_templates.iter().any(|pattern| {
+            let mut subst = HashMap::new();
+            unify_ty(pattern, ty, &mut subst)
+        })
+    }
+
+    fn type_matches_thread_local_template(&self, ty: &Ty) -> bool {
+        self.thread_local_templates.iter().any(|pattern| {
             let mut subst = HashMap::new();
             unify_ty(pattern, ty, &mut subst)
         })
@@ -4905,6 +4918,17 @@ impl<'a> CGenerator<'a> {
     fn share_handle_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
         self.program.checked.impls.iter().find(|implementation| {
             implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| receiver == ty)
+                && implementation.interface_args.get(1..) == Some(&[][..])
+        })
+    }
+
+    fn thread_local_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
+        self.program.checked.impls.iter().find(|implementation| {
+            implementation.interface_name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
                 && implementation
                     .receiver_ty
                     .as_ref()

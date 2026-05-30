@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: forbidden capability `clone_message`
+
+import /std/lib;
+
+unsafe struct LocalClone {
+    i32 handle;
+}
+
+unsafe impl clone_message(*const LocalClone value) {
+    return Ok(*value);
+}
+
+unsafe impl thread_local_marker(*const LocalClone value) {
+    return true;
+}
+
+void accept_local<T: ThreadLocal>(T value) {
+    return;
+}
+
+i32 main() {
+    LocalClone token = unsafe { { handle: 1 } };
+    accept_local(token);
+    return 0;
+}

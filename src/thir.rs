@@ -12,6 +12,7 @@ pub struct CheckedProgram {
     pub hir_modules: Vec<Module>,
     pub hir_locals: Vec<Local>,
     pub share_handle_templates: Vec<Ty>,
+    pub thread_local_templates: Vec<Ty>,
     pub opaque_structs: Vec<CheckedOpaqueStruct>,
     pub structs: Vec<CheckedStruct>,
     pub enums: Vec<CheckedEnum>,
@@ -58,6 +59,7 @@ pub struct CheckedInterface {
 pub struct CheckedInterfaceAlias {
     pub name: String,
     pub positive: Vec<CheckedInterfaceRef>,
+    pub negative: Vec<CheckedInterfaceRef>,
 }
 
 #[derive(Clone, Debug)]

@@ -62,5 +62,6 @@ a concurrency boundary needs owned data.
 SOP does not automatically make every type messageable. `/std/message` has
 ordinary `Message` impls for owned SOP nodes such as fields, products, variants,
 and coproducts. Those impls recursively require every owned leaf to implement
-`Message`. If a leaf is not safe to clone across actors, the compiler rejects
-the boundary where `meta::Repr<T>: Message` is required.
+`Message` and to avoid capabilities forbidden by `Message`, such as
+`ThreadLocal`. If a leaf is not safe to clone across actors, the compiler
+rejects the boundary where `meta::Repr<T>: Message` is required.

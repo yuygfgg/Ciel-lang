@@ -22,7 +22,8 @@ C shim code.
 - Exercise Ciel modules, errors, enums, pattern matching, slices, buffers,
   resource cleanup, actors or channels, unsafe FFI, and C-backed runtime hooks.
 - Establish reusable standard-library APIs for sockets, monotonic time, async
-  timers, byte buffers, binary codecs, command-line arguments, and cryptography.
+  timers, byte buffers, keyed maps, binary codecs, command-line arguments, and
+  cryptography.
 - Use Botan as the first `/std/crypto` backend through its C FFI, while keeping
   the public Ciel API backend-neutral.
 - Sequence the work standard-library first and application second, so the demo
@@ -122,6 +123,8 @@ The MVP implements:
 - One server process and one agent process.
 - Binary length-prefixed frames over a single control TCP connection.
 - Multiplexed logical streams identified by `u32 stream_id`.
+- Reusable stream tables keyed by `u32 stream_id`, built on `/std/map` instead
+  of application-local ad hoc arrays.
 - Pre-shared-key authentication.
 - Actor-friendly TCP operations that compose with `/std/async`.
 - Actor-friendly timer operations that compose with `/std/async`.
@@ -272,6 +275,8 @@ Required modules:
 - `/std/async_time`: actor-friendly timers and deadline building blocks aligned
   with `/std/async`.
 - `/std/buf`: reusable byte buffers.
+- `/std/map`: reusable keyed tables for stream state and other actor-local
+  resource registries.
 - `/std/codec`: endian-aware binary encoding helpers.
 - `/std/time`: monotonic clock and sleep.
 - `/std/env`: command-line argument access for the final product path.
@@ -421,7 +426,84 @@ The first implementation may use fixed-size stack buffers inside the standard
 library while the public API is stabilized. Application code should use the
 intended `std/` surface.
 
-### 10.4 `/std/codec`
+### 10.4 `/std/map`
+
+`/std/map` is the reusable keyed-table layer. The tunnel server and agent need
+stream tables keyed by `u32 stream_id`; that requirement should be met through a
+standard-library map rather than a demo-local data structure.
+
+The first implementation should stay small and auditable, but it should be
+generic rather than `u32`-specific. A key type participates through ordinary
+policy interfaces. `/std/map` provides primitive key policies for the built-in
+scalar types needed by the tunnel, and reusable structural policies over
+`/std/meta` product/sum nodes so visible user structs and enums can opt in by
+projecting to `meta::RefRepr<T>` and delegating to library code.
+
+`HashMap<K, V>` is an actor-local mutable resource by default. It should not
+implement `Message` unless a later wrapper explicitly proves that the key,
+value, and storage semantics are safe to clone or transfer. Application code
+should pass keys, values, snapshots, or completed messages across actor
+boundaries, not live map storage that owns socket or async operation handles.
+
+Minimum public API:
+
+```text
+struct HashMap<K, V>
+
+interface<T> u64 hash_key(*const T value, u64 seed)
+interface<T> bool key_eq(*const T left, *const T right)
+interface map_key = hash_key + key_eq
+
+enum InsertResult<V> {
+    Inserted,
+    Replaced(V),
+}
+
+enum RemoveResult<V> {
+    Removed(V),
+    Missing,
+}
+
+hash_map_new<K: map_key, V>() -> Result<HashMap<K, V>, Error>
+hash_map_len<K: map_key, V>(*const HashMap<K, V>) -> usize
+hash_map_clear<K: map_key, V>(*HashMap<K, V>) -> void
+hash_map_contains_key<K: map_key, V>(
+    *const HashMap<K, V>,
+    key: K
+) -> Result<bool, Error>
+hash_map_insert<K: map_key, V>(
+    *HashMap<K, V>,
+    key: K,
+    value: V
+) -> Result<InsertResult<V>, Error>
+hash_map_remove<K: map_key, V>(
+    *HashMap<K, V>,
+    key: K
+) -> Result<RemoveResult<V>, Error>
+hash_map_with<K: map_key, V, R: Message>(
+    *HashMap<K, V>,
+    key: K,
+    Result<R, Error> |(*V)| body
+) -> Result<R, Error>
+```
+
+`hash_map_with` provides scoped mutable access to an existing entry without
+returning a long-lived pointer into the table. Missing keys should report a
+stable map error. Insertions may rehash and invalidate any internal storage, so
+borrowed entry access must stay scoped to the callback.
+
+The required first key-policy coverage is:
+
+- primitive scalar keys: `bool`, `char`, signed integers, unsigned integers, and
+  `usize`;
+- `/std/meta` structural product/sum nodes used by `meta::RefRepr<T>`, so a
+  nominal struct or enum can opt in with an explicit `hash_key` and `key_eq`
+  wrapper that projects through `meta::as_ref_repr`;
+- byte-slice or string-like keys only if an owned key type with stable storage
+  is available; borrowed slices must not be stored as map keys without an
+  explicit lifetime-owning wrapper policy.
+
+### 10.5 `/std/codec`
 
 Minimum public API:
 
@@ -442,7 +524,7 @@ The first implementation supports unsigned integer types only: `u8`, `u16`,
 input receiver so interface dispatch remains explicit while the return type is
 still `Result<T, Error>`.
 
-### 10.5 `/std/time`
+### 10.6 `/std/time`
 
 Minimum public API:
 
@@ -455,7 +537,7 @@ monotonic_ms() -> Result<u64, Error>
 and low-level tests. Actor-driven code should use `/std/async_time` instead of
 blocking a runner thread with `sleep_ms`.
 
-### 10.6 `/std/async_time`
+### 10.7 `/std/async_time`
 
 `/std/async_time` is the standard timer layer for actor-oriented code. It
 provides generic sleep/deadline building blocks; it does not define tunnel
@@ -498,7 +580,7 @@ be canceled without leaving a late completion in the actor mailbox. The tunnel
 application should implement Ping/Pong and idle-deadline policy in its protocol
 code using these timer primitives.
 
-### 10.7 `/std/env`
+### 10.8 `/std/env`
 
 Minimum public API:
 
@@ -511,7 +593,7 @@ The first implementation only needs process argument access. Environment
 variables, current directory, process spawning, and path search are future
 `/std/env` extensions.
 
-### 10.8 `/std/crypto`
+### 10.9 `/std/crypto`
 
 `/std/crypto` is a general standard-library module. Botan is the selected first
 backend because it provides a stable C FFI, opaque handles, broad algorithm
@@ -692,6 +774,8 @@ Required Ciel safety rules:
 - Raw async socket handles and async operation tokens are private to
   `/std/async_net`.
 - Raw crypto handles are private to `/std/crypto`.
+- Live `/std/map::HashMap` storage is actor-local unless a future wrapper
+  explicitly implements safe transfer semantics.
 - Safe code cannot construct a fake `TcpStream` from arbitrary integers.
 - All raw-handle adoption, pointer casts, and external C calls stay inside
   `unsafe` blocks or trusted standard-library wrappers.
@@ -726,9 +810,11 @@ Module responsibilities:
 - `server/control`: authenticated agent control connection.
 - `server/listener`: public listener and stream id allocation through
   `/std/async_net`.
-- `server/streams`: server-side stream table and state transitions.
+- `server/streams`: server-side stream table built on `/std/map` and
+  server-side state transitions.
 - `agent/control`: agent-side control loop.
-- `agent/dialer`: private target connection management.
+- `agent/dialer`: private target connection management and agent-side stream
+  table entries built on `/std/map`.
 - `relay`: socket-to-frame and frame-to-socket data movement.
 
 ## 13. CLI Requirements
@@ -806,6 +892,9 @@ Compiler fixture tests should cover:
 - frame decode rejection for short input.
 - frame decode rejection for oversized length.
 - invalid stream state transition rejection.
+- `/std/map` insertion, replacement, lookup, removal, collision handling,
+  scoped mutable entry access, and primitive plus structural key-policy
+  coverage.
 - `/std/codec` big-endian round trips and short-buffer rejection.
 - `/std/crypto` CSPRNG, hash, MAC, explicit `SystemRng`, and constant-time
   equality tests.
@@ -847,6 +936,8 @@ Deliverables:
 
 - `/std/codec` first public API.
 - `/std/buf` first public API or a clearly bounded shared byte-container API.
+- `/std/map` first public API, with generic key policies that cover tunnel
+  `u32` stream ids and small nominal wrappers.
 - `/std/time` first public API.
 - `/std/async_time` first public API for actor-friendly timers.
 - `/std/env` argument access API.
@@ -884,6 +975,7 @@ Deliverables:
 
 - frame header codec.
 - stream id allocation.
+- stream tables backed by `/std/map`.
 - `OpenStream`, `OpenResult`, `Data`, `CloseWrite`, and `CloseStream`.
 - server and agent processes built on the stabilized standard-library surfaces.
 - bytes copied through the tunnel for at least one active stream.
@@ -909,6 +1001,8 @@ Exit criteria:
 - at least two concurrent streams work over one control connection.
 - secrets are not logged.
 - application code imports `/std/crypto`.
+- stream table code imports `/std/map` rather than defining a demo-only keyed
+  container.
 
 ### Phase 5: Product Cleanup
 
@@ -932,6 +1026,7 @@ The implementation should intentionally exercise:
 - exported protocol types.
 - enum payloads and nested pattern switches.
 - value copying for frame structs.
+- generic standard-library containers such as `/std/map::HashMap`.
 - local type holes where they improve readability.
 - mutable bindings with `@`.
 - `[]u8` and `[]const u8` conversions.
@@ -961,8 +1056,9 @@ The demo is accepted when:
 - The program has no raw Botan handle exposure in safe application code.
 - Stateful crypto handles are actor-local; cross-actor crypto work uses values
   or a dedicated crypto actor.
-- `/std/net`, `/std/async_net`, `/std/async_time`, `/std/codec`, and the used
-  subset of `/std/crypto` are documented and tested as standard-library APIs.
+- `/std/net`, `/std/async_net`, `/std/async_time`, `/std/map`, `/std/codec`,
+  and the used subset of `/std/crypto` are documented and tested as
+  standard-library APIs.
 - `/std/crypto` uses Botan as its first backend while exposing a backend-neutral
   Ciel API.
 - The demo remains within the intended scale: roughly 3000 lines of Ciel

@@ -22,6 +22,7 @@ pub const STD_ERROR_TRAIT_ALIAS: &str = "ErrorTrait";
 pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
 pub const STD_MESSAGE_SHARE_HANDLE_INTERFACE: &str = "share_handle_marker";
+pub const STD_MESSAGE_THREAD_LOCAL_INTERFACE: &str = "thread_local_marker";
 
 pub fn clone_message_capability() -> ConstraintRef {
     ConstraintRef {

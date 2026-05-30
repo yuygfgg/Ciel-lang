@@ -87,7 +87,8 @@ You do not need to know how the envelope is built to use it. The last chapter
 opens the envelope and explains the SOP machinery inside.
 
 The envelope is still checked. `meta::Repr<T>` implements `Message` only when
-the owned structural representation is messageable all the way down. If a field
-contains a raw pointer, actor-local slice, dynamic interface without an explicit
-policy, or opaque C handle, the normal `Message` constraint fails. SOP is a
-safe representation path, not a permission bypass.
+the owned structural representation is messageable all the way down and does not
+carry a forbidden capability such as `ThreadLocal`. If a field contains a raw
+pointer, actor-local slice, dynamic interface without an explicit policy, or
+opaque C handle, the normal `Message` constraint fails. SOP is a safe
+representation path, not a permission bypass.

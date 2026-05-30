@@ -10,13 +10,14 @@ use crate::{
     thir::*,
     types::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_ERROR_FORMAT_INTERFACE,
-        STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE, Ty,
-        aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
-        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
-        mangle_ty_fragment, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty, std_error_ty,
-        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
+        STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
+        closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
+        contains_generic, contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
+        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
+        meta_sum_ty, receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty,
+        std_error_ty, std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive,
+        unify_ty,
     },
 };
 
@@ -88,6 +89,7 @@ type InterfaceRefTy = ConstraintRef;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct InterfaceView {
     positive: Vec<InterfaceRefTy>,
+    negative: Vec<InterfaceRefTy>,
 }
 
 #[derive(Clone, Debug)]
@@ -526,14 +528,18 @@ fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
     }
 }
 
-fn collect_share_handle_templates(modules: &[Module], resolved: &ResolvedProgram) -> Vec<Ty> {
+fn collect_policy_marker_templates(
+    modules: &[Module],
+    resolved: &ResolvedProgram,
+    interface_name: &str,
+) -> Vec<Ty> {
     let mut templates = Vec::new();
     for module in modules {
         for item in &module.items {
             let ItemKind::Impl(decl) = &item.kind else {
                 continue;
             };
-            if decl.name.display != STD_MESSAGE_SHARE_HANDLE_INTERFACE
+            if decl.name.display != interface_name
                 || !decl.args.is_empty()
                 || decl
                     .generics
@@ -868,6 +874,14 @@ impl TypeChecker {
                                 args: entry.args,
                             })
                             .collect(),
+                        negative: view
+                            .negative
+                            .into_iter()
+                            .map(|entry| CheckedInterfaceRef {
+                                name: entry.name,
+                                args: entry.args,
+                            })
+                            .collect(),
                     }
                 })
                 .collect::<Vec<_>>();
@@ -900,13 +914,22 @@ impl TypeChecker {
                 })
                 .collect::<Vec<_>>();
             checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
-            let share_handle_templates =
-                collect_share_handle_templates(&self.hir_modules, &self.resolved);
+            let share_handle_templates = collect_policy_marker_templates(
+                &self.hir_modules,
+                &self.resolved,
+                STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+            );
+            let thread_local_templates = collect_policy_marker_templates(
+                &self.hir_modules,
+                &self.resolved,
+                STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+            );
             Ok(CheckedProgram {
                 resolved: self.resolved,
                 hir_modules: self.hir_modules,
                 hir_locals: self.hir_locals,
                 share_handle_templates,
+                thread_local_templates,
                 opaque_structs: checked_opaque_structs,
                 structs: checked_structs,
                 enums: checked_enums,
@@ -1289,7 +1312,7 @@ impl TypeChecker {
                         }
                     } else if self.interface_aliases.contains_key(&def_id) {
                         let view = self.interface_view(&def.name, &[]);
-                        for entry in view.positive {
+                        for entry in view.positive.iter().chain(view.negative.iter()) {
                             if let Some(interface) =
                                 self.interface_sig_by_name(&entry.name).cloned()
                             {
@@ -2163,7 +2186,9 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if self.type_implements_share_handle(&original) {
+                if self.type_implements_share_handle(&original)
+                    || self.type_implements_thread_local(&original)
+                {
                     return self.meta_repr_policy_leaf_ty(&original);
                 }
                 Ty::Named {
@@ -2305,7 +2330,9 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if self.type_implements_share_handle(&original) {
+                if self.type_implements_share_handle(&original)
+                    || self.type_implements_thread_local(&original)
+                {
                     return original;
                 }
                 let args = args
@@ -2670,6 +2697,9 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
+                if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
+                    return Some(self.meta_repr_policy_leaf_ty(&instance_ty));
+                }
                 if !expanding.insert(instance_ty.clone()) {
                     if emit_diagnostics {
                         self.diagnostics.push(Diagnostic::new(
@@ -2824,12 +2854,17 @@ impl TypeChecker {
     }
 
     fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
-        if root.is_some_and(|root| ty == root) || contains_generic(ty) || contains_type_hole(ty) {
+        if contains_generic(ty) || contains_type_hole(ty) {
             return false;
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        let is_thread_local = self.type_implements_thread_local(&leaf_ty);
+        if root.is_some_and(|root| ty == root) && !is_thread_local {
+            return false;
+        }
         matches!(ty, Ty::Named { .. })
-            && (self.type_implements_share_handle(&leaf_ty)
+            && (is_thread_local
+                || self.type_implements_share_handle(&leaf_ty)
                 || self.type_implements_message(&leaf_ty))
     }
 
@@ -5707,12 +5742,13 @@ impl TypeChecker {
 
         let handler_state_ty = self.normalize_meta_repr_markers(&state_ty, span);
         let handler_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
+        let message_view = self.interface_view("Message", &[]);
         let expected_handler_ty = Ty::Closure {
             ret: Box::new(handler_ret.clone()),
             params: vec![handler_state_ty.clone(), message_ty.clone()],
             constraints: ConstraintBounds {
-                positive: self.interface_view("Message", &[]).positive,
-                negative: Vec::new(),
+                positive: message_view.positive,
+                negative: message_view.negative,
             },
         };
         let handler = if let Some(handler) = prechecked_handler {
@@ -8555,6 +8591,19 @@ impl TypeChecker {
             )
     }
 
+    fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
+        if !self.is_std_message_thread_local_marker_name(STD_MESSAGE_THREAD_LOCAL_INTERFACE) {
+            return false;
+        }
+        self.find_impl(STD_MESSAGE_THREAD_LOCAL_INTERFACE, &[], ty)
+            .is_some()
+            || self.generic_impl_matches_without_constraints(
+                STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+                &[],
+                ty,
+            )
+    }
+
     fn generic_impl_matches_without_constraints(
         &self,
         interface_name: &str,
@@ -8792,12 +8841,19 @@ impl TypeChecker {
             return view
                 .positive
                 .iter()
-                .all(|expected| actual_view.positive.contains(expected));
+                .all(|expected| actual_view.positive.contains(expected))
+                && view
+                    .negative
+                    .iter()
+                    .all(|expected| actual_view.negative.contains(expected));
         }
         let receiver_ty = receiver_ty_from_value_ty(actual);
         view.positive
             .iter()
             .all(|entry| self.type_implements_capability(&entry.name, &entry.args, &receiver_ty))
+            && view.negative.iter().all(|entry| {
+                !self.type_implements_capability(&entry.name, &entry.args, &receiver_ty)
+            })
     }
 
     fn interface_view(&mut self, name: &str, args: &[Ty]) -> InterfaceView {
@@ -8821,6 +8877,9 @@ impl TypeChecker {
                 bounds
                     .positive
                     .retain(|entry| !view.positive.contains(entry));
+                bounds
+                    .negative
+                    .retain(|entry| !view.negative.contains(entry));
             } else if term.negated {
                 for entry in view.positive {
                     if !bounds.negative.contains(&entry) {
@@ -8831,6 +8890,11 @@ impl TypeChecker {
                 for entry in view.positive {
                     if !bounds.positive.contains(&entry) {
                         bounds.positive.push(entry);
+                    }
+                }
+                for entry in view.negative {
+                    if !bounds.negative.contains(&entry) {
+                        bounds.negative.push(entry);
                     }
                 }
             }
@@ -8891,6 +8955,7 @@ impl TypeChecker {
                 name: name.to_string(),
                 args: args.to_vec(),
             }],
+            negative: Vec::new(),
         }
     }
 
@@ -8909,6 +8974,8 @@ impl TypeChecker {
                     let removed = self.interface_view_for_term(term, expanding);
                     view.positive
                         .retain(|entry| !removed.positive.contains(entry));
+                    view.negative
+                        .retain(|entry| !removed.negative.contains(entry));
                 }
             }
         }
@@ -8921,9 +8988,23 @@ impl TypeChecker {
         term: &InterfaceTerm,
         expanding: &mut HashSet<String>,
     ) {
-        for entry in self.interface_view_for_term(term, expanding).positive {
-            if !view.positive.contains(&entry) {
-                view.positive.push(entry);
+        let term_view = self.interface_view_for_term(term, expanding);
+        if term.negated {
+            for entry in term_view.positive {
+                if !view.negative.contains(&entry) {
+                    view.negative.push(entry);
+                }
+            }
+        } else {
+            for entry in term_view.positive {
+                if !view.positive.contains(&entry) {
+                    view.positive.push(entry);
+                }
+            }
+            for entry in term_view.negative {
+                if !view.negative.contains(&entry) {
+                    view.negative.push(entry);
+                }
             }
         }
     }
@@ -8984,9 +9065,13 @@ impl TypeChecker {
     }
 
     fn is_std_message_thread_local_marker_name(&self, name: &str) -> bool {
-        name == "thread_local_marker"
+        name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
             && self.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_interface(&self.resolved, *def_id, "thread_local_marker")
+                std_id::is_std_message_interface(
+                    &self.resolved,
+                    *def_id,
+                    STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+                )
             })
     }
 

@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: forbidden capability `share_handle_marker`
+
+import /std/lib;
+
+unsafe struct LocalShare {
+    i32 handle;
+}
+
+unsafe impl share_handle_marker(*const LocalShare value) {
+    return true;
+}
+
+unsafe impl thread_local_marker(*const LocalShare value) {
+    return true;
+}
+
+void accept_local<T: ThreadLocal>(T value) {
+    return;
+}
+
+i32 main() {
+    LocalShare token = unsafe { { handle: 1 } };
+    accept_local(token);
+    return 0;
+}

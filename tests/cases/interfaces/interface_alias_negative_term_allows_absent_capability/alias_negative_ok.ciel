@@ -1,0 +1,23 @@
+// ciel-test: run
+// expect-exit: 0
+
+interface<T> i64 measure(*T value);
+interface<T> void seek(*T value);
+interface reader = measure + !seek;
+
+struct Snapshot {
+    i64 value;
+}
+
+impl measure(*Snapshot value) {
+    return value->value;
+}
+
+i64 read<T: reader>(*T value) {
+    return measure(value);
+}
+
+i32 main() {
+    Snapshot @snapshot = { value: 7 };
+    return (read<Snapshot>(&snapshot) - 7) as i32;
+}

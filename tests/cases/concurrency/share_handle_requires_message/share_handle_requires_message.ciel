@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: does not implement `clone_message`
+
+import /std/lib;
+
+unsafe struct ShareOnly {
+    i32 handle;
+}
+
+unsafe impl share_handle_marker(*const ShareOnly value) {
+    return true;
+}
+
+void accept_shared<T: ShareHandle>(T value) {
+    return;
+}
+
+i32 main() {
+    ShareOnly token = unsafe { { handle: 1 } };
+    accept_shared(token);
+    return 0;
+}

@@ -522,7 +522,7 @@ InterfaceSignature  ::= Type Identifier "(" [ ParamList ] ")"
 InterfaceAliasDecl  ::= "interface" Identifier "=" InterfaceExpr ";"
 
 InterfaceExpr       ::= InterfaceTerm { ( "+" | "-" ) InterfaceTerm }
-InterfaceTerm       ::= Identifier [ TypeArgList ]
+InterfaceTerm       ::= [ "!" ] Identifier [ TypeArgList ]
 
 ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ TypeArgList ]
                         "(" [ ParamList ] ")" Block
@@ -1412,19 +1412,21 @@ type PacketMessage = meta::Repr<Packet>;
 
 `/std/message` implements `clone_message` for owned SOP nodes such as `HNil`,
 `HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and `Payload`. If a field or
-payload leaf lacks `Message`, ordinary generic constraint checking rejects the
-representation. Code that wants the original nominal type itself to cross an
-actor or channel boundary must write an explicit `clone_message(*const T)`
-policy.
+payload leaf lacks `Message`, or has a capability forbidden by `Message`,
+ordinary generic constraint checking rejects the representation. Code that wants
+the original nominal type itself to cross an actor or channel boundary must write
+an explicit `clone_message(*const T)` policy and must not mark the type with a
+capability excluded by `Message`.
 
 Owned representation recursively expands structs, enums, concrete closures, and
-fixed-size arrays where no nominal policy boundary exists. A nested named field
-or payload that already has an ordinary `clone_message` impl remains a leaf and
-is cloned through that impl by the SOP policy. The top-level `meta::Repr<T>`
-still reflects `T` itself, so this rule does not make `T` directly implement
-`Message` and does not hide its fields when code explicitly asks for
-`meta::Repr<T>`. Concrete closure instances are not opaque policy leaves; their
-standard-library `clone_message` impl reflects captures through `meta::Repr<C>`.
+fixed-size arrays where no nominal policy boundary exists. A named field or
+payload that already carries a nominal policy such as `clone_message`,
+`ShareHandle`, or `ThreadLocal` remains a leaf. This preserves both positive and
+negative capability facts through `meta::Repr<T>`. For example, a
+`ThreadLocal` handle inside `meta::Repr<Event>` still blocks `Event` from
+satisfying `Message`. Concrete closure instances are not opaque policy leaves;
+their standard-library `clone_message` impl reflects captures through
+`meta::Repr<C>`.
 
 Structural metaprogramming is not a text macro system. It does not generate
 Ciel source, paste tokens, or run before name resolution. The order is:
@@ -1625,7 +1627,16 @@ the actor runtime to clone the handler across the actor boundary.
 
 ```rust
 unsafe interface<T> Result<T, Error> clone_message(*const T value);
-interface Message = clone_message;
+unsafe interface<T> bool share_handle_marker(*const T value);
+unsafe interface<T> bool thread_local_marker(*const T value);
+
+interface MessageInternal = clone_message;
+interface ShareHandleInternal = share_handle_marker;
+interface ThreadLocalInternal = thread_local_marker;
+
+interface Message = MessageInternal + !ThreadLocalInternal;
+interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
+interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
 
 `clone_message` constructs the value that will be owned by the receiver. It may
@@ -1827,10 +1838,20 @@ unsafe interface<T> Result<T, Error> clone_message(*const T value);
 unsafe interface<T> bool share_handle_marker(*const T value);
 unsafe interface<T> bool thread_local_marker(*const T value);
 
-interface Message = clone_message;
-interface ShareHandle = share_handle_marker;
-interface ThreadLocal = thread_local_marker;
+interface MessageInternal = clone_message;
+interface ShareHandleInternal = share_handle_marker;
+interface ThreadLocalInternal = thread_local_marker;
+
+interface Message = MessageInternal + !ThreadLocalInternal;
+interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
+interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
+
+The public aliases encode the standard capability relationships. `Message`
+means an explicit `clone_message` witness and no thread-local marker.
+`ShareHandle` means a share-handle marker, `Message`, and no thread-local
+marker. `ThreadLocal` means a thread-local marker and neither a message clone
+witness nor a share-handle marker.
 
 Examples:
 
@@ -1849,10 +1870,12 @@ void bind_local<T: !Message>(*const T value);
 
 C interop is a trusted boundary. C wrappers decide which C-backed values are
 messageable, shareable handles, or actor-local resources. Opaque C handles
-start as `ThreadLocal`; wrappers implement `Message` by explicitly
-duplicating, reconnecting, or otherwise constructing an independent receiver
-value; wrappers implement `ShareHandle` only when operations are internally
-synchronized or immutable.
+start as `ThreadLocal`; because the public aliases make `ThreadLocal`
+incompatible with `Message` and `ShareHandle`, those handles cannot cross actor
+or channel boundaries through either the nominal type or `meta::Repr<T>`.
+Wrappers implement `Message` by explicitly duplicating, reconnecting, or
+otherwise constructing an independent receiver value; wrappers implement
+`ShareHandle` only when operations are internally synchronized or immutable.
 
 The compiler recognizes canonical `/std/message` interface names only for
 generic constraint lookup, retained closure witnesses, coherence checks, and
@@ -1860,8 +1883,9 @@ code generation of calls to selected ordinary impls. It does not synthesize
 `clone_message` implementations, infer `Message`, `ShareHandle`, or
 `ThreadLocal` policy from type structure, or emit policy-specific fallback
 diagnostics. Structural message behavior is proved through the ordinary
-`/std/message` impls for owned `/std/meta` SOP nodes; failures surface as the
-normal missing `clone_message` or `Message` constraint.
+`/std/message` impls for owned `/std/meta` SOP nodes and through the same
+positive/negative capability algebra used by every interface alias; failures
+surface as normal missing or forbidden capability constraints.
 
 The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
@@ -2152,9 +2176,13 @@ export unsafe interface<T> Result<T, Error> clone_message(*const T value);
 export unsafe interface<T> bool share_handle_marker(*const T value);
 export unsafe interface<T> bool thread_local_marker(*const T value);
 
-export interface Message = clone_message;
-export interface ShareHandle = share_handle_marker;
-export interface ThreadLocal = thread_local_marker;
+export interface MessageInternal = clone_message;
+export interface ShareHandleInternal = share_handle_marker;
+export interface ThreadLocalInternal = thread_local_marker;
+
+export interface Message = MessageInternal + !ThreadLocalInternal;
+export interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
+export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
 
 ```rust

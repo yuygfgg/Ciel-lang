@@ -111,6 +111,7 @@ pub enum InterfaceOp {
 
 #[derive(Clone, Debug)]
 pub struct InterfaceTerm {
+    pub negated: bool,
     pub name: Ident,
     pub args: Vec<Type>,
 }

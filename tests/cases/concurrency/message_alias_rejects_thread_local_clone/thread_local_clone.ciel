@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: forbidden capability `thread_local_marker`
+
+import /std/lib;
+
+unsafe struct LocalToken {
+    i32 handle;
+}
+
+unsafe impl clone_message(*const LocalToken value) {
+    return Ok(*value);
+}
+
+unsafe impl thread_local_marker(*const LocalToken value) {
+    return true;
+}
+
+void accept_message<T: Message>(T value) {
+    return;
+}
+
+i32 main() {
+    LocalToken token = unsafe { { handle: 1 } };
+    accept_message(token);
+    return 0;
+}

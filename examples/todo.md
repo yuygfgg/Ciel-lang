@@ -12,7 +12,7 @@ host integration.
 
 - [ ] Confirm the standard-library module names and import paths.
       Scope: `/std/codec`, `/std/buf`, `/std/time`, `/std/env`, `/std/crypto`,
-      `/std/net`, `/std/async_net`, and `/std/async_time`.
+      `/std/map`, `/std/net`, `/std/async_net`, and `/std/async_time`.
       Tests: documentation-only task; run `git diff --check`.
 
 - [x] Add `/std/codec` endian-aware unsigned integer helpers.
@@ -32,6 +32,27 @@ host integration.
       Implement `byte_buf_reserve` and growing append.
       Tests: append across initial capacity, repeated reserve, preserved
       contents after growth.
+
+- [ ] Add `/std/map` actor-local `HashMap` shell.
+      Define `hash_key`, `key_eq`, and `map_key`, then implement
+      construction, length, clear, `contains_key`, insert, remove, and scoped
+      mutable entry access for `K: map_key`. Start with primitive scalar key
+      policies and a structural wrapper over `meta::RefRepr<T>` so the same
+      map surface covers `u32` stream ids and small nominal structs or enums.
+      Tests: empty map length, insert success, lookup success, missing-key
+      lookup error, replacement returns the old value, removal returns the old
+      value, and clear drops all entries.
+
+- [ ] Add `/std/map` collision, deletion, and key-policy coverage.
+      Implement deterministic hashing/equality for primitive scalar keys and
+      a structural `meta::RefRepr<T>` wrapper, then add table growth, tombstone
+      or deletion repair policy, and stable errors for missing entries. Keep
+      live map storage actor-local unless a future wrapper explicitly
+      implements safe transfer semantics.
+      Tests: colliding keys remain independently reachable, repeated insert and
+      remove preserves later lookups, growth preserves contents, primitive-key
+      coverage includes `u32`, and attempting to send a live `HashMap` through
+      an actor or channel is rejected.
 
 - [x] Add `/std/time` monotonic clock and sleep wrappers.
       Implement `monotonic_ms` and `sleep_ms`.
@@ -248,11 +269,13 @@ host integration.
 ## Phase 8: Multiplexed Tunnel Demo
 
 - [ ] Add server stream table.
-      Track stream id, public client handle, and server-side stream state.
+      Use `/std/map::HashMap<u32, ServerStream>` to track stream id, public
+      client handle, and server-side stream state.
       Tests: two stream ids allocate distinctly and close independently.
 
 - [ ] Add agent stream table.
-      Track stream id, target handle, and agent-side stream state.
+      Use `/std/map::HashMap<u32, AgentStream>` to track stream id, target
+      handle, and agent-side stream state.
       Tests: two target connections stay independent.
 
 - [ ] Route incoming `Data` frames by stream id.
@@ -290,14 +313,16 @@ host integration.
 
 ## Final Acceptance
 
-- [ ] Run focused standard-library tests for codec, buffer, time, async_time,
-      env, crypto, net, and async_net.
+- [ ] Run focused standard-library tests for codec, buffer, map, time,
+      async_time, env, crypto, net, and async_net.
 - [ ] Run discovered Ciel fixture tests for all added fixtures.
 - [ ] Run loopback tunnel integration tests:
       echo, sequential clients, concurrent clients, wrong PSK, target
       unavailable, early public client close, and large payload split across
       multiple data frames.
 - [ ] Confirm application code imports `/std/crypto` portable APIs.
+- [ ] Confirm application code uses `/std/map` for server and agent stream
+      tables instead of demo-local keyed arrays.
 - [ ] Confirm stateful crypto handles and raw socket/async handles stay private
       to their owning standard-library modules.
 - [ ] Run `git diff --check`.

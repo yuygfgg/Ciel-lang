@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: forbidden capability `thread_local_marker`
+
+import /std/lib;
+import /std/meta as meta;
+import /std/os/fd as fd;
+
+i32 main() {
+    Channel<meta::Repr<fd::RawFd>> channel = must(make_channel<meta::Repr<fd::RawFd>>());
+    return 0;
+}

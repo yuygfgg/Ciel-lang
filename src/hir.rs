@@ -120,6 +120,7 @@ pub struct InterfaceExpr {
 
 #[derive(Clone, Debug)]
 pub struct InterfaceTerm {
+    pub negated: bool,
     pub name: NameRef,
     pub args: Vec<Type>,
 }
@@ -775,6 +776,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn lower_interface_term(&mut self, term: &ast::InterfaceTerm) -> InterfaceTerm {
         InterfaceTerm {
+            negated: term.negated,
             name: self.resolve_interface_name(&term.name),
             args: term.args.iter().map(|ty| self.lower_type(ty)).collect(),
         }

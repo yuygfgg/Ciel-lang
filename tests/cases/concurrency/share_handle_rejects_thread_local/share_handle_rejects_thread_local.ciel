@@ -1,0 +1,30 @@
+// ciel-test: error
+// expect-error: forbidden capability `thread_local_marker`
+
+import /std/lib;
+
+unsafe struct ConfusedHandle {
+    i32 handle;
+}
+
+unsafe impl clone_message(*const ConfusedHandle value) {
+    return Ok(*value);
+}
+
+unsafe impl share_handle_marker(*const ConfusedHandle value) {
+    return true;
+}
+
+unsafe impl thread_local_marker(*const ConfusedHandle value) {
+    return true;
+}
+
+void accept_shared<T: ShareHandle>(T value) {
+    return;
+}
+
+i32 main() {
+    ConfusedHandle token = unsafe { { handle: 1 } };
+    accept_shared(token);
+    return 0;
+}

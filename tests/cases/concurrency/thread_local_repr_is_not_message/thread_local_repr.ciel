@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: forbidden capability `thread_local_marker`
+
+import /std/lib;
+import /std/meta as meta;
+
+unsafe struct GLContext {
+    i32 handle;
+}
+
+unsafe impl thread_local_marker(*const GLContext value) {
+    return true;
+}
+
+i32 main() {
+    Channel<meta::Repr<GLContext>> channel = must(make_channel<meta::Repr<GLContext>>());
+    return 0;
+}

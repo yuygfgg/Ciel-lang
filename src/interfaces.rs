@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     thir::{CheckedImpl, CheckedInterface, CheckedInterfaceAlias, CheckedInterfaceRef},
-    types::{ConstraintRef, Ty, receiver_ty_from_value_ty, substitute_ty},
+    types::{ConstraintBounds, ConstraintRef, Ty, receiver_ty_from_value_ty, substitute_ty},
 };
 
 #[derive(Clone, Debug)]
@@ -41,25 +41,35 @@ pub fn constraint_interface_view(
     aliases: &[CheckedInterfaceAlias],
     name: &str,
     args: &[Ty],
-) -> Vec<ConstraintRef> {
+) -> ConstraintBounds {
     aliases
         .iter()
         .find(|alias| alias.name == name)
         .map(|alias| {
-            alias
+            let positive = alias
                 .positive
                 .iter()
                 .map(|entry| ConstraintRef {
                     name: entry.name.clone(),
                     args: entry.args.clone(),
                 })
-                .collect()
+                .collect();
+            let negative = alias
+                .negative
+                .iter()
+                .map(|entry| ConstraintRef {
+                    name: entry.name.clone(),
+                    args: entry.args.clone(),
+                })
+                .collect();
+            ConstraintBounds { positive, negative }
         })
-        .unwrap_or_else(|| {
-            vec![ConstraintRef {
+        .unwrap_or_else(|| ConstraintBounds {
+            positive: vec![ConstraintRef {
                 name: name.to_string(),
                 args: args.to_vec(),
-            }]
+            }],
+            negative: Vec::new(),
         })
 }
 

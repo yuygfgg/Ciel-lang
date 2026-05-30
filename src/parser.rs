@@ -253,24 +253,35 @@ impl Parser {
     }
 
     fn parse_interface_expr(&mut self) -> Result<InterfaceExpr, Diagnostic> {
-        let first = self.parse_interface_term()?;
+        let first = self.parse_interface_term(false)?;
         let mut rest = Vec::new();
         while self.at(TokenKind::Plus) || self.at(TokenKind::Minus) {
-            let op = if self.eat(TokenKind::Plus).is_some() {
-                InterfaceOp::Add
+            let (op, removed) = if self.eat(TokenKind::Plus).is_some() {
+                (InterfaceOp::Add, false)
             } else {
                 self.expect(TokenKind::Minus, "expected interface operator")?;
-                InterfaceOp::Sub
+                (InterfaceOp::Sub, true)
             };
-            rest.push((op, self.parse_interface_term()?));
+            rest.push((op, self.parse_interface_term(removed)?));
         }
         Ok(InterfaceExpr { first, rest })
     }
 
-    fn parse_interface_term(&mut self) -> Result<InterfaceTerm, Diagnostic> {
+    fn parse_interface_term(&mut self, removed: bool) -> Result<InterfaceTerm, Diagnostic> {
+        let negated = self.eat(TokenKind::Bang).is_some();
+        if removed && negated {
+            return Err(Diagnostic::new(
+                self.previous().span,
+                "`- !Capability` is not a valid interface expression",
+            ));
+        }
         let name = self.expect_ident("expected interface name")?;
         let args = self.parse_type_arg_list_opt()?;
-        Ok(InterfaceTerm { name, args })
+        Ok(InterfaceTerm {
+            negated,
+            name,
+            args,
+        })
     }
 
     fn parse_impl_decl(&mut self, is_unsafe: bool) -> Result<ImplDecl, Diagnostic> {

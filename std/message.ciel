@@ -4,7 +4,20 @@ import /std/meta;
 import /std/meta as meta;
 
 export unsafe interface<T> Result<T, Error> clone_message(*const T value);
-export interface Message = clone_message;
+
+// Reserved marker: policy is defined by explicit library/runtime implementations.
+export unsafe interface<T> bool share_handle_marker(*const T value);
+
+// Reserved marker: policy is defined by explicit library/runtime implementations.
+export unsafe interface<T> bool thread_local_marker(*const T value);
+
+export interface MessageInternal = clone_message;
+export interface ShareHandleInternal = share_handle_marker;
+export interface ThreadLocalInternal = thread_local_marker;
+
+export interface Message = MessageInternal + !ThreadLocalInternal;
+export interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
+export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 
 unsafe impl clone_message(*const void value) {
     return Ok;
@@ -337,11 +350,3 @@ unsafe impl<L: Message, R: Message> clone_message(*const meta::ArrayCat<L, R> va
     R right = clone_message(&value->right)?;
     return Ok({ left: left, right: right });
 }
-
-// Reserved marker: policy is defined by explicit library/runtime implementations.
-export unsafe interface<T> bool share_handle_marker(*const T value);
-export interface ShareHandle = share_handle_marker;
-
-// Reserved marker: policy is defined by explicit library/runtime implementations.
-export unsafe interface<T> bool thread_local_marker(*const T value);
-export interface ThreadLocal = thread_local_marker;

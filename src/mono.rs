@@ -24,12 +24,13 @@ use crate::{
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
         ConstraintBounds, ConstraintRef, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
-        STD_MESSAGE_SHARE_HANDLE_INTERFACE, Ty, aggregate_instance_name, contains_generic,
-        is_clone_message_capability, mangle_ty_fragment, meta_array_split_len, meta_named,
-        meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_error_code_ty,
-        std_error_trait_ty, std_message_result_ty, std_meta_repr_marker_ty,
-        std_meta_repr_source_name, ty_contains, ty_from_primitive, type_complexity, unify_ty,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
+        aggregate_instance_name, contains_generic, is_clone_message_capability, mangle_ty_fragment,
+        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty,
+        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
+        ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -879,6 +880,7 @@ struct AggregateCollector<'a> {
     aliases: HashMap<String, AliasTemplate>,
     alias_stack: Vec<String>,
     share_handle_templates: Vec<Ty>,
+    thread_local_templates: Vec<Ty>,
     emitted_structs: HashSet<String>,
     visiting_structs: HashSet<String>,
     emitted_enums: HashSet<String>,
@@ -978,6 +980,7 @@ impl<'a> AggregateCollector<'a> {
             aliases,
             alias_stack: Vec::new(),
             share_handle_templates: checked.share_handle_templates.clone(),
+            thread_local_templates: checked.thread_local_templates.clone(),
             emitted_structs: HashSet::new(),
             visiting_structs: HashSet::new(),
             emitted_enums: HashSet::new(),
@@ -1692,6 +1695,9 @@ impl<'a> AggregateCollector<'a> {
                     name: name.clone(),
                     args: args.clone(),
                 };
+                if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
+                    return self.meta_repr_policy_leaf_ty(&instance_ty);
+                }
                 if !expanding.insert(instance_ty.clone()) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
@@ -1830,29 +1836,46 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
-        if root.is_some_and(|root| ty == root) || contains_generic(ty) {
+        if contains_generic(ty) {
             return false;
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        let is_thread_local = self.thread_local_templates.iter().any(|pattern| {
+            let mut subst = HashMap::new();
+            unify_ty(pattern, &leaf_ty, &mut subst)
+        }) || self.checked.impls.iter().any(|implementation| {
+            implementation.interface_name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| receiver == &leaf_ty)
+                && implementation.interface_args.get(1..) == Some(&[][..])
+        });
+        if root.is_some_and(|root| ty == root) && !is_thread_local {
+            return false;
+        }
         matches!(ty, Ty::Named { .. })
-            && (self.share_handle_templates.iter().any(|pattern| {
-                let mut subst = HashMap::new();
-                unify_ty(pattern, &leaf_ty, &mut subst)
-            }) || self.checked.impls.iter().any(|implementation| {
-                implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
-                    && implementation
-                        .receiver_ty
-                        .as_ref()
-                        .is_some_and(|receiver| receiver == &leaf_ty)
-                    && implementation.interface_args.get(1..) == Some(&[][..])
-            }) || self.checked.impls.iter().any(|implementation| {
-                implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
-                    && implementation
-                        .receiver_ty
-                        .as_ref()
-                        .is_some_and(|receiver| receiver == &leaf_ty)
-                    && implementation.interface_args.get(1..) == Some(&[][..])
-            }))
+            && (is_thread_local
+                || self.share_handle_templates.iter().any(|pattern| {
+                    let mut subst = HashMap::new();
+                    unify_ty(pattern, &leaf_ty, &mut subst)
+                })
+                || self.checked.impls.iter().any(|implementation| {
+                    implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
+                        && implementation
+                            .receiver_ty
+                            .as_ref()
+                            .is_some_and(|receiver| receiver == &leaf_ty)
+                        && implementation.interface_args.get(1..) == Some(&[][..])
+                })
+                || self.checked.impls.iter().any(|implementation| {
+                    implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
+                        && implementation
+                            .receiver_ty
+                            .as_ref()
+                            .is_some_and(|receiver| receiver == &leaf_ty)
+                        && implementation.interface_args.get(1..) == Some(&[][..])
+                }))
     }
 
     fn meta_array_repr_ty_rec(
@@ -2134,17 +2157,25 @@ impl<'a> AggregateCollector<'a> {
             if term.removed {
                 bounds
                     .positive
-                    .retain(|entry| !view.iter().any(|removed| removed == entry));
+                    .retain(|entry| !view.positive.iter().any(|removed| removed == entry));
+                bounds
+                    .negative
+                    .retain(|entry| !view.negative.iter().any(|removed| removed == entry));
             } else if term.negated {
-                for entry in view {
+                for entry in view.positive {
                     if !bounds.negative.contains(&entry) {
                         bounds.negative.push(entry);
                     }
                 }
             } else {
-                for entry in view {
+                for entry in view.positive {
                     if !bounds.positive.contains(&entry) {
                         bounds.positive.push(entry);
+                    }
+                }
+                for entry in view.negative {
+                    if !bounds.negative.contains(&entry) {
+                        bounds.negative.push(entry);
                     }
                 }
             }

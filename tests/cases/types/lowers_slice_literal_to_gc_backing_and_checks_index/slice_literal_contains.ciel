@@ -2,7 +2,7 @@
 // expect-c-contains: #include <gc/gc.h>
 // expect-c-contains: GC_INIT();
 // expect-c-contains: GC_MALLOC(size);
-// expect-c-contains: ciel_alloc_array(sizeof(int64_t), 3)
+// expect-c-contains: ciel_alloc_atomic_array(sizeof(int64_t), 3)
 // expect-c-contains: ciel_bounds_check((size_t)(1), (values__
 
 usize main() {

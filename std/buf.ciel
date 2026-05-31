@@ -99,6 +99,24 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
     return Ok;
 }
 
+export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) {
+    byte_buf_reserve(buf, additional)?;
+    usize len = byte_buf_len(buf);
+    return Ok(unsafe { buf->storage[len..(len + additional)] });
+}
+
+export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) {
+    usize len = byte_buf_len(buf);
+    usize cap = byte_buf_capacity(buf);
+    if (additional > (cap - len)) {
+        return Err(overflow_error());
+    }
+    unsafe {
+        buf->len = len + additional;
+    };
+    return Ok;
+}
+
 export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) {
     usize len = byte_buf_len(buf);
     if (count > len) {

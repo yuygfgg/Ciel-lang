@@ -2466,10 +2466,10 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(
                         indent,
                         &format!(
-                            "{} = ({})ciel_alloc(sizeof({}));",
+                            "{} = ({}){};",
                             self.c_pointer_decl(ty, &cname),
                             self.c_pointer_type(ty),
-                            self.c_sizeof_type(ty)
+                            self.c_object_alloc_expr(ty)
                         ),
                     );
                     if let Some(init) = init {
@@ -2757,10 +2757,10 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(
                         indent,
                         &format!(
-                            "{} = ({})ciel_alloc(sizeof({}));",
+                            "{} = ({}){};",
                             self.c_pointer_decl(ty, &cname),
                             self.c_pointer_type(ty),
-                            self.c_sizeof_type(ty)
+                            self.c_object_alloc_expr(ty)
                         ),
                     );
                     self.emit_value_copy(&format!("*{cname}"), value_expr, ty, indent);
@@ -2925,10 +2925,10 @@ impl<'a> CGenerator<'a> {
         self.line_indent(
             indent,
             &format!(
-                "{} = ({})ciel_alloc(sizeof({}));",
+                "{} = ({}){};",
                 self.c_pointer_decl(ty, &cname),
                 self.c_pointer_type(ty),
-                self.c_sizeof_type(ty)
+                self.c_object_alloc_expr(ty)
             ),
         );
         if let Some(init) = init {
@@ -5484,7 +5484,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(
             indent,
             &format!(
-                "{} = ciel_alloc(sizeof(*{msg_box}));",
+                "{} = ciel_actor_message_alloc(sizeof(*{msg_box}));",
                 self.c_pointer_decl(message_ty, &msg_box)
             ),
         );
@@ -5632,14 +5632,9 @@ impl<'a> CGenerator<'a> {
             );
             return Ok(slice);
         }
-        self.line_indent(
-            indent,
-            &format!(
-                "{elem_c} *{data} = ({elem_c} *)ciel_alloc_array(sizeof({elem_c}), {len});",
-                elem_c = self.c_type(elem),
-                len = elements.len()
-            ),
-        );
+        let elem_c = self.c_type(elem);
+        let alloc = self.c_array_alloc_expr(elem, &elements.len().to_string());
+        self.line_indent(indent, &format!("{elem_c} *{data} = ({elem_c} *){alloc};"));
         for (idx, element) in elements.iter().enumerate() {
             let value = self.gen_expr_in_stmt(element, indent)?;
             self.line_indent(indent, &format!("{data}[{idx}] = {value};"));
@@ -5684,13 +5679,9 @@ impl<'a> CGenerator<'a> {
             );
             return Ok(slice);
         }
-        self.line_indent(
-            indent,
-            &format!(
-                "{elem_c} *{data} = ({elem_c} *)ciel_alloc_array(sizeof({elem_c}), {len});",
-                elem_c = self.c_type(elem),
-            ),
-        );
+        let elem_c = self.c_type(elem);
+        let alloc = self.c_array_alloc_expr(elem, &len.to_string());
+        self.line_indent(indent, &format!("{elem_c} *{data} = ({elem_c} *){alloc};"));
         self.emit_array_repeat_init(data.as_str(), elem, element, len, indent)?;
         self.line_indent(
             indent,
@@ -6725,9 +6716,9 @@ impl<'a> CGenerator<'a> {
             self.line_indent(
                 indent,
                 &format!(
-                    "{target_temp}.ptr = ({})ciel_alloc_array(sizeof({}), ({source_value}).len);",
+                    "{target_temp}.ptr = ({}){};",
                     self.c_pointer_type(target_elem),
-                    self.c_sizeof_type(target_elem)
+                    self.c_array_alloc_expr(target_elem, &format!("({source_value}).len"))
                 ),
             );
             let idx = self.next_temp("retained_i");
@@ -7760,6 +7751,56 @@ impl<'a> CGenerator<'a> {
         match ty {
             Ty::Array { len, elem } => format!("{}[{}]", self.c_type(elem), len),
             _ => self.c_type(ty),
+        }
+    }
+
+    fn c_array_alloc_expr(&self, elem: &Ty, len: &str) -> String {
+        let allocator = if self.ty_can_carry_gc_pointer(elem) {
+            "ciel_alloc_array"
+        } else {
+            "ciel_alloc_atomic_array"
+        };
+        format!("{allocator}(sizeof({}), {len})", self.c_sizeof_type(elem))
+    }
+
+    fn c_object_alloc_expr(&self, ty: &Ty) -> String {
+        let allocator = if self.ty_can_carry_gc_pointer(ty) {
+            "ciel_alloc"
+        } else {
+            "ciel_alloc_atomic"
+        };
+        format!("{allocator}(sizeof({}))", self.c_sizeof_type(ty))
+    }
+
+    fn ty_can_carry_gc_pointer(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Pointer { .. }
+            | Ty::Slice { .. }
+            | Ty::DynamicInterface { .. }
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::ClosureInstance { .. } => true,
+            Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer(elem),
+            Ty::Named { .. }
+            | Ty::CSpelling { .. }
+            | Ty::Generic(_)
+            | Ty::Hole(_)
+            | Ty::Unknown => true,
+            Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64 => false,
         }
     }
 

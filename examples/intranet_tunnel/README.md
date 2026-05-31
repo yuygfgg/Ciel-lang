@@ -89,3 +89,41 @@ sh examples/intranet_tunnel/test/test.sh
 
 Set `CIEL_TUNNEL_SKIP_LOOPBACK=1` to run only the Ciel compile/unit portion in
 an environment that blocks loopback sockets.
+
+## Stress Comparison
+
+The benchmark script under `examples/benchmark/intranet_tunnel` compares the Go
+reference implementation against the Ciel implementation. It builds release
+binaries, builds the Cargo-based Rust load tool, verifies that the direct
+echo/load path can handle the configured ceiling, then binary-searches the
+highest concurrent public-client count that each tunnel can complete. The
+summary reports both boundary throughput at the highest passing concurrency and
+peak throughput among successful trials.
+
+```sh
+python3 examples/benchmark/intranet_tunnel/stress.py --ceiling 128
+```
+
+The script raises the soft file-descriptor limit before it starts the echo
+server, load generator, and tunnel processes. Use `--fd-limit` to request a
+higher limit, or `--fd-limit 0` to leave the current limit unchanged.
+
+It also waits 15 seconds between high-concurrency load-generator trials by
+default so short connections from the previous large trial have time to leave
+`TIME_WAIT`. The cooldown applies only at or above concurrency 512 by default;
+use `--trial-gap-threshold` to tune that cutoff, or `--trial-gap-ms 0` to
+disable it.
+
+For a high-priority run with a prebuilt compiler:
+
+```sh
+cargo build --quiet --release
+sudo env CIELC="$PWD/target/release/cielc" \
+  nice -n -20 \
+  python3 examples/benchmark/intranet_tunnel/stress.py --ceiling 3072 --fd-limit 65536
+```
+
+Use `--payload-bytes`, `--round-trips`, and `--trial-timeout-ms` to change the
+per-client workload. Use `--trial-gap-ms` to adjust the cooldown between
+high-concurrency load-generator trials. Set `CIELC=/path/to/cielc` to reuse an
+existing compiler binary instead of running it through Cargo.

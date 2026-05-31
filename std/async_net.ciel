@@ -17,7 +17,7 @@ unsafe extern "C" {
     opaque struct CielSocketAddr;
 
     c::c_int ciel_errno();
-    ?*void ciel_box_copy(usize size, usize align, *const void source);
+    ?*void ciel_actor_box_copy(usize size, usize align, *const void source);
 
     ?*CielAsyncTcpListener ciel_async_tcp_listen(*CielSocketAddr addr);
     c::c_int ciel_async_tcp_listener_addr(*CielAsyncTcpListener listener, *?*CielSocketAddr out);
@@ -162,7 +162,7 @@ net::SocketAddr addr_from_raw(*CielSocketAddr raw) {
 Result<*void, Error> box_message<M: Message>(M message) {
     M local = message;
     M cloned = clone_message(&local)?;
-    ?*void boxed = unsafe { ciel_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
+    ?*void boxed = unsafe { ciel_actor_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
     if (boxed == null) {
         return Err(code_error(5));
     }

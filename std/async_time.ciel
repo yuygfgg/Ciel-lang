@@ -11,7 +11,7 @@ unsafe extern "C" {
     opaque struct CielAsyncOp;
 
     c::c_int ciel_errno();
-    ?*void ciel_box_copy(usize size, usize align, *const void source);
+    ?*void ciel_actor_box_copy(usize size, usize align, *const void source);
 
     ?*CielAsyncOp ciel_async_sleep_ms(u64 ms);
     c::c_int ciel_async_notify_sleep(*CielAsyncOp op, *CielActor actor, *void message);
@@ -46,7 +46,7 @@ Error runtime_error() {
 Result<*void, Error> box_message<M: Message>(M message) {
     M local = message;
     M cloned = clone_message(&local)?;
-    ?*void boxed = unsafe { ciel_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
+    ?*void boxed = unsafe { ciel_actor_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
     if (boxed == null) {
         return Err(code_error(5));
     }

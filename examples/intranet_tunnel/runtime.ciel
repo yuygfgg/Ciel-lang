@@ -129,8 +129,16 @@ export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
 }
 
 export Result<void, Error> frame_reader_push(*FrameReader reader, anet::Bytes bytes) {
-    []u8 chunk = bytes_to_slice(bytes)?;
-    buf::byte_buf_push_slice(&reader->buffer, chunk)?;
+    usize len = anet::bytes_len(bytes);
+    if (len > frame::max_payload_len()) {
+        return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
+    }
+    []u8 dst = buf::byte_buf_spare_mut_slice(&reader->buffer, len)?;
+    usize copied = anet::bytes_copy_to(bytes, dst)?;
+    if (copied != len) {
+        return Err(text_error("short async byte copy"));
+    }
+    buf::byte_buf_commit_tail(&reader->buffer, copied)?;
     return Ok;
 }
 
@@ -170,10 +178,7 @@ export Result<anet::Bytes, Error> encode_frame_from_slice(
         length: payload.len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    buf::ByteBuf @out = buf::byte_buf_new(frame::header_len() + payload.len)?;
-    buf::byte_buf_push_slice(&out, encoded_header)?;
-    buf::byte_buf_push_slice(&out, payload)?;
-    return anet::bytes_copy(buf::byte_buf_slice(&out));
+    return anet::bytes_concat(encoded_header, payload);
 }
 
 export Result<anet::Bytes, Error> encode_frame_from_bytes(
@@ -181,8 +186,16 @@ export Result<anet::Bytes, Error> encode_frame_from_bytes(
     u32 stream_id,
     anet::Bytes payload
 ) {
-    []u8 slice = bytes_to_slice(payload)?;
-    return encode_frame_from_slice(kind, stream_id, slice);
+    usize len = anet::bytes_len(payload);
+    frame::validate_stream_id(kind, stream_id)?;
+    frame::validate_payload_len(len)?;
+    frame::FrameHeader header = {
+        kind: kind,
+        stream_id: stream_id,
+        length: len as u32
+    };
+    []u8 encoded_header = tunnel_codec::encode_header(header)?;
+    return anet::bytes_prepend(encoded_header, payload);
 }
 
 export bool kind_is(frame::FrameKind left, frame::FrameKind right) {

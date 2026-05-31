@@ -148,7 +148,7 @@ Result<void, Error> schedule_control_read(*ServerCore core) {
     if (!core->has_control || core->control_read_pending) {
         return Ok;
     }
-    anet::AsyncTcpRead op = anet::read_bytes(core->control, 4096)?;
+    anet::AsyncTcpRead op = anet::read_bytes(core->control, frame::max_payload_len())?;
     core->control_read_pending = true;
     anet::notify_read_done(&op, &core->actor_handle, server_msg(ControlReadDone(op)))?;
     return Ok;

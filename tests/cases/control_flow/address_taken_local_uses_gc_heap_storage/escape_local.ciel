@@ -1,6 +1,6 @@
 // ciel-test: compile
 // expect-c-contains: int64_t *value__
-// expect-c-contains: = (int64_t *)ciel_alloc(sizeof(int64_t));
+// expect-c-contains: = (int64_t *)ciel_alloc_atomic(sizeof(int64_t));
 // expect-c-contains: = value__
 // expect-c-contains: return ciel_return_
 

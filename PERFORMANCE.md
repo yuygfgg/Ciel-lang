@@ -20,6 +20,12 @@ rather than process-level wall time.
   symbols.
 - The runtime prelude annotates cold panic paths and allocator-like helpers so
   Clang has better noreturn, cold-code, allocation-size, and aliasing facts.
+- Actor messages now use a dedicated runtime-owned message allocation path:
+  queued message boxes stay rooted while pending and are freed by the actor
+  runtime immediately after dispatch. Async operation records are ordinary GC
+  objects pinned only while the runtime operation is pending, then unpinned on
+  finish so completed read/write/connect/accept tokens do not permanently grow
+  the uncollectable root set.
 
 ## Remaining Problems
 
@@ -74,8 +80,9 @@ messages usually escape by construction.
 
 Escape analysis can still remove some setup allocations around immediate error
 paths or known-safe cloning, but the main improvement here is ABI design:
-batching small messages, avoiding redundant clone boxes, and generating typed
-dispatch entry points with fewer generic wrappers.
+batching small messages, avoiding redundant clone boxes, reusing async operation
+records where the token cannot escape, and generating typed dispatch entry
+points with fewer generic wrappers.
 
 ### Checked Arithmetic And Panic Paths
 

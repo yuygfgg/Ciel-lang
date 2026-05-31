@@ -1,6 +1,6 @@
 // ciel-test: compile
 // expect-c-contains: int64_t *value__
-// expect-c-contains: ciel_alloc(sizeof(int64_t))
+// expect-c-contains: ciel_alloc_atomic(sizeof(int64_t))
 
 unsafe extern "C" {
     void observe(*i64 value);

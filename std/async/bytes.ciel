@@ -7,6 +7,13 @@ unsafe extern "C" {
 
     c::c_int ciel_errno();
     ?*CielBytes ciel_bytes_copy(*const u8 ptr, usize len);
+    ?*CielBytes ciel_bytes_concat(
+        *const u8 left,
+        usize left_len,
+        *const u8 right,
+        usize right_len
+    );
+    ?*CielBytes ciel_bytes_prepend(*const u8 prefix, usize prefix_len, *CielBytes bytes);
     usize ciel_bytes_len(*CielBytes bytes);
     c::c_int ciel_bytes_copy_to(*CielBytes bytes, *u8 out, usize cap, *usize copied);
 }
@@ -37,6 +44,22 @@ Error runtime_error() {
 
 export Result<Bytes, Error> bytes_copy([]const u8 data) {
     ?*CielBytes raw = unsafe { ciel_bytes_copy(data.ptr, data.len) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<Bytes, Error> bytes_concat([]const u8 left, []const u8 right) {
+    ?*CielBytes raw = unsafe { ciel_bytes_concat(left.ptr, left.len, right.ptr, right.len) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) {
+    ?*CielBytes raw = unsafe { ciel_bytes_prepend(prefix.ptr, prefix.len, raw_bytes(bytes)) };
     if (raw == null) {
         return Err(runtime_error());
     }

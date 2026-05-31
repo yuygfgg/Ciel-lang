@@ -27,7 +27,7 @@ done
 ## Stage 3: Concurrency
 
 7. [Actor Basics](07-actor-basics.md)
-8. [Sending Complex Data Across Actors](08-actor-envelopes.md)
+8. [Messages and Actor-Owned State](08-actor-envelopes.md)
 9. [Channels and Async Flows](09-channels-async-io.md)
 
 ## Stage 4: Advanced

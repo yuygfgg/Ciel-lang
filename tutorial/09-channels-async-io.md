@@ -239,12 +239,22 @@ At that level, the mailbox receives both commands and completion messages:
 
 ```ciel
 enum ReaderMsg {
-    Start(aio::AsyncFd, Actor<meta::Repr<ReaderMsg>>),
+    Start(aio::AsyncFd),
     ReadDone(aio::AsyncRead),
 }
 ```
 
 `Start` begins the read. `ReadDone` consumes the completed operation.
+The actor is spawned with `spawn_actor_state`, so the handler receives the
+actor's own handle directly:
+
+```ciel
+Result<void, Error> handle(
+    *Channel<usize> done,
+    Actor<meta::Repr<ReaderMsg>> self,
+    meta::Repr<ReaderMsg> envelope
+)
+```
 
 The actor starts the operation:
 
@@ -267,7 +277,7 @@ the actor:
 ```ciel
 aio::Bytes bytes = aio::finish_read(op)?;
 usize len = aio::bytes_len(bytes);
-channel_send(&done, len)?;
+channel_send(done, len)?;
 ```
 
 The complete lower-level example is in
@@ -301,6 +311,10 @@ The flow API hides the completion-message enum, but it does not remove message
 safety. Values captured by task closures still cross a concurrency boundary and
 must be messageable.
 
+Manual actors have the same rule for their initializer and handler values.
+`spawn_actor_state` lets the private state `S` be non-messageable, but the
+initializer closure and handler value still need retained `Message` capability.
+
 These captures work in the example:
 
 - `payload_file` and `target_file`, because async file handles have explicit
@@ -328,3 +342,6 @@ Operation-specific tasks from `/std/async_io`, `/std/async_time`, and
 `/std/async_net` compose through the same `flow::then` API.
 
 Use a manual actor state machine when the workflow is not a linear chain.
+
+Use `spawn_actor_state` for a manual actor that owns mutable resources in place
+or needs its own `Actor<M>` handle while handling a message.

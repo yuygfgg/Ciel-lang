@@ -68,3 +68,8 @@ i32 main() {
 
 `send` queues work and returns after the message is accepted. `join` waits for
 already queued work to finish and closes the actor to later sends.
+
+This chapter used `spawn_actor_cloned` because the state is a small messageable
+integer. The next chapter shows `spawn_actor_state`, which is the actor-owned
+state API for maps, queues, async handles, and other state that should not be
+copied as a message.

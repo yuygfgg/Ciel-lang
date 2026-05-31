@@ -7,20 +7,23 @@ import /std/async_io as aio;
 import /std/meta as meta;
 
 enum ReaderMsg {
-    // Start a read on this async file handle. The actor handle tells the runtime
-    // where the completion message should be sent later.
-    Start(aio::AsyncFd, Actor<meta::Repr<ReaderMsg>>),
+    // Start a read on this async file handle.
+    Start(aio::AsyncFd),
 
     // The runtime sends this after it observes that the read operation finished.
     ReadDone(aio::AsyncRead),
 }
 
-Result<Channel<usize>, Error> handle(Channel<usize> done, meta::Repr<ReaderMsg> envelope) {
+Result<void, Error> handle(
+    *Channel<usize> done,
+    Actor<meta::Repr<ReaderMsg>> self,
+    meta::Repr<ReaderMsg> envelope
+) {
     // The mailbox stores the safe envelope. Open it before normal pattern matching.
     ReaderMsg msg = meta::from_repr<ReaderMsg>(envelope);
 
     switch (msg) {
-        case Start(fd, self):
+        case Start(fd):
             // Start one async read. This returns immediately with an operation token.
             aio::AsyncRead op = aio::read_bytes(fd, 16)?;
 
@@ -32,7 +35,7 @@ Result<Channel<usize>, Error> handle(Channel<usize> done, meta::Repr<ReaderMsg> 
             aio::notify_read_done(&op, &self, completed_envelope)?;
 
             // Return now. The actor is not blocked while the OS is reading.
-            return Ok(done);
+            return Ok;
 
         case ReadDone(op):
             // The OS has finished. Now consume the completed operation token.
@@ -40,8 +43,8 @@ Result<Channel<usize>, Error> handle(Channel<usize> done, meta::Repr<ReaderMsg> 
             usize len = aio::bytes_len(bytes);
 
             // Send the final answer back to whoever is waiting on the channel.
-            channel_send(&done, len)?;
-            return Ok(done);
+            channel_send(done, len)?;
+            return Ok;
     }
 }
 
@@ -56,18 +59,19 @@ i32 main() {
     Channel<usize> done = must(make_channel<usize>());
 
     // The actor receives envelopes around the real application message.
-    Actor<meta::Repr<ReaderMsg>> reader = must(spawn_actor_cloned<Channel<usize>, meta::Repr<ReaderMsg>>(
-        done,
-        handle
-    ));
+    Actor<meta::Repr<ReaderMsg>> reader =
+        must(spawn_actor_state<Channel<usize>, meta::Repr<ReaderMsg>>(
+            || Ok(done),
+            handle
+        ));
 
     // Open an async file handle. The read itself starts inside the actor handler.
     aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_tutorial_async_read.txt"));
     defer aio::close_async(fd);
 
-    // Tell the actor to begin the read. The actor handle is part of the command so
-    // the actor can ask the runtime to send the completion message back to itself.
-    ReaderMsg start = Start(fd, reader);
+    // Tell the actor to begin the read. The handler receives the actor's own
+    // handle, so the command only needs the file handle.
+    ReaderMsg start = Start(fd);
     must(send(&reader, meta::into_repr(&start)));
 
     // Main blocks here waiting for the final answer.

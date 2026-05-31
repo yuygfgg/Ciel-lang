@@ -1,4 +1,4 @@
-# 8. Sending Complex Data Across Actors
+# 8. Messages and Actor-Owned State
 
 Sending an integer is easy. Sending a struct is the moment where Ciel asks:
 "what exactly is safe to copy into another actor?"
@@ -92,3 +92,73 @@ carry a forbidden capability such as `ThreadLocal`. If a field contains a raw
 pointer, actor-local slice, dynamic interface without an explicit policy, or
 opaque C handle, the normal `Message` constraint fails. SOP is a safe
 representation path, not a permission bypass.
+
+## Actor-Owned State
+
+Chapter 7 used `spawn_actor_cloned`: the state type `S` must implement
+`Message`, and the handler returns the next state value. That is a good fit for
+small state such as an integer counter.
+
+Some actor state should stay actor-local. A stream table, a queue, or a
+`HashMap` may be perfectly safe for one actor to own, but it should not become a
+message that can be copied into another actor. For that shape, use
+`spawn_actor_state`:
+
+```ciel
+Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
+    Result<S, Error> |(): Message| init,
+    Result<void, Error> |(*S, Actor<M>, M): Message| handler
+);
+```
+
+Read the signature in three parts:
+
+- `S` is the private actor state. It does not need to implement `Message`.
+- `init` constructs `S` before the actor accepts messages. The initializer
+  itself is `: Message`, so it can capture safe seed values such as channels or
+  actor handles, but not a non-message local `HashMap`.
+- `handler` receives a writable pointer to actor-owned state, the actor's own
+  handle, and one message. It mutates state in place and returns `Ok`.
+
+The complete example is in `tutorial/examples/08_actor_owned_state.ciel`. Its
+state owns a `HashMap`, while its mailbox still receives safe envelopes:
+
+```ciel
+struct Counts {
+    map::HashMap<u32, i64> table;
+    Channel<i64> out;
+}
+
+Result<Counts, Error> init_counts(Channel<i64> out) {
+    return Ok({
+        table: map::hash_map_new<u32, i64>()?,
+        out: out
+    });
+}
+
+Result<void, Error> handle(
+    *Counts state,
+    Actor<meta::Repr<CountMsg>> self,
+    meta::Repr<CountMsg> envelope
+) {
+    CountMsg msg = meta::from_repr<CountMsg>(envelope);
+    // Handle Add and Flush messages here.
+    return Ok;
+}
+```
+
+The actor is spawned by giving the runtime an initializer, not by passing an
+already-built `Counts` value from the caller:
+
+```ciel
+Actor<meta::Repr<CountMsg>> worker =
+    must(spawn_actor_state<Counts, meta::Repr<CountMsg>>(
+        || init_counts(out),
+        handle
+    ));
+```
+
+This is the important safety line: the `HashMap` is created inside
+`init_counts`, then lives behind the actor boundary. Messages still cross the
+mailbox as `meta::Repr<CountMsg>`, so message copying remains explicit and
+checked.

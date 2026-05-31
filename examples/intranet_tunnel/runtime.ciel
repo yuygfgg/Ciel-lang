@@ -1,5 +1,4 @@
 import /std/async_net as anet;
-import /std/actor as actor;
 import /std/buf as buf;
 import /std/c as c;
 import /std/message;
@@ -45,8 +44,8 @@ export enum BytesQueuePop {
 }
 
 // Actor-local allocation helpers. Callers keep the boxed values private to one
-// actor; this lets the demo hold live HashMap state without making HashMap a
-// Message type.
+// actor; this is used for internal queue nodes and temporary placeholder
+// handles.
 export Result<*T, Error> box_copy<T>(T value) {
     T local = value;
     ?*void raw = unsafe {
@@ -58,14 +57,7 @@ export Result<*T, Error> box_copy<T>(T value) {
     return Ok(unsafe { raw as *T });
 }
 
-// Placeholders are installed only during actor core construction. The matching
-// has_* flag must be true before application code uses the handle.
 export Result<anet::AsyncTcpStream, Error> placeholder_stream() {
-    *u8 marker = box_copy<u8>(0 as u8)?;
-    return Ok(unsafe { { handle: marker as *void } });
-}
-
-export Result<actor::Actor<M>, Error> placeholder_actor<M>() {
     *u8 marker = box_copy<u8>(0 as u8)?;
     return Ok(unsafe { { handle: marker as *void } });
 }

@@ -24,7 +24,7 @@ Result<Channel<usize>, Error> handle(Channel<usize> done_signal, meta::Repr<Msg>
 
 i32 main() {
     Channel<usize> done_signal = must(make_channel<usize>());
-    Actor<meta::Repr<Msg>> actor = must(spawn_actor<Channel<usize>, meta::Repr<Msg>>(
+    Actor<meta::Repr<Msg>> actor = must(spawn_actor_cloned<Channel<usize>, meta::Repr<Msg>>(
         done_signal,
         handle
     ));

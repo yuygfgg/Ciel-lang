@@ -17,7 +17,7 @@ Result<i64, Error> handle(i64 total, i64 amount) {
 
 i32 main() {
     // This actor's state is i64 and its message type is also i64.
-    Actor<i64> worker = must(spawn_actor<i64, i64>(0, handle));
+    Actor<i64> worker = must(spawn_actor_cloned<i64, i64>(0, handle));
 
     // `send` puts messages into the actor's mailbox.
     must(send(&worker, 2));

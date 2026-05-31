@@ -50,7 +50,7 @@ Result<i64, Error> handle(i64 state, Envelope<Command<Pair<i64>>> msg) {
 }
 
 i64 main() {
-    Actor<Envelope<Command<Pair<i64>>>> actor = must(spawn_actor<i64, Envelope<Command<Pair<i64>>>>(0, handle));
+    Actor<Envelope<Command<Pair<i64>>>> actor = must(spawn_actor_cloned<i64, Envelope<Command<Pair<i64>>>>(0, handle));
 
     Pair<i64> first = { left: 2, right: 3 };
     Command<Pair<i64>> add = Add(first);

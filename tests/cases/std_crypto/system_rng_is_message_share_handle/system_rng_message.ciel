@@ -32,7 +32,7 @@ i64 main() {
     must(accept_shared(rng));
 
     Channel<usize> done = must(make_channel<usize>());
-    Actor<crypto::SystemRng> actor = must(spawn_actor<Channel<usize>, crypto::SystemRng>(done, worker));
+    Actor<crypto::SystemRng> actor = must(spawn_actor_cloned<Channel<usize>, crypto::SystemRng>(done, worker));
     must(send(&actor, rng));
 
     usize value = must(channel_recv(&done));

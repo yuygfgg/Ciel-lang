@@ -23,7 +23,7 @@ i64 inc(i64 value) {
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Op> actor = must(spawn_actor<i64, Op>(1, |i64 state, Op op| {
+    Actor<Op> actor = must(spawn_actor_cloned<i64, Op>(1, |i64 state, Op op| {
         Channel<i64> local_out = out;
         switch (op) {
             case Apply(callback, value):

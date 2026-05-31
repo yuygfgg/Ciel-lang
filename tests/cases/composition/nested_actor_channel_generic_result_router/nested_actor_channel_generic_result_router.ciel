@@ -19,7 +19,7 @@ Result<void, Error> flush_value<T: Message>(*const Channel<T> out, T value) {
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Route<i64>> actor = must(spawn_actor<i64, Route<i64>>(0, |i64 state, Route<i64> msg| {
+    Actor<Route<i64>> actor = must(spawn_actor_cloned<i64, Route<i64>>(0, |i64 state, Route<i64> msg| {
         Channel<i64> local_out = out;
         switch (msg) {
             case Deliver(result):

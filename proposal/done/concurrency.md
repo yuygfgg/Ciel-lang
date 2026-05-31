@@ -45,7 +45,7 @@ interface<H, S, M> Result<S, Error> handle(*H handler, S state, M message);
 One possible spawn API:
 
 ```rust
-Result<Actor<M>, Error> spawn_actor<S: Message, M: Message, H: Message + Handler<S, M>>(
+Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message, H: Message + Handler<S, M>>(
     S initial_state,
     H handler
 );
@@ -244,7 +244,7 @@ signature types do not implement `Message` by default.
 
 The standard library and runtime need these additions:
 
-1. `/std/actor` with `Actor<M>`, `spawn_actor`, `send`, actor lifecycle helpers,
+1. `/std/actor` with `Actor<M>`, `spawn_actor_cloned`, `send`, actor lifecycle helpers,
    and error types for closed mailboxes or backpressure. The current runtime
    reports pthread/mailbox failures through `Error::Code`.
 2. Runtime mailbox support: allocation, enqueue, dequeue, wakeup, shutdown, and
@@ -281,7 +281,7 @@ implementations, and trusted C wrappers honoring their declared policies.
 
 1. Add `Message` and hand-written primitive/container implementations.
 2. Add derived `Message` for simple pointer-free value trees.
-3. Add `Actor<M>`, `spawn_actor`, and `send<T: Message>`.
+3. Add `Actor<M>`, `spawn_actor_cloned`, and `send<T: Message>`.
 4. Add the minimal runtime mailbox scheduler.
 5. Make pointers, slices, mutexes, and opaque C handles actor-local unless a
    wrapper provides an explicit message conversion.

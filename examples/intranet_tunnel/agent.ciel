@@ -14,7 +14,7 @@ import ./protocol/state as tunnel_state;
 import ./runtime as rt;
 
 enum AgentMsg {
-    AgentStart(Actor<meta::Repr<AgentMsg>>),
+    AgentStart(void),
     ControlConnected(anet::AsyncConnect),
     ControlReadDone(anet::AsyncTcpRead),
     ControlWriteDone(anet::AsyncTcpWrite),
@@ -36,8 +36,6 @@ struct AgentStream {
 }
 
 struct AgentCore {
-    Actor<meta::Repr<AgentMsg>> actor_handle;
-    bool has_actor;
     anet::AsyncTcpStream control;
     bool has_control;
     bool authenticated;
@@ -48,16 +46,6 @@ struct AgentCore {
     map::HashMap<u32, AgentStream> streams;
     cli::AgentConfig config;
     Channel<i64> done;
-}
-
-struct AgentState {
-    *AgentCore core;
-}
-
-// AgentState is a shallow pointer to actor-owned core state. The live stream
-// table remains actor-local and is not made Message.
-unsafe impl clone_message(*const AgentState value) {
-    return Ok(*value);
 }
 
 meta::Repr<AgentMsg> agent_msg(AgentMsg msg) {
@@ -123,42 +111,57 @@ Result<void, Error> signal_agent(*AgentCore core, i64 code) {
     return Ok;
 }
 
-Result<void, Error> schedule_control_connect(*AgentCore core) {
+Result<void, Error> schedule_control_connect(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle
+) {
     anet::AsyncConnect op = anet::connect_async(core->config.server_addr)?;
-    anet::notify_connect_done(&op, &core->actor_handle, agent_msg(ControlConnected(op)))?;
+    anet::notify_connect_done(&op, &actor_handle, agent_msg(ControlConnected(op)))?;
     return Ok;
 }
 
-Result<void, Error> schedule_control_read(*AgentCore core) {
+Result<void, Error> schedule_control_read(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle
+) {
     if (!core->has_control || core->control_read_pending) {
         return Ok;
     }
     anet::AsyncTcpRead op = anet::read_bytes(core->control, frame::max_payload_len())?;
     core->control_read_pending = true;
-    anet::notify_read_done(&op, &core->actor_handle, agent_msg(ControlReadDone(op)))?;
+    anet::notify_read_done(&op, &actor_handle, agent_msg(ControlReadDone(op)))?;
     return Ok;
 }
 
-Result<void, Error> schedule_target_connect(*AgentCore core, u32 stream_id) {
+Result<void, Error> schedule_target_connect(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    u32 stream_id
+) {
     anet::AsyncConnect op = anet::connect_async(core->config.target_addr)?;
     anet::notify_connect_done(
         &op,
-        &core->actor_handle,
+        &actor_handle,
         agent_msg(TargetConnected(stream_id, op))
     )?;
     return Ok;
 }
 
-Result<void, Error> schedule_target_read(*AgentCore core, u32 stream_id) {
+Result<void, Error> schedule_target_read(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    u32 stream_id
+) {
     return map::hash_map_with(&core->streams, stream_id, |stream| {
         if (!stream->has_target || stream->target_eof || stream->target_read_pending) {
             return Ok;
         }
         anet::AsyncTcpRead op = anet::read_bytes(stream->target, 16384)?;
         stream->target_read_pending = true;
+        Actor<meta::Repr<AgentMsg>> notify_actor = actor_handle;
         anet::notify_read_done(
             &op,
-            &core->actor_handle,
+            &notify_actor,
             agent_msg(TargetReadDone(stream_id, op))
         )?;
         return Ok;
@@ -179,50 +182,70 @@ Result<void, Error> close_control(*AgentCore core, i64 code) {
     return Ok;
 }
 
-Result<void, Error> start_control_write(*AgentCore core, anet::Bytes bytes) {
+Result<void, Error> start_control_write(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    anet::Bytes bytes
+) {
     if (!core->has_control) {
         return Ok;
     }
     anet::AsyncTcpWrite op = anet::write_bytes(core->control, bytes)?;
     core->control_write_busy = true;
-    anet::notify_write_done(&op, &core->actor_handle, agent_msg(ControlWriteDone(op)))?;
+    anet::notify_write_done(&op, &actor_handle, agent_msg(ControlWriteDone(op)))?;
     return Ok;
 }
 
-Result<void, Error> enqueue_control_bytes(*AgentCore core, anet::Bytes bytes) {
+Result<void, Error> enqueue_control_bytes(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    anet::Bytes bytes
+) {
     if (core->control_write_busy) {
         rt::bytes_queue_push(&core->control_out, bytes)?;
         return Ok;
     }
-    return start_control_write(core, bytes);
+    return start_control_write(core, actor_handle, bytes);
 }
 
 Result<void, Error> send_control_frame_bytes(
     *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
     frame::FrameKind kind,
     u32 stream_id,
     anet::Bytes payload
 ) {
     anet::Bytes encoded = rt::encode_frame_from_bytes(kind, stream_id, payload)?;
-    return enqueue_control_bytes(core, encoded);
+    return enqueue_control_bytes(core, actor_handle, encoded);
 }
 
 Result<void, Error> send_control_frame_slice(
     *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
     frame::FrameKind kind,
     u32 stream_id,
     []const u8 payload
 ) {
     anet::Bytes encoded = rt::encode_frame_from_slice(kind, stream_id, payload)?;
-    return enqueue_control_bytes(core, encoded);
+    return enqueue_control_bytes(core, actor_handle, encoded);
 }
 
-Result<void, Error> send_control_empty(*AgentCore core, frame::FrameKind kind, u32 stream_id) {
+Result<void, Error> send_control_empty(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    frame::FrameKind kind,
+    u32 stream_id
+) {
     anet::Bytes empty = rt::empty_bytes()?;
-    return send_control_frame_bytes(core, kind, stream_id, empty);
+    return send_control_frame_bytes(core, actor_handle, kind, stream_id, empty);
 }
 
-Result<void, Error> enqueue_target_bytes(*AgentCore core, u32 stream_id, anet::Bytes bytes) {
+Result<void, Error> enqueue_target_bytes(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    u32 stream_id,
+    anet::Bytes bytes
+) {
     return map::hash_map_with(&core->streams, stream_id, |stream| {
         if (!stream->has_target) {
             return Ok;
@@ -233,21 +256,26 @@ Result<void, Error> enqueue_target_bytes(*AgentCore core, u32 stream_id, anet::B
         }
         anet::AsyncTcpWrite op = anet::write_bytes(stream->target, bytes)?;
         stream->target_write_busy = true;
+        Actor<meta::Repr<AgentMsg>> notify_actor = actor_handle;
         anet::notify_write_done(
             &op,
-            &core->actor_handle,
+            &notify_actor,
             agent_msg(TargetWriteDone(stream_id, op))
         )?;
         return Ok;
     });
 }
 
-Result<void, Error> handle_control_write_done(*AgentCore core, anet::AsyncTcpWrite op) {
+Result<void, Error> handle_control_write_done(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    anet::AsyncTcpWrite op
+) {
     anet::finish_write(op)?;
     rt::BytesQueuePop next = rt::bytes_queue_pop(&core->control_out);
     switch (next) {
         case rt::BytesQueueItem(bytes):
-            start_control_write(core, bytes)?;
+            start_control_write(core, actor_handle, bytes)?;
             return Ok;
         case rt::BytesQueueEmpty:
             core->control_write_busy = false;
@@ -257,6 +285,7 @@ Result<void, Error> handle_control_write_done(*AgentCore core, anet::AsyncTcpWri
 
 Result<void, Error> handle_target_write_done(
     *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
     u32 stream_id,
     anet::AsyncTcpWrite op
 ) {
@@ -266,9 +295,10 @@ Result<void, Error> handle_target_write_done(
         switch (next) {
             case rt::BytesQueueItem(bytes):
                 anet::AsyncTcpWrite next_op = anet::write_bytes(stream->target, bytes)?;
+                Actor<meta::Repr<AgentMsg>> notify_actor = actor_handle;
                 anet::notify_write_done(
                     &next_op,
-                    &core->actor_handle,
+                    &notify_actor,
                     agent_msg(TargetWriteDone(stream_id, next_op))
                 )?;
                 stream->target_write_busy = true;
@@ -285,14 +315,18 @@ Result<void, Error> handle_target_write_done(
     return Ok;
 }
 
-Result<void, Error> send_hello(*AgentCore core) {
+Result<void, Error> send_hello(*AgentCore core, Actor<meta::Repr<AgentMsg>> actor_handle) {
     io::eprintln_value("tunnel-agent: sending hello")?;
     []u8 payload = auth::encode_hello(core->config.route, core->config.psk)?;
     io::eprintln("tunnel-agent: hello payload {} bytes", [payload.len])?;
-    return send_control_frame_slice(core, frame::Hello, 0 as u32, payload);
+    return send_control_frame_slice(core, actor_handle, frame::Hello, 0 as u32, payload);
 }
 
-Result<void, Error> handle_control_connected(*AgentCore core, anet::AsyncConnect op) {
+Result<void, Error> handle_control_connected(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    anet::AsyncConnect op
+) {
     Result<anet::AsyncTcpStream, Error> connected = anet::finish_connect(op);
     switch (connected) {
         case Ok(stream):
@@ -301,10 +335,10 @@ Result<void, Error> handle_control_connected(*AgentCore core, anet::AsyncConnect
             core->authenticated = false;
             core->control_reader = rt::frame_reader_new()?;
             io::eprintln_value("tunnel-agent: control connected")?;
-            Result<void, Error> sent = send_hello(core);
+            Result<void, Error> sent = send_hello(core, actor_handle);
             switch (sent) {
                 case Ok:
-                    return schedule_control_read(core);
+                    return schedule_control_read(core, actor_handle);
                 case Err(error):
                     io::eprintln("tunnel-agent: failed to send hello: {}", [error])?;
                     close_control(core, -1)?;
@@ -327,6 +361,7 @@ Result<void, Error> handle_hello_ok(*AgentCore core, rt::AsyncFrame incoming) {
 
 Result<void, Error> handle_target_connected(
     *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
     u32 stream_id,
     anet::AsyncConnect op
 ) {
@@ -345,28 +380,32 @@ Result<void, Error> handle_target_connected(
             if (present) {
                 io::eprintln("tunnel-agent: stream {} target connected", [stream_id])?;
                 []u8 success = tunnel_codec::encode_open_result_success()?;
-                send_control_frame_slice(core, frame::OpenResult, stream_id, success)?;
-                schedule_target_read(core, stream_id)?;
+                send_control_frame_slice(core, actor_handle, frame::OpenResult, stream_id, success)?;
+                schedule_target_read(core, actor_handle, stream_id)?;
             }
             return Ok;
         case Err(error):
             io::eprintln("tunnel-agent: stream {} target connect failed: {}", [stream_id, error])?;
             []u8 failure =
                 tunnel_codec::encode_open_result_error(100 as u16, error_message(&error))?;
-            send_control_frame_slice(core, frame::OpenResult, stream_id, failure)?;
+            send_control_frame_slice(core, actor_handle, frame::OpenResult, stream_id, failure)?;
             []u8 close_reason =
                 tunnel_codec::encode_close_reason(100 as u16, "target dial failed")?;
-            send_control_frame_slice(core, frame::CloseStream, stream_id, close_reason)?;
+            send_control_frame_slice(core, actor_handle, frame::CloseStream, stream_id, close_reason)?;
             remove_agent_stream(core, stream_id)?;
             return Ok;
     }
 }
 
-Result<void, Error> handle_open_stream(*AgentCore core, rt::AsyncFrame incoming) {
+Result<void, Error> handle_open_stream(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    rt::AsyncFrame incoming
+) {
     io::eprintln("tunnel-agent: stream {} open requested", [incoming.stream_id])?;
     AgentStream stream = new_agent_stream()?;
     map::hash_map_insert(&core->streams, incoming.stream_id, stream)?;
-    return schedule_target_connect(core, incoming.stream_id);
+    return schedule_target_connect(core, actor_handle, incoming.stream_id);
 }
 
 Result<void, Error> handle_server_close_write(*AgentCore core, u32 stream_id) {
@@ -386,6 +425,7 @@ Result<void, Error> handle_server_close_write(*AgentCore core, u32 stream_id) {
 
 Result<void, Error> handle_target_read_done(
     *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
     u32 stream_id,
     anet::AsyncTcpRead op
 ) {
@@ -397,21 +437,25 @@ Result<void, Error> handle_target_read_done(
             stream->state =
                 tunnel_state::agent_transition(stream->state, tunnel_state::AgentTargetEof)?;
             stream->target_eof = true;
-            send_control_empty(core, frame::CloseWrite, stream_id)?;
+            send_control_empty(core, actor_handle, frame::CloseWrite, stream_id)?;
             return Ok(should_remove_agent_stream(stream));
         }
-        send_control_frame_bytes(core, frame::Data, stream_id, bytes)?;
+        send_control_frame_bytes(core, actor_handle, frame::Data, stream_id, bytes)?;
         return Ok(false);
     })?;
     if (remove) {
         remove_agent_stream(core, stream_id)?;
     } else if (len > 0) {
-        schedule_target_read(core, stream_id)?;
+        schedule_target_read(core, actor_handle, stream_id)?;
     }
     return Ok;
 }
 
-Result<void, Error> handle_control_frame(*AgentCore core, rt::AsyncFrame incoming) {
+Result<void, Error> handle_control_frame(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    rt::AsyncFrame incoming
+) {
     if (!core->authenticated) {
         if (rt::kind_is(incoming.kind, frame::HelloOk)) {
             return handle_hello_ok(core, incoming);
@@ -425,10 +469,10 @@ Result<void, Error> handle_control_frame(*AgentCore core, rt::AsyncFrame incomin
     }
 
     if (rt::kind_is(incoming.kind, frame::OpenStream)) {
-        return handle_open_stream(core, incoming);
+        return handle_open_stream(core, actor_handle, incoming);
     }
     if (rt::kind_is(incoming.kind, frame::Data)) {
-        return enqueue_target_bytes(core, incoming.stream_id, incoming.payload);
+        return enqueue_target_bytes(core, actor_handle, incoming.stream_id, incoming.payload);
     }
     if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
         return handle_server_close_write(core, incoming.stream_id);
@@ -437,7 +481,7 @@ Result<void, Error> handle_control_frame(*AgentCore core, rt::AsyncFrame incomin
         return remove_agent_stream(core, incoming.stream_id);
     }
     if (rt::kind_is(incoming.kind, frame::Ping)) {
-        return send_control_empty(core, frame::Pong, 0 as u32);
+        return send_control_empty(core, actor_handle, frame::Pong, 0 as u32);
     }
     if (rt::kind_is(incoming.kind, frame::Pong)) {
         return Ok;
@@ -445,64 +489,71 @@ Result<void, Error> handle_control_frame(*AgentCore core, rt::AsyncFrame incomin
     return close_control(core, -2);
 }
 
-Result<void, Error> drain_control_frames(*AgentCore core) {
+Result<void, Error> drain_control_frames(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle
+) {
     while (true) {
         rt::FrameReadResult next = rt::frame_reader_next(&core->control_reader)?;
         switch (next) {
             case rt::NeedMore:
                 return Ok;
             case rt::FrameReady(incoming):
-                handle_control_frame(core, incoming)?;
+                handle_control_frame(core, actor_handle, incoming)?;
         }
     }
     return Ok;
 }
 
-Result<void, Error> handle_control_read_done(*AgentCore core, anet::AsyncTcpRead op) {
+Result<void, Error> handle_control_read_done(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    anet::AsyncTcpRead op
+) {
     core->control_read_pending = false;
     anet::Bytes bytes = anet::finish_read(op)?;
     if (anet::bytes_len(bytes) == 0) {
         return close_control(core, -2);
     }
     rt::frame_reader_push(&core->control_reader, bytes)?;
-    drain_control_frames(core)?;
-    return schedule_control_read(core);
+    drain_control_frames(core, actor_handle)?;
+    return schedule_control_read(core, actor_handle);
 }
 
-Result<AgentState, Error> handle_agent(AgentState state, meta::Repr<AgentMsg> envelope) {
-    *AgentCore core = state.core;
+Result<void, Error> handle_agent(
+    *AgentCore core,
+    Actor<meta::Repr<AgentMsg>> actor_handle,
+    meta::Repr<AgentMsg> envelope
+) {
     AgentMsg msg = meta::from_repr<AgentMsg>(envelope);
     switch (msg) {
-        case AgentStart(actor_handle):
-            core->actor_handle = actor_handle;
-            core->has_actor = true;
-            schedule_control_connect(core)?;
-            return Ok(state);
+        case AgentStart(_):
+            schedule_control_connect(core, actor_handle)?;
+            return Ok;
         case ControlConnected(op):
-            handle_control_connected(core, op)?;
-            return Ok(state);
+            handle_control_connected(core, actor_handle, op)?;
+            return Ok;
         case ControlReadDone(op):
-            handle_control_read_done(core, op)?;
-            return Ok(state);
+            handle_control_read_done(core, actor_handle, op)?;
+            return Ok;
         case ControlWriteDone(op):
-            handle_control_write_done(core, op)?;
-            return Ok(state);
+            handle_control_write_done(core, actor_handle, op)?;
+            return Ok;
         case TargetConnected(stream_id, op):
-            handle_target_connected(core, stream_id, op)?;
-            return Ok(state);
+            handle_target_connected(core, actor_handle, stream_id, op)?;
+            return Ok;
         case TargetReadDone(stream_id, op):
-            handle_target_read_done(core, stream_id, op)?;
-            return Ok(state);
+            handle_target_read_done(core, actor_handle, stream_id, op)?;
+            return Ok;
         case TargetWriteDone(stream_id, op):
-            handle_target_write_done(core, stream_id, op)?;
-            return Ok(state);
+            handle_target_write_done(core, actor_handle, stream_id, op)?;
+            return Ok;
     }
 }
 
-Result<Actor<meta::Repr<AgentMsg>>, Error> start_agent(cli::AgentConfig config, Channel<i64> done) {
-    AgentCore core = {
-        actor_handle: rt::placeholder_actor<meta::Repr<AgentMsg>>()?,
-        has_actor: false,
+Result<AgentCore, Error> init_agent_core(Channel<i64> done) {
+    cli::AgentConfig config = cli::parse_agent_args()?;
+    return Ok({
         control: rt::placeholder_stream()?,
         has_control: false,
         authenticated: false,
@@ -513,18 +564,22 @@ Result<Actor<meta::Repr<AgentMsg>>, Error> start_agent(cli::AgentConfig config, 
         streams: map::hash_map_new<u32, AgentStream>()?,
         config: config,
         done: done
-    };
-    *AgentCore boxed = rt::box_copy<AgentCore>(core)?;
-    AgentState state = { core: boxed };
+    });
+}
+
+Result<Actor<meta::Repr<AgentMsg>>, Error> start_agent(Channel<i64> done) {
     Actor<meta::Repr<AgentMsg>> actor_handle =
-        spawn_actor<AgentState, meta::Repr<AgentMsg>>(state, handle_agent)?;
-    send(&actor_handle, agent_msg(AgentStart(actor_handle)))?;
+        spawn_actor_state<AgentCore, meta::Repr<AgentMsg>>(
+            || init_agent_core(done),
+            handle_agent
+        )?;
+    send(&actor_handle, agent_msg(AgentStart))?;
     return Ok(actor_handle);
 }
 
-export Result<void, Error> run_agent(cli::AgentConfig config) {
+export Result<void, Error> run_agent() {
     Channel<i64> done = make_channel<i64>()?;
-    Actor<meta::Repr<AgentMsg>> actor_handle = start_agent(config, done)?;
+    Actor<meta::Repr<AgentMsg>> actor_handle = start_agent(done)?;
     i64 first = channel_recv(&done)?;
     if (first != 1) {
         stop(&actor_handle);

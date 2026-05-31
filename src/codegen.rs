@@ -18,8 +18,9 @@ use crate::{
     },
     source::SourceMap,
     thir::{
-        CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock, TClosureBody,
-        TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, TryPropagation,
+        ActorSpawnMode, CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock,
+        TClosureBody, TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind,
+        TryPropagation,
     },
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE,
@@ -120,7 +121,9 @@ struct RetainedClosureWitness {
 #[derive(Clone, Debug)]
 struct ActorDispatch {
     name: String,
+    mode: ActorSpawnMode,
     state_ty: Ty,
+    handle_message_ty: Ty,
     message_ty: Ty,
     handler_ty: Ty,
 }
@@ -976,14 +979,15 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Try { expr, .. } => self.collect_expr_array_returns(expr),
             TExprKind::ActorSpawn {
-                initial_state,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
                 message_ty,
                 handler_ty,
+                ..
             } => {
-                self.collect_expr_array_returns(initial_state);
+                self.collect_expr_array_returns(state_arg);
                 self.collect_expr_array_returns(handler);
                 self.collect_ty_array_returns(state_ty);
                 self.collect_ty_array_returns(handle_message_ty);
@@ -1298,26 +1302,30 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_closures(owner, value);
             }
             TExprKind::ActorSpawn {
-                initial_state,
+                mode,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
                 message_ty,
                 handler_ty,
+                ..
             } => {
                 self.collect_ty_closure(state_ty);
                 self.collect_ty_closure(handle_message_ty);
                 self.collect_ty_closure(message_ty);
                 self.collect_ty_closure(handler_ty);
-                self.collect_expr_closures(owner, initial_state);
+                self.collect_expr_closures(owner, state_arg);
                 self.collect_expr_closures(owner, handler);
-                let name = self.actor_dispatch_name(state_ty, message_ty, handler_ty);
+                let name = self.actor_dispatch_name(mode, state_ty, message_ty, handler_ty);
                 self.plan
                     .actor_dispatches
                     .entry(name.clone())
                     .or_insert_with(|| ActorDispatch {
                         name,
+                        mode: mode.clone(),
                         state_ty: state_ty.clone(),
+                        handle_message_ty: handle_message_ty.clone(),
                         message_ty: message_ty.clone(),
                         handler_ty: handler_ty.clone(),
                     });
@@ -1594,12 +1602,10 @@ impl<'a> CGenerator<'a> {
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_dynamic(value),
             TExprKind::ActorSpawn {
-                initial_state,
-                handler,
-                ..
+                state_arg, handler, ..
             } => {
                 self.collect_standard_error_code_dynamic();
-                self.collect_expr_dynamic(initial_state);
+                self.collect_expr_dynamic(state_arg);
                 self.collect_expr_dynamic(handler);
             }
             TExprKind::ActorSend { actor, value, .. } => {
@@ -1849,11 +1855,9 @@ impl<'a> CGenerator<'a> {
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_locations(value),
             TExprKind::ActorSpawn {
-                initial_state,
-                handler,
-                ..
+                state_arg, handler, ..
             } => {
-                self.collect_expr_locations(initial_state);
+                self.collect_expr_locations(state_arg);
                 self.collect_expr_locations(handler);
             }
             TExprKind::ActorSend { actor, value, .. } => {
@@ -2087,11 +2091,9 @@ impl<'a> CGenerator<'a> {
             | TExprKind::MetaIntoRepr { value, .. }
             | TExprKind::MetaFromRepr { value, .. } => self.collect_expr_string_literals(value),
             TExprKind::ActorSpawn {
-                initial_state,
-                handler,
-                ..
+                state_arg, handler, ..
             } => {
-                self.collect_expr_string_literals(initial_state);
+                self.collect_expr_string_literals(state_arg);
                 self.collect_expr_string_literals(handler);
             }
             TExprKind::ActorSend { actor, value, .. } => {
@@ -2321,18 +2323,19 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(value);
             }
             TExprKind::ActorSpawn {
-                initial_state,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
                 message_ty,
                 handler_ty,
+                ..
             } => {
                 self.collect_ty_slice(state_ty);
                 self.collect_ty_slice(handle_message_ty);
                 self.collect_ty_slice(message_ty);
                 self.collect_ty_slice(handler_ty);
-                self.collect_expr_slices(initial_state);
+                self.collect_expr_slices(state_arg);
                 self.collect_expr_slices(handler);
             }
             TExprKind::ActorSend {
@@ -3459,7 +3462,8 @@ impl<'a> CGenerator<'a> {
                 self.emit_meta_from_repr_expr(expr, value, target_ty, indent)?
             }
             TExprKind::ActorSpawn {
-                initial_state,
+                mode,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
@@ -3469,12 +3473,13 @@ impl<'a> CGenerator<'a> {
                 let Some(indent) = stmt_indent else {
                     return Err(vec![Diagnostic::new(
                         expr.span,
-                        "spawn_actor needs statement lowering in this context",
+                        "actor spawn needs statement lowering in this context",
                     )]);
                 };
                 self.emit_actor_spawn_expr(
                     expr,
-                    initial_state,
+                    mode,
+                    state_arg,
                     handler,
                     state_ty,
                     handle_message_ty,
@@ -5327,6 +5332,43 @@ impl<'a> CGenerator<'a> {
     fn emit_actor_spawn_expr(
         &mut self,
         expr: &TExpr,
+        mode: &ActorSpawnMode,
+        state_arg: &TExpr,
+        handler: &TExpr,
+        state_ty: &Ty,
+        handle_message_ty: &Ty,
+        message_ty: &Ty,
+        handler_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        match mode {
+            ActorSpawnMode::Cloned => self.emit_actor_spawn_cloned_expr(
+                expr,
+                state_arg,
+                handler,
+                state_ty,
+                handle_message_ty,
+                message_ty,
+                handler_ty,
+                indent,
+            ),
+            ActorSpawnMode::State => self.emit_actor_spawn_state_expr(
+                expr,
+                state_arg,
+                handler,
+                state_ty,
+                handle_message_ty,
+                message_ty,
+                handler_ty,
+                indent,
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_actor_spawn_cloned_expr(
+        &mut self,
+        expr: &TExpr,
         initial_state: &TExpr,
         handler: &TExpr,
         state_ty: &Ty,
@@ -5410,7 +5452,137 @@ impl<'a> CGenerator<'a> {
 
         let raw_actor = self.next_temp("actor_raw");
         let rc = self.next_temp("actor_rc");
-        let dispatch = self.actor_dispatch_name(state_ty, message_ty, handler_ty);
+        let dispatch =
+            self.actor_dispatch_name(&ActorSpawnMode::Cloned, state_ty, message_ty, handler_ty);
+        self.line_indent(indent, &format!("CielActor *{raw_actor} = NULL;"));
+        self.line_indent(
+            indent,
+            &format!(
+                "int32_t {rc} = ciel_actor_spawn(&{raw_actor}, (void *){state_box}, (void *){handler_box}, {dispatch});"
+            ),
+        );
+        self.line_indent(indent, &format!("if ({rc} != 0) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result_temp} = {};",
+                self.result_err_from_error_literal(&result_layout, &self.error_code_literal(&rc))
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
+        let actor_ty = Ty::Named {
+            name: "Actor".to_string(),
+            args: vec![handle_message_ty.clone()],
+        };
+        let actor_value = format!(
+            "({}){{ .handle = (void *){raw_actor} }}",
+            self.c_type(&actor_ty)
+        );
+        self.line_indent(
+            indent,
+            &format!(
+                "{result_temp} = {};",
+                self.result_ok_literal(&result_layout, Some(&actor_value))
+            ),
+        );
+        self.line_indent(indent, &format!("{done_label}:;"));
+        Ok(result_temp)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn emit_actor_spawn_state_expr(
+        &mut self,
+        expr: &TExpr,
+        init: &TExpr,
+        handler: &TExpr,
+        state_ty: &Ty,
+        handle_message_ty: &Ty,
+        message_ty: &Ty,
+        handler_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let result_layout = self.result_layout(&expr.ty, expr.span)?;
+        let result_temp = self.next_temp("actor_spawn_result");
+        let done_label = self.next_temp("actor_spawn_done");
+        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
+
+        let init_src = self.emit_temp_value("actor_state_init", init, indent)?;
+        let init_call = self.callable_call_expr(&init.ty, &init_src, &[])?;
+        let init_result_ty = std_result_ty(state_ty.clone(), std_error_ty());
+        let init_result = self.next_temp("actor_state_init_result");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = {init_call};",
+                self.c_decl(&init_result_ty, &init_result)
+            ),
+        );
+        self.emit_clone_error_jump(
+            &result_temp,
+            &result_layout,
+            &init_result,
+            state_ty,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
+
+        let state_box = self.next_temp("actor_state_box");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = ciel_alloc(sizeof(*{state_box}));",
+                self.c_pointer_decl(state_ty, &state_box)
+            ),
+        );
+        let init_result_layout = self.result_layout(&init_result_ty, expr.span)?;
+        self.emit_value_copy(
+            &format!("(*{state_box})"),
+            &format!("{init_result}.as.{}._0", init_result_layout.ok_name),
+            state_ty,
+            indent,
+        );
+
+        let handler_src = self.emit_temp_value("actor_handler_src", handler, indent)?;
+        let handler_clone = self.emit_clone_message_result_from_ptr(
+            handler_ty,
+            &format!("&{handler_src}"),
+            indent,
+            expr.span,
+        )?;
+        self.emit_clone_error_jump(
+            &result_temp,
+            &result_layout,
+            &handler_clone,
+            handler_ty,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
+        let handler_box = self.next_temp("actor_handler_box");
+        self.line_indent(
+            indent,
+            &format!(
+                "{} = ciel_alloc(sizeof(*{handler_box}));",
+                self.c_pointer_decl(handler_ty, &handler_box)
+            ),
+        );
+        let handler_clone_layout = self.result_layout(
+            &std_result_ty(handler_ty.clone(), std_error_ty()),
+            expr.span,
+        )?;
+        self.emit_value_copy(
+            &format!("(*{handler_box})"),
+            &format!("{handler_clone}.as.{}._0", handler_clone_layout.ok_name),
+            handler_ty,
+            indent,
+        );
+
+        let raw_actor = self.next_temp("actor_raw");
+        let rc = self.next_temp("actor_rc");
+        let dispatch =
+            self.actor_dispatch_name(&ActorSpawnMode::State, state_ty, message_ty, handler_ty);
         self.line_indent(indent, &format!("CielActor *{raw_actor} = NULL;"));
         self.line_indent(
             indent,
@@ -6347,7 +6519,7 @@ impl<'a> CGenerator<'a> {
         let dispatches = self.plan.actor_dispatches.clone();
         for dispatch in dispatches.values() {
             self.line(&format!(
-                "static void {}(void *state_raw, void *handler_raw, void *message_raw, int32_t *failed);",
+                "static void {}(CielActor *actor_raw, void *state_raw, void *handler_raw, void *message_raw, int32_t *failed);",
                 dispatch.name
             ));
         }
@@ -7137,13 +7309,16 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_actor_dispatch(&mut self, dispatch: &ActorDispatch) -> DiagResult<()> {
-        let result_ty = std_result_ty(dispatch.state_ty.clone(), std_error_ty());
+        let result_ty = match dispatch.mode {
+            ActorSpawnMode::Cloned => std_result_ty(dispatch.state_ty.clone(), std_error_ty()),
+            ActorSpawnMode::State => std_result_ty(Ty::Void, std_error_ty()),
+        };
         let result_layout = self.result_layout(
             &result_ty,
             crate::span::Span::new(crate::span::FileId(0), 0, 0),
         )?;
         self.line(&format!(
-            "static void {}(void *state_raw, void *handler_raw, void *message_raw, int32_t *failed) {{",
+            "static void {}(CielActor *actor_raw, void *state_raw, void *handler_raw, void *message_raw, int32_t *failed) {{",
             dispatch.name
         ));
         self.line_indent(
@@ -7167,12 +7342,32 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(&dispatch.message_ty, "message")
             ),
         );
-        let call = self.actor_handler_call_expr(
-            &dispatch.handler_ty,
-            "(*handler)",
-            "(*state)",
-            "(*message)",
-        )?;
+        let call = match dispatch.mode {
+            ActorSpawnMode::Cloned => self.callable_call_expr(
+                &dispatch.handler_ty,
+                "(*handler)",
+                &["(*state)", "(*message)"],
+            )?,
+            ActorSpawnMode::State => {
+                let actor_ty = Ty::Named {
+                    name: "Actor".to_string(),
+                    args: vec![dispatch.handle_message_ty.clone()],
+                };
+                self.line_indent(
+                    1,
+                    &format!(
+                        "{} = ({}){{ .handle = (void *)actor_raw }};",
+                        self.c_decl(&actor_ty, "actor_self"),
+                        self.c_type(&actor_ty)
+                    ),
+                );
+                self.callable_call_expr(
+                    &dispatch.handler_ty,
+                    "(*handler)",
+                    &["state", "actor_self", "(*message)"],
+                )?
+            }
+        };
         self.line_indent(
             1,
             &format!("{} result = {call};", self.c_decl(&result_ty, "")),
@@ -7184,7 +7379,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(2, "*failed = 1;");
         self.line_indent(2, "return;");
         self.line_indent(1, "}");
-        if result_layout.ok_has_payload {
+        if matches!(dispatch.mode, ActorSpawnMode::Cloned) && result_layout.ok_has_payload {
             self.line_indent(
                 1,
                 &format!("*state = result.as.{}._0;", result_layout.ok_name),
@@ -8068,30 +8263,42 @@ impl<'a> CGenerator<'a> {
         }
     }
 
-    fn actor_dispatch_name(&self, state_ty: &Ty, message_ty: &Ty, handler_ty: &Ty) -> String {
+    fn actor_dispatch_name(
+        &self,
+        mode: &ActorSpawnMode,
+        state_ty: &Ty,
+        message_ty: &Ty,
+        handler_ty: &Ty,
+    ) -> String {
+        let mode_name = match mode {
+            ActorSpawnMode::Cloned => "cloned",
+            ActorSpawnMode::State => "state",
+        };
         format!(
-            "ciel_actor_dispatch_{}_{}_{}",
+            "ciel_actor_dispatch_{}_{}_{}_{}",
+            mode_name,
             mangle_ty_fragment(state_ty),
             mangle_ty_fragment(message_ty),
             mangle_ty_fragment(handler_ty)
         )
     }
 
-    fn actor_handler_call_expr(
+    fn callable_call_expr(
         &self,
-        handler_ty: &Ty,
-        handler: &str,
-        state: &str,
-        message: &str,
+        callable_ty: &Ty,
+        callable: &str,
+        args: &[&str],
     ) -> DiagResult<String> {
-        match handler_ty {
-            Ty::Function { .. } => Ok(format!("({handler})({state}, {message})")),
-            Ty::Closure { .. } | Ty::ClosureInstance { .. } => Ok(format!(
-                "({handler}).call(({handler}).env, {state}, {message})"
-            )),
+        match callable_ty {
+            Ty::Function { .. } => Ok(format!("({callable})({})", args.join(", "))),
+            Ty::Closure { .. } | Ty::ClosureInstance { .. } => {
+                let mut call_args = vec![format!("({callable}).env")];
+                call_args.extend(args.iter().map(|arg| (*arg).to_string()));
+                Ok(format!("({callable}).call({})", call_args.join(", ")))
+            }
             other => Err(vec![Diagnostic::new(
                 None,
-                format!("internal error: actor handler `{other}` is not callable"),
+                format!("internal error: actor callable `{other}` is not callable"),
             )]),
         }
     }

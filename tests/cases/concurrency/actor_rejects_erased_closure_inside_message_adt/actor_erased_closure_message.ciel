@@ -14,7 +14,7 @@ Result<i64, Error> handle(i64 state, Job job) {
 }
 
 i64 main() {
-    Actor<Job> actor = must(spawn_actor<i64, Job>(0, handle));
+    Actor<Job> actor = must(spawn_actor_cloned<i64, Job>(0, handle));
     must(join(&actor));
     return 0;
 }

@@ -2,7 +2,7 @@
 
 This proposal lets Ciel standard-library code pass a monomorphized generic C
 ABI function as a C callback value. The goal is to remove compiler-known
-lowering for APIs such as `/std/actor.spawn_actor` by making the missing
+lowering for APIs such as `/std/actor.spawn_actor_state` by making the missing
 callback glue an ordinary language and FFI feature.
 
 ## Proposal Order
@@ -13,7 +13,7 @@ pure-library-message <= monomorphized-c-callbacks
 unsafe <= monomorphized-c-callbacks[C callback declarations]
 
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
-actor-owned-state < actor-stdlib-lowering[spawn_actor semantics]
+actor-owned-state < actor-stdlib-lowering[spawn_actor_state semantics]
 ```
 
 The callback feature does not own actor safety. It only supplies the missing
@@ -24,10 +24,9 @@ When the unsafe proposal is active, imported C runtime hooks used by this
 proposal are declared in `unsafe extern "C"` blocks and called inside safe
 standard-library wrappers.
 
-The `actor-stdlib-lowering` step should not freeze the old clone-state
-`spawn_actor<S: Message, M: Message>` semantics. If `actor-owned-state` is
-accepted, `/std/actor` lowering must use the owned-state dispatch shape
-described below.
+The `actor-stdlib-lowering` step should preserve both explicit actor shapes:
+`spawn_actor_cloned<S: Message, M: Message>` for value-state compatibility and
+`spawn_actor_state<S, M: Message>` for actor-owned state.
 
 ## Problem
 
@@ -63,9 +62,9 @@ static void dispatch(void *state_raw, void *handler_raw, void *message_raw,
 }
 ```
 
-Today the compiler recognizes `spawn_actor` and emits this dispatch thunk as an
-actor-specific special case. The same operation should be expressible as a
-generic C ABI function in `/std/actor`.
+Today the compiler recognizes actor spawn functions and emits dispatch thunks
+as actor-specific special cases. The same operations should be expressible as
+generic C ABI functions in `/std/actor`.
 
 ## Goals
 
@@ -198,7 +197,7 @@ extern "C" void actor_dispatch<S: Message, M: Message>(
     }
 }
 
-export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
+export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler,
 ) {
@@ -232,35 +231,39 @@ export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
 payload, box it with `ciel_box_copy`, and pass the raw pointer to the C runtime.
 `stop` and `join` are direct C calls.
 
-After this migration, the compiler no longer needs to recognize the name
-`spawn_actor`. It only needs to implement generic C callback function values.
+After this migration, the compiler no longer needs to recognize actor spawn
+function names. It only needs to implement generic C callback function values.
 
 ## Interaction With Actor-Owned State
 
 The callback mechanism remains valid if actor state moves from clone-state to
 owned-state semantics. Only the typed dispatch body changes.
 
-An owned-state dispatch uses the same C-visible ABI:
+An owned-state dispatch uses the actor-aware C-visible ABI:
 
 ```c
-void (*dispatch)(void *state, void *handler, void *message, int32_t *failed)
+void (*dispatch)(CielActor *actor, void *state, void *handler, void *message,
+                 int32_t *failed)
 ```
 
-but recovers a mutable state pointer and calls an in-place handler:
+It recovers a mutable state pointer, rebuilds the actor self handle, and calls
+an in-place handler:
 
 ```rust
 extern "C" void actor_dispatch_owned<S, M: Message>(
+    *CielActor actor_raw,
     *void state_raw,
     *void handler_raw,
     *void message_raw,
     *c::c_int failed,
 ) {
     *S state = state_raw as *S;
-    *(Result<void, Error> |(*S, M): Message|) handler =
-        handler_raw as *(Result<void, Error> |(*S, M): Message|);
+    *(Result<void, Error> |(*S, Actor<M>, M): Message|) handler =
+        handler_raw as *(Result<void, Error> |(*S, Actor<M>, M): Message|);
     *M message = message_raw as *M;
+    Actor<M> self = { handle: actor_raw as *void };
 
-    Result<void, Error> result = (*handler)(state, *message);
+    Result<void, Error> result = (*handler)(state, self, *message);
     switch (result) {
         case Ok(_):
             return;
@@ -270,8 +273,9 @@ extern "C" void actor_dispatch_owned<S, M: Message>(
 }
 ```
 
-In that model, `spawn_actor` does not call `clone_message` for `S`. It boxes
-the actor-owned state according to the rules in `actor-owned-state`. `send`
+In the owned-state model, `spawn_actor_state` does not call `clone_message` for
+`S`. It boxes the actor-owned state according to the rules in
+`actor-owned-state`. `send`
 still clones `M`, and the retained handler value still needs the callback-safe
 capability required by the actor API.
 

@@ -30,7 +30,7 @@ Result<S, Error> run_step<S>(S state, Step<S> step) {
 }
 
 Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state) {
-    return actor::spawn_actor<S, Step<S>>(initial_state, |S state, Step<S> step| {
+    return actor::spawn_actor_cloned<S, Step<S>>(initial_state, |S state, Step<S> step| {
         return step(state);
     });
 }

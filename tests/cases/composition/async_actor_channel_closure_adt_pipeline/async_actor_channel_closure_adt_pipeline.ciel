@@ -30,7 +30,7 @@ i64 main() {
     Sink<i64> sink = { out: must(make_channel<i64>()), base: 3 };
     i64 multiplier = 2;
 
-    Actor<Job<i64>> actor = must(spawn_actor<i64, Job<i64>>(0, |i64 state, Job<i64> job| {
+    Actor<Job<i64>> actor = must(spawn_actor_cloned<i64, Job<i64>>(0, |i64 state, Job<i64> job| {
         Sink<i64> local_sink = sink;
         switch (job) {
             case Add(value):

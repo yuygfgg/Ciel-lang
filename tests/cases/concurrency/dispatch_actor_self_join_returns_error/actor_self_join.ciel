@@ -17,7 +17,7 @@ Result<Channel<i64>, Error> handle(Channel<i64> out, Actor<i64> self) {
 
 i32 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Actor<i64>> actor = must(spawn_actor<Channel<i64>, Actor<i64>>(out, handle));
+    Actor<Actor<i64>> actor = must(spawn_actor_cloned<Channel<i64>, Actor<i64>>(out, handle));
     Actor<i64> self = { handle: actor.handle };
     must(send(&actor, self));
     i64 value = must(channel_recv(&out));

@@ -95,7 +95,7 @@ but this proposal does not preserve the current pthread actor backend.
 
 ## Goals
 
-1. Keep `Actor<M>`, `spawn_actor`, `send`, `stop`, and `join` source-compatible.
+1. Keep `Actor<M>`, `spawn_actor_cloned`, `send`, `stop`, and `join` source-compatible.
 2. Remove the runtime policy that each actor owns a dedicated pthread.
 3. Preserve FIFO processing for accepted messages.
 4. Preserve the current shutdown contract: `stop` and `join` close the mailbox
@@ -152,7 +152,7 @@ the handoff between `send`, `stop`, and `join`. The dispatch queue owns
 execution order. The dispatch group tracks all accepted jobs so `join` can wait
 without a dedicated worker thread.
 
-`spawn_actor`:
+`spawn_actor_cloned`:
 
 1. validates the raw arguments;
 2. initializes the Ciel runtime and GC;

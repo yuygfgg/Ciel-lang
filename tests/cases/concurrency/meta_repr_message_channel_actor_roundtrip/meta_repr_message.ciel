@@ -43,7 +43,7 @@ i64 main() {
     must(channel_close(&packets));
 
     State initial = { total: received.value };
-    Actor<meta::Repr<Command>> actor = must(spawn_actor<meta::Repr<State>, meta::Repr<Command>>(
+    Actor<meta::Repr<Command>> actor = must(spawn_actor_cloned<meta::Repr<State>, meta::Repr<Command>>(
         meta::into_repr(&initial),
         handle
     ));

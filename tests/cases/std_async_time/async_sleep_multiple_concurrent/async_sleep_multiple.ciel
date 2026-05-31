@@ -18,7 +18,7 @@ Result<Channel<i64>, Error> handle(Channel<i64> done, atime::AsyncSleep op) {
 i32 main() {
     Channel<i64> done = must(make_channel<i64>());
     Actor<atime::AsyncSleep> actor =
-        must(spawn_actor<Channel<i64>, atime::AsyncSleep>(done, handle));
+        must(spawn_actor_cloned<Channel<i64>, atime::AsyncSleep>(done, handle));
 
     atime::AsyncSleep fast = must(atime::sleep_ms_async(0));
     atime::AsyncSleep slow = must(atime::sleep_ms_async(1));

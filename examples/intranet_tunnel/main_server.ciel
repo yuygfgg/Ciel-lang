@@ -6,8 +6,8 @@ import /intranet_tunnel/server as server;
 i32 main() {
     Result<cli::ServerConfig, Error> parsed = cli::parse_server_args();
     switch (parsed) {
-        case Ok(config):
-            Result<void, Error> run = server::run_server(config);
+        case Ok(_):
+            Result<void, Error> run = server::run_server();
             switch (run) {
                 case Ok:
                     return 0;

@@ -13,8 +13,8 @@ Result<Channel<usize>, Error> worker(Channel<usize> done, usize label) {
 
 i64 main() {
     Channel<usize> done = must(make_channel<usize>());
-    Actor<usize> left = must(spawn_actor<Channel<usize>, usize>(done, worker));
-    Actor<usize> right = must(spawn_actor<Channel<usize>, usize>(done, worker));
+    Actor<usize> left = must(spawn_actor_cloned<Channel<usize>, usize>(done, worker));
+    Actor<usize> right = must(spawn_actor_cloned<Channel<usize>, usize>(done, worker));
 
     must(send(&left, 1 as usize));
     must(send(&right, 2 as usize));

@@ -10,7 +10,7 @@ Result<i64, Error> handle(i64 state, i64 msg) {
 }
 
 i64 main() {
-    Actor<i64> actor = must(spawn_actor<i64, i64>(0, handle));
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, handle));
     must(send(&actor, 4));
     must(send(&actor, 5));
     must(join(&actor));

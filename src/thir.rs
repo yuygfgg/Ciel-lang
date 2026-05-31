@@ -255,6 +255,12 @@ impl TExpr {
 }
 
 #[derive(Clone, Debug)]
+pub enum ActorSpawnMode {
+    Cloned,
+    State,
+}
+
+#[derive(Clone, Debug)]
 pub enum TExprKind {
     Local(LocalId, String),
     Function(DefId, String),
@@ -362,7 +368,8 @@ pub enum TExprKind {
         target_ty: Ty,
     },
     ActorSpawn {
-        initial_state: Box<TExpr>,
+        mode: ActorSpawnMode,
+        state_arg: Box<TExpr>,
         handler: Box<TExpr>,
         state_ty: Ty,
         handle_message_ty: Ty,
@@ -624,11 +631,9 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::MetaIntoRepr { value, .. }
         | TExprKind::MetaFromRepr { value, .. } => visitor.visit_expr(value),
         TExprKind::ActorSpawn {
-            initial_state,
-            handler,
-            ..
+            state_arg, handler, ..
         } => {
-            visitor.visit_expr(initial_state);
+            visitor.visit_expr(state_arg);
             visitor.visit_expr(handler);
         }
         TExprKind::ActorSend { actor, value, .. } => {

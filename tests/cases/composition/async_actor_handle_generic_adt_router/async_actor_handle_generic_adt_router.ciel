@@ -36,11 +36,11 @@ Result<i64, Error> sink(i64 state, i64 msg) {
 }
 
 i64 main() {
-    Actor<i64> target = must(spawn_actor<i64, i64>(0, sink));
+    Actor<i64> target = must(spawn_actor_cloned<i64, i64>(0, sink));
     must(accept_shared(target));
 
     Channel<i64> done = must(make_channel<i64>());
-    Actor<RouterMsg<i64>> router = must(spawn_actor<i64, RouterMsg<i64>>(0, |i64 state, RouterMsg<i64> msg| {
+    Actor<RouterMsg<i64>> router = must(spawn_actor_cloned<i64, RouterMsg<i64>>(0, |i64 state, RouterMsg<i64> msg| {
         Channel<i64> local_done = done;
         switch (msg) {
             case RouteTo(route):

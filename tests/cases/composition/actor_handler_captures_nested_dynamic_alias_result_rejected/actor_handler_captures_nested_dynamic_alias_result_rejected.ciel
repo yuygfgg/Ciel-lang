@@ -23,7 +23,7 @@ i64 main() {
     Counter counter = { value: 9 };
     readable view = &counter;
     Envelope envelope = { payload: Ok(view) };
-    Actor<i64> actor = must(spawn_actor<i64, i64>(0, |i64 state, i64 msg| {
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 msg| {
         switch (envelope.payload) {
             case Ok(item):
                 return Ok(state + msg + read(item));

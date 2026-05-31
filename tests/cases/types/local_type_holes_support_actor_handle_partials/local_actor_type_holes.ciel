@@ -29,6 +29,6 @@ Result<State, Error> handle(State state, Command command) {
 i64 main() {
     State initial = { total: 0 };
     _ handler = |State state, Command command| handle(state, command);
-    Actor<_> actor = must(spawn_actor<State, Command>(initial, handler));
+    Actor<_> actor = must(spawn_actor_cloned<State, Command>(initial, handler));
     return 0;
 }

@@ -37,7 +37,7 @@ i64 main() {
         bias: { value: 4 },
     };
 
-    Actor<Command<i64>> actor = must(spawn_actor<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
+    Actor<Command<i64>> actor = must(spawn_actor_cloned<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
         Capture<i64> local = capture;
         switch (command) {
             case Add(value):

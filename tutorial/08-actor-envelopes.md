@@ -65,7 +65,7 @@ Result<i64, Error> handle(i64 total, meta::Repr<Event> envelope) {
 
 i32 main() {
     // The mailbox stores safe envelopes, not borrowed local Event values.
-    Actor<meta::Repr<Event>> worker = must(spawn_actor<i64, meta::Repr<Event>>(0, handle));
+    Actor<meta::Repr<Event>> worker = must(spawn_actor_cloned<i64, meta::Repr<Event>>(0, handle));
 
     Event first = { amount: 4, important: false };
     Event second = { amount: 6, important: true };

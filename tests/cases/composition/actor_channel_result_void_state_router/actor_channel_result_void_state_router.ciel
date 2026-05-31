@@ -35,7 +35,7 @@ i64 main() {
     Channel<Result<Event<i64>, Error>> out = must(make_channel<Result<Event<i64>, Error>>());
     State<i64> initial = { out: out, total: 0 };
 
-    Actor<Command<i64>> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, |State<i64> state, Command<i64> command| {
+    Actor<Command<i64>> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, |State<i64> state, Command<i64> command| {
         State<i64> @next = state;
         switch (command) {
             case Add(value):

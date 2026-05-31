@@ -17,9 +17,9 @@ use crate::{
     },
     std_id,
     thir::{
-        CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl, CheckedInterfaceRef,
-        CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr, TExprKind, TForInit,
-        TPattern, TStmt, TStmtKind,
+        ActorSpawnMode, CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl,
+        CheckedInterfaceRef, CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr,
+        TExprKind, TForInit, TPattern, TStmt, TStmtKind,
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
@@ -652,7 +652,8 @@ impl MonoContext {
                 target_ty,
             },
             TExprKind::ActorSpawn {
-                initial_state,
+                mode,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
@@ -660,10 +661,13 @@ impl MonoContext {
                 handler_ty,
             } => {
                 self.mark_standard_error_code_impl();
-                self.mark_message_clone_impls(&state_ty);
+                if matches!(mode, ActorSpawnMode::Cloned) {
+                    self.mark_message_clone_impls(&state_ty);
+                }
                 self.mark_message_clone_impls(&handler_ty);
                 TExprKind::ActorSpawn {
-                    initial_state: Box::new(self.rewrite_expr(*initial_state)?),
+                    mode,
+                    state_arg: Box::new(self.rewrite_expr(*state_arg)?),
                     handler: Box::new(self.rewrite_expr(*handler)?),
                     state_ty,
                     handle_message_ty,
@@ -1225,23 +1229,26 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(target_ty);
             }
             TExprKind::ActorSpawn {
-                initial_state,
+                mode,
+                state_arg,
                 handler,
                 state_ty,
                 handle_message_ty,
                 message_ty,
                 handler_ty,
             } => {
-                self.collect_expr(initial_state);
+                self.collect_expr(state_arg);
                 self.collect_expr(handler);
                 self.collect_ty(state_ty);
                 self.collect_ty(handle_message_ty);
                 self.collect_ty(message_ty);
                 self.collect_ty(handler_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_message_result_ty(state_ty.clone()));
                 self.collect_ty(&std_message_result_ty(handler_ty.clone()));
-                self.collect_message_clone_result_tys(state_ty);
+                if matches!(mode, ActorSpawnMode::Cloned) {
+                    self.collect_ty(&std_message_result_ty(state_ty.clone()));
+                    self.collect_message_clone_result_tys(state_ty);
+                }
                 self.collect_message_clone_result_tys(handler_ty);
             }
             TExprKind::ActorSend {

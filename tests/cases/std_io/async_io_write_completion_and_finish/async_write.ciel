@@ -13,7 +13,7 @@ Result<Channel<usize>, Error> handle(Channel<usize> out, aio::AsyncWrite op) {
 
 i32 main() {
     Channel<usize> done = must(make_channel<usize>());
-    Actor<aio::AsyncWrite> actor = must(spawn_actor<Channel<usize>, aio::AsyncWrite>(done, handle));
+    Actor<aio::AsyncWrite> actor = must(spawn_actor_cloned<Channel<usize>, aio::AsyncWrite>(done, handle));
     aio::AsyncFd fd = must(aio::create_async("/tmp/ciel_async_write_fixture.txt"));
     aio::Bytes bytes = must(aio::bytes_copy([116 as u8, 101 as u8, 115 as u8, 116 as u8]));
     aio::AsyncWrite op = must(aio::write_bytes(fd, bytes));

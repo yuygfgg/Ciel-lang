@@ -11,7 +11,7 @@ Result<i64, Error> fail_after_one(i64 state, i64 msg) {
 }
 
 i32 main() {
-    Actor<i64> actor = must(spawn_actor<i64, i64>(0, fail_after_one));
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, fail_after_one));
     must(send(&actor, 1));
     Result<void, Error> joined = join(&actor);
     switch (joined) {

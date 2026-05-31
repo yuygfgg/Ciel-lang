@@ -19,7 +19,7 @@ Result<void, Error> send_task<T: Message>(*const Actor<Task<T>> actor, Task<T> t
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Task<i64>> actor = must(spawn_actor<i64, Task<i64>>(0, |i64 state, Task<i64> task| {
+    Actor<Task<i64>> actor = must(spawn_actor_cloned<i64, Task<i64>>(0, |i64 state, Task<i64> task| {
         Channel<i64> local_out = out;
         switch (task) {
             case Add(value):

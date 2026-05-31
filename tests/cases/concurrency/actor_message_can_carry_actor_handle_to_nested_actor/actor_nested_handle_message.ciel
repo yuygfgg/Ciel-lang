@@ -25,8 +25,8 @@ Result<i64, Error> bridge(i64 state, Forward msg) {
 }
 
 i64 main() {
-    Actor<i64> target = must(spawn_actor<i64, i64>(0, sink));
-    Actor<Forward> forwarder = must(spawn_actor<i64, Forward>(0, bridge));
+    Actor<i64> target = must(spawn_actor_cloned<i64, i64>(0, sink));
+    Actor<Forward> forwarder = must(spawn_actor_cloned<i64, Forward>(0, bridge));
 
     must(send(&forwarder, { target: target, value: 10 }));
     must(send(&forwarder, { target: target, value: 20 }));

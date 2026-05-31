@@ -1,10 +1,10 @@
 // ciel-test: error
-// expect-error: spawn_actor accepts at most S and M type arguments
+// expect-error: spawn_actor_cloned accepts at most S and M type arguments
 
 import /std/lib;
 
 i64 main() {
-    Actor<i64> actor = must(spawn_actor<i64, i64, Result<i64, Error> |(i64, i64)|>(
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64, Result<i64, Error> |(i64, i64)|>(
         0,
         |i64 state, i64 msg| {
             return Ok(state + msg);

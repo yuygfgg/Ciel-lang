@@ -6,8 +6,8 @@ import /intranet_tunnel/cli as cli;
 i32 main() {
     Result<cli::AgentConfig, Error> parsed = cli::parse_agent_args();
     switch (parsed) {
-        case Ok(config):
-            Result<void, Error> run = agent::run_agent(config);
+        case Ok(_):
+            Result<void, Error> run = agent::run_agent();
             switch (run) {
                 case Ok:
                     return 0;

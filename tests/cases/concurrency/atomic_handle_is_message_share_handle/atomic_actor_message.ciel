@@ -17,7 +17,7 @@ i64 main() {
     Atomic<i64> counter = must(make_atomic<i64>(0));
     must(accept_shared(counter));
 
-    Actor<Atomic<i64>> actor = must(spawn_actor<i64, Atomic<i64>>(0, increment));
+    Actor<Atomic<i64>> actor = must(spawn_actor_cloned<i64, Atomic<i64>>(0, increment));
     must(send(&actor, counter));
     must(join(&actor));
 

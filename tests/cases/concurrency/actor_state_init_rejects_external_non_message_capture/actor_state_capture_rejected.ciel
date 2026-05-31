@@ -1,0 +1,36 @@
+// ciel-test: error
+// expect-error: closure conversion requires
+// expect-error: implement `clone_message`
+
+import /std/lib;
+import /std/map as map;
+import /std/meta as meta;
+
+enum Command {
+    Flush(void),
+}
+
+struct OwnedState {
+    map::HashMap<u32, i64> table;
+    Channel<i64> out;
+}
+
+Result<void, Error> handle(
+    *OwnedState state,
+    Actor<meta::Repr<Command>> self,
+    meta::Repr<Command> envelope
+) {
+    return Ok;
+}
+
+i64 main() {
+    Channel<i64> out = must(make_channel<i64>());
+    map::HashMap<u32, i64> table = must(map::hash_map_new<u32, i64>());
+    Actor<meta::Repr<Command>> actor = must(spawn_actor_state<OwnedState, meta::Repr<Command>>(
+        || Ok({ table: table, out: out }),
+        handle
+    ));
+    stop(&actor);
+    join(&actor);
+    return 0;
+}

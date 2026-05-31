@@ -38,10 +38,10 @@ i64 main() {
     Atomic<i64> ready = must(make_atomic<i64>(0));
     Atomic<bool> start = must(make_atomic<bool>(false));
 
-    Actor<Burst> a0 = must(spawn_actor<i64, Burst>(0, worker));
-    Actor<Burst> a1 = must(spawn_actor<i64, Burst>(0, worker));
-    Actor<Burst> a2 = must(spawn_actor<i64, Burst>(0, worker));
-    Actor<Burst> a3 = must(spawn_actor<i64, Burst>(0, worker));
+    Actor<Burst> a0 = must(spawn_actor_cloned<i64, Burst>(0, worker));
+    Actor<Burst> a1 = must(spawn_actor_cloned<i64, Burst>(0, worker));
+    Actor<Burst> a2 = must(spawn_actor_cloned<i64, Burst>(0, worker));
+    Actor<Burst> a3 = must(spawn_actor_cloned<i64, Burst>(0, worker));
 
     Burst burst = {
         counter: counter,

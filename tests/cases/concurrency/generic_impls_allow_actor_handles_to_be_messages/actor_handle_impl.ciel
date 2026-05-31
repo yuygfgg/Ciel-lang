@@ -18,7 +18,7 @@ Result<i64, Error> record(i64 state, i64 msg) {
 }
 
 i64 main() {
-    Actor<i64> actor = must(spawn_actor<i64, i64>(0, record));
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, record));
     Actor<i64> copy = must(clone_message(&actor));
 
     must(accept_handle(copy));

@@ -25,7 +25,7 @@ unsafe impl<T: Message> clone_message(*const Maybe<T> value) {
 i64 main() {
     Pair<i64> pair = { left: 4, right: 5 };
     Maybe<Pair<i64>> captured = Some(pair);
-    Actor<i64> actor = must(spawn_actor<i64, i64>(1, |i64 state, i64 msg| {
+    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(1, |i64 state, i64 msg| {
         switch (captured) {
             case Some(inner):
                 print_value(state + msg + inner.left + inner.right)?;

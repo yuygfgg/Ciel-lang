@@ -327,11 +327,9 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.escape_sources(value);
             }
             TExprKind::ActorSpawn {
-                initial_state,
-                handler,
-                ..
+                state_arg, handler, ..
             } => {
-                self.scan_expr(initial_state);
+                self.scan_expr(state_arg);
                 self.scan_expr(handler);
             }
             TExprKind::ActorSend { actor, value, .. } => {
@@ -523,11 +521,9 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.collect_storage_sources(value, out);
             }
             TExprKind::ActorSpawn {
-                initial_state,
-                handler,
-                ..
+                state_arg, handler, ..
             } => {
-                self.collect_storage_sources(initial_state, out);
+                self.collect_storage_sources(state_arg, out);
                 self.collect_storage_sources(handler, out);
             }
             TExprKind::ActorSend { actor, value, .. } => {

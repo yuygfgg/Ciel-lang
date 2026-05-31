@@ -7,7 +7,7 @@ that state directly. Other code can only put messages in the worker's mailbox.
 The worker takes one message at a time, updates the private state, then moves to
 the next message.
 
-In Ciel, `spawn_actor<S, M>(state, handler)` starts an actor with state type `S`
+In Ciel, `spawn_actor_cloned<S, M>(state, handler)` starts an actor with state type `S`
 and message type `M`. The handler receives the current state and one message,
 then returns the next state.
 
@@ -54,7 +54,7 @@ Result<i64, Error> handle(i64 total, i64 amount) {
 
 i32 main() {
     // This actor's state is i64 and its message type is also i64.
-    Actor<i64> worker = must(spawn_actor<i64, i64>(0, handle));
+    Actor<i64> worker = must(spawn_actor_cloned<i64, i64>(0, handle));
 
     // `send` puts messages into the actor's mailbox.
     must(send(&worker, 2));

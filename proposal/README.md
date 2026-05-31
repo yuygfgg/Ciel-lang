@@ -33,7 +33,7 @@ metaprogramming <= generic-growable-storage[type size and alignment]
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
-actor-owned-state < actor-stdlib-lowering[spawn_actor semantics]
+actor-owned-state < actor-stdlib-lowering[spawn_actor_state semantics]
 
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]

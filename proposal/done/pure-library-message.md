@@ -200,7 +200,7 @@ Result<StateMessage, Error> run(StateMessage state_message, CommandMessage comma
     return Ok(meta::into_repr(next));
 }
 
-Actor<CommandMessage> actor = spawn_actor<StateMessage, CommandMessage>(
+Actor<CommandMessage> actor = spawn_actor_cloned<StateMessage, CommandMessage>(
     meta::into_repr(initial_state),
     run
 )?;

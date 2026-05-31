@@ -25,7 +25,7 @@ inspection, and declaration generation belong to the metaprogramming proposal.
 Local variables currently require a complete written type:
 
 ```rust
-Actor<Command<i64>> actor = must(spawn_actor<State<i64>, Command<i64>>(
+Actor<Command<i64>> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(
     initial,
     |State<i64> state, Command<i64> command| {
         return handle(state, command);
@@ -51,15 +51,15 @@ Use `_` as a type hole inside initialized local declarations:
 ```rust
 _ handler = |State<i64> state, Command<i64> command| handle(state, command);
 
-_ actor = must(spawn_actor<State<i64>, Command<i64>>(initial, handler));
+_ actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 ```
 
 The same hole may appear inside a partial local type annotation:
 
 ```rust
-Actor<_> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, handler));
+Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 Result<Actor<_>, Error> pending =
-    spawn_actor<State<i64>, Command<i64>>(initial, handler);
+    spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler);
 []_ values = [1, 2, 3];
 [3]_ fixed = [1, 2, 3];
 ```
@@ -109,7 +109,7 @@ Examples:
 _ count = 0;          // i64, by the existing integer literal default
 _ scale = 1.0;        // f64, by the existing float literal default
 []_ values = [1, 2];  // []i64
-Actor<_> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, handler));
+Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 ```
 
 After the initializer is checked, the compiler substitutes the solved type into

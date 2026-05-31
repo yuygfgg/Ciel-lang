@@ -56,7 +56,7 @@ i32 main() {
     Channel<usize> done = must(make_channel<usize>());
 
     // The actor receives envelopes around the real application message.
-    Actor<meta::Repr<ReaderMsg>> reader = must(spawn_actor<Channel<usize>, meta::Repr<ReaderMsg>>(
+    Actor<meta::Repr<ReaderMsg>> reader = must(spawn_actor_cloned<Channel<usize>, meta::Repr<ReaderMsg>>(
         done,
         handle
     ));

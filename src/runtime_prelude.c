@@ -1717,14 +1717,15 @@ bool ciel_crypto_constant_time_eq(const uint8_t *left, size_t left_len,
 }
 
 typedef struct CielActor CielActor;
-typedef void (*CielActorDispatchFn)(void *state, void *handler, void *message,
-                                    int32_t *failed);
 typedef struct CielChannel CielChannel;
 typedef struct CielMutex CielMutex;
 typedef struct CielAtomic CielAtomic;
 typedef struct CielBytes CielBytes;
 typedef struct CielAsyncFd CielAsyncFd;
 typedef struct CielAsyncOp CielAsyncOp;
+typedef void (*CielActorDispatchFn)(CielActor *actor, void *state,
+                                    void *handler, void *message,
+                                    int32_t *failed);
 
 typedef struct CielActorJob {
     CielActor *actor;
@@ -1761,7 +1762,7 @@ static void ciel_actor_job_run(void *raw) {
     int32_t attach_rc = ciel_runtime_enter_callback();
     int32_t failed = attach_rc != 0;
     if (attach_rc == 0) {
-        actor->dispatch(actor->state, actor->handler, message, &failed);
+        actor->dispatch(actor, actor->state, actor->handler, message, &failed);
         ciel_runtime_leave_callback();
     }
 

@@ -28,7 +28,7 @@ i32 main() {
 
     Channel<bool> done = must(make_channel<bool>());
     Actor<anet::AsyncConnect> actor =
-        must(spawn_actor<Channel<bool>, anet::AsyncConnect>(done, handle));
+        must(spawn_actor_cloned<Channel<bool>, anet::AsyncConnect>(done, handle));
     anet::AsyncConnect op = must(anet::connect_async(addr));
     must(anet::notify_connect_done(&op, &actor, op));
     bool refused = must(channel_recv(&done));

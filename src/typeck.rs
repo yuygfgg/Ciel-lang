@@ -5687,7 +5687,7 @@ impl TypeChecker {
         Some(result)
     }
 
-    fn check_actor_spawn_call(
+    fn check_actor_spawn_cloned_call(
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
@@ -5698,7 +5698,7 @@ impl TypeChecker {
         if args.len() != 2 {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("spawn_actor expects 2 arguments, got {}", args.len()),
+                format!("spawn_actor_cloned expects 2 arguments, got {}", args.len()),
             ));
             return None;
         }
@@ -5712,7 +5712,7 @@ impl TypeChecker {
         if explicit_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                "spawn_actor accepts at most S and M type arguments",
+                "spawn_actor_cloned accepts at most S and M type arguments",
             ));
             return None;
         }
@@ -5743,7 +5743,7 @@ impl TypeChecker {
         let Some(handle_message_ty) = handle_message_ty else {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                "could not infer actor message type; add spawn_actor<S, M> type arguments, an expected Actor<M>, or handler parameter types",
+                "could not infer actor message type; add spawn_actor_cloned<S, M> type arguments, an expected Actor<M>, or handler parameter types",
             ));
             return None;
         };
@@ -5802,7 +5802,197 @@ impl TypeChecker {
             span,
             ty: ret,
             kind: TExprKind::ActorSpawn {
-                initial_state: Box::new(initial_state),
+                mode: ActorSpawnMode::Cloned,
+                state_arg: Box::new(initial_state),
+                handler_ty: handler.ty.clone(),
+                handler: Box::new(handler),
+                state_ty: handler_state_ty,
+                handle_message_ty,
+                message_ty,
+            },
+        })
+    }
+
+    fn check_actor_spawn_state_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("spawn_actor_state expects 2 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+        let current_subst = self.current_type_subst();
+        let explicit_args = type_args
+            .iter()
+            .map(|arg| {
+                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
+            })
+            .collect::<Vec<_>>();
+        if explicit_args.len() > 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "spawn_actor_state accepts at most S and M type arguments",
+            ));
+            return None;
+        }
+
+        let explicit_state_ty = explicit_args
+            .first()
+            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+        let explicit_handle_message_ty = explicit_args.get(1).cloned();
+        let explicit_message_ty = explicit_handle_message_ty
+            .as_ref()
+            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+
+        let mut prechecked_init = None;
+        let state_ty = if let Some(state_ty) = explicit_state_ty {
+            state_ty
+        } else {
+            let init = self.check_expr(scopes, &args[0], None)?;
+            let Some((ret, params)) = callable_ret_params_ty(&init.ty) else {
+                self.diagnostics.push(Diagnostic::new(
+                    init.span,
+                    format!("actor state initializer `{}` is not callable", init.ty),
+                ));
+                return None;
+            };
+            if !params.is_empty() {
+                self.diagnostics.push(Diagnostic::new(
+                    init.span,
+                    format!(
+                        "actor state initializer expects 0 parameters, got {}",
+                        params.len()
+                    ),
+                ));
+                return None;
+            }
+            let Some((ok_ty, err_ty)) = self.result_ok_err_tys(&ret) else {
+                self.diagnostics.push(Diagnostic::new(
+                    init.span,
+                    format!("actor state initializer must return `Result<S, Error>`, got `{ret}`"),
+                ));
+                return None;
+            };
+            if err_ty != std_error_ty() {
+                self.diagnostics.push(Diagnostic::new(
+                    init.span,
+                    format!("actor state initializer error type must be `Error`, got `{err_ty}`"),
+                ));
+                return None;
+            }
+            prechecked_init = Some(init);
+            self.normalize_meta_repr_markers(&ok_ty, span)
+        };
+
+        let mut prechecked_handler = None;
+        let mut handle_message_ty = explicit_handle_message_ty
+            .clone()
+            .or_else(|| self.actor_message_ty_from_spawn_expected(expected))
+            .or_else(|| self.actor_message_ty_from_closure_literal_at(&args[1], 2));
+        if handle_message_ty.is_none() && !expr_is_closure_literal(&args[1]) {
+            let handler = self.check_expr(scopes, &args[1], None)?;
+            handle_message_ty =
+                callable_ret_params_ty(&handler.ty).and_then(|(_, params)| params.get(2).cloned());
+            prechecked_handler = Some(handler);
+        }
+        let Some(handle_message_ty) = handle_message_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "could not infer actor message type; add spawn_actor_state<S, M> type arguments, an expected Actor<M>, or handler parameter types",
+            ));
+            return None;
+        };
+        let message_ty = explicit_message_ty
+            .unwrap_or_else(|| self.normalize_meta_repr_markers(&handle_message_ty, span));
+        let handler_state_ty = self.normalize_meta_repr_markers(&state_ty, span);
+        let state_ptr_ty = Ty::Pointer {
+            nullable: false,
+            mutability: ViewMutability::Writable,
+            inner: Box::new(handler_state_ty.clone()),
+        };
+        let actor_self_ty = std_actor_ty(handle_message_ty.clone());
+        let init_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
+        let handler_ret = std_result_ty(Ty::Void, std_error_ty());
+        let message_view = self.interface_view("Message", &[]);
+        let expected_init_ty = Ty::Closure {
+            ret: Box::new(init_ret.clone()),
+            params: vec![],
+            constraints: ConstraintBounds {
+                positive: message_view.positive.clone(),
+                negative: message_view.negative.clone(),
+            },
+        };
+        let expected_handler_ty = Ty::Closure {
+            ret: Box::new(handler_ret.clone()),
+            params: vec![
+                state_ptr_ty.clone(),
+                actor_self_ty.clone(),
+                message_ty.clone(),
+            ],
+            constraints: ConstraintBounds {
+                positive: message_view.positive,
+                negative: message_view.negative,
+            },
+        };
+        let init = if let Some(init) = prechecked_init {
+            self.coerce_expr_to_expected(scopes, init, Some(&expected_init_ty))
+        } else {
+            let init = self.check_expr(scopes, &args[0], Some(&expected_init_ty))?;
+            self.coerce_expr_to_expected(scopes, init, Some(&expected_init_ty))
+        };
+        self.require_actor_callable(
+            &init.ty,
+            &[],
+            &init_ret,
+            "actor state initializer",
+            init.span,
+        );
+
+        let handler = if let Some(handler) = prechecked_handler {
+            self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
+        } else if let ExprKind::Closure { params, body } = &args[1].kind {
+            let handler = self.check_closure_expr(
+                scopes,
+                args[1].span,
+                params,
+                body,
+                Some(&expected_handler_ty),
+            )?;
+            self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
+        } else {
+            let handler = self.check_expr(scopes, &args[1], Some(&expected_handler_ty))?;
+            self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
+        };
+        self.require_actor_callable(
+            &handler.ty,
+            &[state_ptr_ty, actor_self_ty, message_ty.clone()],
+            &handler_ret,
+            "actor state handler",
+            handler.span,
+        );
+
+        if !self.type_implements_message(&message_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("actor message type `{message_ty}` does not implement `Message`"),
+            ));
+        }
+        let ret = std_result_ty(std_actor_ty(handle_message_ty.clone()), std_error_ty());
+        self.ensure_struct_instance(&ret);
+        self.ensure_enum_instance(&ret);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::ActorSpawn {
+                mode: ActorSpawnMode::State,
+                state_arg: Box::new(init),
                 handler_ty: handler.ty.clone(),
                 handler: Box::new(handler),
                 state_ty: handler_state_ty,
@@ -6201,12 +6391,22 @@ impl TypeChecker {
     }
 
     fn actor_message_ty_from_closure_literal(&mut self, expr: &Expr) -> Option<Ty> {
+        self.actor_message_ty_from_closure_literal_at(expr, 1)
+    }
+
+    fn actor_message_ty_from_closure_literal_at(
+        &mut self,
+        expr: &Expr,
+        param_index: usize,
+    ) -> Option<Ty> {
         match &expr.kind {
             ExprKind::Closure { params, .. } => params
-                .get(1)
+                .get(param_index)
                 .and_then(|param| param.ty.as_ref())
                 .map(|ty| self.lower_type(ty)),
-            ExprKind::Cast { expr, .. } => self.actor_message_ty_from_closure_literal(expr),
+            ExprKind::Cast { expr, .. } => {
+                self.actor_message_ty_from_closure_literal_at(expr, param_index)
+            }
             _ => None,
         }
     }
@@ -6253,42 +6453,55 @@ impl TypeChecker {
         expected_ret: &Ty,
         span: crate::span::Span,
     ) {
-        let Some((ret, params)) = callable_ret_params_ty(handler_ty) else {
+        self.require_actor_callable(
+            handler_ty,
+            &[state_ty.clone(), message_ty.clone()],
+            expected_ret,
+            "actor handler",
+            span,
+        );
+    }
+
+    fn require_actor_callable(
+        &mut self,
+        callable_ty: &Ty,
+        expected_params: &[Ty],
+        expected_ret: &Ty,
+        label: &str,
+        span: crate::span::Span,
+    ) {
+        let Some((ret, params)) = callable_ret_params_ty(callable_ty) else {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("actor handler `{handler_ty}` is not callable"),
+                format!("{label} `{callable_ty}` is not callable"),
             ));
             return;
         };
-        if params.len() != 2 {
+        if params.len() != expected_params.len() {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("actor handler expects 2 parameters, got {}", params.len()),
+                format!(
+                    "{label} expects {} parameters, got {}",
+                    expected_params.len(),
+                    params.len()
+                ),
             ));
             return;
         }
-        if params[0] != *state_ty {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!(
-                    "actor handler state parameter mismatch: expected `{state_ty}`, got `{}`",
-                    params[0]
-                ),
-            ));
-        }
-        if params[1] != *message_ty {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!(
-                    "actor handler message parameter mismatch: expected `{message_ty}`, got `{}`",
-                    params[1]
-                ),
-            ));
+        for (index, (actual, expected)) in params.iter().zip(expected_params.iter()).enumerate() {
+            if actual != expected {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "{label} parameter {index} mismatch: expected `{expected}`, got `{actual}`",
+                    ),
+                ));
+            }
         }
         if !expected_ret.can_assign_from(&ret) {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("actor handler must return `{expected_ret}`, got `{ret}`"),
+                format!("{label} must return `{expected_ret}`, got `{ret}`"),
             ));
         }
     }
@@ -6302,8 +6515,17 @@ impl TypeChecker {
         args: &[Expr],
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
-        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "spawn_actor") {
-            return self.check_actor_spawn_call(scopes, span, type_args, args, expected);
+        if std_id::is_std_actor_function(
+            &self.resolved,
+            sig.module,
+            &sig.name,
+            "spawn_actor_cloned",
+        ) {
+            return self.check_actor_spawn_cloned_call(scopes, span, type_args, args, expected);
+        }
+        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "spawn_actor_state")
+        {
+            return self.check_actor_spawn_state_call(scopes, span, type_args, args, expected);
         }
         if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "send") {
             return self.check_actor_send_call(scopes, span, type_args, args);

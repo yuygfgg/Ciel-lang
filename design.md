@@ -294,9 +294,9 @@ declarations and initialized `for` declarations:
 
 ```rust
 _ handler = |State<i64> state, Command<i64> command| handle(state, command);
-Actor<_> actor = must(spawn_actor<State<i64>, Command<i64>>(initial, handler));
+Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 Result<Actor<_>, Error> pending =
-    spawn_actor<State<i64>, Command<i64>>(initial, handler);
+    spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler);
 []_ values = [1, 2, 3];
 [3]_ fixed = [1, 2, 3];
 ```
@@ -1607,11 +1607,12 @@ Actor state remains encapsulated by the actor runtime. It is initialized when
 the actor starts and is updated by the actor's handler. Actor state is never
 exposed as a cross-actor `*S`.
 
-Actors are spawned with an initial state value and a retained-capability
-closure handler:
+Actors can be spawned with cloned messageable state or with actor-owned state
+constructed by an initializer. The clone-state API copies both the initial
+state and the handler through `Message`:
 
 ```rust
-Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
+Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
 );
@@ -1622,6 +1623,23 @@ loop, and safe code cannot send a borrowed pointer to another actor's mutable
 state. Actor-handler closures capture by value. Converting a concrete closure
 or Ciel ABI `fn` into the handler type retains the `Message` witness used by
 the actor runtime to clone the handler across the actor boundary.
+
+The actor-owned-state API constructs `S` inside an initializer closure and
+stores it directly in actor runtime storage:
+
+```rust
+Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
+    Result<S, Error> |(): Message| init,
+    Result<void, Error> |(*S, Actor<M>, M): Message| handler
+);
+```
+
+`S` does not need to implement `Message`. The initializer itself must be
+`Message`, so it can capture only messageable seed values. Non-message actor
+resources such as maps, async streams, frame readers, and queues are built
+inside the initializer. The handler receives a writable pointer to actor-owned
+state plus the actor's own handle for the current message; it mutates state in
+place and returns `Result<void, Error>`.
 
 `Message` is an explicit conversion capability:
 
@@ -1672,10 +1690,10 @@ send(actor, buf);        // send calls clone_message(&value)
 append(p, "local only"); // mutates only the sender's buffer
 ```
 
-`spawn_actor` follows the same rule:
+`spawn_actor_cloned` follows the same rule:
 
 ```rust
-Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
+Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
 ) {
@@ -1685,16 +1703,30 @@ Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
 }
 ```
 
+`spawn_actor_state` does not clone `S`:
+
+```rust
+Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
+    Result<S, Error> |(): Message| init,
+    Result<void, Error> |(*S, Actor<M>, M): Message| handler
+) {
+    S state = init()?;
+    Result<void, Error> |(*S, Actor<M>, M): Message| actor_handler =
+        clone_message(&handler)?;
+    return runtime_spawn_actor_state(state, actor_handler);
+}
+```
+
 Closure messageability is a property of the concrete closure type's generated
 environment, not of the erased callable signature alone:
 
 ```rust
 i64 x = 1;
-spawn_actor(0, |s, msg| s + msg + x); // ok
+spawn_actor_cloned(0, |s, msg| s + msg + x); // ok
 
 i64 local = 1;
 *i64 ptr = &local;
-spawn_actor(0, |s, msg| s + *ptr); // compile error
+spawn_actor_cloned(0, |s, msg| s + *ptr); // compile error
 ```
 
 The compiler treats every closure literal as a unique concrete type. A concrete
@@ -1760,7 +1792,7 @@ extern C function pointers, and opaque C handles do not implement `Message`
 without an explicit policy.
 
 The actor runtime is backed by one serial dispatch queue per actor on supported
-targets. `spawn_actor` clones the initial state and handler, creates a runtime
+targets. `spawn_actor_cloned` clones the initial state and handler, creates a runtime
 mailbox, a serial queue, and a group used to track accepted jobs. `send`
 clones the payload before enqueueing it. `stop` closes the mailbox to new
 sends while allowing accepted jobs to drain. `join` closes the mailbox, waits
@@ -2245,9 +2277,13 @@ export struct Actor<M> {
     *void handle;
 }
 
-export Result<Actor<M>, Error> spawn_actor<S: Message, M: Message>(
+export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
+);
+export Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
+    Result<S, Error> |(): Message| init,
+    Result<void, Error> |(*S, Actor<M>, M): Message| handler
 );
 export Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
 export Result<void, Error> stop<T: Message>(*const Actor<T> actor);

@@ -68,7 +68,7 @@ i64 main() {
         out: must(make_channel<i64>()),
     };
 
-    Actor<Envelope<Step<i64>>> actor = must(spawn_actor<i64, Envelope<Step<i64>>>(0, |i64 state, Envelope<Step<i64>> msg| {
+    Actor<Envelope<Step<i64>>> actor = must(spawn_actor_cloned<i64, Envelope<Step<i64>>>(0, |i64 state, Envelope<Step<i64>> msg| {
         Atomic<i64> total = metrics.total;
         Mutex<i64> last = metrics.last;
         Channel<i64> out = metrics.out;

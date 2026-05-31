@@ -13,14 +13,21 @@ pure-library-message <= monomorphized-c-callbacks
 unsafe <= monomorphized-c-callbacks[C callback declarations]
 
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
+actor-owned-state < actor-stdlib-lowering[spawn_actor semantics]
 ```
 
-The callback feature does not own actor safety. Actor state, handler, and
-message movement remain ordinary `Message` checks owned by `/std/message`.
+The callback feature does not own actor safety. It only supplies the missing
+generic C ABI callback mechanism. Actor state ownership is owned by
+`actor-owned-state`; actor message cloning is owned by `pure-library-message`.
 Retained closure handler types are provided by `capability-erased-closures`.
 When the unsafe proposal is active, imported C runtime hooks used by this
 proposal are declared in `unsafe extern "C"` blocks and called inside safe
 standard-library wrappers.
+
+The `actor-stdlib-lowering` step should not freeze the old clone-state
+`spawn_actor<S: Message, M: Message>` semantics. If `actor-owned-state` is
+accepted, `/std/actor` lowering must use the owned-state dispatch shape
+described below.
 
 ## Problem
 
@@ -228,6 +235,51 @@ payload, box it with `ciel_box_copy`, and pass the raw pointer to the C runtime.
 After this migration, the compiler no longer needs to recognize the name
 `spawn_actor`. It only needs to implement generic C callback function values.
 
+## Interaction With Actor-Owned State
+
+The callback mechanism remains valid if actor state moves from clone-state to
+owned-state semantics. Only the typed dispatch body changes.
+
+An owned-state dispatch uses the same C-visible ABI:
+
+```c
+void (*dispatch)(void *state, void *handler, void *message, int32_t *failed)
+```
+
+but recovers a mutable state pointer and calls an in-place handler:
+
+```rust
+extern "C" void actor_dispatch_owned<S, M: Message>(
+    *void state_raw,
+    *void handler_raw,
+    *void message_raw,
+    *c::c_int failed,
+) {
+    *S state = state_raw as *S;
+    *(Result<void, Error> |(*S, M): Message|) handler =
+        handler_raw as *(Result<void, Error> |(*S, M): Message|);
+    *M message = message_raw as *M;
+
+    Result<void, Error> result = (*handler)(state, *message);
+    switch (result) {
+        case Ok(_):
+            return;
+        case Err(_):
+            *failed = 1;
+    }
+}
+```
+
+In that model, `spawn_actor` does not call `clone_message` for `S`. It boxes
+the actor-owned state according to the rules in `actor-owned-state`. `send`
+still clones `M`, and the retained handler value still needs the callback-safe
+capability required by the actor API.
+
+This means `monomorphized-c-callbacks` can land before actor-owned state as a
+general FFI feature, but the actor-specific stdlib lowering should wait until
+the actor state semantics are settled. Otherwise the stdlib migration would
+encode the obsolete `S: Message` clone-state API and need another rewrite.
+
 ## Thread Attachment
 
 This proposal does not make arbitrary C libraries safe to call Ciel callbacks
@@ -324,7 +376,8 @@ expected
 7. Teach codegen to emit generic C ABI instances and lower function-item values
    to their generated symbols.
 8. Add `/std/runtime` or `/std/c` boxing hook such as `ciel_box_copy`, then move
-   `/std/actor` from compiler builtins to ordinary Ciel code.
+   `/std/actor` from compiler builtins to ordinary Ciel code after the
+   `actor-owned-state` direction has settled.
 9. Delete actor-specific `TExprKind::ActorSpawn`, `ActorSend`, `ActorStop`, and
    `ActorJoin` after the stdlib actor fixtures pass through the ordinary call
    path.

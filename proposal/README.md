@@ -33,6 +33,7 @@ metaprogramming <= generic-growable-storage[type size and alignment]
 capability-erased-closures < monomorphized-c-callbacks
 pure-library-message <= monomorphized-c-callbacks
 monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
+actor-owned-state < actor-stdlib-lowering[spawn_actor semantics]
 
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]
@@ -42,6 +43,11 @@ binding-mutability <= actor-owned-state[consumed state locals]
 dispatch-actor-io-runtime <= actor-owned-state[actor runtime state storage]
 pure-library-message || actor-owned-state[message payload policy]
 monomorphized-c-callbacks || actor-owned-state[runtime callback ABI]
+
+dispatch-actor-io-runtime <= actor-reactor-effects[async operation backend]
+actor-owned-state <= actor-reactor-effects[safe actor-owned state]
+pure-library-message <= actor-reactor-effects[event payload policy]
+monomorphized-c-callbacks || actor-reactor-effects[runtime callback ABI]
 ```
 
 The main consequence is that SOP structural representation belongs to

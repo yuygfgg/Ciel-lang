@@ -46,6 +46,58 @@ supplies the local binding rules used by live-local analysis.
 `monomorphized-c-callbacks` is not on this path. It remains a separate FFI
 proposal for generic C callback function items.
 
+## Current Implementation Baseline
+
+This proposal starts from an actor-oriented async implementation, not from a
+blank runtime.
+
+Compiler status:
+
+1. There is no language-level `async`, `await`, or `select` syntax yet. The
+   lexer currently treats `async`, `await`, and `select` as ordinary
+   identifiers, which is important because `/std/async` is an existing module
+   path. The implementation should therefore introduce these as contextual
+   keywords or explicitly preserve module-path compatibility.
+2. The compiler already has ordinary closures, retained closure capability
+   checks, `?` propagation through `Result<T, Error>`, `defer` cleanup,
+   interface aliases, generic capability constraints, structural `Message`
+   policy through `meta::Repr<T>`, `ThreadLocal`/share-handle marker policy,
+   actor lowering, and actor-owned state through `spawn_actor_state`.
+3. The compiler does not yet have first-class generated future frame types,
+   liveness across suspension points, async-frame-safety analysis, task lowering,
+   hidden resume events, `Task<T>` result routing, or async cleanup state.
+
+Runtime status:
+
+1. Actors are backed by serial libdispatch queues. Actor messages are delivered
+   by `ciel_actor_send`, and the runtime prevents concurrent execution of one
+   actor's handler.
+2. File, TCP, accept, connect, and timer operations are represented by
+   `CielAsyncOp` tokens. Completions can enqueue a user-provided actor message
+   and are finished through `finish_*` functions.
+3. The current operation tokens support cancellation and own their libdispatch
+   callback state, but they do not yet carry task id, operation id, generation,
+   hidden resume-event routing, task result waiters, select-set registration, or
+   deterministic task-frame cleanup.
+
+Standard library status:
+
+1. `/std/async` currently exposes the flow API:
+   `AsyncRunner<S>`, `AsyncTask<S, Out>`, `Completion<S, Out>`,
+   `spawn_runner`, `from_completion`, `then`, `start`, `stop_runner`, and
+   `join_runner`.
+2. `/std/async/adapter` contains the operation-token adapter interfaces
+   `notify_done` and `finish`.
+3. `/std/async_io`, `/std/async_net`, and `/std/async_time` expose low-level
+   operation tokens, completion adapters, and `*_task` helpers over the flow
+   API. Their fixtures already cover async file I/O, TCP accept/connect/read/
+   write, timers, cancellation, and facade re-exports.
+4. `/std/channel` is a synchronous actor/message-friendly channel. It is not the
+   bounded async task channel described by this proposal.
+5. Tutorial chapter 9 is intentionally written against the current flow API.
+   It is the compatibility baseline until task async/await has equivalent
+   coverage.
+
 ## Motivation
 
 The current actor-friendly async APIs expose operation tokens and completion
@@ -1083,6 +1135,10 @@ export Result<Task<T>, Error> spawn<T, F: Future<Result<T, Error>> + Abortable>(
     F body
 );
 
+export Result<T, Error> block_on<T, F: Future<Result<T, Error>> + Abortable>(
+    F body
+);
+
 export Result<void, Error> cancel<T>(*Task<T> task);
 export Result<TaskGroup<T>, Error> task_group<T>();
 export Result<void, Error> group_add<T>(*TaskGroup<T> group, Task<T> task);
@@ -1135,6 +1191,11 @@ or reach into another task's async frame.
 The visible declarations stay close to ordinary generic APIs. The compiler
 attaches hidden `Message` obligations at cross-task boundaries and reports them
 as boundary diagnostics, not as actor-state programming requirements.
+
+`block_on` is the synchronous bridge for CLI entry points, tests, and embedding
+hosts. It starts one future on the task runtime and blocks the calling thread
+until the future returns. Ordinary async code should use `await` instead of
+calling `block_on` from inside async bodies.
 
 The stdlib must provide trusted handle implementations for `Task<T>`,
 `TaskGroup<T>`, `Sender<T>`, `Receiver<T>`, and `SendPermit<T>` based on runtime
@@ -1306,100 +1367,56 @@ future helpers such as `async::timeout`, not through flow tasks.
 Keep `/std/actor` as an advanced compatibility module. It should not be the
 primary tutorial path once async/await lands.
 
-## Migration Plan
+## Executable Project Split
 
-1. Add generic interface aliases if they are not already implemented.
-2. Add parser/typechecker support for async functions, async closures, and
-   await.
-3. Add first-class compiler-generated `Future<T>` values.
-4. Add compiler lowering for a single awaitable sleep future.
-5. Add `Task<T>` and `async::spawn`.
-6. Add `TaskGroup<T>` for dynamic task completion sets.
-7. Add awaitable `/std/async_time::sleep_ms`.
-8. Add awaitable `/std/async_io` read/write.
-9. Add awaitable `/std/async_net` accept/connect/read/write/read_into`.
-10. Add buffered stream readers for cancellation-safe selectable reads.
-11. Add bounded async channels with sender counts, capacity wakeups,
-    deterministic endpoint cleanup, and cancel-safe `reserve` permits.
-12. Add `CancelSafe` and `Abortable` checking, with `CancelSafe` treated as a
-    semantic capability rather than an automatic consequence of child awaits.
-13. Add `select` expression lowering, internal `SelectSet<R>` support,
-    `timeout`, cancellation, abort, and stale-completion support.
-14. Add defer-style deterministic async-frame cleanup.
-15. Add the async resume trampoline.
-16. Rewrite tutorial chapter 9 using task async/await.
-17. Migrate intranet tunnel to tasks/channels and awaitable I/O.
-18. Remove the public flow API once migrated fixtures cover async I/O, TCP,
-    timers, channels, task awaiting, cancellation, abort, select expressions,
-    future helpers, and trampoline
-    behavior.
+The checkable execution checklist lives in
+[`proposal/async-await-todo.md`](async-await-todo.md). That TODO is the
+day-to-day tracker. The split is intentionally bottom-up but vertical: every
+phase should produce runnable behavior instead of landing syntax or policy in
+isolation.
 
-## Test Plan
+Recommended order:
 
-1. A spawned task awaits a timer and returns a value.
-2. A task can await another task.
-3. `TaskGroup<T>` returns completed dynamic tasks through `group_next` without
-   cancelling unfinished tasks.
-4. A task can send/receive through bounded async channels.
-5. A full bounded channel makes `send` suspend until capacity is available.
-6. A cancelled `reserve` does not send or lose a value; `permit_send` commits
-   synchronously after capacity is reserved.
-7. A task awaits TCP accept/connect/read/write/read_into in sequential code.
-8. A `read_into` loop reuses `Bytes` capacity across reads.
-9. A first-class future can be stored, passed to a helper, and awaited once.
-10. A composed frame reader that consumes a header and then awaits a body is not
-    inferred `CancelSafe` merely because both underlying reads are `CancelSafe`.
-11. A `select` expression races timer, buffered TCP read, and channel receive
-    with flat-list fair tie behavior.
-12. `biased select` uses deterministic source-order tie behavior.
-13. The compiler lowers `select` through internal `SelectSet<R>` support without
-   exposing a second public select API.
-14. A raw TCP read, `read_into`, or write passed to `select` or `timeout` is
-    rejected as not `CancelSafe`.
-15. A cancelled losing `CancelSafe` future does not resume user code.
-16. A stale completion after `CancelSafe` cancellation is discarded.
-17. A cancelled task aborts a pending raw TCP read by closing or poisoning the
-    stream and terminates without leaking its actor.
-18. Aborting a task with the last `Sender<T>` in its frame wakes a pending
-    receiver immediately through deterministic cleanup, not through BDWGC
-    finalization.
-19. A non-`Abortable` future cannot be awaited in a cancellable task in safe
-    code.
-20. A connect timeout works because pending connect is `CancelSafe +
-    Abortable`.
-21. Dropping or failing the last sender wakes a pending receiver with a closed
-    channel error.
-22. A buffered reader with residual private-buffer bytes wins `select`
-    immediately without waiting for a fresh socket readability event.
-23. A loop of immediately ready awaits runs through the trampoline without C
-    stack growth.
-24. A non-`Message` local inside an async body can cross await when it passes
-    async-frame safety.
-25. A captured non-`Message` local passed into `async::spawn` is rejected.
-26. A raw pointer live across await is rejected.
-27. A string literal `[]const char` live across await is accepted.
-28. A non-static borrowed slice live across await is rejected.
-29. A crossing struct payload gets compiler-generated `Message` through
-    `meta::Repr`.
-30. A crossing struct with a nested non-messageable field gets a field-path
-    diagnostic.
-31. Safe fixtures cannot produce data races or concurrent access to task-local
-    mutable state.
-32. Generic interface alias fixtures prove `SelectableFuture<T>`-style bounds
-    substitute type arguments correctly.
-33. Existing low-level actor fixtures continue to pass.
-34. The intranet tunnel integration tests pass after migration.
-35. A non-`CancelSafe` protocol future can be isolated in a spawned task, and
-    `timeout(task)` cancels only the waiter rather than corrupting the
-    protocol state inside the task.
-36. Dropping or aborting the last receiver wakes blocked `send` and `reserve`
-    futures with `channel_closed_error()`.
-37. Aborting a suspended libdispatch-backed operation drops the async frame
-    while a queued C callback later fires; the callback only posts a routed
-    stale completion event and never dereferences the freed frame.
-38. A struct or enum containing a slice field is rejected across await in the
-    first implementation even when the field was initialized from a string
-    literal.
+```text
+runtime future driver
+  -> first language await
+  -> async frames and cleanup
+  -> task ownership boundary
+  -> awaitable standard-library I/O
+  -> cancellation, abort, and timeout
+  -> async communication
+  -> select and buffered TCP reads
+  -> migration and flow removal
+```
+
+1. **Runtime future driver** adds the core future surface, `block_on`,
+   primitive task polling, and a transitional sleep future over the existing
+   `CielAsyncOp` timer path. This gives the first runnable future without
+   compiler-generated async frames.
+2. **First language await** adds contextual async syntax and the first lowering
+   together: an async function with one `await` of the primitive sleep future
+   runs through `block_on`.
+3. **Async frames and cleanup** expands the vertical slice to multi-await
+   frames, nested future storage, live-local frame safety, deterministic cleanup,
+   and trampoline scheduling.
+4. **Task ownership boundary** adds `Task<T>`, `spawn`, task awaiting, task
+   status/cancellation entry points, and hidden `Message` obligations for task
+   results and captures.
+5. **Awaitable standard-library I/O** migrates timers, async file I/O, and async
+   TCP operations from flow tasks to awaitable futures while preserving old flow
+   compatibility.
+6. **Cancellation, abort, and timeout** adds generation-routed external
+   completions, trusted `CancelSafe`/`Abortable`, task abort cleanup, and
+   `async::timeout`.
+7. **Async communication** adds bounded async channels, endpoint lifecycle
+   cleanup, payload boundary policy, and task groups for dynamic concurrency.
+8. **Select and buffered TCP reads** adds compiler-level `select`, internal
+   `SelectSet<R>` lowering, selectable-future checks, fair/biased tie handling,
+   and cancellation-safe buffered TCP reads.
+9. **Migration and flow removal** rewrites tutorial and intranet-tunnel code to
+   task async/await, moves operation-token adapters internal, removes the public
+   flow API, and updates `design.md` only after the new surface has equivalent
+   fixture coverage.
 
 ## Resolved Decisions
 

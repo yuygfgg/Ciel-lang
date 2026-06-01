@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: `async::spawn` task result type `BadResult` does not implement `Message`
+
+import /std/async as async;
+import /std/result;
+
+struct BadResult {
+    *const usize ptr;
+}
+
+i32 main() {
+    Result<async::Task<BadResult>, Error> task = async::spawn<BadResult>(async || {
+        usize value = 9;
+        return Ok({ ptr: &value });
+    });
+    return 0;
+}

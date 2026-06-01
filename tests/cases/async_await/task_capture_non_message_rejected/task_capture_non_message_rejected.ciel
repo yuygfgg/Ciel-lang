@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: `async::spawn` capture `config` of type `BadConfig` does not implement `Message`
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+struct BadConfig {
+    *const usize ptr;
+}
+
+i32 main() {
+    usize value = 5;
+    BadConfig config = { ptr: &value };
+    Result<async::Task<usize>, Error> task = async::spawn<usize>(async || {
+        usize snapshot = unsafe { *config.ptr };
+        await async_time::sleep_ms(1)?;
+        return Ok(snapshot);
+    });
+    return 0;
+}

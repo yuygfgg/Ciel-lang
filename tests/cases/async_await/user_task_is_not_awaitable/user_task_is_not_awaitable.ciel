@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: `await` requires `Future<T>`, got `Task<usize>`
+
+import /std/result;
+
+struct Task<T> {
+    T value;
+}
+
+async Result<usize, Error> bad(Task<usize> task) {
+    return await task;
+}
+
+i32 main() {
+    return 0;
+}

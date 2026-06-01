@@ -1,0 +1,23 @@
+// ciel-test: error
+// expect-error: `async::spawn` capture `config` of type `OuterConfig` does not implement `Message`
+// expect-error: config.inner.ptr has raw pointer type `*const usize`
+
+import /std/async as async;
+import /std/result;
+
+struct InnerConfig {
+    *const usize ptr;
+}
+
+struct OuterConfig {
+    InnerConfig inner;
+}
+
+i32 main() {
+    usize value = 5;
+    OuterConfig config = { inner: { ptr: &value } };
+    Result<async::Task<usize>, Error> task = async::spawn<usize>(async || {
+        return Ok(unsafe { *config.inner.ptr });
+    });
+    return 0;
+}

@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: `async::spawn` task result type `OuterResult` does not implement `Message`
+// expect-error: task result.inner.ptr has raw pointer type `*const usize`
+
+import /std/async as async;
+import /std/result;
+
+struct InnerResult {
+    *const usize ptr;
+}
+
+struct OuterResult {
+    InnerResult inner;
+}
+
+i32 main() {
+    Result<async::Task<OuterResult>, Error> task = async::spawn<OuterResult>(async || {
+        usize value = 9;
+        return Ok({ inner: { ptr: &value } });
+    });
+    return 0;
+}

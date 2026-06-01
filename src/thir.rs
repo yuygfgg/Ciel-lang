@@ -369,6 +369,18 @@ pub enum TExprKind {
         ms: Box<TExpr>,
         output_ty: Ty,
     },
+    AsyncSpawn {
+        body: Box<TExpr>,
+        task_output_ty: Ty,
+    },
+    AsyncTaskCancel {
+        task: Box<TExpr>,
+        task_output_ty: Ty,
+    },
+    AsyncTaskIsFinished {
+        task: Box<TExpr>,
+        task_output_ty: Ty,
+    },
     MetaAsRefRepr {
         value: Box<TExpr>,
         source_ty: Ty,
@@ -603,6 +615,10 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
         TExprKind::AsyncSleep { ms, output_ty: _ } => visitor.visit_expr(ms),
+        TExprKind::AsyncSpawn { body, .. } => visitor.visit_expr(body),
+        TExprKind::AsyncTaskCancel { task, .. } | TExprKind::AsyncTaskIsFinished { task, .. } => {
+            visitor.visit_expr(task)
+        }
         TExprKind::UnsafeBlock { statements, value } => {
             for stmt in statements {
                 visitor.visit_stmt(stmt);

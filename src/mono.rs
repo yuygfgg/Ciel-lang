@@ -29,8 +29,8 @@ use crate::{
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_future_ty,
-        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
-        ty_from_primitive, type_complexity, unify_ty,
+        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, std_task_ty,
+        ty_contains, ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -643,12 +643,18 @@ impl MonoContext {
             }
             TExprKind::Await { future } => {
                 self.mark_standard_error_code_impl();
+                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                    self.mark_task_boundary_clone_impls(&task_output_ty);
+                }
                 TExprKind::Await {
                     future: Box::new(self.rewrite_expr(*future)?),
                 }
             }
             TExprKind::AsyncBlockOn { future } => {
                 self.mark_standard_error_code_impl();
+                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                    self.mark_task_boundary_clone_impls(&task_output_ty);
+                }
                 TExprKind::AsyncBlockOn {
                     future: Box::new(self.rewrite_expr(*future)?),
                 }
@@ -658,6 +664,42 @@ impl MonoContext {
                 TExprKind::AsyncSleep {
                     ms: Box::new(self.rewrite_expr(*ms)?),
                     output_ty,
+                }
+            }
+            TExprKind::AsyncSpawn {
+                body,
+                task_output_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                self.mark_task_boundary_clone_impls(&task_output_ty);
+                if let TExprKind::Closure { captures, .. } = &body.kind {
+                    for capture in captures {
+                        self.mark_task_boundary_clone_impls(&capture.ty);
+                    }
+                }
+                TExprKind::AsyncSpawn {
+                    body: Box::new(self.rewrite_expr(*body)?),
+                    task_output_ty,
+                }
+            }
+            TExprKind::AsyncTaskCancel {
+                task,
+                task_output_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncTaskCancel {
+                    task: Box::new(self.rewrite_expr(*task)?),
+                    task_output_ty,
+                }
+            }
+            TExprKind::AsyncTaskIsFinished {
+                task,
+                task_output_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncTaskIsFinished {
+                    task: Box::new(self.rewrite_expr(*task)?),
+                    task_output_ty,
                 }
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
@@ -828,6 +870,27 @@ impl MonoContext {
         if let Some(function_def) = self.clone_message_impl_def(ty) {
             self.mark_function(function_def);
         }
+    }
+
+    fn mark_task_boundary_clone_impls(&mut self, ty: &Ty) {
+        if self.clone_message_impl_def(ty).is_some() {
+            self.mark_message_clone_impls(ty);
+            return;
+        }
+        if !matches!(
+            ty,
+            Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
+        ) {
+            self.mark_message_clone_impls(ty);
+            return;
+        }
+        let repr_ty = self.task_boundary_meta_repr_ty(ty);
+        self.mark_message_clone_impls(&repr_ty);
+    }
+
+    fn task_boundary_meta_repr_ty(&self, ty: &Ty) -> Ty {
+        let mut collector = AggregateCollector::new(&self.checked);
+        collector.meta_repr_ty(None, ty, false)
     }
 
     fn mark_retained_closure_witness_impls(&mut self, target_ty: &Ty, source_ty: &Ty) {
@@ -1179,11 +1242,45 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(future);
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
+                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                    self.collect_task_boundary_clone_result_tys(&task_output_ty);
+                }
             }
             TExprKind::AsyncSleep { ms, output_ty } => {
                 self.collect_expr(ms);
                 self.collect_ty(&std_future_ty(output_ty.clone()));
                 self.collect_ty(output_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+            }
+            TExprKind::AsyncSpawn {
+                body,
+                task_output_ty,
+            } => {
+                self.collect_expr(body);
+                self.collect_ty(task_output_ty);
+                self.collect_ty(&std_task_ty(task_output_ty.clone()));
+                self.collect_ty(&std_message_result_ty(task_output_ty.clone()));
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                if let TExprKind::Closure { captures, .. } = &body.kind {
+                    for capture in captures {
+                        self.collect_task_boundary_clone_result_tys(&capture.ty);
+                    }
+                }
+                self.collect_task_boundary_clone_result_tys(task_output_ty);
+            }
+            TExprKind::AsyncTaskCancel {
+                task,
+                task_output_ty,
+            }
+            | TExprKind::AsyncTaskIsFinished {
+                task,
+                task_output_ty,
+            } => {
+                self.collect_expr(task);
+                self.collect_ty(task_output_ty);
+                self.collect_ty(&std_task_ty(task_output_ty.clone()));
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
             }
@@ -1338,6 +1435,20 @@ impl<'a> AggregateCollector<'a> {
 
     fn collect_message_clone_result_tys(&mut self, ty: &Ty) {
         self.collect_ty(&std_message_result_ty(ty.clone()));
+    }
+
+    fn collect_task_boundary_clone_result_tys(&mut self, ty: &Ty) {
+        self.collect_message_clone_result_tys(ty);
+        if !matches!(
+            ty,
+            Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
+        ) {
+            return;
+        }
+        let repr_ty = self.meta_repr_ty(None, ty, false);
+        if repr_ty != *ty {
+            self.collect_message_clone_result_tys(&repr_ty);
+        }
     }
 
     fn collect_ty(&mut self, ty: &Ty) {
@@ -2246,6 +2357,17 @@ fn enum_c_name_from_ty(ty: &Ty) -> Option<String> {
     match ty {
         Ty::Named { name, args } => Some(aggregate_instance_name(name, args)),
         _ => None,
+    }
+}
+
+fn task_output_ty(resolved: &ResolvedProgram, ty: &Ty) -> Option<Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && std_id::is_std_async_type_name(resolved, name, "Task") {
+        Some(args[0].clone())
+    } else {
+        None
     }
 }
 

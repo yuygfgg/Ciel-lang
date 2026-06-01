@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 23
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+Result<async::Task<T>, Error> spawn_identity<T>(T value) {
+    return async::spawn<T>(async || {
+        return Ok(value);
+    });
+}
+
+i32 main() {
+    async::Task<usize> task = must(spawn_identity<usize>(23));
+    must(print_value(must(async::block_on(task))));
+    return 0;
+}

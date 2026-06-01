@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: `async::spawn` requires a direct async closure or Future<Result<T, Error>>
+
+import /std/async as async;
+import /std/result;
+
+i32 main() {
+    Result<async::Task<usize>, Error> task = async::spawn<usize>(|| {
+        return Ok(1);
+    });
+    return 0;
+}

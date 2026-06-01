@@ -146,6 +146,52 @@ pub fn is_std_async_time_function(
     name == expected_name && module_path_matches(resolved, module, STD_ASYNC_TIME_PATH)
 }
 
+fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
+    matches!(kind, DefKind::Struct | DefKind::Enum)
+}
+
+fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
+    let def = resolved.def(def_id);
+    let has_same_named_nominal = resolved.defs.iter().any(|other| {
+        other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
+    });
+    if has_same_named_nominal {
+        format!("{}__def{}", def.name, def.id.0)
+    } else {
+        def.name.clone()
+    }
+}
+
+pub fn is_std_async_type_name(
+    resolved: &ResolvedProgram,
+    ty_name: &str,
+    expected_name: &str,
+) -> bool {
+    let has_std_def = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && def.kind == DefKind::Struct
+            && module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+    });
+    if has_std_def && ty_name == expected_name {
+        return true;
+    }
+    let std_match = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && def.kind == DefKind::Struct
+            && module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+            && nominal_type_name(resolved, def.id) == ty_name
+    });
+    if std_match {
+        return true;
+    }
+    let has_user_nominal = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && is_nominal_type_def_kind(&def.kind)
+            && !module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+    });
+    ty_name == expected_name && !has_user_nominal
+}
+
 pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name: &str) -> bool {
     def_matches(
         resolved,

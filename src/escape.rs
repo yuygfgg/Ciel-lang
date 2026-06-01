@@ -260,6 +260,9 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.scan_expr(future)
             }
             TExprKind::AsyncSleep { ms, .. } => self.scan_expr(ms),
+            TExprKind::AsyncSpawn { body, .. } => self.scan_expr(body),
+            TExprKind::AsyncTaskCancel { task, .. }
+            | TExprKind::AsyncTaskIsFinished { task, .. } => self.scan_expr(task),
             TExprKind::Binary { left, right, .. } => {
                 self.scan_expr(left);
                 self.scan_expr(right);
@@ -519,6 +522,11 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.collect_storage_sources(future, out)
             }
             TExprKind::AsyncSleep { ms, .. } => self.collect_storage_sources(ms, out),
+            TExprKind::AsyncSpawn { body, .. } => self.collect_storage_sources(body, out),
+            TExprKind::AsyncTaskCancel { task, .. }
+            | TExprKind::AsyncTaskIsFinished { task, .. } => {
+                self.collect_storage_sources(task, out)
+            }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_storage_sources(left, out);
                 self.collect_storage_sources(right, out);

@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: `async::spawn` async closure must not take parameters
+
+import /std/async as async;
+import /std/result;
+
+i32 main() {
+    Result<async::Task<usize>, Error> task = async::spawn<usize>(async |usize value| {
+        return Ok(value);
+    });
+    return 0;
+}

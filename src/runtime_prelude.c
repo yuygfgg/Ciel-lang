@@ -2664,6 +2664,8 @@ struct CielAsyncOp {
     uint64_t route_generation;
 };
 
+typedef struct CielTask CielTask;
+
 typedef struct CielFuture {
     CielFutureRunFn run;
     CielFutureCleanupFn cleanup;
@@ -2679,7 +2681,18 @@ typedef struct CielFuture {
     uint64_t next_operation_id;
     uint64_t generation;
     CielAsyncOp *pending_op;
+    CielTask *pending_task;
 } CielFuture;
+
+struct CielTask {
+    CielFuture *future;
+    CielFuture *wait_future;
+    dispatch_queue_t queue;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    uint8_t finished;
+    int32_t rc;
+};
 
 enum {
     CIEL_FUTURE_PENDING = 0,
@@ -3963,6 +3976,7 @@ int32_t ciel_future_cancel(CielFuture *future) {
     future->failure = ECANCELED;
     op = future->pending_op;
     future->pending_op = NULL;
+    future->pending_task = NULL;
     pthread_mutex_unlock(&future->mutex);
     if (op != NULL)
         (void)ciel_async_cancel(op);
@@ -4000,6 +4014,23 @@ static void ciel_future_clear_operation(CielFuture *future, CielAsyncOp *op) {
     pthread_mutex_lock(&future->mutex);
     if (future->pending_op == op)
         future->pending_op = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_future_bind_task(CielFuture *future, CielTask *task) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    future->pending_task = task;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_future_clear_task(CielFuture *future, CielTask *task) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    if (future->pending_task == task)
+        future->pending_task = NULL;
     pthread_mutex_unlock(&future->mutex);
 }
 
@@ -4072,13 +4103,16 @@ void ciel_future_adopt_pending_operation(CielFuture *future, CielFuture *child) 
     if (future == NULL)
         return;
     CielAsyncOp *op = NULL;
+    CielTask *task = NULL;
     if (child != NULL) {
         pthread_mutex_lock(&child->mutex);
         op = child->pending_op;
+        task = child->pending_task;
         pthread_mutex_unlock(&child->mutex);
     }
     pthread_mutex_lock(&future->mutex);
     future->pending_op = op;
+    future->pending_task = task;
     pthread_mutex_unlock(&future->mutex);
 }
 
@@ -4087,7 +4121,19 @@ void ciel_future_clear_pending_operation(CielFuture *future) {
         return;
     pthread_mutex_lock(&future->mutex);
     future->pending_op = NULL;
+    future->pending_task = NULL;
     pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_task_wait_until_finished(CielTask *task) {
+    if (task == NULL) {
+        sched_yield();
+        return;
+    }
+    pthread_mutex_lock(&task->mutex);
+    while (!task->finished)
+        pthread_cond_wait(&task->cond, &task->mutex);
+    pthread_mutex_unlock(&task->mutex);
 }
 
 static void ciel_future_wait_until_ready(CielFuture *future) {
@@ -4097,12 +4143,111 @@ static void ciel_future_wait_until_ready(CielFuture *future) {
     }
     pthread_mutex_lock(&future->mutex);
     CielAsyncOp *op = future->pending_op;
+    CielTask *task = future->pending_task;
     pthread_mutex_unlock(&future->mutex);
     if (op == NULL) {
-        sched_yield();
+        if (task != NULL)
+            ciel_task_wait_until_finished(task);
+        else
+            sched_yield();
         return;
     }
     ciel_async_wait_until_ready(op);
+}
+
+static int32_t ciel_task_wait_future_run(void *ctx_raw, void *out_raw) {
+    CielTask *task = (CielTask *)ctx_raw;
+    if (task == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&task->mutex);
+    uint8_t finished = task->finished;
+    pthread_mutex_unlock(&task->mutex);
+    if (!finished) {
+        ciel_future_bind_task(task->wait_future, task);
+        return EAGAIN;
+    }
+    ciel_future_clear_task(task->wait_future, task);
+    return ciel_future_poll(task->future, out_raw);
+}
+
+static void ciel_task_run(void *ctx_raw) {
+    CielTask *task = (CielTask *)ctx_raw;
+    if (task == NULL)
+        return;
+    int32_t rc = ciel_future_run_to_completion(task->future, NULL);
+    pthread_mutex_lock(&task->mutex);
+    if (!task->finished) {
+        task->finished = 1;
+        task->rc = rc;
+    }
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mutex);
+}
+
+void *ciel_task_spawn(CielFuture *future) {
+    if (future == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    CielTask *task = (CielTask *)ciel_alloc(sizeof(CielTask));
+    memset(task, 0, sizeof(CielTask));
+    task->future = future;
+    int rc = pthread_mutex_init(&task->mutex, NULL);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    rc = pthread_cond_init(&task->cond, NULL);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    task->queue = dispatch_queue_create("ciel.task", DISPATCH_QUEUE_SERIAL);
+    if (task->queue == NULL) {
+        errno = EIO;
+        return NULL;
+    }
+    task->wait_future =
+        ciel_future_new(future->result_size, future->result_align,
+                        ciel_task_wait_future_run, task, NULL);
+    if (task->wait_future == NULL)
+        return NULL;
+    dispatch_async_f(task->queue, task, ciel_task_run);
+    return task;
+}
+
+CielFuture *ciel_task_future_from_handle(void *handle) {
+    CielTask *task = (CielTask *)handle;
+    if (task == NULL)
+        return NULL;
+    return task->wait_future;
+}
+
+int32_t ciel_task_cancel(void *handle) {
+    CielTask *task = (CielTask *)handle;
+    if (task == NULL)
+        return EINVAL;
+    int32_t rc = ciel_future_cancel(task->future);
+    pthread_mutex_lock(&task->mutex);
+    if (!task->finished) {
+        task->finished = 1;
+        task->rc = ECANCELED;
+    }
+    pthread_cond_broadcast(&task->cond);
+    pthread_mutex_unlock(&task->mutex);
+    if (rc == EALREADY)
+        return 0;
+    return rc == 0 ? 0 : rc;
+}
+
+int32_t ciel_task_is_finished(void *handle, bool *out) {
+    CielTask *task = (CielTask *)handle;
+    if (task == NULL || out == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&task->mutex);
+    *out = task->finished != 0;
+    pthread_mutex_unlock(&task->mutex);
+    return 0;
 }
 
 int32_t ciel_future_poll_trampoline(CielFuture *future, void *out) {

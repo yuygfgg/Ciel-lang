@@ -85,14 +85,14 @@ Implementation guardrails:
 
 ## Phase 3: Task Ownership Boundary
 
-- [ ] Add `Task<T>`, `async::spawn`, and task awaiting.
+- [x] Add `Task<T>`, `async::spawn`, and task awaiting.
       Scope: lower directly spawned async closures to actor-owned task
       initialization and generated dispatch; task handles store completion
       results and wake awaiters.
       Tests: a spawned task awaits a timer and returns a value; a task can await
       another task.
 
-- [ ] Add task boundary policy.
+- [x] Add task boundary policy.
       Scope: task results and spawned-task captures get hidden `Message`
       obligations; direct async closure captures are analyzed without requiring
       retained `: Message` closure syntax.
@@ -101,7 +101,7 @@ Implementation guardrails:
       capture or nested field; a non-`Message` local created inside the task can
       live across await if frame-safe.
 
-- [ ] Add task status and cancellation entry points.
+- [x] Add task status and cancellation entry points.
       Scope: add `async::cancel` and `async::is_finished` or explicitly drop
       them from the public surface before this phase closes.
       Tests: fixtures observe finished state and a stable cancellation result.

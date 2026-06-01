@@ -17,7 +17,8 @@ use crate::{
         meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
         meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
-        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
+        std_meta_repr_marker_ty, std_result_ty, std_task_ty, substitute_ty, ty_from_primitive,
+        unify_ty,
     },
 };
 
@@ -193,7 +194,8 @@ impl ThirVisitor for AsyncLocalInfoCollector<'_, '_> {
         match &expr.kind {
             TExprKind::UnsafeBlock { statements, value } => {
                 for stmt in statements {
-                    self.checker.async_collect_local_infos_stmt(stmt, self.infos);
+                    self.checker
+                        .async_collect_local_infos_stmt(stmt, self.infos);
                 }
                 if let Some(value) = value {
                     self.visit_expr(value);
@@ -529,6 +531,12 @@ struct CheckedStmtFlow {
 enum ActorLifecycleOp {
     Stop,
     Join,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum AsyncTaskControl {
+    Cancel,
+    IsFinished,
 }
 
 pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
@@ -4187,7 +4195,9 @@ impl TypeChecker {
                 ),
             ));
         }
-        if sig.is_async && let Some(checked) = checked.as_ref() {
+        if sig.is_async
+            && let Some(checked) = checked.as_ref()
+        {
             self.check_async_frame_safety(&checked.block, params);
         }
         self.current_return_ty = previous_return_ty;
@@ -4217,6 +4227,47 @@ impl TypeChecker {
         let live_after = HashSet::new();
         self.async_live_before_block(block, live_after, &infos);
         self.async_check_defer_arg_frame_safety_block(block);
+    }
+
+    fn check_async_closure_frame_safety(
+        &mut self,
+        body: &TClosureBody,
+        params: &[(LocalId, String, Ty)],
+        captures: &[TClosureCapture],
+    ) {
+        let mut infos = HashMap::<LocalId, AsyncLocalInfo>::new();
+        for (local_id, name, ty) in params {
+            infos.insert(
+                *local_id,
+                AsyncLocalInfo {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    static_const_slice: false,
+                },
+            );
+        }
+        for capture in captures {
+            infos.insert(
+                capture.local_id,
+                AsyncLocalInfo {
+                    name: capture.name.clone(),
+                    ty: capture.ty.clone(),
+                    static_const_slice: false,
+                },
+            );
+        }
+        match body {
+            TClosureBody::Block(block) => {
+                self.async_collect_local_infos_block(block, &mut infos);
+                let live_after = HashSet::new();
+                self.async_live_before_block(block, live_after, &infos);
+                self.async_check_defer_arg_frame_safety_block(block);
+            }
+            TClosureBody::Expr(expr) => {
+                let live_after = HashSet::new();
+                self.async_validate_awaits_in_expr(expr, &live_after, &infos);
+            }
+        }
     }
 
     fn async_check_defer_arg_frame_safety_block(&mut self, block: &TBlock) {
@@ -4300,9 +4351,7 @@ impl TypeChecker {
                         ) {
                             self.diagnostics.push(Diagnostic::new(
                                 arg.span,
-                                format!(
-                                    "`defer` argument is not async-frame-safe: {reason}"
-                                ),
+                                format!("`defer` argument is not async-frame-safe: {reason}"),
                             ));
                         }
                     }
@@ -4345,10 +4394,7 @@ impl TypeChecker {
                 }
             }
             TExprKind::Closure { .. } => {}
-            _ => walk_expr(
-                &mut AsyncDeferArgFrameSafetyVisitor { checker: self },
-                expr,
-            ),
+            _ => walk_expr(&mut AsyncDeferArgFrameSafetyVisitor { checker: self }, expr),
         }
     }
 
@@ -4382,7 +4428,8 @@ impl TypeChecker {
                     AsyncLocalInfo {
                         name: name.clone(),
                         ty: ty.clone(),
-                        static_const_slice: self.async_is_static_const_slice_init(ty, init.as_ref()),
+                        static_const_slice: self
+                            .async_is_static_const_slice_init(ty, init.as_ref()),
                     },
                 );
                 if let Some(init) = init {
@@ -4465,7 +4512,8 @@ impl TypeChecker {
                     AsyncLocalInfo {
                         name: name.clone(),
                         ty: ty.clone(),
-                        static_const_slice: self.async_is_static_const_slice_init(ty, init.as_ref()),
+                        static_const_slice: self
+                            .async_is_static_const_slice_init(ty, init.as_ref()),
                     },
                 );
                 if let Some(init) = init {
@@ -4495,7 +4543,13 @@ impl TypeChecker {
                 }
             }
             TExprKind::Closure { .. } => {}
-            _ => walk_expr(&mut AsyncLocalInfoCollector { checker: self, infos }, expr),
+            _ => walk_expr(
+                &mut AsyncLocalInfoCollector {
+                    checker: self,
+                    infos,
+                },
+                expr,
+            ),
         }
     }
 
@@ -4794,14 +4848,14 @@ impl TypeChecker {
                     ))
                 }
             }
-            Ty::Array { elem, .. } => self.async_frame_safety_violation(
-                elem,
-                false,
-                &format!("{path} element"),
-                visiting,
-            ),
+            Ty::Array { elem, .. } => {
+                self.async_frame_safety_violation(elem, false, &format!("{path} element"), visiting)
+            }
             Ty::Named { name, args } => {
-                if name == "Future" && args.len() == 1 {
+                if args.len() == 1
+                    && (std_id::is_std_async_type_name(&self.resolved, name, "Future")
+                        || std_id::is_std_async_type_name(&self.resolved, name, "Task"))
+                {
                     return None;
                 }
                 if !visiting.insert(ty.clone()) {
@@ -7475,6 +7529,15 @@ impl TypeChecker {
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "spawn") {
+            return self.check_async_spawn_call(scopes, span, type_args, args, expected);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "cancel") {
+            return self.check_async_task_cancel_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "is_finished") {
+            return self.check_async_task_is_finished_call(scopes, span, type_args, args);
+        }
         if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "block_on") {
             return self.check_async_block_on_call(scopes, span, type_args, args);
         }
@@ -7604,8 +7667,26 @@ impl TypeChecker {
             }
             None => None,
         };
+        let expected_body_sig = expected_sig
+            .as_ref()
+            .map(|(expected_ret, expected_params, target_fn)| {
+                let body_ret = if is_async {
+                    self.future_output_ty(expected_ret).unwrap_or_else(|| {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "async closure requires expected callable return type `Future<T>`, got `{expected_ret}`"
+                            ),
+                        ));
+                        Ty::Unknown
+                    })
+                } else {
+                    expected_ret.clone()
+                };
+                (body_ret, expected_params.clone(), *target_fn)
+            });
 
-        if let Some((_, expected_params, _)) = &expected_sig
+        if let Some((_, expected_params, _)) = &expected_body_sig
             && expected_params.len() != params.len()
         {
             self.diagnostics.push(Diagnostic::new(
@@ -7625,7 +7706,7 @@ impl TypeChecker {
         for (idx, param) in params.iter().enumerate() {
             let param_ty = if let Some(ty) = &param.ty {
                 let ty = self.lower_type(ty);
-                if let Some((_, expected_params, _)) = &expected_sig
+                if let Some((_, expected_params, _)) = &expected_body_sig
                     && let Some(expected_ty) = expected_params.get(idx)
                 {
                     if contains_type_hole(expected_ty) {
@@ -7647,7 +7728,7 @@ impl TypeChecker {
                     }
                 }
                 ty
-            } else if let Some((_, expected_params, _)) = &expected_sig {
+            } else if let Some((_, expected_params, _)) = &expected_body_sig {
                 expected_params
                     .get(idx)
                     .map(|ty| self.resolve_type_holes(ty))
@@ -7690,7 +7771,7 @@ impl TypeChecker {
             std::mem::replace(&mut self.current_async_depth, if is_async { 1 } else { 0 });
         let (ret_ty, checked_body) = match body {
             ClosureBody::Expr(body_expr) => {
-                if let Some((expected_ret, _, _)) = &expected_sig {
+                if let Some((expected_ret, _, _)) = &expected_body_sig {
                     let expected_ret = self.resolve_type_holes(expected_ret);
                     self.current_return_ty = expected_ret.clone();
                     let checked =
@@ -7705,7 +7786,7 @@ impl TypeChecker {
                 }
             }
             ClosureBody::Block(block) => {
-                let Some((expected_ret, _, _)) = &expected_sig else {
+                let Some((expected_ret, _, _)) = &expected_body_sig else {
                     self.diagnostics.push(Diagnostic::new(
                         block.span,
                         "block-bodied closure requires an expected callable return type",
@@ -7777,6 +7858,9 @@ impl TypeChecker {
             .iter()
             .map(|capture| capture.ty.clone())
             .collect::<Vec<_>>();
+        if is_async {
+            self.check_async_closure_frame_safety(&checked_body, &checked_params, &captures);
+        }
 
         let result_ty = if let Some((expected_ret, expected_params, target_fn)) = expected_sig {
             let expected_ret = self.resolve_type_holes(&expected_ret);
@@ -7806,9 +7890,14 @@ impl TypeChecker {
                 }
             }
         } else {
+            let ret_ty = if is_async {
+                std_future_ty(ret_ty.clone())
+            } else {
+                ret_ty.clone()
+            };
             Ty::ClosureInstance {
                 id,
-                ret: Box::new(ret_ty.clone()),
+                ret: Box::new(ret_ty),
                 params: checked_params.iter().map(|(_, _, ty)| ty.clone()).collect(),
                 captures: capture_tys,
             }
@@ -8001,6 +8090,278 @@ impl TypeChecker {
             }
             _ => self.check_expr(scopes, arg, expected),
         }
+    }
+
+    fn check_async_spawn_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                type_args[1].span,
+                "too many type arguments for `spawn`",
+            ));
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("spawn expects 1 argument, got {}", args.len()),
+            ));
+        }
+        let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
+        let expected_output = explicit_output
+            .clone()
+            .or_else(|| self.task_output_from_spawn_expected(expected));
+        let Some(arg) = args.first() else {
+            return None;
+        };
+
+        let expected_result = expected_output
+            .as_ref()
+            .map(|ty| std_result_ty(ty.clone(), std_error_ty()));
+        let expected_future = expected_result
+            .as_ref()
+            .map(|result_ty| std_future_ty(result_ty.clone()));
+        let expected_closure = expected_future.as_ref().map(|future_ty| Ty::Closure {
+            ret: Box::new(future_ty.clone()),
+            params: Vec::new(),
+            constraints: ConstraintBounds::default(),
+        });
+
+        let body = if expr_is_closure_literal(arg) {
+            self.check_closure_literal_preserving_instance(scopes, arg, expected_closure.as_ref())?
+        } else {
+            self.check_expr(scopes, arg, expected_future.as_ref())?
+        };
+
+        let body_output_ty = match &body.kind {
+            TExprKind::Closure {
+                is_async,
+                params,
+                captures,
+                ..
+            } => {
+                if !*is_async {
+                    self.diagnostics.push(Diagnostic::new(
+                        body.span,
+                        "`async::spawn` requires a direct async closure or Future<Result<T, Error>>",
+                    ));
+                    None
+                } else if !params.is_empty() {
+                    self.diagnostics.push(Diagnostic::new(
+                        body.span,
+                        "`async::spawn` async closure must not take parameters",
+                    ));
+                    None
+                } else {
+                    for capture in captures {
+                        if capture.ty.is_erased_value() {
+                            continue;
+                        }
+                        if let Some(reason) = self.task_boundary_message_violation(
+                            &capture.ty,
+                            &capture.name,
+                            &mut HashSet::new(),
+                        ) {
+                            self.diagnostics.push(Diagnostic::new(
+                                body.span,
+                                format!(
+                                    "`async::spawn` capture `{}` of type `{}` does not implement `Message`: {reason}",
+                                    capture.name, capture.ty
+                                ),
+                            ));
+                        }
+                    }
+                    callable_ret_params_ty(&body.ty)
+                        .and_then(|(ret, _)| self.future_output_ty(&ret))
+                }
+            }
+            _ => self.future_output_ty(&body.ty),
+        };
+
+        let Some(result_ty) = body_output_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "`async::spawn` requires `Future<Result<T, Error>>`, got `{}`",
+                    body.ty
+                ),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: TExprKind::AsyncSpawn {
+                    body: Box::new(body),
+                    task_output_ty: Ty::Unknown,
+                },
+            });
+        };
+        let Some((task_output_ty, err_ty)) = self.result_ok_err_tys(&result_ty) else {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "`async::spawn` requires `Future<Result<T, Error>>`, got `Future<{result_ty}>`"
+                ),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: TExprKind::AsyncSpawn {
+                    body: Box::new(body),
+                    task_output_ty: Ty::Unknown,
+                },
+            });
+        };
+        if !self.is_std_error_ty(&err_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!("`async::spawn` task error type must be `Error`, got `{err_ty}`"),
+            ));
+        }
+        if let Some(expected_output) = &expected_output {
+            self.require_assignable(expected_output, &task_output_ty, body.span);
+        }
+        if let Some(reason) = self.task_boundary_message_violation(
+            &task_output_ty,
+            "task result",
+            &mut HashSet::new(),
+        ) {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "`async::spawn` task result type `{task_output_ty}` does not implement `Message`: {reason}"
+                ),
+            ));
+        }
+
+        let task_ty = std_task_ty(task_output_ty.clone());
+        let result_ty = std_result_ty(task_ty, std_error_ty());
+        Some(TExpr {
+            span,
+            ty: result_ty,
+            kind: TExprKind::AsyncSpawn {
+                body: Box::new(body),
+                task_output_ty,
+            },
+        })
+    }
+
+    fn task_output_from_spawn_expected(&self, expected: Option<&Ty>) -> Option<Ty> {
+        let Some((ok_ty, err_ty)) = expected.and_then(|ty| self.result_ok_err_tys(ty)) else {
+            return None;
+        };
+        if !self.is_std_error_ty(&err_ty) {
+            return None;
+        }
+        self.task_output_ty(&ok_ty)
+    }
+
+    fn check_async_task_cancel_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        self.check_async_task_control_call(scopes, span, type_args, args, AsyncTaskControl::Cancel)
+    }
+
+    fn check_async_task_is_finished_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        self.check_async_task_control_call(
+            scopes,
+            span,
+            type_args,
+            args,
+            AsyncTaskControl::IsFinished,
+        )
+    }
+
+    fn check_async_task_control_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        op: AsyncTaskControl,
+    ) -> Option<TExpr> {
+        let label = match op {
+            AsyncTaskControl::Cancel => "cancel",
+            AsyncTaskControl::IsFinished => "is_finished",
+        };
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                type_args[1].span,
+                format!("too many type arguments for `{label}`"),
+            ));
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("{label} expects 1 argument, got {}", args.len()),
+            ));
+        }
+        let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
+        let expected_task = explicit_output
+            .as_ref()
+            .map(|ty| Ty::const_pointer_to(std_task_ty(ty.clone())));
+        let Some(arg) = args.first() else {
+            return None;
+        };
+        let task = self.check_expr(scopes, arg, expected_task.as_ref())?;
+        if let Some(expected) = expected_task.as_ref() {
+            self.require_assignable(expected, &task.ty, task.span);
+        }
+        let Some(task_output_ty) = self.task_output_from_pointer_ty(&task.ty) else {
+            self.diagnostics.push(Diagnostic::new(
+                task.span,
+                format!("`async::{label}` requires `*Task<T>`, got `{}`", task.ty),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: match op {
+                    AsyncTaskControl::Cancel => TExprKind::AsyncTaskCancel {
+                        task: Box::new(task),
+                        task_output_ty: Ty::Unknown,
+                    },
+                    AsyncTaskControl::IsFinished => TExprKind::AsyncTaskIsFinished {
+                        task: Box::new(task),
+                        task_output_ty: Ty::Unknown,
+                    },
+                },
+            });
+        };
+        let ret_ok = match op {
+            AsyncTaskControl::Cancel => Ty::Void,
+            AsyncTaskControl::IsFinished => Ty::Bool,
+        };
+        let ret_ty = std_result_ty(ret_ok, std_error_ty());
+        Some(TExpr {
+            span,
+            ty: ret_ty,
+            kind: match op {
+                AsyncTaskControl::Cancel => TExprKind::AsyncTaskCancel {
+                    task: Box::new(task),
+                    task_output_ty,
+                },
+                AsyncTaskControl::IsFinished => TExprKind::AsyncTaskIsFinished {
+                    task: Box::new(task),
+                    task_output_ty,
+                },
+            },
+        })
     }
 
     fn infer_generic_function_call(
@@ -9831,6 +10192,131 @@ impl TypeChecker {
         self.type_implements_capability(STD_MESSAGE_CLONE_INTERFACE, &[], ty)
     }
 
+    fn task_boundary_message_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        if ty.is_erased_value() {
+            return None;
+        }
+        if self.type_implements_message(ty) {
+            return None;
+        }
+        if contains_generic(ty) || contains_type_hole(ty) {
+            return Some(format!(
+                "{path} has generic type `{ty}` without a proven `Message` boundary"
+            ));
+        }
+        if self.type_implements_thread_local(ty) {
+            return Some(format!("{path} has ThreadLocal type `{ty}`"));
+        }
+        if let Some(repr_ty) = self.try_meta_repr_ty(ty, false)
+            && self.type_implements_message(&repr_ty)
+        {
+            return None;
+        }
+        match ty {
+            Ty::Unknown
+            | Ty::Hole(_)
+            | Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64 => None,
+            Ty::CSpelling { .. } => Some(format!(
+                "{path} has opaque C spelling type `{ty}` without a `Message` policy"
+            )),
+            Ty::Pointer { nullable, .. } => {
+                if *nullable {
+                    Some(format!("{path} has nullable raw pointer type `{ty}`"))
+                } else {
+                    Some(format!("{path} has raw pointer type `{ty}`"))
+                }
+            }
+            Ty::Slice { mutability, .. } => Some(format!(
+                "{path} has borrowed {}slice type `{ty}`",
+                if *mutability == ViewMutability::Writable {
+                    "mutable "
+                } else {
+                    "read-only "
+                }
+            )),
+            Ty::Array { elem, .. } => {
+                self.task_boundary_message_violation(elem, &format!("{path} element"), visiting)
+            }
+            Ty::Named { name, args } => {
+                if !visiting.insert(ty.clone()) {
+                    return Some(format!("{path} is recursive through `{ty}`"));
+                }
+                self.ensure_struct_instance(ty);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    for (field, field_ty) in fields {
+                        if let Some(reason) = self.task_boundary_message_violation(
+                            &field_ty,
+                            &format!("{path}.{field}"),
+                            visiting,
+                        ) {
+                            visiting.remove(ty);
+                            return Some(reason);
+                        }
+                    }
+                    visiting.remove(ty);
+                    return Some(format!(
+                        "{path} has struct type `{ty}` without a generated `Message` witness"
+                    ));
+                }
+                self.ensure_enum_instance(ty);
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    for variant in enm.variants {
+                        for (idx, payload_ty) in variant.payload.iter().enumerate() {
+                            if let Some(reason) = self.task_boundary_message_violation(
+                                payload_ty,
+                                &format!("{path}.{}#{idx}", variant.name),
+                                visiting,
+                            ) {
+                                visiting.remove(ty);
+                                return Some(reason);
+                            }
+                        }
+                    }
+                    visiting.remove(ty);
+                    return Some(format!(
+                        "{path} has enum type `{ty}` without a generated `Message` witness"
+                    ));
+                }
+                visiting.remove(ty);
+                Some(format!(
+                    "{path} has nominal type `{ty}` without a `Message` policy"
+                ))
+            }
+            Ty::DynamicInterface { .. } => Some(format!(
+                "{path} has dynamic interface type `{ty}` without a `Message` policy"
+            )),
+            Ty::Function { .. } => Some(format!(
+                "{path} has function pointer type `{ty}` without a `Message` policy"
+            )),
+            Ty::Closure { .. } | Ty::ClosureInstance { .. } => Some(format!(
+                "{path} has closure type `{ty}` without a `Message` policy"
+            )),
+            Ty::Generic(_) => Some(format!(
+                "{path} has generic type `{ty}` without a proven `Message` boundary"
+            )),
+        }
+    }
+
     fn meta_repr_marker_matches_concrete(&mut self, marker: &Ty, concrete: &Ty) -> bool {
         let Ty::Named { name, args } = marker else {
             return false;
@@ -10335,11 +10821,36 @@ impl TypeChecker {
         let Ty::Named { name, args } = ty else {
             return None;
         };
-        if name == "Future" && args.len() == 1 {
+        if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Future") {
+            Some(args[0].clone())
+        } else if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Task") {
+            Some(std_result_ty(args[0].clone(), std_error_ty()))
+        } else {
+            None
+        }
+    }
+
+    fn task_output_ty(&self, ty: &Ty) -> Option<Ty> {
+        let Ty::Named { name, args } = ty else {
+            return None;
+        };
+        if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Task") {
             Some(args[0].clone())
         } else {
             None
         }
+    }
+
+    fn task_output_from_pointer_ty(&self, ty: &Ty) -> Option<Ty> {
+        let Ty::Pointer {
+            nullable: false,
+            inner,
+            ..
+        } = ty
+        else {
+            return None;
+        };
+        self.task_output_ty(inner)
     }
 
     fn is_std_message_clone_interface_name(&self, name: &str) -> bool {

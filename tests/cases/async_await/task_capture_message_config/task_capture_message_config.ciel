@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 29
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+struct Config {
+    usize base;
+    usize extra;
+}
+
+async Result<usize, Error> join_task(async::Task<usize> task) {
+    return await task;
+}
+
+i32 main() {
+    Config config = { base: 20, extra: 7 };
+    async::Task<usize> task = must(async::spawn<usize>(async || {
+        await async_time::sleep_ms(1)?;
+        return Ok(config.base + config.extra + 2);
+    }));
+    must(print_value(must(async::block_on(join_task(task)))));
+    return 0;
+}

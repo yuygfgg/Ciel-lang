@@ -14,6 +14,22 @@ export struct Future<T> {
 
 export T block_on<T>(Future<T> future);
 
+export struct Task<T> {
+    *void handle;
+}
+
+export Result<Task<T>, Error> spawn<T>(Future<Result<T, Error>> body);
+export Result<void, Error> cancel<T>(*const Task<T> task);
+export Result<bool, Error> is_finished<T>(*const Task<T> task);
+
+unsafe impl<T: Message> clone_message(*const Task<T> value) {
+    return Ok(*value);
+}
+
+unsafe impl<T: Message> share_handle_marker(*const Task<T> value) {
+    return true;
+}
+
 export struct AsyncRunner<S> {
     actor::Actor<Step<S>> actor_handle;
 }

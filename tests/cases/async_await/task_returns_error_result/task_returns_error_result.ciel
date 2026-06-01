@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 1
+
+import /std/async as async;
+import /std/error/basic as basic;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+i32 main() {
+    async::Task<usize> task = must(async::spawn<usize>(async || {
+        return Err(basic::code_error(77));
+    }));
+    switch (async::block_on(task)) {
+        case Err(_):
+            must(print_value(1));
+        case Ok(_):
+            return 2;
+    }
+    return 0;
+}

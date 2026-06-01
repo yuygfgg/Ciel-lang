@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: `async::spawn` capture `value` of type `*const usize` does not implement `Message`
+
+import /std/async as async;
+import /std/result;
+
+Result<async::Task<T>, Error> spawn_identity<T>(T value) {
+    return async::spawn<T>(async || {
+        return Ok(value);
+    });
+}
+
+i32 main() {
+    usize local = 3;
+    Result<async::Task<*const usize>, Error> task = spawn_identity<*const usize>(&local);
+    return 0;
+}

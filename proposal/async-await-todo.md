@@ -1,8 +1,9 @@
 # Async/Await TODO
 
-This checklist breaks `proposal/async-await.md` into executable vertical slices.
-Each phase should land runnable behavior, fixtures, and any `design.md` updates
-for behavior that actually exists in `src/`, `std/`, or `tutorial/`.
+This checklist breaks `proposal/async-await.md` into executable vertical
+slices. Each phase must land behavior on the final architecture path, with
+fixtures and docs for behavior that actually exists in `src/`, `std/`, or
+`tutorial/`.
 
 Keep the current flow API working until the final migration phase. For every
 phase, run:
@@ -13,52 +14,51 @@ cargo test -q --test ciel_cases discovered_ciel_cases_pass_their_declared_expect
 git diff --check
 ```
 
-## Phase 1: Runtime Future Driver
+Implementation guardrails:
 
-- [ ] Add the core future surface and primitive driver.
-      Scope: add `/std/async` `Poll<T>`, `FutureContext`, `Future<T>`,
-      `CancelSafe`, `Abortable`, async error constructors, and a runtime task
-      driver that can poll a primitive future to completion through
-      `async::block_on`.
-      Tests: a run fixture drives a primitive ready future through
-      `async::block_on` and prints the result.
+- Do not add public transitional APIs such as `sleep_ms_future`.
+- Do not add a dummy ready future just to satisfy a phase test.
+- Do not land parser-only async syntax without runnable lowering in the same
+  phase.
+- Any temporary helper must either be internal and survive on the final lowering
+  path, or be test-only and removed in the same phase.
+- Runtime callbacks must route through operation/task identity. They must not
+  capture async frame pointers or task-state pointers.
 
-- [ ] Add a sleep future over the existing async operation token.
-      Scope: expose a transitional `sleep_ms_future` backed by the existing
-      `CielAsyncOp` timer path, and keep `sleep_ms_async`,
-      `sleep_ms_completion`, and `sleep_ms_task` working.
-      Tests: one fixture drives `sleep_ms_future(1)` through `block_on`; the
-      existing `std_async_time` flow fixtures still pass.
+## Phase 1: Minimal Async/Await Timer Slice
 
-- [ ] Route primitive future wakeups without exposing frame pointers.
-      Scope: `FutureContext` registers wakeups through runtime-owned routing
-      state; callbacks must not receive pointers into user async frames.
-      Tests: two primitive sleep futures complete independently through the
-      task driver.
-
-## Phase 2: First Language Await
-
-- [ ] Add contextual async syntax and first lowering in one slice.
-      Scope: parse `async` functions, async closures, and `await` as contextual
-      keywords; preserve `/std/async` module-path compatibility; lower an async
-      function with one `await` of `sleep_ms_future`.
-      Tests: `async Result<usize, Error> f() { await sleep_ms_future(1)?;
+- [ ] Land the first user-visible async/await path.
+      Scope: add the final `/std/async` future surface, contextual async syntax,
+      generated future type for one-await async functions/closures,
+      `async::block_on`, and awaitable `/std/async_time::sleep_ms` in one
+      vertical slice.
+      Tests: `async Result<usize, Error> f() { await async_time::sleep_ms(1)?;
       return Ok(7); }` runs through `async::block_on(f())` and prints `7`.
 
-- [ ] Type-check the initial future model.
-      Scope: an async call returns an opaque generated future implementing
+- [ ] Use final-shaped wake routing from the first slice.
+      Scope: `sleep_ms` wakeups go through runtime-owned operation/task routing
+      state, with room for task id, operation id, and generation even if the
+      first test only has one operation.
+      Tests: two async timer functions driven through the runtime complete
+      independently and do not expose frame pointers to callbacks.
+
+- [ ] Type-check the initial final model.
+      Scope: async calls return opaque generated futures implementing
       `Future<Out>`; `await` requires `Future<Out>` and yields `Out`; `?` works
-      immediately after an await of `Result<T, Error>`.
+      after awaiting `Result<T, Error>`.
       Tests: storing a future in a local before `block_on` compiles; awaiting a
       non-future is rejected; using an async call where an ordinary
       `Result<T, Error>` is expected is rejected.
 
-- [ ] Reject invalid async entry points.
-      Scope: `await` outside async is rejected, and async functions cannot be
-      exported as C ABI functions.
-      Tests: focused error fixtures for both diagnostics.
+- [ ] Preserve compatibility while adding contextual keywords.
+      Scope: `async` remains usable as the `/std/async` module-path segment;
+      `await` outside async is rejected; async functions cannot be exported as C
+      ABI functions; old flow timer helpers keep working.
+      Tests: `/std/async as flow` still imports; focused diagnostics cover
+      invalid `await` and exported C ABI async functions; existing
+      `std_async_time` flow fixtures still pass.
 
-## Phase 3: Async Frames And Cleanup
+## Phase 2: Frames, Cleanup, And Trampoline
 
 - [ ] Add multi-await frame lowering.
       Scope: generate program counters, frame storage, nested future storage,
@@ -83,7 +83,7 @@ git diff --check
       immediately ready awaits does not grow the native stack; two ready-loop
       tasks both make progress.
 
-## Phase 4: Task Ownership Boundary
+## Phase 3: Task Ownership Boundary
 
 - [ ] Add `Task<T>`, `async::spawn`, and task awaiting.
       Scope: lower directly spawned async closures to actor-owned task
@@ -106,19 +106,14 @@ git diff --check
       them from the public surface before this phase closes.
       Tests: fixtures observe finished state and a stable cancellation result.
 
-## Phase 5: Awaitable Standard Library I/O
-
-- [ ] Replace transitional timer futures with awaitable `/std/async_time`.
-      Scope: add `async_time::sleep_ms` as the user-facing awaitable timer and
-      keep old flow helpers until final migration.
-      Tests: an async function awaits `sleep_ms` directly; old timer flow
-      fixtures still pass.
+## Phase 4: Awaitable File And TCP I/O
 
 - [ ] Add awaitable `/std/async_io` file operations.
       Scope: add awaitable `read_bytes` and `write_bytes` over the current async
       fd operation backend.
       Tests: a sequential async file-copy fixture uses `await` instead of
-      `flow::then`; facade fixtures compile.
+      `flow::then`; facade fixtures compile; old flow file-I/O helpers still
+      pass.
 
 - [ ] Add awaitable `/std/async_net` TCP operations.
       Scope: add awaitable `accept`, `connect`, `read`, `read_into`, `write`,
@@ -134,9 +129,9 @@ git diff --check
       during migration.
       Tests: compatibility and `/std/lib` facade fixtures compile.
 
-## Phase 6: Cancellation, Abort, And Timeout
+## Phase 5: Cancellation, Abort, And Timeout
 
-- [ ] Add operation generation routing for abort-safe callbacks.
+- [ ] Complete generation-routed operation abort.
       Scope: external completions route by actor mailbox id, task id, operation
       id, and generation; callbacks enqueue routed events and never dereference
       async frames or task-state pointers.
@@ -165,7 +160,7 @@ git diff --check
       write are rejected by timeout as not `CancelSafe`; a non-`CancelSafe`
       protocol reader isolated in a task survives waiter timeout.
 
-## Phase 7: Async Communication
+## Phase 6: Async Communication
 
 - [ ] Add bounded async channels.
       Scope: add `Sender<T>`, `Receiver<T>`, `SendPermit<T>`, `ChannelPair<T>`,
@@ -195,7 +190,7 @@ git diff --check
       cancelling unfinished tasks; `group_cancel_all` aborts unfinished tasks
       through `Abortable`; closing a group releases remaining handles.
 
-## Phase 8: Select And Buffered TCP Reads
+## Phase 7: Select And Buffered TCP Reads
 
 - [ ] Add compiler-level `select` and `biased select`.
       Scope: type-check arms as a flat list of futures, lower to internal
@@ -219,7 +214,7 @@ git diff --check
       Tests: buffered read fixtures cover normal reads, EOF, residual private
       buffer bytes winning `select` immediately, and overlapping read policy.
 
-## Phase 9: Migration And Flow Removal
+## Phase 8: Migration And Flow Removal
 
 - [ ] Rewrite tutorial chapter 9 around task async/await.
       Scope: teach tasks, async channels, awaitable I/O, timeout/select safety

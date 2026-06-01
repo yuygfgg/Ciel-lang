@@ -1371,49 +1371,45 @@ primary tutorial path once async/await lands.
 
 The checkable execution checklist lives in
 [`proposal/async-await-todo.md`](async-await-todo.md). That TODO is the
-day-to-day tracker. The split is intentionally bottom-up but vertical: every
-phase should produce runnable behavior instead of landing syntax or policy in
-isolation.
+day-to-day tracker. The split is intentionally bottom-up and vertical: every
+phase should use final-shaped public APIs and runtime routing, not throwaway
+helpers that a later phase must replace.
 
 Recommended order:
 
 ```text
-runtime future driver
-  -> first language await
+minimal async/await timer slice
   -> async frames and cleanup
   -> task ownership boundary
-  -> awaitable standard-library I/O
+  -> awaitable file and TCP I/O
   -> cancellation, abort, and timeout
   -> async communication
   -> select and buffered TCP reads
   -> migration and flow removal
 ```
 
-1. **Runtime future driver** adds the core future surface, `block_on`,
-   primitive task polling, and a transitional sleep future over the existing
-   `CielAsyncOp` timer path. This gives the first runnable future without
-   compiler-generated async frames.
-2. **First language await** adds contextual async syntax and the first lowering
-   together: an async function with one `await` of the primitive sleep future
-   runs through `block_on`.
-3. **Async frames and cleanup** expands the vertical slice to multi-await
+1. **Minimal async/await timer slice** adds the final future surface,
+   contextual async syntax, one-await lowering, `block_on`, final
+   `/std/async_time::sleep_ms`, and final-shaped wake routing in one user-visible
+   slice.
+2. **Async frames and cleanup** expands the vertical slice to multi-await
    frames, nested future storage, live-local frame safety, deterministic cleanup,
    and trampoline scheduling.
-4. **Task ownership boundary** adds `Task<T>`, `spawn`, task awaiting, task
+3. **Task ownership boundary** adds `Task<T>`, `spawn`, task awaiting, task
    status/cancellation entry points, and hidden `Message` obligations for task
    results and captures.
-5. **Awaitable standard-library I/O** migrates timers, async file I/O, and async
-   TCP operations from flow tasks to awaitable futures while preserving old flow
+4. **Awaitable file and TCP I/O** migrates async file I/O and async TCP
+   operations from flow tasks to awaitable futures while preserving old flow
    compatibility.
-6. **Cancellation, abort, and timeout** adds generation-routed external
+5. **Cancellation, abort, and timeout** adds generation-routed external
    completions, trusted `CancelSafe`/`Abortable`, task abort cleanup, and
    `async::timeout`.
-7. **Async communication** adds bounded async channels, endpoint lifecycle
+6. **Async communication** adds bounded async channels, endpoint lifecycle
    cleanup, payload boundary policy, and task groups for dynamic concurrency.
-8. **Select and buffered TCP reads** adds compiler-level `select`, internal
+7. **Select and buffered TCP reads** adds compiler-level `select`, internal
    `SelectSet<R>` lowering, selectable-future checks, fair/biased tie handling,
    and cancellation-safe buffered TCP reads.
-9. **Migration and flow removal** rewrites tutorial and intranet-tunnel code to
+8. **Migration and flow removal** rewrites tutorial and intranet-tunnel code to
    task async/await, moves operation-token adapters internal, removes the public
    flow API, and updates `design.md` only after the new surface has equivalent
    fixture coverage.

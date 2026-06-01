@@ -1,0 +1,6 @@
+// ciel-test: error
+// expect-error: `extern "C"` functions cannot be async
+
+export extern "C" async i32 bad() {
+    return 0;
+}

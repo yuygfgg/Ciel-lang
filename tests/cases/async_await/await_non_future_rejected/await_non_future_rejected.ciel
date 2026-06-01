@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: `await` requires `Future<T>`
+
+import /std/result;
+
+async Result<usize, Error> bad() {
+    return Ok(await 1);
+}

@@ -256,6 +256,10 @@ impl<'a> FunctionAnalyzer<'a> {
         match &expr.kind {
             TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => self.scan_expr(expr),
             TExprKind::Try { expr, .. } => self.scan_expr(expr),
+            TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
+                self.scan_expr(future)
+            }
+            TExprKind::AsyncSleep { ms, .. } => self.scan_expr(ms),
             TExprKind::Binary { left, right, .. } => {
                 self.scan_expr(left);
                 self.scan_expr(right);
@@ -511,6 +515,10 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::Cast { expr, .. } => self.collect_storage_sources(expr, out),
             TExprKind::Try { expr, .. } => self.collect_storage_sources(expr, out),
+            TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
+                self.collect_storage_sources(future, out)
+            }
+            TExprKind::AsyncSleep { ms, .. } => self.collect_storage_sources(ms, out),
             TExprKind::Binary { left, right, .. } => {
                 self.collect_storage_sources(left, out);
                 self.collect_storage_sources(right, out);

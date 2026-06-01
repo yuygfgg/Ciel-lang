@@ -318,11 +318,15 @@ impl ResolvedProgram {
         if !visited.insert(module) {
             return;
         }
+        let start_len = out.len();
         for id in &self.modules[module.0].defs {
             let def = self.def(*id);
             if def.exported && def.name == name && kind_matches(&def.kind, kinds) {
                 out.push(*id);
             }
+        }
+        if out.len() != start_len {
+            return;
         }
         for import in &self.modules[module.0].imports {
             if !import.exported || import.alias.is_some() {

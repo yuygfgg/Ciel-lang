@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/result;
+
+async Result<usize, Error> fail_after_timer() {
+    await async_time::sleep_ms(0)?;
+    return Err(text_error("timer completed before failure"));
+}
+
+i32 main() {
+    Result<usize, Error> result = async::block_on(fail_after_timer());
+    switch (result) {
+        case Ok(_):
+            return 1;
+        case Err(_):
+            return 0;
+    }
+}

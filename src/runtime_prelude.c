@@ -2634,12 +2634,15 @@ typedef enum {
     CIEL_ASYNC_SLEEP,
 } CielAsyncKind;
 
+typedef int32_t (*CielFutureRunFn)(void *ctx, void *out);
+
 struct CielAsyncOp {
     CielAsyncKind kind;
     CielAsyncFd *fd;
     CielAsyncTcpListener *listener;
     dispatch_source_t source;
     pthread_mutex_t mutex;
+    pthread_cond_t cond;
     int complete;
     int canceled;
     int finished;
@@ -2654,6 +2657,31 @@ struct CielAsyncOp {
     CielActor *notify_actor;
     void *notify_message;
     CielRoot *self_root;
+    uint64_t route_task_id;
+    uint64_t route_operation_id;
+    uint64_t route_generation;
+};
+
+typedef struct CielFuture {
+    CielFutureRunFn run;
+    void *ctx;
+    void *result;
+    size_t result_size;
+    size_t result_align;
+    pthread_mutex_t mutex;
+    uint8_t state;
+    int32_t failure;
+    uint64_t task_id;
+    uint64_t next_operation_id;
+    uint64_t generation;
+    CielAsyncOp *pending_op;
+} CielFuture;
+
+enum {
+    CIEL_FUTURE_PENDING = 0,
+    CIEL_FUTURE_RUNNING = 1,
+    CIEL_FUTURE_COMPLETE = 2,
+    CIEL_FUTURE_FAILED = 3,
 };
 
 static dispatch_queue_t ciel_async_io_queue;
@@ -2920,6 +2948,13 @@ static CielAsyncOp *ciel_async_op_new(CielAsyncKind kind, CielAsyncFd *fd) {
         errno = rc;
         return NULL;
     }
+    rc = pthread_cond_init(&op->cond, NULL);
+    if (rc != 0) {
+        ciel_root_unpin(op->self_root);
+        op->self_root = NULL;
+        errno = rc;
+        return NULL;
+    }
     return op;
 }
 
@@ -2953,6 +2988,7 @@ static void ciel_async_complete(CielAsyncOp *op, int error, CielBytes *bytes,
         op->written = written;
     }
     op->complete = 1;
+    pthread_cond_broadcast(&op->cond);
     ciel_async_send_notification_locked(op);
     pthread_mutex_unlock(&op->mutex);
 }
@@ -3827,6 +3863,7 @@ int32_t ciel_async_cancel(CielAsyncOp *op) {
     op->canceled = 1;
     op->notify_actor = NULL;
     op->notify_message = NULL;
+    pthread_cond_broadcast(&op->cond);
     source = op->source;
     op->source = NULL;
     raw_fd = op->raw_fd;
@@ -3843,6 +3880,136 @@ int32_t ciel_async_cancel(CielAsyncOp *op) {
     if (result_fd != NULL)
         (void)ciel_async_close(result_fd);
     return 0;
+}
+
+static pthread_mutex_t ciel_future_id_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t ciel_next_future_task_id = 1;
+
+static uint64_t ciel_future_alloc_task_id(void) {
+    pthread_mutex_lock(&ciel_future_id_mutex);
+    uint64_t id = ciel_next_future_task_id++;
+    if (ciel_next_future_task_id == 0)
+        ciel_next_future_task_id = 1;
+    pthread_mutex_unlock(&ciel_future_id_mutex);
+    return id;
+}
+
+CielFuture *ciel_future_new(size_t result_size, size_t result_align,
+                            CielFutureRunFn run, void *ctx) {
+    if (run == NULL || result_align == 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    CielFuture *future = (CielFuture *)ciel_alloc(sizeof(CielFuture));
+    memset(future, 0, sizeof(CielFuture));
+    future->run = run;
+    future->ctx = ctx;
+    future->result_size = result_size;
+    future->result_align = result_align;
+    future->state = CIEL_FUTURE_PENDING;
+    future->task_id = ciel_future_alloc_task_id();
+    int rc = pthread_mutex_init(&future->mutex, NULL);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    if (result_size > 0) {
+        future->result = ciel_alloc(result_size);
+        memset(future->result, 0, result_size);
+    }
+    return future;
+}
+
+CielFuture *ciel_future_from_handle(void *handle) {
+    return (CielFuture *)handle;
+}
+
+static void ciel_future_bind_operation(CielFuture *future, CielAsyncOp *op) {
+    if (future == NULL || op == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    uint64_t operation_id = ++future->next_operation_id;
+    uint64_t generation = ++future->generation;
+    if (operation_id == 0)
+        operation_id = ++future->next_operation_id;
+    if (generation == 0)
+        generation = ++future->generation;
+    future->pending_op = op;
+    pthread_mutex_unlock(&future->mutex);
+
+    pthread_mutex_lock(&op->mutex);
+    op->route_task_id = future->task_id;
+    op->route_operation_id = operation_id;
+    op->route_generation = generation;
+    pthread_mutex_unlock(&op->mutex);
+}
+
+static void ciel_future_clear_operation(CielFuture *future, CielAsyncOp *op) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    if (future->pending_op == op)
+        future->pending_op = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_async_wait_until_ready(CielAsyncOp *op) {
+    pthread_mutex_lock(&op->mutex);
+    while (!op->complete && !op->canceled)
+        pthread_cond_wait(&op->cond, &op->mutex);
+    pthread_mutex_unlock(&op->mutex);
+}
+
+int32_t ciel_future_run_to_completion(CielFuture *future, void *out) {
+    if (future == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&future->mutex);
+    if (future->state == CIEL_FUTURE_COMPLETE) {
+        if (future->result_size > 0 && out != NULL)
+            memcpy(out, future->result, future->result_size);
+        pthread_mutex_unlock(&future->mutex);
+        return 0;
+    }
+    if (future->state == CIEL_FUTURE_FAILED) {
+        int32_t failure = future->failure == 0 ? EIO : future->failure;
+        pthread_mutex_unlock(&future->mutex);
+        return failure;
+    }
+    if (future->state == CIEL_FUTURE_RUNNING) {
+        pthread_mutex_unlock(&future->mutex);
+        return EALREADY;
+    }
+    future->state = CIEL_FUTURE_RUNNING;
+    pthread_mutex_unlock(&future->mutex);
+
+    int32_t rc = future->run(future->ctx, future->result);
+
+    pthread_mutex_lock(&future->mutex);
+    if (rc == 0) {
+        future->state = CIEL_FUTURE_COMPLETE;
+        if (future->result_size > 0 && out != NULL)
+            memcpy(out, future->result, future->result_size);
+    } else {
+        future->state = CIEL_FUTURE_FAILED;
+        future->failure = rc;
+    }
+    pthread_mutex_unlock(&future->mutex);
+    return rc;
+}
+
+int32_t ciel_future_await_sleep_ms(CielFuture *future, uint64_t ms) {
+    CielAsyncOp *op = ciel_async_sleep_ms(ms);
+    if (op == NULL)
+        return errno == 0 ? EIO : errno;
+    ciel_future_bind_operation(future, op);
+    for (;;) {
+        int32_t rc = ciel_async_finish_sleep(op);
+        if (rc != EAGAIN) {
+            ciel_future_clear_operation(future, op);
+            return rc;
+        }
+        ciel_async_wait_until_ready(op);
+    }
 }
 
 #if defined(__GNUC__) || defined(__clang__)

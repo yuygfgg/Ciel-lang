@@ -61,6 +61,8 @@ export Result<AsyncSleep, Error> sleep_ms_async(u64 ms) {
     return Ok({ handle: raw as *void });
 }
 
+export async Result<void, Error> sleep_ms(u64 ms);
+
 export Result<void, Error> notify_sleep_done<M: Message>(
     *const AsyncSleep op,
     *const actor::Actor<M> actor_handle,

@@ -1074,6 +1074,13 @@ pub fn std_actor_ty(message_ty: Ty) -> Ty {
     }
 }
 
+pub fn std_future_ty(output_ty: Ty) -> Ty {
+    Ty::Named {
+        name: "Future".to_string(),
+        args: vec![output_ty],
+    }
+}
+
 pub const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
 pub const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
 pub const META_ARRAY_CHUNK_SIZE: usize = 16;

@@ -20,3 +20,9 @@ export import /std/time;
 export import /std/env;
 export import /std/crypto;
 export import /std/net;
+
+import /std/time as sync_time;
+
+export Result<void, Error> sleep_ms(u64 ms) {
+    return sync_time::sleep_ms(ms);
+}

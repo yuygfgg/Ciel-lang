@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: expected `Result
+// expect-error: got `Future
+
+import /std/result;
+
+async Result<usize, Error> value() {
+    return Ok(7);
+}
+
+i32 main() {
+    Result<usize, Error> result = value();
+    result;
+    return 0;
+}

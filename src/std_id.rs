@@ -10,6 +10,8 @@ const STD_ERROR_CORE_PATH: &str = "std/error/core.ciel";
 const STD_MESSAGE_PATH: &str = "std/message.ciel";
 const STD_ACTOR_PATH: &str = "std/actor.ciel";
 const STD_META_PATH: &str = "std/meta.ciel";
+const STD_ASYNC_PATH: &str = "std/async.ciel";
+const STD_ASYNC_TIME_PATH: &str = "std/async_time.ciel";
 
 fn module_path_matches(resolved: &ResolvedProgram, module: ModuleId, suffix: &str) -> bool {
     resolved.modules[module.0].path.ends_with(Path::new(suffix))
@@ -124,6 +126,24 @@ pub fn is_std_meta_function(
     expected_name: &str,
 ) -> bool {
     name == expected_name && module_path_matches(resolved, module, STD_META_PATH)
+}
+
+pub fn is_std_async_function(
+    resolved: &ResolvedProgram,
+    module: ModuleId,
+    name: &str,
+    expected_name: &str,
+) -> bool {
+    name == expected_name && module_path_matches(resolved, module, STD_ASYNC_PATH)
+}
+
+pub fn is_std_async_time_function(
+    resolved: &ResolvedProgram,
+    module: ModuleId,
+    name: &str,
+    expected_name: &str,
+) -> bool {
+    name == expected_name && module_path_matches(resolved, module, STD_ASYNC_TIME_PATH)
 }
 
 pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name: &str) -> bool {

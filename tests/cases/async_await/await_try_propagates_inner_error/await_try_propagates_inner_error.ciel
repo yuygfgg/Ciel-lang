@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/result;
+
+async Result<usize, Error> fail_inner() {
+    return Err(text_error("inner failure"));
+}
+
+async Result<usize, Error> outer() {
+    usize value = await fail_inner()?;
+    return Ok(value + 1);
+}
+
+i32 main() {
+    Result<usize, Error> result = async::block_on(outer());
+    switch (result) {
+        case Ok(_):
+            return 1;
+        case Err(_):
+            return 0;
+    }
+}

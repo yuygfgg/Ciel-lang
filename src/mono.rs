@@ -28,7 +28,7 @@ use crate::{
         aggregate_instance_name, contains_generic, is_clone_message_capability, mangle_ty_fragment,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_future_ty,
         std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, ty_contains,
         ty_from_primitive, type_complexity, unify_ty,
     },
@@ -537,11 +537,13 @@ impl MonoContext {
                     .transpose()?,
             },
             TExprKind::Closure {
+                is_async,
                 id,
                 params,
                 captures,
                 body,
             } => TExprKind::Closure {
+                is_async,
                 id,
                 params,
                 captures,
@@ -637,6 +639,25 @@ impl MonoContext {
                 TExprKind::Try {
                     expr: Box::new(inner),
                     propagation,
+                }
+            }
+            TExprKind::Await { future } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::Await {
+                    future: Box::new(self.rewrite_expr(*future)?),
+                }
+            }
+            TExprKind::AsyncBlockOn { future } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncBlockOn {
+                    future: Box::new(self.rewrite_expr(*future)?),
+                }
+            }
+            TExprKind::AsyncSleep { ms, output_ty } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncSleep {
+                    ms: Box::new(self.rewrite_expr(*ms)?),
+                    output_ty,
                 }
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
@@ -999,6 +1020,9 @@ impl<'a> AggregateCollector<'a> {
     fn collect_from_functions(&mut self, functions: &[CheckedFunction]) {
         for function in functions {
             self.collect_ty(&function.ret);
+            if function.is_async {
+                self.collect_ty(&std_future_ty(function.ret.clone()));
+            }
             for (_, _, ty) in &function.params {
                 self.collect_ty(ty);
             }
@@ -1150,6 +1174,18 @@ impl<'a> AggregateCollector<'a> {
                         self.collect_ty(err_ty);
                     }
                 }
+            }
+            TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
+                self.collect_expr(future);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+            }
+            TExprKind::AsyncSleep { ms, output_ty } => {
+                self.collect_expr(ms);
+                self.collect_ty(&std_future_ty(output_ty.clone()));
+                self.collect_ty(output_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr(left);

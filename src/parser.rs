@@ -379,6 +379,12 @@ impl Parser {
         } else {
             inherited_abi
         };
+        let is_async = if self.at_ident_named("async") {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let signature = self.parse_function_signature()?;
         let body = if self.eat(TokenKind::Semi).is_some() {
             None
@@ -387,6 +393,7 @@ impl Parser {
         };
         Ok(FunctionDecl {
             is_unsafe,
+            is_async,
             abi,
             signature,
             body,
@@ -1319,7 +1326,16 @@ impl Parser {
     }
 
     fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
-        let mut expr = self.parse_primary()?;
+        let expr = self.parse_primary()?;
+        self.parse_postfix_tail(expr, true)
+    }
+
+    fn parse_postfix_without_try(&mut self) -> Result<Expr, Diagnostic> {
+        let expr = self.parse_primary()?;
+        self.parse_postfix_tail(expr, false)
+    }
+
+    fn parse_postfix_tail(&mut self, mut expr: Expr, allow_try: bool) -> Result<Expr, Diagnostic> {
         loop {
             if self.at(TokenKind::Lt) {
                 let save = self.pos;
@@ -1421,7 +1437,7 @@ impl Parser {
                         };
                     }
                 }
-            } else if self.eat(TokenKind::Question).is_some() {
+            } else if allow_try && self.eat(TokenKind::Question).is_some() {
                 expr = Expr {
                     span: expr.span.merge(self.previous().span),
                     kind: ExprKind::Try(Box::new(expr)),
@@ -1455,6 +1471,22 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         match token.kind {
+            TokenKind::Ident if token.lexeme == "await" => {
+                self.advance();
+                let inner = self.parse_postfix_without_try()?;
+                let span = token.span.merge(inner.span);
+                Ok(Expr {
+                    span,
+                    kind: ExprKind::Await(Box::new(inner)),
+                })
+            }
+            TokenKind::Ident
+                if token.lexeme == "async"
+                    && matches!(self.peek_next().kind, TokenKind::PipePipe | TokenKind::Pipe) =>
+            {
+                self.advance();
+                self.parse_closure_expr_with_async(token.span, true)
+            }
             TokenKind::Ident => {
                 let mut path = vec![self.expect_ident("expected identifier")?];
                 while self.eat(TokenKind::ColonColon).is_some() {
@@ -1508,7 +1540,9 @@ impl Parser {
                     kind: ExprKind::Literal(Literal::Null),
                 })
             }
-            TokenKind::PipePipe | TokenKind::Pipe => self.parse_closure_expr(),
+            TokenKind::PipePipe | TokenKind::Pipe => {
+                self.parse_closure_expr_with_async(token.span, false)
+            }
             TokenKind::LBrace => self.parse_struct_literal(),
             TokenKind::LBracket => self.parse_array_literal(),
             TokenKind::LParen => {
@@ -1605,8 +1639,11 @@ impl Parser {
             && self.peek_n(2).kind == TokenKind::Colon
     }
 
-    fn parse_closure_expr(&mut self) -> Result<Expr, Diagnostic> {
-        let start = self.peek().span;
+    fn parse_closure_expr_with_async(
+        &mut self,
+        start: crate::span::Span,
+        is_async: bool,
+    ) -> Result<Expr, Diagnostic> {
         let params = if self.eat(TokenKind::PipePipe).is_some() {
             Vec::new()
         } else {
@@ -1638,7 +1675,11 @@ impl Parser {
         };
         Ok(Expr {
             span: start.merge(end),
-            kind: ExprKind::Closure { params, body },
+            kind: ExprKind::Closure {
+                is_async,
+                params,
+                body,
+            },
         })
     }
 

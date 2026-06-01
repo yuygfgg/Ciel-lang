@@ -8,6 +8,12 @@ export type Step<S> = Result<S, Error> |(S): Message|;
 export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
 export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
 
+export struct Future<T> {
+    *void handle;
+}
+
+export T block_on<T>(Future<T> future);
+
 export struct AsyncRunner<S> {
     actor::Actor<Step<S>> actor_handle;
 }

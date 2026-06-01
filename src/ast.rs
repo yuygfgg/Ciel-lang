@@ -130,6 +130,7 @@ pub struct ImplDecl {
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<String>,
     pub signature: FunctionSignature,
     pub body: Option<Block>,
@@ -378,6 +379,7 @@ pub enum ExprKind {
         len: Option<usize>,
     },
     Closure {
+        is_async: bool,
         params: Vec<ClosureParam>,
         body: ClosureBody,
     },
@@ -418,6 +420,7 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
     },
     Try(Box<Expr>),
+    Await(Box<Expr>),
 }
 
 #[derive(Clone, Debug)]

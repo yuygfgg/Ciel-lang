@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
+import /std/lib;
+import /std/async as async;
+import /std/async_time as async_time;
+
+async Result<usize, Error> wait_async() {
+    await async_time::sleep_ms(0)?;
+    return Ok(5);
+}
+
+i32 main() {
+    must(sleep_ms(0));
+    must(print_value(must(async::block_on(wait_async()))));
+    return 0;
+}

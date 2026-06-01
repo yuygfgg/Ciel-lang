@@ -16,8 +16,8 @@ use crate::{
         contains_generic, contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
         meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
         meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
-        retained_closure_proves_capability, std_actor_ty, std_error_ty, std_meta_repr_marker_ty,
-        std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
+        retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
+        std_meta_repr_marker_ty, std_result_ty, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -27,6 +27,7 @@ struct FunctionSig {
     module: ModuleId,
     name: String,
     is_unsafe: bool,
+    is_async: bool,
     abi: Option<String>,
     noescape: bool,
     has_body: bool,
@@ -672,6 +673,7 @@ struct TypeChecker {
     checked_enums: HashMap<String, CheckedEnum>,
     current_module: ModuleId,
     current_return_ty: Ty,
+    current_async_depth: usize,
     control_contexts: Vec<ControlContext>,
     next_synthetic_def: usize,
     next_closure_id: usize,
@@ -715,6 +717,7 @@ impl TypeChecker {
             checked_enums: HashMap::new(),
             current_module: ModuleId(0),
             current_return_ty: Ty::Void,
+            current_async_depth: 0,
             control_contexts: Vec::new(),
             next_synthetic_def,
             next_closure_id: 0,
@@ -771,6 +774,7 @@ impl TypeChecker {
                                         def_id: sig.def_id,
                                         name: signature.name.name.clone(),
                                         is_unsafe: sig.is_unsafe,
+                                        is_async: sig.is_async,
                                         abi: Some(block.abi.clone()),
                                         noescape: *noescape,
                                         exported: item.export,
@@ -914,6 +918,7 @@ impl TypeChecker {
                         module: sig.module,
                         name: sig.name.clone(),
                         is_unsafe: sig.is_unsafe,
+                        is_async: sig.is_async,
                         abi: sig.abi.clone(),
                         noescape: sig.noescape,
                         exported: template.exported,
@@ -3240,6 +3245,7 @@ impl TypeChecker {
                             module.id,
                             &function.signature,
                             function.is_unsafe,
+                            function.is_async,
                             function.abi.clone(),
                             false,
                             function.body.is_some(),
@@ -3275,6 +3281,7 @@ impl TypeChecker {
                                     module.id,
                                     signature,
                                     block.is_unsafe,
+                                    false,
                                     Some(block.abi.clone()),
                                     *noescape,
                                     false,
@@ -3707,6 +3714,7 @@ impl TypeChecker {
             module,
             name: function_name.clone(),
             is_unsafe: false,
+            is_async: false,
             abi: None,
             noescape: false,
             has_body: true,
@@ -3780,6 +3788,7 @@ impl TypeChecker {
                 def_id: pending.function_sig.def_id,
                 name: pending.function_name.clone(),
                 is_unsafe: false,
+                is_async: false,
                 abi: None,
                 noescape: false,
                 exported: false,
@@ -3825,6 +3834,7 @@ impl TypeChecker {
         module: ModuleId,
         signature: &FunctionSignature,
         is_unsafe: bool,
+        is_async: bool,
         abi: Option<String>,
         noescape: bool,
         has_body: bool,
@@ -3849,6 +3859,7 @@ impl TypeChecker {
             module,
             name: signature.name.name.clone(),
             is_unsafe,
+            is_async,
             abi,
             noescape,
             has_body,
@@ -3904,6 +3915,12 @@ impl TypeChecker {
                 self.diagnostics.push(Diagnostic::new(
                     self.resolved.def(sig.def_id).span,
                     "imported C function declarations must be in `unsafe extern \"C\"` blocks",
+                ));
+            }
+            if sig.is_async {
+                self.diagnostics.push(Diagnostic::new(
+                    self.resolved.def(sig.def_id).span,
+                    "`extern \"C\"` functions cannot be async",
                 ));
             }
             if sig.has_body && !sig.exported {
@@ -4008,6 +4025,7 @@ impl TypeChecker {
             def_id: sig.def_id,
             name: sig.name,
             is_unsafe: sig.is_unsafe,
+            is_async: sig.is_async,
             abi: sig.abi,
             noescape: sig.noescape,
             exported,
@@ -4026,6 +4044,10 @@ impl TypeChecker {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
         let previous_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
+        let previous_async_depth = std::mem::replace(
+            &mut self.current_async_depth,
+            if sig.is_async { 1 } else { 0 },
+        );
         let mut scopes = LocalScopes::default();
         scopes.push();
         for (local_id, name, ty, mutability) in params {
@@ -4076,6 +4098,7 @@ impl TypeChecker {
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
+        self.current_async_depth = previous_async_depth;
         checked.map(|checked| checked.block)
     }
 
@@ -5256,9 +5279,11 @@ impl TypeChecker {
                     },
                 }
             }
-            ExprKind::Closure { params, body } => {
-                self.check_closure_expr(scopes, expr.span, params, body, expected)?
-            }
+            ExprKind::Closure {
+                is_async,
+                params,
+                body,
+            } => self.check_closure_expr(scopes, expr.span, *is_async, params, body, expected)?,
             ExprKind::Unary { op, expr: inner } => {
                 if matches!(op, UnaryOp::Neg)
                     && let ExprKind::Literal(Literal::Integer(raw)) = &inner.kind
@@ -5403,10 +5428,21 @@ impl TypeChecker {
             }
             ExprKind::Cast { expr: inner, ty } => {
                 let target = self.lower_type(ty);
-                if let ExprKind::Closure { params, body } = &inner.kind {
+                if let ExprKind::Closure {
+                    is_async,
+                    params,
+                    body,
+                } = &inner.kind
+                {
                     self.check_closure_cast_allowed(&target, expr.span);
-                    let checked =
-                        self.check_closure_expr(scopes, inner.span, params, body, Some(&target))?;
+                    let checked = self.check_closure_expr(
+                        scopes,
+                        inner.span,
+                        *is_async,
+                        params,
+                        body,
+                        Some(&target),
+                    )?;
                     let checked = TExpr {
                         span: expr.span,
                         ..checked
@@ -5721,6 +5757,35 @@ impl TypeChecker {
                     },
                 }
             }
+            ExprKind::Await(inner) => {
+                if self.current_async_depth == 0 {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        "`await` is allowed only inside async functions or async closures",
+                    ));
+                }
+                let future = self.check_expr(scopes, inner, None)?;
+                let Some(output_ty) = self.future_output_ty(&future.ty) else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("`await` requires `Future<T>`, got `{}`", future.ty),
+                    ));
+                    return Some(TExpr {
+                        span: expr.span,
+                        ty: Ty::Unknown,
+                        kind: TExprKind::Await {
+                            future: Box::new(future),
+                        },
+                    });
+                };
+                TExpr {
+                    span: expr.span,
+                    ty: output_ty,
+                    kind: TExprKind::Await {
+                        future: Box::new(future),
+                    },
+                }
+            }
         };
 
         Some(result)
@@ -5802,10 +5867,16 @@ impl TypeChecker {
         };
         let handler = if let Some(handler) = prechecked_handler {
             self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
-        } else if let ExprKind::Closure { params, body } = &args[1].kind {
+        } else if let ExprKind::Closure {
+            is_async: false,
+            params,
+            body,
+        } = &args[1].kind
+        {
             let handler = self.check_closure_expr(
                 scopes,
                 args[1].span,
+                false,
                 params,
                 body,
                 Some(&expected_handler_ty),
@@ -5996,10 +6067,16 @@ impl TypeChecker {
 
         let handler = if let Some(handler) = prechecked_handler {
             self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
-        } else if let ExprKind::Closure { params, body } = &args[1].kind {
+        } else if let ExprKind::Closure {
+            is_async: false,
+            params,
+            body,
+        } = &args[1].kind
+        {
             let handler = self.check_closure_expr(
                 scopes,
                 args[1].span,
+                false,
                 params,
                 body,
                 Some(&expected_handler_ty),
@@ -6598,6 +6675,12 @@ impl TypeChecker {
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "block_on") {
+            return self.check_async_block_on_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_time_function(&self.resolved, sig.module, &sig.name, "sleep_ms") {
+            return self.check_async_sleep_ms_call(scopes, span, type_args, args);
+        }
 
         let (call_sig, generic_args) = if sig.generics.is_empty() {
             if !type_args.is_empty() {
@@ -6622,12 +6705,17 @@ impl TypeChecker {
                 ),
             );
         }
+        let call_ret = if call_sig.is_async {
+            std_future_ty(call_sig.ret.clone())
+        } else {
+            call_sig.ret.clone()
+        };
         let callee = TExpr {
             span,
             ty: Ty::Function {
                 is_unsafe: call_sig.is_unsafe,
                 abi: call_sig.abi.clone(),
-                ret: Box::new(call_sig.ret.clone()),
+                ret: Box::new(call_ret.clone()),
                 params: call_sig.params.clone(),
             },
             kind: if let Some(type_args) = generic_args {
@@ -6640,7 +6728,7 @@ impl TypeChecker {
                 TExprKind::Function(call_sig.def_id, call_sig.name.clone())
             },
         };
-        self.check_call_with_sig(scopes, span, callee, &call_sig.ret, &call_sig.params, args)
+        self.check_call_with_sig(scopes, span, callee, &call_ret, &call_sig.params, args)
     }
 
     fn check_closure_cast_allowed(&mut self, target: &Ty, span: crate::span::Span) {
@@ -6680,6 +6768,7 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
+        is_async: bool,
         params: &[ClosureParam],
         body: &ClosureBody,
         expected: Option<&Ty>,
@@ -6797,6 +6886,8 @@ impl TypeChecker {
         let previous_return_ty = self.current_return_ty.clone();
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
         let previous_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
+        let previous_async_depth =
+            std::mem::replace(&mut self.current_async_depth, if is_async { 1 } else { 0 });
         let (ret_ty, checked_body) = match body {
             ClosureBody::Expr(body_expr) => {
                 if let Some((expected_ret, _, _)) = &expected_sig {
@@ -6822,6 +6913,7 @@ impl TypeChecker {
                     self.current_return_ty = previous_return_ty;
                     self.control_contexts = previous_control_contexts;
                     self.unsafe_depth = previous_unsafe_depth;
+                    self.current_async_depth = previous_async_depth;
                     return None;
                 };
                 let expected_ret = self.resolve_type_holes(expected_ret);
@@ -6848,6 +6940,7 @@ impl TypeChecker {
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
+        self.current_async_depth = previous_async_depth;
 
         let capture_ids = collect_closure_capture_ids(&checked_params, &checked_body);
         let mut captures = Vec::new();
@@ -6924,6 +7017,7 @@ impl TypeChecker {
             span,
             ty: result_ty,
             kind: TExprKind::Closure {
+                is_async,
                 id,
                 params: checked_params,
                 captures,
@@ -6970,6 +7064,92 @@ impl TypeChecker {
         })
     }
 
+    fn check_async_block_on_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                type_args[1].span,
+                "too many type arguments for `block_on`",
+            ));
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("call expects 1 arguments, got {}", args.len()),
+            ));
+        }
+        let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
+        let expected_future = explicit_output.as_ref().map(|ty| std_future_ty(ty.clone()));
+        let Some(arg) = args.first() else {
+            return None;
+        };
+        let future = self.check_expr(scopes, arg, expected_future.as_ref())?;
+        if let Some(expected) = expected_future.as_ref() {
+            self.require_assignable(expected, &future.ty, future.span);
+        }
+        let output_ty = explicit_output.or_else(|| self.future_output_ty(&future.ty));
+        let Some(output_ty) = output_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                future.span,
+                format!("`block_on` requires `Future<T>`, got `{}`", future.ty),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: TExprKind::AsyncBlockOn {
+                    future: Box::new(future),
+                },
+            });
+        };
+        Some(TExpr {
+            span,
+            ty: output_ty,
+            kind: TExprKind::AsyncBlockOn {
+                future: Box::new(future),
+            },
+        })
+    }
+
+    fn check_async_sleep_ms_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if !type_args.is_empty() {
+            self.diagnostics
+                .push(Diagnostic::new(span, "function `sleep_ms` is not generic"));
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("call expects 1 arguments, got {}", args.len()),
+            ));
+        }
+        let Some(ms_arg) = args.first() else {
+            return None;
+        };
+        let ms = self.check_expr(scopes, ms_arg, Some(&Ty::U64))?;
+        self.require_assignable(&Ty::U64, &ms.ty, ms.span);
+        let output_ty = std_result_ty(Ty::Void, std_error_ty());
+        Some(TExpr {
+            span,
+            ty: std_future_ty(output_ty.clone()),
+            kind: TExprKind::AsyncSleep {
+                ms: Box::new(ms),
+                output_ty,
+            },
+        })
+    }
+
     fn check_generic_inference_arg(
         &mut self,
         scopes: &mut LocalScopes,
@@ -6989,17 +7169,30 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
         match &arg.kind {
-            ExprKind::Closure { params, body } => {
-                self.check_closure_expr(scopes, arg.span, params, body, expected)
-            }
+            ExprKind::Closure {
+                is_async,
+                params,
+                body,
+            } => self.check_closure_expr(scopes, arg.span, *is_async, params, body, expected),
             ExprKind::Cast { expr, ty } => {
-                let ExprKind::Closure { params, body } = &expr.kind else {
+                let ExprKind::Closure {
+                    is_async,
+                    params,
+                    body,
+                } = &expr.kind
+                else {
                     return self.check_expr(scopes, arg, expected);
                 };
                 let target = self.lower_type(ty);
                 self.check_closure_cast_allowed(&target, arg.span);
-                let checked =
-                    self.check_closure_expr(scopes, expr.span, params, body, Some(&target))?;
+                let checked = self.check_closure_expr(
+                    scopes,
+                    expr.span,
+                    *is_async,
+                    params,
+                    body,
+                    Some(&target),
+                )?;
                 let checked = TExpr {
                     span: arg.span,
                     ..checked
@@ -7149,6 +7342,8 @@ impl TypeChecker {
                 def_id: sig.def_id,
                 module: sig.module,
                 name: sig.name.clone(),
+                is_unsafe: sig.is_unsafe,
+                is_async: sig.is_async,
                 abi: sig.abi.clone(),
                 noescape: sig.noescape,
                 has_body: sig.has_body,
@@ -7156,7 +7351,6 @@ impl TypeChecker {
                 params,
                 generics: Vec::new(),
                 exported: sig.exported,
-                is_unsafe: sig.is_unsafe,
             },
             instance_args,
         ))
@@ -7289,6 +7483,7 @@ impl TypeChecker {
             module: template.module,
             name: instance_name.clone(),
             is_unsafe: template.is_unsafe,
+            is_async: template.is_async,
             abi: template.abi.clone(),
             noescape: template.noescape,
             has_body: true,
@@ -7312,6 +7507,7 @@ impl TypeChecker {
             def_id,
             name: instance_name,
             is_unsafe: template.is_unsafe,
+            is_async: template.is_async,
             abi: template.abi.clone(),
             noescape: template.noescape,
             exported: false,
@@ -9333,6 +9529,17 @@ impl TypeChecker {
             return None;
         }
         Some((args[0].clone(), args[1].clone()))
+    }
+
+    fn future_output_ty(&self, ty: &Ty) -> Option<Ty> {
+        let Ty::Named { name, args } = ty else {
+            return None;
+        };
+        if name == "Future" && args.len() == 1 {
+            Some(args[0].clone())
+        } else {
+            None
+        }
     }
 
     fn is_std_message_clone_interface_name(&self, name: &str) -> bool {

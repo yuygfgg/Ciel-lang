@@ -27,7 +27,7 @@ Implementation guardrails:
 
 ## Phase 1: Minimal Async/Await Timer Slice
 
-- [ ] Land the first user-visible async/await path.
+- [x] Land the first user-visible async/await path.
       Scope: add the final `/std/async` future surface, contextual async syntax,
       generated future type for one-await async functions/closures,
       `async::block_on`, and awaitable `/std/async_time::sleep_ms` in one
@@ -35,14 +35,14 @@ Implementation guardrails:
       Tests: `async Result<usize, Error> f() { await async_time::sleep_ms(1)?;
       return Ok(7); }` runs through `async::block_on(f())` and prints `7`.
 
-- [ ] Use final-shaped wake routing from the first slice.
+- [x] Use final-shaped wake routing from the first slice.
       Scope: `sleep_ms` wakeups go through runtime-owned operation/task routing
       state, with room for task id, operation id, and generation even if the
       first test only has one operation.
       Tests: two async timer functions driven through the runtime complete
       independently and do not expose frame pointers to callbacks.
 
-- [ ] Type-check the initial final model.
+- [x] Type-check the initial final model.
       Scope: async calls return opaque generated futures implementing
       `Future<Out>`; `await` requires `Future<Out>` and yields `Out`; `?` works
       after awaiting `Result<T, Error>`.
@@ -50,7 +50,7 @@ Implementation guardrails:
       non-future is rejected; using an async call where an ordinary
       `Result<T, Error>` is expected is rejected.
 
-- [ ] Preserve compatibility while adding contextual keywords.
+- [x] Preserve compatibility while adding contextual keywords.
       Scope: `async` remains usable as the `/std/async` module-path segment;
       `await` outside async is rejected; async functions cannot be exported as C
       ABI functions; old flow timer helpers keep working.

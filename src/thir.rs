@@ -84,6 +84,7 @@ pub struct CheckedFunction {
     pub def_id: DefId,
     pub name: String,
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<String>,
     pub noescape: bool,
     pub exported: bool,
@@ -98,6 +99,7 @@ pub struct CheckedGenericFunction {
     pub module: ModuleId,
     pub name: String,
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<String>,
     pub noescape: bool,
     pub exported: bool,
@@ -287,6 +289,7 @@ pub enum TExprKind {
         len: usize,
     },
     Closure {
+        is_async: bool,
         id: usize,
         params: Vec<(LocalId, String, Ty)>,
         captures: Vec<TClosureCapture>,
@@ -355,6 +358,16 @@ pub enum TExprKind {
     Try {
         expr: Box<TExpr>,
         propagation: TryPropagation,
+    },
+    Await {
+        future: Box<TExpr>,
+    },
+    AsyncBlockOn {
+        future: Box<TExpr>,
+    },
+    AsyncSleep {
+        ms: Box<TExpr>,
+        output_ty: Ty,
     },
     MetaAsRefRepr {
         value: Box<TExpr>,
@@ -584,9 +597,12 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
         | TExprKind::Try { expr: inner, .. }
+        | TExprKind::Await { future: inner }
+        | TExprKind::AsyncBlockOn { future: inner }
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        TExprKind::AsyncSleep { ms, output_ty: _ } => visitor.visit_expr(ms),
         TExprKind::UnsafeBlock { statements, value } => {
             for stmt in statements {
                 visitor.visit_stmt(stmt);

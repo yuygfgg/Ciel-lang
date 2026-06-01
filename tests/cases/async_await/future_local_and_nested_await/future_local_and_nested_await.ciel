@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 8
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> inner() {
+    await async_time::sleep_ms(0)?;
+    return Ok(7);
+}
+
+async Result<usize, Error> outer() {
+    usize value = await inner()?;
+    return Ok(value + 1);
+}
+
+i32 main() {
+    async::Future<Result<usize, Error>> future = outer();
+    must(print_value(must(async::block_on(future))));
+    return 0;
+}

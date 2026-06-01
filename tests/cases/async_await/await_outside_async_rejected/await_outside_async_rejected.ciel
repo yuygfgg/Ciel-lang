@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: `await` is allowed only inside async functions or async closures
+
+import /std/async_time as async_time;
+import /std/result;
+
+Result<void, Error> bad() {
+    await async_time::sleep_ms(0)?;
+    return Ok;
+}

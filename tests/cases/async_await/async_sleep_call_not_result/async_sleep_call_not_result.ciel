@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: expected `Result
+// expect-error: got `Future
+
+import /std/async_time as async_time;
+import /std/result;
+
+Result<void, Error> bad() {
+    Result<void, Error> slept = async_time::sleep_ms(0);
+    return slept;
+}

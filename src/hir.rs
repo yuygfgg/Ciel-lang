@@ -139,6 +139,7 @@ pub struct ImplDecl {
 #[derive(Clone, Debug)]
 pub struct FunctionDecl {
     pub is_unsafe: bool,
+    pub is_async: bool,
     pub abi: Option<String>,
     pub signature: FunctionSignature,
     pub body: Option<Block>,
@@ -373,6 +374,7 @@ pub enum ExprKind {
         len: Option<usize>,
     },
     Closure {
+        is_async: bool,
         params: Vec<ClosureParam>,
         body: ClosureBody,
     },
@@ -413,6 +415,7 @@ pub enum ExprKind {
         end: Option<Box<Expr>>,
     },
     Try(Box<Expr>),
+    Await(Box<Expr>),
 }
 
 #[derive(Clone, Debug)]
@@ -642,6 +645,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 self.pop_generics();
                 ItemKind::Function(FunctionDecl {
                     is_unsafe: decl.is_unsafe,
+                    is_async: decl.is_async,
                     abi: decl.abi.clone(),
                     signature,
                     body,
@@ -1130,7 +1134,11 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 element: Box::new(self.lower_expr(element)),
                 len: *len,
             },
-            ast::ExprKind::Closure { params, body } => {
+            ast::ExprKind::Closure {
+                is_async,
+                params,
+                body,
+            } => {
                 self.push_scope();
                 let params = params
                     .iter()
@@ -1155,7 +1163,11 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     }
                 };
                 self.pop_scope();
-                ExprKind::Closure { params, body }
+                ExprKind::Closure {
+                    is_async: *is_async,
+                    params,
+                    body,
+                }
             }
             ast::ExprKind::Unary { op, expr } => ExprKind::Unary {
                 op: *op,
@@ -1200,6 +1212,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 end: end.as_ref().map(|expr| Box::new(self.lower_expr(expr))),
             },
             ast::ExprKind::Try(inner) => ExprKind::Try(Box::new(self.lower_expr(inner))),
+            ast::ExprKind::Await(inner) => ExprKind::Await(Box::new(self.lower_expr(inner))),
         };
         Expr {
             span: expr.span,

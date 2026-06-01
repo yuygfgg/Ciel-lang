@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: expected `usize`
+// expect-error: got `Result
+
+import /std/result;
+
+async Result<usize, Error> inner() {
+    return Ok(7);
+}
+
+async Result<usize, Error> bad() {
+    usize value = await inner();
+    return Ok(value);
+}

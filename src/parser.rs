@@ -228,7 +228,7 @@ impl Parser {
 
     fn parse_interface_item(&mut self, is_unsafe: bool) -> Result<ItemKind, Diagnostic> {
         self.expect(TokenKind::Interface, "expected `interface`")?;
-        if self.at(TokenKind::Ident) && self.peek_next().kind == TokenKind::Eq {
+        if self.at(TokenKind::Ident) {
             if is_unsafe {
                 return Err(Diagnostic::new(
                     self.peek().span,
@@ -236,10 +236,15 @@ impl Parser {
                 ));
             }
             let name = self.expect_ident("expected interface alias name")?;
+            let generics = self.parse_generic_param_list_opt()?;
             self.expect(TokenKind::Eq, "expected `=` in interface alias")?;
             let expr = self.parse_interface_expr()?;
             self.expect(TokenKind::Semi, "expected `;` after interface alias")?;
-            return Ok(ItemKind::InterfaceAlias(InterfaceAliasDecl { name, expr }));
+            return Ok(ItemKind::InterfaceAlias(InterfaceAliasDecl {
+                name,
+                generics,
+                expr,
+            }));
         }
 
         let generics = self.parse_generic_param_list()?;

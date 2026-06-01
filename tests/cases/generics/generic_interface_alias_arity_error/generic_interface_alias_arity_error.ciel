@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: interface alias `same_as` expects 1 type arguments, got 0
+
+interface<T, U> bool same(*T value, U other);
+interface same_as<U> = same<U>;
+
+i64 matches<T: same_as>(*T value) {
+    return 0;
+}
+
+i64 main() {
+    i64 @value = 0;
+    return matches(&value);
+}

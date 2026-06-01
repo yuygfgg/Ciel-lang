@@ -33,7 +33,7 @@ pub fn checked_interface_view(
     aliases
         .iter()
         .find(|alias| alias.name == name)
-        .map(|alias| alias.positive.clone())
+        .map(|alias| substitute_checked_alias_refs(&alias.generics, args, &alias.positive))
         .unwrap_or_default()
 }
 
@@ -46,12 +46,17 @@ pub fn constraint_interface_view(
         .iter()
         .find(|alias| alias.name == name)
         .map(|alias| {
+            let subst = alias_subst(&alias.generics, args);
             let positive = alias
                 .positive
                 .iter()
                 .map(|entry| ConstraintRef {
                     name: entry.name.clone(),
-                    args: entry.args.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| substitute_ty(arg, &subst))
+                        .collect(),
                 })
                 .collect();
             let negative = alias
@@ -59,7 +64,11 @@ pub fn constraint_interface_view(
                 .iter()
                 .map(|entry| ConstraintRef {
                     name: entry.name.clone(),
-                    args: entry.args.clone(),
+                    args: entry
+                        .args
+                        .iter()
+                        .map(|arg| substitute_ty(arg, &subst))
+                        .collect(),
                 })
                 .collect();
             ConstraintBounds { positive, negative }
@@ -71,6 +80,31 @@ pub fn constraint_interface_view(
             }],
             negative: Vec::new(),
         })
+}
+
+fn alias_subst(generics: &[String], args: &[Ty]) -> HashMap<String, Ty> {
+    if generics.len() != args.len() {
+        return HashMap::new();
+    }
+    generics.iter().cloned().zip(args.iter().cloned()).collect()
+}
+
+fn substitute_checked_alias_refs(
+    generics: &[String],
+    args: &[Ty],
+    refs: &[CheckedInterfaceRef],
+) -> Vec<CheckedInterfaceRef> {
+    let subst = alias_subst(generics, args);
+    refs.iter()
+        .map(|entry| CheckedInterfaceRef {
+            name: entry.name.clone(),
+            args: entry
+                .args
+                .iter()
+                .map(|arg| substitute_ty(arg, &subst))
+                .collect(),
+        })
+        .collect()
 }
 
 pub fn interface_subst(

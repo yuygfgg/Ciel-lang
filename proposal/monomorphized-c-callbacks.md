@@ -1,303 +1,156 @@
 # Monomorphized C Callbacks Proposal
 
-This proposal lets Ciel standard-library code pass a monomorphized generic C
-ABI function as a C callback value. The goal is to remove compiler-known
-lowering for APIs such as `/std/actor.spawn_actor_state` by making the missing
-callback glue an ordinary language and FFI feature.
+This proposal lets Ciel code pass a concrete instance of a generic C ABI
+function template as a C callback value. It is a narrow FFI feature. It does not
+own actor lowering, actor state safety, async/await lowering, or conversion from
+closures to C callbacks.
 
 ## Proposal Order
 
 ```text
-capability-erased-closures < monomorphized-c-callbacks
-pure-library-message <= monomorphized-c-callbacks
+binding-mutability < monomorphized-c-callbacks
 unsafe <= monomorphized-c-callbacks[C callback declarations]
-
-monomorphized-c-callbacks :> actor-stdlib-lowering[dispatch callback]
-actor-owned-state < actor-stdlib-lowering[spawn_actor_state semantics]
 ```
 
-The callback feature does not own actor safety. It only supplies the missing
-generic C ABI callback mechanism. Actor state ownership is owned by
-`actor-owned-state`; actor message cloning is owned by `pure-library-message`.
-Retained closure handler types are provided by `capability-erased-closures`.
-When the unsafe proposal is active, imported C runtime hooks used by this
-proposal are declared in `unsafe extern "C"` blocks and called inside safe
-standard-library wrappers.
-
-The `actor-stdlib-lowering` step should preserve both explicit actor shapes:
-`spawn_actor_cloned<S: Message, M: Message>` for value-state compatibility and
-`spawn_actor_state<S, M: Message>` for actor-owned state.
+`binding-mutability` supplies the final local-binding rules used by generic
+function bodies. `unsafe` owns imported C declarations, raw pointer casts, and
+calls through foreign function pointers. This proposal only adds a way to name
+and emit a monomorphized C ABI function item.
 
 ## Problem
 
-The actor runtime is already shaped like a typed Ciel layer over an untyped C
-runtime:
+C APIs often accept a function pointer plus an untyped context pointer:
 
 ```c
-int32_t ciel_actor_spawn(
-    CielActor **out,
-    void *state,
-    void *handler,
-    void (*dispatch)(void *state, void *handler, void *message, int32_t *failed)
-);
+typedef int (*CompareFn)(const void *left, const void *right, void *ctx);
+int c_sort(void *items, size_t len, size_t stride, CompareFn compare, void *ctx);
 ```
 
-The missing piece is the typed dispatch callback. For each actor instantiation
-the callback needs to cast raw pointers back to `S`, `M`, and the retained
-handler type, call the handler, and store the next state:
+Ciel can model the imported function pointer type, but a reusable standard
+library wrapper sometimes needs a typed helper function whose C-visible
+signature is concrete while its body is generic. Today a generic function can be
+called from Ciel after monomorphization, but there is no source-level expression
+for "the concrete C ABI function pointer for this generic instance", and mono
+collection does not know that a generic function instance is needed when it is
+only passed to C.
 
-```c
-static void dispatch(void *state_raw, void *handler_raw, void *message_raw,
-                     int32_t *failed) {
-    S *state = state_raw;
-    Handler *handler = handler_raw;
-    M *message = message_raw;
-
-    Result<S, Error> result = (*handler)(*state, *message);
-    if (result is Err) {
-        *failed = 1;
-        return;
-    }
-    *state = result.Ok;
-}
-```
-
-Today the compiler recognizes actor spawn functions and emits dispatch thunks
-as actor-specific special cases. The same operations should be expressible as
-generic C ABI functions in `/std/actor`.
+Without this feature, every typed wrapper must be hand-specialized or moved into
+compiler code. That is unnecessary for ordinary FFI callback adapters.
 
 ## Goals
 
-1. Let a generic Ciel function body use the C ABI for its callable signature.
-2. Let Ciel code refer to a concrete monomorphized instance as a function value.
-3. Ensure monomorphized callback instances are emitted even when they are only
-   passed to C, not called from Ciel.
+1. Allow non-exported generic functions with C ABI bodies.
+2. Allow Ciel code to refer to a concrete monomorphized function item as a value.
+3. Ensure the concrete instance is emitted even when it is only passed to C.
 4. Keep exported C symbols non-generic and stable.
-5. Keep closure-to-C-callback conversion out of scope; callbacks are named
-   function items.
+5. Keep closure-to-C-callback conversion out of scope.
+6. Keep actor and async/await lowering out of scope.
+
+## Non-Goals
+
+1. Removing actor compiler builtins.
+2. Implementing async/await dispatch.
+3. Passing Ciel closures directly as C callbacks.
+4. Making callbacks from arbitrary C threads safe.
+5. Supporting generic exported C symbols.
+6. Supporting type parameters in C-visible parameter or return types in the
+   first implementation.
 
 ## Syntax
 
 Allow non-exported `extern "C"` function definitions:
 
 ```rust
-extern "C" void actor_dispatch<S: Message, M: Message>(
-    *void state_raw,
-    *void handler_raw,
-    *void message_raw,
-    *c::c_int failed,
+extern "C" c::c_int compare_items<T>(
+    *const void left_raw,
+    *const void right_raw,
+    *void ctx_raw,
 ) {
     ...
 }
 ```
 
-This defines a C ABI function template, not an imported external symbol and not
-an exported C symbol. Each used type argument list produces one internal C
+This defines a C ABI function template. It is not an imported declaration and
+not an exported symbol. Each used type argument list produces one internal C ABI
 function.
 
 Add explicit type application for function-item expressions:
 
 ```rust
-actor_dispatch::<S, M>
+compare_items::<Item>
 ```
 
-`::<...>` is chosen because plain `f<T>` is ambiguous with relational
-expressions. Generic calls may keep the existing `f<T>(args)` syntax; type
-application is needed when the result is a function value rather than a call.
+Generic calls may keep the existing `f<T>(args)` syntax. The `::<...>` form is
+used when the result is a function value rather than a call.
 
-Example with an alias:
+Example:
 
 ```rust
-type ActorDispatch = extern "C" void fn(*void, *void, *void, *c::c_int);
+type CompareFn = extern "C" c::c_int fn(*const void, *const void, *void);
 
-ActorDispatch dispatch = actor_dispatch::<S, M>;
+CompareFn compare = compare_items::<Item>;
 ```
 
 ## Semantics
 
-A generic C ABI function with a body is a template. It has no standalone C
-symbol. A type-applied function item such as `actor_dispatch::<State, Msg>`:
+A generic C ABI function body is a template. A type-applied function item such
+as `compare_items::<Item>`:
 
-1. checks generic arity and constraints;
-2. substitutes the type arguments into the function body and signature;
-3. has the resulting function-pointer type;
-4. records that the concrete instance must be monomorphized and emitted;
-5. lowers to the generated C symbol for that instance.
+1. resolves `compare_items` to a generic function item;
+2. checks generic arity;
+3. checks generic constraints;
+4. substitutes the type arguments into the function body and function type;
+5. has the resulting C function-pointer type;
+6. records that the concrete instance must be monomorphized and emitted;
+7. lowers to the generated internal C symbol for that instance.
 
 `export extern "C"` remains the spelling for user-visible C symbols. Exported C
-ABI functions cannot be generic, because C needs one stable symbol name and one
-concrete signature.
+ABI functions cannot be generic because C needs one stable symbol name and one
+concrete signature. Imported declarations in `extern "C" { ... }` remain
+non-generic declarations of external C symbols.
 
-Imported declarations in `extern "C" { ... }` remain non-generic declarations of
-external C symbols.
+## C ABI Restrictions
 
-## C ABI Signature Restrictions
+The first implementation is intentionally conservative:
 
-The first implementation should be conservative:
+1. A generic C ABI function body may be generic.
+2. The C-visible parameter and return types must be valid C ABI types under the
+   existing C ABI rules.
+3. `void` by value remains invalid in C ABI parameters.
+4. Closure types remain invalid in C ABI parameters and return types.
+5. Exported generic C ABI functions are rejected.
+6. Imported generic C declarations are rejected.
+7. Type parameters may appear in the body.
+8. Type parameters may not appear in the C-visible callback signature in the
+   first implementation.
 
-1. A generic C ABI callback body may be generic, but its C-visible parameter and
-   return types must be valid C ABI types under the existing C ABI rules.
-2. `void` by value remains invalid in C ABI parameters.
-3. Closure types remain invalid in C ABI parameters and return types.
-4. Exported generic C ABI functions remain invalid.
-5. Type parameters may appear in the body freely. The first slice should reject
-   type parameters in the C-visible callback signature itself.
+This keeps the ABI surface stable: generic typing is a Ciel-side implementation
+detail, while C sees a concrete function pointer.
 
-This keeps the feature sufficient for actor dispatch, where the C ABI signature
-is `*void`-based and the typed values are recovered inside the body.
+## Safety Model
 
-## Actor Lowering Without Compiler Builtins
+This proposal does not make foreign callbacks safe by itself.
 
-With this proposal, `/std/actor` can be written as ordinary Ciel code over C
-runtime hooks:
+1. Calling an imported C function remains an unsafe operation according to the
+   `unsafe` proposal.
+2. Raw context pointers passed to C remain owned by the wrapper that constructs
+   them.
+3. A callback body that casts `*void` back to a Ciel type must do so inside an
+   unsafe block.
+4. If a C library may invoke the callback after the wrapper returns, the wrapper
+   must keep the context alive for that duration.
+5. If a C library may invoke the callback from a non-Ciel thread, that thread
+   must be attached to the Ciel runtime before executing Ciel code.
+6. A C callback must not capture Ciel stack references. Generic C ABI function
+   items are named functions and have no closure environment.
 
-```rust
-import /std/c as c;
-import /std/meta;
-
-unsafe extern "C" {
-    opaque struct CielActor;
-
-    c::c_int ciel_actor_spawn(
-        *?*CielActor out,
-        *void state,
-        *void handler,
-        extern "C" void fn(*void, *void, *void, *c::c_int) dispatch,
-    );
-    c::c_int ciel_actor_send(*CielActor actor, *void message);
-    c::c_int ciel_actor_stop(*CielActor actor);
-    c::c_int ciel_actor_join(*CielActor actor);
-
-    ?*void ciel_box_copy(usize size, usize align, *const void source);
-}
-```
-
-The standard library owns typed cloning and boxing:
-
-```rust
-type ActorDispatch = extern "C" void fn(*void, *void, *void, *c::c_int);
-
-extern "C" void actor_dispatch<S: Message, M: Message>(
-    *void state_raw,
-    *void handler_raw,
-    *void message_raw,
-    *c::c_int failed,
-) {
-    *S state = state_raw as *S;
-    *(Result<S, Error> |(S, M): Message|) handler =
-        handler_raw as *(Result<S, Error> |(S, M): Message|);
-    *M message = message_raw as *M;
-
-    Result<S, Error> result = (*handler)(*state, *message);
-    switch (result) {
-        case Ok(next):
-            *state = next;
-        case Err(_):
-            *failed = 1;
-    }
-}
-
-export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
-    S initial_state,
-    Result<S, Error> |(S, M): Message| handler,
-) {
-    S state = clone_message(&initial_state)?;
-    Result<S, Error> |(S, M): Message| handler_copy = clone_message(&handler)?;
-
-    ?*void state_box = ciel_box_copy(type_size<S>(), type_align<S>(), &state as *const void);
-    if (state_box == null) {
-        return Err(Code(5));
-    }
-    ?*void handler_box = ciel_box_copy(
-        type_size<Result<S, Error> |(S, M): Message|>(),
-        type_align<Result<S, Error> |(S, M): Message|>(),
-        &handler_copy as *const void,
-    );
-    if (handler_box == null) {
-        return Err(Code(5));
-    }
-
-    ?*CielActor raw = null;
-    ActorDispatch dispatch = actor_dispatch::<S, M>;
-    c::c_int rc = ciel_actor_spawn(&raw, state_box, handler_box, dispatch);
-    if ((rc as i64) != 0) {
-        return Err(Code(rc as i64));
-    }
-    return Ok({ handle: raw as *void });
-}
-```
-
-`send<M: Message>` can follow the same pattern as `/std/channel`: clone the
-payload, box it with `ciel_box_copy`, and pass the raw pointer to the C runtime.
-`stop` and `join` are direct C calls.
-
-After this migration, the compiler no longer needs to recognize actor spawn
-function names. It only needs to implement generic C callback function values.
-
-## Interaction With Actor-Owned State
-
-The callback mechanism remains valid if actor state moves from clone-state to
-owned-state semantics. Only the typed dispatch body changes.
-
-An owned-state dispatch uses the actor-aware C-visible ABI:
-
-```c
-void (*dispatch)(CielActor *actor, void *state, void *handler, void *message,
-                 int32_t *failed)
-```
-
-It recovers a mutable state pointer, rebuilds the actor self handle, and calls
-an in-place handler:
-
-```rust
-extern "C" void actor_dispatch_owned<S, M: Message>(
-    *CielActor actor_raw,
-    *void state_raw,
-    *void handler_raw,
-    *void message_raw,
-    *c::c_int failed,
-) {
-    *S state = state_raw as *S;
-    *(Result<void, Error> |(*S, Actor<M>, M): Message|) handler =
-        handler_raw as *(Result<void, Error> |(*S, Actor<M>, M): Message|);
-    *M message = message_raw as *M;
-    Actor<M> self = { handle: actor_raw as *void };
-
-    Result<void, Error> result = (*handler)(state, self, *message);
-    switch (result) {
-        case Ok(_):
-            return;
-        case Err(_):
-            *failed = 1;
-    }
-}
-```
-
-In the owned-state model, `spawn_actor_state` does not call `clone_message` for
-`S`. It boxes the actor-owned state according to the rules in
-`actor-owned-state`. `send`
-still clones `M`, and the retained handler value still needs the callback-safe
-capability required by the actor API.
-
-This means `monomorphized-c-callbacks` can land before actor-owned state as a
-general FFI feature, but the actor-specific stdlib lowering should wait until
-the actor state semantics are settled. Otherwise the stdlib migration would
-encode the obsolete `S: Message` clone-state API and need another rewrite.
-
-## Thread Attachment
-
-This proposal does not make arbitrary C libraries safe to call Ciel callbacks
-from unknown threads. A C thread that calls a Ciel callback must already be
-attached to the Ciel runtime.
-
-The actor runtime satisfies this by calling `ciel_thread_attach` in the worker
-thread before invoking the dispatch callback and `ciel_thread_detach` before the
-thread exits. Other runtime facilities must provide the same guarantee or expose
-explicit attach/detach wrappers.
+The key safety boundary is explicit: this proposal gives the programmer a
+function pointer value, but it does not prove that the C library's callback
+lifetime, threading, or context-pointer contract is correct.
 
 ## Type Checking
 
-Type checking should add a function-item type application expression:
+Type checking adds a function-item type application expression:
 
 ```text
 Expr ::= FunctionItem "::" TypeArgList
@@ -305,7 +158,7 @@ Expr ::= FunctionItem "::" TypeArgList
 
 The expression is valid only when the receiver is a function item or a qualified
 function item. It is rejected for variables, closures, dynamic interface calls,
-and arbitrary expressions.
+method values, and arbitrary expressions.
 
 For `f::<A, B>`:
 
@@ -318,13 +171,13 @@ For `f::<A, B>`:
    type arguments.
 
 If an expected function-pointer type is present, ordinary assignability checks
-ensure the ABI and signature match.
+ensure that the ABI and signature match.
 
 ## Monomorphization And Codegen
 
 Monomorphization must treat type-applied function items as uses of the concrete
-generic instance. This is the important difference from today's generic calls:
-the instance may be needed even when no Ciel call expression invokes it.
+generic instance. This differs from ordinary generic calls because the instance
+may be needed even when no Ciel call expression invokes it.
 
 Required lowering:
 
@@ -347,12 +200,12 @@ change is that function values must trigger instantiation just like calls.
 Examples:
 
 ```text
-generic function item `actor_dispatch` needs explicit type arguments when used
+generic function item `compare_items` needs explicit type arguments when used
 as a value
 ```
 
 ```text
-`extern "C"` generic function `actor_dispatch` cannot be exported; remove
+`extern "C"` generic function `compare_items` cannot be exported; remove
 `export` or provide a concrete non-generic wrapper
 ```
 
@@ -365,26 +218,27 @@ cannot pass Ciel ABI function `f::<T>` where `extern "C" ... fn(...)` is
 expected
 ```
 
+```text
+generic C ABI callback parameter type cannot mention type parameter `T`
+```
+
 ## Implementation Plan
 
 1. Extend the parser with postfix `::<TypeArgs>` on expression function items.
-2. Add an AST/HIR/THIR node for type-applied function items, or reuse
-   `GenericFunction` with a flag that distinguishes value use from call use.
+2. Add an AST/HIR/THIR node for type-applied function items, or reuse the
+   generic-function item representation with a flag that distinguishes value use
+   from call use.
 3. Relax C ABI validation to allow non-exported `extern "C"` function bodies and
    generic non-exported `extern "C"` templates.
 4. Keep imported and exported C ABI declarations non-generic.
 5. Type-check `f::<Args>` by reusing generic function substitution and
    constraint checking.
-6. Teach mono collection that type-applied function values instantiate and emit
+6. Reject type parameters in C-visible callback signatures for the first
+   implementation.
+7. Teach mono collection that type-applied function values instantiate and emit
    their generic bodies.
-7. Teach codegen to emit generic C ABI instances and lower function-item values
+8. Teach codegen to emit generic C ABI instances and lower function-item values
    to their generated symbols.
-8. Add `/std/runtime` or `/std/c` boxing hook such as `ciel_box_copy`, then move
-   `/std/actor` from compiler builtins to ordinary Ciel code after the
-   `actor-owned-state` direction has settled.
-9. Delete actor-specific `TExprKind::ActorSpawn`, `ActorSend`, `ActorStop`, and
-   `ActorJoin` after the stdlib actor fixtures pass through the ordinary call
-   path.
 
 ## Tests
 
@@ -393,7 +247,9 @@ expected
 2. A type-applied generic callback is emitted even when it is only passed as a C
    function pointer.
 3. Exported generic C ABI functions are rejected.
-4. Type application on non-functions is rejected.
-5. ABI mismatch between Ciel ABI and `extern "C"` function pointers is rejected.
-6. `/std/actor` can spawn, send, stop, and join without any compiler-recognized
-   actor call path.
+4. Imported generic C ABI declarations are rejected.
+5. Type application on non-functions is rejected.
+6. ABI mismatch between Ciel ABI and `extern "C"` function pointers is rejected.
+7. Type parameters in C-visible callback signatures are rejected.
+8. A callback from an unsafe wrapper can recover typed values from `*void` only
+   inside an unsafe block.

@@ -84,6 +84,12 @@ struct InterfaceSig {
     params: Vec<Param>,
 }
 
+#[derive(Clone, Debug)]
+struct InterfaceAliasTemplate {
+    generics: Vec<GenericInfo>,
+    expr: InterfaceExpr,
+}
+
 type InterfaceRefTy = ConstraintRef;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -654,7 +660,7 @@ struct TypeChecker {
     variants: HashMap<DefId, VariantSig>,
     interfaces: HashMap<DefId, InterfaceSig>,
     interface_names: HashMap<String, DefId>,
-    interface_aliases: HashMap<DefId, InterfaceExpr>,
+    interface_aliases: HashMap<DefId, InterfaceAliasTemplate>,
     interface_alias_names: HashMap<String, DefId>,
     impls: Vec<ImplSig>,
     generic_impls: Vec<GenericImplTemplate>,
@@ -860,12 +866,24 @@ impl TypeChecker {
             let alias_def_ids = self.interface_aliases.keys().copied().collect::<Vec<_>>();
             let mut checked_aliases = alias_def_ids
                 .iter()
-                .map(|def_id| {
+                .filter_map(|def_id| {
                     let name = self.resolved.def(*def_id).name.clone();
+                    let alias = self.interface_aliases.get(def_id).cloned()?;
                     self.current_module = self.resolved.def(*def_id).module;
-                    let view = self.interface_view(&name, &[]);
-                    CheckedInterfaceAlias {
+                    let generics = alias
+                        .generics
+                        .iter()
+                        .map(|generic| generic.name.clone())
+                        .collect::<Vec<_>>();
+                    let alias_args = generics
+                        .iter()
+                        .cloned()
+                        .map(Ty::Generic)
+                        .collect::<Vec<_>>();
+                    let view = self.interface_view(&name, &alias_args);
+                    Some(CheckedInterfaceAlias {
                         name,
+                        generics,
                         positive: view
                             .positive
                             .into_iter()
@@ -882,7 +900,7 @@ impl TypeChecker {
                                 args: entry.args,
                             })
                             .collect(),
-                    }
+                    })
                 })
                 .collect::<Vec<_>>();
             checked_aliases.sort_by(|a, b| a.name.cmp(&b.name));
@@ -984,7 +1002,29 @@ impl TypeChecker {
                         ) else {
                             continue;
                         };
-                        self.interface_aliases.insert(def_id, decl.expr.clone());
+                        for generic in &decl.generics {
+                            if generic.constraint.is_some() {
+                                self.diagnostics.push(Diagnostic::new(
+                                    generic.name.span,
+                                    "interface alias generic parameters cannot have constraints",
+                                ));
+                            }
+                        }
+                        let generics = decl
+                            .generics
+                            .iter()
+                            .map(|param| GenericInfo {
+                                name: param.name.name.clone(),
+                                constraint: param.constraint.clone(),
+                            })
+                            .collect::<Vec<_>>();
+                        self.interface_aliases.insert(
+                            def_id,
+                            InterfaceAliasTemplate {
+                                generics,
+                                expr: decl.expr.clone(),
+                            },
+                        );
                         self.interface_alias_names
                             .insert(decl.name.name.clone(), def_id);
                     }
@@ -1311,7 +1351,11 @@ impl TypeChecker {
                                 .collect(),
                         }
                     } else if self.interface_aliases.contains_key(&def_id) {
-                        let view = self.interface_view(&def.name, &[]);
+                        let alias_args = args
+                            .iter()
+                            .map(|arg| self.lower_type_with_subst_inner(arg, subst, allow_holes))
+                            .collect::<Vec<_>>();
+                        let view = self.interface_view(&def.name, &alias_args);
                         for entry in view.positive.iter().chain(view.negative.iter()) {
                             if let Some(interface) =
                                 self.interface_sig_by_name(&entry.name).cloned()
@@ -1339,12 +1383,7 @@ impl TypeChecker {
                         }
                         Ty::DynamicInterface {
                             name: def.name,
-                            args: args
-                                .iter()
-                                .map(|arg| {
-                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
-                                })
-                                .collect(),
+                            args: alias_args,
                         }
                     } else {
                         let nominal_name = nominal_type_name(&self.resolved, def_id);
@@ -9175,10 +9214,27 @@ impl TypeChecker {
             .and_then(|def_id| self.interface_aliases.get(def_id))
             .cloned()
         {
+            if alias.generics.len() != args.len() {
+                self.diagnostics.push(Diagnostic::new(
+                    None,
+                    format!(
+                        "interface alias `{name}` expects {} type arguments, got {}",
+                        alias.generics.len(),
+                        args.len()
+                    ),
+                ));
+                return InterfaceView::default();
+            }
             if !expanding.insert(name.to_string()) {
                 return InterfaceView::default();
             }
-            let view = self.interface_view_from_expr(&alias, args, expanding);
+            let subst = alias
+                .generics
+                .iter()
+                .map(|generic| generic.name.clone())
+                .zip(args.iter().cloned())
+                .collect::<HashMap<_, _>>();
+            let view = self.interface_view_from_expr(&alias.expr, &subst, expanding);
             expanding.remove(name);
             return view;
         }
@@ -9194,16 +9250,16 @@ impl TypeChecker {
     fn interface_view_from_expr(
         &mut self,
         expr: &InterfaceExpr,
-        _args: &[Ty],
+        subst: &HashMap<String, Ty>,
         expanding: &mut HashSet<String>,
     ) -> InterfaceView {
         let mut view = InterfaceView::default();
-        self.view_add_term(&mut view, &expr.first, expanding);
+        self.view_add_term(&mut view, &expr.first, subst, expanding);
         for (op, term) in &expr.rest {
             match op {
-                InterfaceOp::Add => self.view_add_term(&mut view, term, expanding),
+                InterfaceOp::Add => self.view_add_term(&mut view, term, subst, expanding),
                 InterfaceOp::Sub => {
-                    let removed = self.interface_view_for_term(term, expanding);
+                    let removed = self.interface_view_for_term(term, subst, expanding);
                     view.positive
                         .retain(|entry| !removed.positive.contains(entry));
                     view.negative
@@ -9218,9 +9274,10 @@ impl TypeChecker {
         &mut self,
         view: &mut InterfaceView,
         term: &InterfaceTerm,
+        subst: &HashMap<String, Ty>,
         expanding: &mut HashSet<String>,
     ) {
-        let term_view = self.interface_view_for_term(term, expanding);
+        let term_view = self.interface_view_for_term(term, subst, expanding);
         if term.negated {
             for entry in term_view.positive {
                 if !view.negative.contains(&entry) {
@@ -9244,14 +9301,14 @@ impl TypeChecker {
     fn interface_view_for_term(
         &mut self,
         term: &InterfaceTerm,
+        subst: &HashMap<String, Ty>,
         expanding: &mut HashSet<String>,
     ) -> InterfaceView {
         let name = name_ref_canonical(&self.resolved, &term.name);
-        let subst = HashMap::new();
         let args = term
             .args
             .iter()
-            .map(|ty| self.lower_type_with_subst(ty, &subst))
+            .map(|ty| self.lower_type_with_subst(ty, subst))
             .collect::<Vec<_>>();
         self.interface_view_inner(&name, &args, expanding)
     }

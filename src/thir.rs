@@ -58,6 +58,7 @@ pub struct CheckedInterface {
 #[derive(Clone, Debug)]
 pub struct CheckedInterfaceAlias {
     pub name: String,
+    pub generics: Vec<String>,
     pub positive: Vec<CheckedInterfaceRef>,
     pub negative: Vec<CheckedInterfaceRef>,
 }

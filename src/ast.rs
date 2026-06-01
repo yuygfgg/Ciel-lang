@@ -94,6 +94,7 @@ pub struct InterfaceDecl {
 #[derive(Clone, Debug)]
 pub struct InterfaceAliasDecl {
     pub name: Ident,
+    pub generics: Vec<GenericParam>,
     pub expr: InterfaceExpr,
 }
 

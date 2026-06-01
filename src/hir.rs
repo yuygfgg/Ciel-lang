@@ -109,6 +109,7 @@ pub struct InterfaceDecl {
 #[derive(Clone, Debug)]
 pub struct InterfaceAliasDecl {
     pub name: ast::Ident,
+    pub generics: Vec<GenericParam>,
     pub expr: InterfaceExpr,
 }
 
@@ -584,10 +585,17 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     signature,
                 })
             }
-            ast::ItemKind::InterfaceAlias(decl) => ItemKind::InterfaceAlias(InterfaceAliasDecl {
-                name: decl.name.clone(),
-                expr: self.lower_interface_expr(&decl.expr),
-            }),
+            ast::ItemKind::InterfaceAlias(decl) => {
+                self.push_generics(&decl.generics);
+                let generics = self.lower_generics(&decl.generics);
+                let expr = self.lower_interface_expr(&decl.expr);
+                self.pop_generics();
+                ItemKind::InterfaceAlias(InterfaceAliasDecl {
+                    name: decl.name.clone(),
+                    generics,
+                    expr,
+                })
+            }
             ast::ItemKind::Impl(decl) => {
                 self.push_generics(&decl.generics);
                 self.push_scope();

@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 1
+
+interface<T, U> bool same(*T value, U other);
+interface same_as<U> = same<U>;
+
+struct Box {
+    i64 value;
+}
+
+impl same<i64>(*Box box, i64 other) {
+    return box->value == other;
+}
+
+i64 matches<T: same_as<i64>>(*T value, i64 expected) {
+    if (same(value, expected)) {
+        return 1;
+    }
+    return 0;
+}
+
+i64 main() {
+    Box @box = { value: 9 };
+    return matches(&box, 9);
+}

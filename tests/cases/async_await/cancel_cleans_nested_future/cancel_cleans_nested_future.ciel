@@ -1,0 +1,52 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: CP
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/c as c;
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    opaque struct CielFuture;
+
+    i32 putchar(i32 ch);
+    c::c_int ciel_future_poll_trampoline(*CielFuture future, *void out);
+    c::c_int ciel_future_cancel(*CielFuture future);
+}
+
+void mark(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
+*CielFuture raw_future(async::Future<Result<usize, Error>> future) {
+    return unsafe { future.handle as *CielFuture };
+}
+
+async Result<usize, Error> child() {
+    defer mark(67);
+    await async_time::sleep_ms(10000)?;
+    return Ok(1);
+}
+
+async Result<usize, Error> parent() {
+    defer mark(80);
+    usize value = await child()?;
+    return Ok(value);
+}
+
+i32 main() {
+    async::Future<Result<usize, Error>> future = parent();
+    Result<usize, Error> @out = Ok(0);
+    c::c_int start = unsafe { ciel_future_poll_trampoline(raw_future(future), &out as *void) };
+    if (start == 0) {
+        return 1;
+    }
+    c::c_int canceled = unsafe { ciel_future_cancel(raw_future(future)) };
+    if (canceled != 0) {
+        return 2;
+    }
+    return 0;
+}

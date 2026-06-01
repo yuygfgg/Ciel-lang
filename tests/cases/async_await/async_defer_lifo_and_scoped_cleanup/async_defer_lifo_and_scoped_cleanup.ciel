@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: CBDA
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    i32 putchar(i32 ch);
+}
+
+void mark(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
+async Result<void, Error> scoped() {
+    defer mark(65);
+    await async_time::sleep_ms(0)?;
+    {
+        defer mark(66);
+        defer mark(67);
+        await async_time::sleep_ms(0)?;
+    }
+    defer mark(68);
+    await async_time::sleep_ms(0)?;
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(scoped()));
+    return 0;
+}

@@ -60,13 +60,13 @@ Implementation guardrails:
 
 ## Phase 2: Frames, Cleanup, And Trampoline
 
-- [ ] Add multi-await frame lowering.
+- [x] Add multi-await frame lowering.
       Scope: generate program counters, frame storage, nested future storage,
       source-order evaluation, and resume code for multiple await points.
       Tests: a run fixture performs two awaits, calls a nested async function,
       and prints the final value.
 
-- [ ] Add live-local and async-frame-safety analysis.
+- [x] Add live-local and async-frame-safety analysis.
       Scope: permit owned frame-safe locals and direct local static read-only
       slices across await; reject raw pointers, nullable pointers, mutable
       slices, non-static borrowed slices, `ThreadLocal` handles, forbidden
@@ -75,7 +75,7 @@ Implementation guardrails:
       positive fixture for a string-literal slice; focused error fixtures for
       each rejected category.
 
-- [ ] Add deterministic async-frame cleanup and trampoline scheduling.
+- [x] Add deterministic async-frame cleanup and trampoline scheduling.
       Scope: initialized frame fields are cleaned up on return, `Err`, panic,
       cancel, or abort; immediate completions resume through a trampoline with a
       fairness budget instead of recursive C calls.

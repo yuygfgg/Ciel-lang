@@ -1,0 +1,136 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: ABCD
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/c as c;
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    opaque struct CielFuture;
+
+    i32 putchar(i32 ch);
+    c::c_int ciel_future_poll_trampoline(*CielFuture future, *void out);
+    c::c_int ciel_future_cancel(*CielFuture future);
+    c::c_int ciel_future_abort(*CielFuture future);
+}
+
+void mark(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
+*CielFuture raw_future(async::Future<Result<usize, Error>> future) {
+    return unsafe { future.handle as *CielFuture };
+}
+
+async Result<usize, Error> early_return() {
+    defer mark(65);
+    await async_time::sleep_ms(0)?;
+    return Ok(1);
+}
+
+async Result<usize, Error> err_return() {
+    defer mark(66);
+    await async_time::sleep_ms(0)?;
+    return Err(code_error(77));
+}
+
+async Result<usize, Error> cancel_target() {
+    defer mark(67);
+    await async_time::sleep_ms(10000)?;
+    return Ok(3);
+}
+
+async Result<usize, Error> abort_target() {
+    defer mark(68);
+    await async_time::sleep_ms(10000)?;
+    return Ok(4);
+}
+
+async Result<usize, Error> ready_loop(usize limit) {
+    usize @i = 0;
+    usize @count = 0;
+    while (i < limit) {
+        await async_time::sleep_ms(0)?;
+        count = count + 1;
+        i = i + 1;
+    }
+    return Ok(count);
+}
+
+async Result<usize, Error> ready_inc(usize value) {
+    return Ok(value + 1);
+}
+
+async Result<usize, Error> ready_chain(usize limit) {
+    usize @i = 0;
+    usize @count = 0;
+    while (i < limit) {
+        count = await ready_inc(count)?;
+        i = i + 1;
+    }
+    return Ok(count);
+}
+
+bool poll_ready_step(async::Future<Result<usize, Error>> future, *Result<usize, Error> out) {
+    c::c_int rc = unsafe { ciel_future_poll_trampoline(raw_future(future), out as *void) };
+    return rc == 0;
+}
+
+i32 main() {
+    if (must(async::block_on(early_return())) != 1) {
+        return 1;
+    }
+    switch (async::block_on(err_return())) {
+        case Ok(_):
+            return 2;
+        case Err(_):
+    }
+    async::Future<Result<usize, Error>> cancel_future = cancel_target();
+    Result<usize, Error> @cancel_out = Ok(0);
+    c::c_int cancel_start = unsafe {
+        ciel_future_poll_trampoline(raw_future(cancel_future), &cancel_out as *void)
+    };
+    if (cancel_start == 0) {
+        return 3;
+    }
+    if (unsafe { ciel_future_cancel(raw_future(cancel_future)) } != 0) {
+        return 4;
+    }
+    async::Future<Result<usize, Error>> abort_future = abort_target();
+    Result<usize, Error> @abort_out = Ok(0);
+    c::c_int abort_start = unsafe {
+        ciel_future_poll_trampoline(raw_future(abort_future), &abort_out as *void)
+    };
+    if (abort_start == 0) {
+        return 5;
+    }
+    if (unsafe { ciel_future_abort(raw_future(abort_future)) } != 0) {
+        return 6;
+    }
+    usize first = must(async::block_on(ready_loop(70)));
+    usize second = must(async::block_on(ready_loop(65)));
+    if (first != 70 || second != 65) {
+        return 7;
+    }
+    async::Future<Result<usize, Error>> ready_a = ready_chain(130);
+    async::Future<Result<usize, Error>> ready_b = ready_chain(127);
+    Result<usize, Error> @out_a = Ok(0);
+    Result<usize, Error> @out_b = Ok(0);
+    bool @done_a = poll_ready_step(ready_a, &out_a);
+    bool @done_b = poll_ready_step(ready_b, &out_b);
+    done_a = poll_ready_step(ready_a, &out_a);
+    done_b = poll_ready_step(ready_b, &out_b);
+    done_a = poll_ready_step(ready_a, &out_a);
+    done_b = poll_ready_step(ready_b, &out_b);
+    if (!done_a || !done_b) {
+        return 8;
+    }
+    if (must(out_a) != 130 || must(out_b) != 127) {
+        return 8;
+    }
+    return 0;
+}

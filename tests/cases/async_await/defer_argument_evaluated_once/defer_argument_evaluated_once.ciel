@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: EE
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    i32 putchar(i32 ch);
+}
+
+void mark(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
+i32 mark_value(i32 ch) {
+    mark(ch);
+    return ch;
+}
+
+async Result<void, Error> deferred() {
+    defer mark(mark_value(69));
+    await async_time::sleep_ms(0)?;
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(deferred()));
+    return 0;
+}

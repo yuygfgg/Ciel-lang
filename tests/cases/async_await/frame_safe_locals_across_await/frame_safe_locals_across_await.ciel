@@ -1,0 +1,51 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 63
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+struct OwnedBox {
+    usize first;
+    [3]usize values;
+}
+
+enum OwnedChoice {
+    Use(OwnedBox),
+    Skip,
+}
+
+async Result<usize, Error> nested_value(usize seed) {
+    await async_time::sleep_ms(0)?;
+    return Ok(seed + 5);
+}
+
+async Result<usize, Error> keep_values() {
+    usize scalar = 7;
+    [3]usize values = [2, 3, 4];
+    OwnedBox box = { first: 11, values: values };
+    OwnedChoice choice = Use(box);
+    []const char label = "frame";
+    _ add = || scalar + box.first;
+    async::Future<Result<usize, Error>> pending = nested_value(10);
+
+    await async_time::sleep_ms(0)?;
+
+    usize @total = scalar + values[1] + label.len + add();
+    switch (choice) {
+        case Use(found):
+            total = total + found.first + found.values[2];
+        case Skip:
+            total = total + 1000;
+    }
+    usize from_nested = await pending?;
+    return Ok(total + from_nested);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(keep_values()))));
+    return 0;
+}

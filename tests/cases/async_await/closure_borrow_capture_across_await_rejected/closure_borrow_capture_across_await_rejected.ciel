@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: closure capture
+// expect-error: raw pointer type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+async Result<i64, Error> main_async() {
+    i64 value = 10;
+    *i64 ptr = &value;
+    _ reader = || *ptr;
+    await async_time::sleep_ms(0)?;
+    return Ok(reader());
+}
+
+i32 main() {
+    Result<i64, Error> value = async::block_on(main_async());
+    switch (value) {
+        case Ok(_):
+            return 0;
+        case Err(_):
+            return 1;
+    }
+}

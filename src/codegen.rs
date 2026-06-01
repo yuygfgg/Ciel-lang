@@ -20,7 +20,7 @@ use crate::{
     thir::{
         ActorSpawnMode, CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock,
         TClosureBody, TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind,
-        TryPropagation,
+        ThirVisitor, TryPropagation, walk_expr,
     },
     types::{
         ConstraintBounds, ConstraintRef, STD_MESSAGE_CLONE_INTERFACE,
@@ -60,9 +60,64 @@ struct CGenerator<'a> {
     continue_targets: Vec<Option<String>>,
     current_return_ty: Ty,
     current_async_output: Option<String>,
+    current_async_context: Option<String>,
+    current_async_await_index: usize,
+    current_async_frame_locals: HashMap<LocalId, String>,
+    current_async_await_outputs: Vec<Option<(String, Ty)>>,
+    current_async_defer_arg_index: usize,
+    current_async_cleanup_cases: Vec<Vec<Vec<String>>>,
     temp_counter: usize,
     share_handle_templates: Vec<Ty>,
     thread_local_templates: Vec<Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncFrameLocal {
+    id: LocalId,
+    ty: Ty,
+    field: String,
+    heap: bool,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncDeferArg {
+    ty: Ty,
+    field: String,
+}
+
+struct AsyncLocalUseCollector {
+    locals: HashSet<LocalId>,
+}
+
+impl ThirVisitor for AsyncLocalUseCollector {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::Local(local_id, _) => {
+                self.locals.insert(*local_id);
+            }
+            TExprKind::Closure { captures, .. } => {
+                for capture in captures {
+                    self.locals.insert(capture.local_id);
+                }
+            }
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+struct ExprChildVisitor<'a, F: FnMut(&TExpr)> {
+    visit: &'a mut F,
+}
+
+impl<F: FnMut(&TExpr)> ThirVisitor for ExprChildVisitor<'_, F> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        (self.visit)(expr);
+    }
+}
+
+fn walk_typed_expr<F: FnMut(&TExpr)>(expr: &TExpr, visit: &mut F) {
+    let mut visitor = ExprChildVisitor { visit };
+    walk_expr(&mut visitor, expr);
 }
 
 #[derive(Clone, Debug, Default)]
@@ -134,6 +189,7 @@ struct ActorDispatch {
 struct AsyncFunctionNames {
     context: String,
     run: String,
+    cleanup: String,
 }
 
 #[derive(Clone, Debug)]
@@ -203,6 +259,12 @@ impl<'a> CGenerator<'a> {
             continue_targets: Vec::new(),
             current_return_ty: Ty::Void,
             current_async_output: None,
+            current_async_context: None,
+            current_async_await_index: 0,
+            current_async_frame_locals: HashMap::new(),
+            current_async_await_outputs: Vec::new(),
+            current_async_defer_arg_index: 0,
+            current_async_cleanup_cases: Vec::new(),
             temp_counter: 0,
             share_handle_templates: program.checked.share_handle_templates.clone(),
             thread_local_templates: program.checked.thread_local_templates.clone(),
@@ -2452,6 +2514,654 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn async_frame_locals_for_function(&self, function: &CheckedFunction) -> Vec<AsyncFrameLocal> {
+        let mut locals = Vec::<(LocalId, Ty)>::new();
+        let mut seen = HashSet::<LocalId>::new();
+        let mut live_across_await = HashSet::<LocalId>::new();
+        if let Some(body) = &function.body {
+            self.collect_async_frame_locals_block(body, &mut locals, &mut seen);
+            self.async_live_frame_locals_before_block(body, HashSet::new(), &mut live_across_await);
+        }
+        let heap_locals = self
+            .escapes
+            .functions
+            .get(&function.def_id)
+            .map(|escape| escape.heap_locals.clone())
+            .unwrap_or_default();
+        locals
+            .into_iter()
+            .filter(|(id, _)| live_across_await.contains(id))
+            .map(|(id, ty)| AsyncFrameLocal {
+                id,
+                ty,
+                field: format!("local{}", id.0),
+                heap: heap_locals.contains(&id),
+            })
+            .collect()
+    }
+
+    fn collect_async_frame_locals_block(
+        &self,
+        block: &TBlock,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        for stmt in &block.statements {
+            self.collect_async_frame_locals_stmt(stmt, out, seen);
+        }
+    }
+
+    fn collect_async_frame_locals_stmt(
+        &self,
+        stmt: &TStmt,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_frame_locals_block(block, out, seen);
+            }
+            TStmtKind::VarDecl {
+                ty,
+                local_id,
+                init,
+                ..
+            } => {
+                if !ty.is_erased_value() && seen.insert(*local_id) {
+                    out.push((*local_id, ty.clone()));
+                }
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_expr(init, out, seen);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_frame_locals_expr(target, out, seen);
+                self.collect_async_frame_locals_expr(value, out, seen);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_frame_locals_expr(cond, out, seen);
+                self.collect_async_frame_locals_block(then_block, out, seen);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_frame_locals_stmt(else_branch, out, seen);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_for_init(init, out, seen);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_frame_locals_expr(cond, out, seen);
+                }
+                if let Some(step) = step {
+                    self.collect_async_frame_locals_for_init(step, out, seen);
+                }
+                self.collect_async_frame_locals_block(body, out, seen);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_frame_locals_expr(expr, out, seen);
+                for case in cases {
+                    let mut bindings = Vec::new();
+                    case.pattern.collect_bindings(&mut bindings);
+                    for (local_id, _, _, ty) in bindings {
+                        if !ty.is_erased_value() && seen.insert(*local_id) {
+                            out.push((*local_id, ty.clone()));
+                        }
+                    }
+                    for stmt in &case.statements {
+                        self.collect_async_frame_locals_stmt(stmt, out, seen);
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_frame_locals_stmt(stmt, out, seen);
+                }
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.collect_async_frame_locals_expr(expr, out, seen);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_frame_locals_for_init(
+        &self,
+        init: &TForInit,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match init {
+            TForInit::VarDecl {
+                ty,
+                local_id,
+                init,
+                ..
+            } => {
+                if !ty.is_erased_value() && seen.insert(*local_id) {
+                    out.push((*local_id, ty.clone()));
+                }
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_expr(init, out, seen);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_frame_locals_expr(target, out, seen);
+                self.collect_async_frame_locals_expr(value, out, seen);
+            }
+            TForInit::Expr(expr) => self.collect_async_frame_locals_expr(expr, out, seen),
+        }
+    }
+
+    fn collect_async_frame_locals_expr(
+        &self,
+        expr: &TExpr,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_frame_locals_stmt(stmt, out, seen);
+                }
+                if let Some(value) = value {
+                    self.collect_async_frame_locals_expr(value, out, seen);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_frame_locals_expr(child, out, seen);
+            }),
+        }
+    }
+
+    fn async_live_frame_locals_before_block(
+        &self,
+        block: &TBlock,
+        mut live: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        for stmt in block.statements.iter().rev() {
+            live = self.async_live_frame_locals_before_stmt(stmt, live, out);
+        }
+        live
+    }
+
+    fn async_live_frame_locals_before_stmt(
+        &self,
+        stmt: &TStmt,
+        live_after: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        match &stmt.kind {
+            TStmtKind::Block(block) => {
+                self.async_live_frame_locals_before_block(block, live_after, out)
+            }
+            TStmtKind::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_collect_live_awaits_in_expr(init, &live, out);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TStmtKind::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(value, &live, out);
+                self.async_collect_live_awaits_in_expr(target, &live, out);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                let then_live =
+                    self.async_live_frame_locals_before_block(then_block, live_after.clone(), out);
+                let else_live = else_branch
+                    .as_ref()
+                    .map(|stmt| {
+                        self.async_live_frame_locals_before_stmt(stmt, live_after.clone(), out)
+                    })
+                    .unwrap_or_else(|| live_after.clone());
+                let mut live = then_live;
+                live.extend(else_live);
+                self.async_collect_live_awaits_in_expr(cond, &live, out);
+                live.extend(Self::async_expr_used_locals(cond));
+                live
+            }
+            TStmtKind::While { cond, body } => {
+                let mut loop_live = live_after.clone();
+                loop_live.extend(Self::async_expr_used_locals(cond));
+                for _ in 0..2 {
+                    let body_live =
+                        self.async_live_frame_locals_before_block(body, loop_live.clone(), out);
+                    let old_len = loop_live.len();
+                    loop_live.extend(body_live);
+                    loop_live.extend(Self::async_expr_used_locals(cond));
+                    if loop_live.len() == old_len {
+                        break;
+                    }
+                }
+                self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
+                loop_live
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                let mut live = live_after;
+                if let Some(step) = step {
+                    live = self.async_live_frame_locals_before_for_init(step, live, out);
+                }
+                if let Some(cond) = cond {
+                    self.async_collect_live_awaits_in_expr(cond, &live, out);
+                    live.extend(Self::async_expr_used_locals(cond));
+                }
+                live = self.async_live_frame_locals_before_block(body, live, out);
+                if let Some(init) = init {
+                    live = self.async_live_frame_locals_before_for_init(init, live, out);
+                }
+                live
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                let mut live = HashSet::new();
+                for case in cases {
+                    let mut case_live = live_after.clone();
+                    for stmt in case.statements.iter().rev() {
+                        case_live =
+                            self.async_live_frame_locals_before_stmt(stmt, case_live, out);
+                    }
+                    let mut bindings = Vec::new();
+                    case.pattern.collect_bindings(&mut bindings);
+                    for (local_id, _, _, _) in bindings {
+                        case_live.remove(local_id);
+                    }
+                    live.extend(case_live);
+                }
+                let mut default_live = live_after;
+                for stmt in default.iter().rev() {
+                    default_live =
+                        self.async_live_frame_locals_before_stmt(stmt, default_live, out);
+                }
+                live.extend(default_live);
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Return(Some(expr)) => {
+                let live = HashSet::new();
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                Self::async_expr_used_locals(expr)
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => HashSet::new(),
+        }
+    }
+
+    fn async_live_frame_locals_before_for_init(
+        &self,
+        init: &TForInit,
+        live_after: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        match init {
+            TForInit::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_collect_live_awaits_in_expr(init, &live, out);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TForInit::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(value, &live, out);
+                self.async_collect_live_awaits_in_expr(target, &live, out);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TForInit::Expr(expr) => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+        }
+    }
+
+    fn async_collect_live_awaits_in_expr(
+        &self,
+        expr: &TExpr,
+        live_after: &HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) {
+        let mut live_after = live_after.clone();
+        live_after.extend(Self::async_expr_used_locals(expr));
+        self.async_collect_live_awaits_in_expr_inner(expr, &live_after, out);
+    }
+
+    fn async_collect_live_awaits_in_expr_inner(
+        &self,
+        expr: &TExpr,
+        live_after: &HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                let mut live = live_after.clone();
+                live.extend(Self::async_expr_used_locals(future));
+                out.extend(live);
+                self.async_collect_live_awaits_in_expr_inner(future, live_after, out);
+            }
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                let mut live = live_after.clone();
+                if let Some(value) = value {
+                    self.async_collect_live_awaits_in_expr_inner(value, &live, out);
+                    live.extend(Self::async_expr_used_locals(value));
+                }
+                for stmt in statements.iter().rev() {
+                    live = self.async_live_frame_locals_before_stmt(stmt, live, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.async_collect_live_awaits_in_expr_inner(child, live_after, out);
+            }),
+        }
+    }
+
+    fn async_expr_used_locals(expr: &TExpr) -> HashSet<LocalId> {
+        let mut collector = AsyncLocalUseCollector {
+            locals: HashSet::new(),
+        };
+        collector.visit_expr(expr);
+        collector.locals
+    }
+
+    fn async_await_output_tys_for_block(&self, block: &TBlock) -> Vec<Ty> {
+        let mut out = Vec::new();
+        self.collect_async_await_output_tys_block(block, &mut out);
+        out
+    }
+
+    fn async_defer_args_for_function(&self, function: &CheckedFunction) -> Vec<AsyncDeferArg> {
+        let mut out = Vec::new();
+        if let Some(body) = &function.body {
+            self.collect_async_defer_args_block(body, &mut out);
+        }
+        out.into_iter()
+            .enumerate()
+            .map(|(idx, ty)| AsyncDeferArg {
+                ty,
+                field: format!("defer_arg{}", idx + 1),
+            })
+            .collect()
+    }
+
+    fn collect_async_defer_args_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
+        for stmt in &block.statements {
+            self.collect_async_defer_args_stmt(stmt, out);
+        }
+    }
+
+    fn collect_async_defer_args_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_defer_args_block(block, out);
+            }
+            TStmtKind::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_expr(init, out);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_defer_args_expr(target, out);
+                self.collect_async_defer_args_expr(value, out);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_defer_args_expr(cond, out);
+                self.collect_async_defer_args_block(then_block, out);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_defer_args_stmt(else_branch, out);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_for_init(init, out);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_defer_args_expr(cond, out);
+                }
+                if let Some(step) = step {
+                    self.collect_async_defer_args_for_init(step, out);
+                }
+                self.collect_async_defer_args_block(body, out);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_defer_args_expr(expr, out);
+                for case in cases {
+                    for stmt in &case.statements {
+                        self.collect_async_defer_args_stmt(stmt, out);
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_defer_args_stmt(stmt, out);
+                }
+            }
+            TStmtKind::Defer(expr) => {
+                if let TExprKind::Call { callee, args, .. } = &expr.kind {
+                    self.collect_async_defer_args_expr(callee, out);
+                    for arg in args {
+                        self.collect_async_defer_args_expr(arg, out);
+                        if !arg.ty.is_erased_value() {
+                            out.push(arg.ty.clone());
+                        }
+                    }
+                } else {
+                    self.collect_async_defer_args_expr(expr, out);
+                }
+            }
+            TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.collect_async_defer_args_expr(expr, out);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_defer_args_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
+        match init {
+            TForInit::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_expr(init, out);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_defer_args_expr(target, out);
+                self.collect_async_defer_args_expr(value, out);
+            }
+            TForInit::Expr(expr) => self.collect_async_defer_args_expr(expr, out),
+        }
+    }
+
+    fn collect_async_defer_args_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
+        match &expr.kind {
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_defer_args_stmt(stmt, out);
+                }
+                if let Some(value) = value {
+                    self.collect_async_defer_args_expr(value, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_defer_args_expr(child, out);
+            }),
+        }
+    }
+
+    fn collect_async_await_output_tys_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
+        for stmt in &block.statements {
+            self.collect_async_await_output_tys_stmt(stmt, out);
+        }
+    }
+
+    fn collect_async_await_output_tys_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_await_output_tys_block(block, out);
+            }
+            TStmtKind::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_expr(init, out);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_await_output_tys_expr(target, out);
+                self.collect_async_await_output_tys_expr(value, out);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_await_output_tys_expr(cond, out);
+                self.collect_async_await_output_tys_block(then_block, out);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_await_output_tys_stmt(else_branch, out);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_for_init(init, out);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_await_output_tys_expr(cond, out);
+                }
+                if let Some(step) = step {
+                    self.collect_async_await_output_tys_for_init(step, out);
+                }
+                self.collect_async_await_output_tys_block(body, out);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_await_output_tys_expr(expr, out);
+                for case in cases {
+                    for stmt in &case.statements {
+                        self.collect_async_await_output_tys_stmt(stmt, out);
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_await_output_tys_stmt(stmt, out);
+                }
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.collect_async_await_output_tys_expr(expr, out);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_await_output_tys_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
+        match init {
+            TForInit::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_expr(init, out);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_await_output_tys_expr(target, out);
+                self.collect_async_await_output_tys_expr(value, out);
+            }
+            TForInit::Expr(expr) => self.collect_async_await_output_tys_expr(expr, out),
+        }
+    }
+
+    fn collect_async_await_output_tys_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                self.collect_async_await_output_tys_expr(future, out);
+                out.push(expr.ty.clone());
+            }
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_await_output_tys_stmt(stmt, out);
+                }
+                if let Some(value) = value {
+                    self.collect_async_await_output_tys_expr(value, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_await_output_tys_expr(child, out);
+            }),
+        }
+    }
+
     fn emit_async_function_contexts(&mut self) {
         for function in &self.program.checked.functions {
             if !function.is_async || function.body.is_none() {
@@ -2459,6 +3169,10 @@ impl<'a> CGenerator<'a> {
             }
             let names = self.async_function_names(function.def_id);
             self.line(&format!("typedef struct {} {{", names.context));
+            self.line("    CielFuture *future;");
+            self.line("    uint32_t pc;");
+            self.line("    uint32_t cleanup_state;");
+            self.line("    CielFuture *active_future;");
             let mut emitted = false;
             for (idx, (_, _, ty)) in function
                 .params
@@ -2467,6 +3181,36 @@ impl<'a> CGenerator<'a> {
                 .enumerate()
             {
                 self.line(&format!("    {};", self.c_decl(ty, &format!("arg{idx}"))));
+                emitted = true;
+            }
+            for local in self.async_frame_locals_for_function(function) {
+                if local.heap {
+                    self.line(&format!(
+                        "    {};",
+                        self.c_pointer_decl(&local.ty, &local.field)
+                    ));
+                } else {
+                    self.line(&format!("    {};", self.c_decl(&local.ty, &local.field)));
+                }
+                emitted = true;
+            }
+            for (idx, output_ty) in self.async_await_output_tys_for_block(
+                function.body.as_ref().expect("async body exists"),
+            )
+            .into_iter()
+            .enumerate()
+            {
+                if output_ty.is_erased_value() {
+                    continue;
+                }
+                self.line(&format!(
+                    "    {};",
+                    self.c_decl(&output_ty, &format!("await_out{}", idx + 1))
+                ));
+                emitted = true;
+            }
+            for arg in self.async_defer_args_for_function(function) {
+                self.line(&format!("    {};", self.c_decl(&arg.ty, &arg.field)));
                 emitted = true;
             }
             if !emitted {
@@ -2495,6 +3239,10 @@ impl<'a> CGenerator<'a> {
                 "static int32_t {}(void *ctx_raw, void *out_raw);",
                 names.run
             ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                names.cleanup
+            ));
         }
     }
 
@@ -2509,6 +3257,7 @@ impl<'a> CGenerator<'a> {
             let name = self.async_sleep_context_name(&output_ty);
             self.line(&format!("typedef struct {name} {{"));
             self.line("    CielFuture *future;");
+            self.line("    CielAsyncOp *op;");
             self.line("    uint64_t ms;");
             self.line(&format!("}} {name};"));
         }
@@ -2529,6 +3278,10 @@ impl<'a> CGenerator<'a> {
                 "static int32_t {}(void *ctx_raw, void *out_raw);",
                 self.async_sleep_run_name(&output_ty)
             ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_sleep_cleanup_name(&output_ty)
+            ));
         }
     }
 
@@ -2542,6 +3295,7 @@ impl<'a> CGenerator<'a> {
         {
             let ctx_name = self.async_sleep_context_name(&output_ty);
             let run_name = self.async_sleep_run_name(&output_ty);
+            let cleanup_name = self.async_sleep_cleanup_name(&output_ty);
             let layout = self.result_layout(
                 &output_ty,
                 crate::span::Span::new(crate::span::FileId(0), 0, 0),
@@ -2560,8 +3314,11 @@ impl<'a> CGenerator<'a> {
             );
             self.line_indent(
                 1,
-                "int32_t rc = ciel_future_await_sleep_ms(ctx->future, ctx->ms);",
+                "int32_t rc = ciel_future_await_sleep_ms(ctx->future, &ctx->op, ctx->ms);",
             );
+            self.line_indent(1, "if (rc == EAGAIN) {");
+            self.line_indent(2, "return EAGAIN;");
+            self.line_indent(1, "}");
             self.line_indent(1, "if (rc == 0) {");
             self.line_indent(
                 2,
@@ -2577,6 +3334,15 @@ impl<'a> CGenerator<'a> {
             );
             self.line_indent(1, "}");
             self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(1, "(void)reason;");
+            self.line_indent(1, "if (ctx == NULL || ctx->op == NULL) return;");
+            self.line_indent(1, "(void)ciel_async_cancel(ctx->op);");
+            self.line_indent(1, "ctx->op = NULL;");
             self.line("}");
         }
         Ok(())
@@ -2637,6 +3403,11 @@ impl<'a> CGenerator<'a> {
                 names.context, names.context, names.context
             ),
         );
+        self.line_indent(1, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(1, &format!("{ctx}->pc = 0;"));
+        self.line_indent(1, &format!("{ctx}->cleanup_state = 0;"));
+        self.line_indent(1, &format!("{ctx}->future = NULL;"));
+        self.line_indent(1, &format!("{ctx}->active_future = NULL;"));
         for (idx, (_, name, ty)) in function
             .params
             .iter()
@@ -2650,8 +3421,8 @@ impl<'a> CGenerator<'a> {
         self.line_indent(
             1,
             &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx});",
-                names.run
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
+                names.run, names.cleanup
             ),
         );
         let (file, line) = self.location_args(body.span);
@@ -2663,6 +3434,7 @@ impl<'a> CGenerator<'a> {
             ),
         );
         self.line_indent(1, "}");
+        self.line_indent(1, &format!("{ctx}->future = {raw};"));
         self.line_indent(
             1,
             &format!(
@@ -2680,6 +3452,27 @@ impl<'a> CGenerator<'a> {
         self.loop_defer_starts.clear();
         self.current_return_ty = function.ret.clone();
         self.current_async_output = Some("out_raw".to_string());
+        self.current_async_context = Some("ctx".to_string());
+        self.current_async_await_index = 0;
+        self.current_async_frame_locals = self
+            .async_frame_locals_for_function(function)
+            .into_iter()
+            .map(|local| (local.id, format!("ctx->{}", local.field)))
+            .collect();
+        self.current_async_await_outputs = self
+            .async_await_output_tys_for_block(body)
+            .into_iter()
+            .enumerate()
+            .map(|(idx, ty)| {
+                if ty.is_erased_value() {
+                    None
+                } else {
+                    Some((format!("ctx->await_out{}", idx + 1), ty))
+                }
+            })
+            .collect();
+        self.current_async_defer_arg_index = 0;
+        self.current_async_cleanup_cases = vec![Vec::new(); self.current_async_await_outputs.len()];
         self.current_heap_locals = self
             .escapes
             .functions
@@ -2698,6 +3491,15 @@ impl<'a> CGenerator<'a> {
             1,
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
         );
+        if !self.current_async_await_outputs.is_empty() {
+            self.line_indent(1, "switch (ctx->pc) {");
+            self.line_indent(2, "case 0: break;");
+            for idx in 1..=self.current_async_await_outputs.len() {
+                self.line_indent(2, &format!("case {idx}: goto ciel_async_resume_{idx};"));
+            }
+            self.line_indent(2, "default: return EINVAL;");
+            self.line_indent(1, "}");
+        }
         let falls_through = self.gen_block_inner(body, 1)?;
         if falls_through && function.ret.is_never() {
             self.line_indent(1, "ciel_panic(NULL, 0);");
@@ -2708,13 +3510,58 @@ impl<'a> CGenerator<'a> {
         } else if falls_through {
             self.line_indent(1, "return 0;");
         }
+        let cleanup_cases = self.current_async_cleanup_cases.clone();
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
         self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.current_async_output = None;
+        self.current_async_context = None;
+        self.current_async_await_index = 0;
+        self.current_async_frame_locals.clear();
+        self.current_async_await_outputs.clear();
+        self.current_async_defer_arg_index = 0;
+        self.current_async_cleanup_cases.clear();
         self.line("}");
+        self.emit_async_cleanup_function(&names, &cleanup_cases);
         Ok(())
+    }
+
+    fn emit_async_cleanup_function(
+        &mut self,
+        names: &AsyncFunctionNames,
+        cleanup_cases: &[Vec<Vec<String>>],
+    ) {
+        self.line(&format!(
+            "static void {}(void *ctx_raw, int32_t reason) {{",
+            names.cleanup
+        ));
+        self.line_indent(
+            1,
+            &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
+        );
+        self.line_indent(1, "(void)reason;");
+        self.line_indent(1, "if (ctx == NULL || ctx->cleanup_state == 0) return;");
+        self.line_indent(1, "if (ctx->active_future != NULL) {");
+        self.line_indent(2, "(void)ciel_future_cancel(ctx->active_future);");
+        self.line_indent(2, "ctx->active_future = NULL;");
+        self.line_indent(1, "}");
+        self.line_indent(1, "switch (ctx->cleanup_state) {");
+        for (idx, frames) in cleanup_cases.iter().enumerate() {
+            if frames.iter().all(|frame| frame.is_empty()) {
+                continue;
+            }
+            self.line_indent(2, &format!("case {}:", idx + 1));
+            self.emit_defer_frames(frames, 3);
+            self.line_indent(3, "break;");
+        }
+        self.line_indent(2, "default:");
+        self.line_indent(3, "break;");
+        self.line_indent(1, "}");
+        self.line_indent(1, "ctx->pc = 0;");
+        self.line_indent(1, "ctx->cleanup_state = 0;");
+        self.line_indent(1, "ciel_future_clear_pending_operation(ctx->future);");
+        self.line("}");
     }
 
     fn gen_block(&mut self, block: &TBlock, indent: usize) -> DiagResult<bool> {
@@ -2755,6 +3602,24 @@ impl<'a> CGenerator<'a> {
                     if let Some(init) = init {
                         let value = self.gen_expr_in_stmt(init, indent)?;
                         self.line_indent(indent, &format!("(void)({value});"));
+                    }
+                    return Ok(true);
+                }
+                if self.local_is_async_frame(*local_id) {
+                    if self.local_is_heap(*local_id) {
+                        self.line_indent(
+                            indent,
+                            &format!(
+                                "{cname} = ({}){};",
+                                self.c_pointer_type(ty),
+                                self.c_object_alloc_expr(ty)
+                            ),
+                        );
+                        if let Some(init) = init {
+                            self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
+                        }
+                    } else if let Some(init) = init {
+                        self.emit_expr_store(&cname, init, indent)?;
                     }
                     return Ok(true);
                 }
@@ -2852,9 +3717,9 @@ impl<'a> CGenerator<'a> {
                     local_id,
                     init,
                 }) = init
-                    && self.local_is_heap(*local_id)
+                    && (self.local_is_heap(*local_id) || self.local_is_async_frame(*local_id))
                 {
-                    self.gen_heap_local_decl(ty, name, *local_id, init.as_ref(), indent)?;
+                    self.gen_frame_or_heap_local_decl(ty, name, *local_id, init.as_ref(), indent)?;
                     String::new()
                 } else {
                     init.as_ref()
@@ -3069,6 +3934,22 @@ impl<'a> CGenerator<'a> {
                     return Ok(());
                 }
                 let cname = self.local_c_name(*local_id, name);
+                if self.local_is_async_frame(*local_id) {
+                    if self.local_is_heap(*local_id) {
+                        self.line_indent(
+                            indent,
+                            &format!(
+                                "{cname} = ({}){};",
+                                self.c_pointer_type(ty),
+                                self.c_object_alloc_expr(ty)
+                            ),
+                        );
+                        self.emit_value_copy(&format!("*{cname}"), value_expr, ty, indent);
+                    } else {
+                        self.emit_value_copy(&cname, value_expr, ty, indent);
+                    }
+                    return Ok(());
+                }
                 if self.local_is_heap(*local_id) {
                     self.line_indent(
                         indent,
@@ -3117,6 +3998,13 @@ impl<'a> CGenerator<'a> {
                 if ty.is_erased_value() {
                     return if let Some(init) = init {
                         Ok(format!("(void)({})", self.gen_expr(init)?))
+                    } else {
+                        Ok(String::new())
+                    };
+                }
+                if self.local_is_async_frame(*local_id) {
+                    return if let Some(init) = init {
+                        Ok(format!("{cname} = {}", self.gen_expr(init)?))
                     } else {
                         Ok(String::new())
                     };
@@ -3199,8 +4087,14 @@ impl<'a> CGenerator<'a> {
                     }
                     return Ok(());
                 }
-                if self.local_is_heap(*local_id) {
-                    return self.gen_heap_local_decl(ty, name, *local_id, init.as_ref(), indent);
+                if self.local_is_heap(*local_id) || self.local_is_async_frame(*local_id) {
+                    return self.gen_frame_or_heap_local_decl(
+                        ty,
+                        name,
+                        *local_id,
+                        init.as_ref(),
+                        indent,
+                    );
                 }
                 if let Some(init) = init {
                     self.emit_local_decl_with_init(ty, &cname, init, indent)?;
@@ -3229,7 +4123,7 @@ impl<'a> CGenerator<'a> {
         }
     }
 
-    fn gen_heap_local_decl(
+    fn gen_frame_or_heap_local_decl(
         &mut self,
         ty: &Ty,
         name: &str,
@@ -3238,6 +4132,24 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<()> {
         let cname = self.local_c_name(local_id, name);
+        if self.local_is_async_frame(local_id) {
+            if self.local_is_heap(local_id) {
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "{cname} = ({}){};",
+                        self.c_pointer_type(ty),
+                        self.c_object_alloc_expr(ty)
+                    ),
+                );
+                if let Some(init) = init {
+                    self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
+                }
+            } else if let Some(init) = init {
+                self.emit_expr_store(&cname, init, indent)?;
+            }
+            return Ok(());
+        }
         self.line_indent(
             indent,
             &format!(
@@ -5411,15 +6323,51 @@ impl<'a> CGenerator<'a> {
         prefix: &str,
         indent: usize,
     ) -> DiagResult<(String, String)> {
-        let future_temp = self.emit_temp_value(&format!("{prefix}_future"), future, indent)?;
         let raw = self.next_temp(&format!("{prefix}_raw"));
-        self.line_indent(
-            indent,
-            &format!("CielFuture *{raw} = ciel_future_from_handle({future_temp}.handle);"),
-        );
+        let await_index = if prefix == "await" && self.current_async_context.is_some() {
+            self.current_async_await_index += 1;
+            Some(self.current_async_await_index)
+        } else {
+            None
+        };
+        let async_ctx = self.current_async_context.clone();
+        let async_await = async_ctx.is_some() && await_index.is_some();
+        if let Some(await_index) = await_index {
+            if let Some(case) = self.current_async_cleanup_cases.get_mut(await_index - 1) {
+                *case = self.defer_stack.clone();
+            }
+            self.line_indent(indent, &format!("ciel_async_resume_{await_index}:;"));
+            self.line_indent(indent, &format!("CielFuture *{raw} = NULL;"));
+            let ctx = async_ctx.as_ref().expect("async ctx exists");
+            self.line_indent(
+                indent,
+                &format!("if ({ctx}->pc == {await_index} && {ctx}->active_future != NULL) {{"),
+            );
+            self.line_indent(indent + 1, &format!("{raw} = {ctx}->active_future;"));
+            self.line_indent(indent, "} else {");
+            let future_temp = self.emit_temp_value(&format!("{prefix}_future"), future, indent + 1)?;
+            self.line_indent(
+                indent + 1,
+                &format!("{raw} = ciel_future_from_handle({future_temp}.handle);"),
+            );
+            self.line_indent(indent + 1, &format!("{ctx}->pc = {await_index};"));
+            self.line_indent(indent + 1, &format!("{ctx}->cleanup_state = {ctx}->pc;"));
+            self.line_indent(indent + 1, &format!("{ctx}->active_future = {raw};"));
+            self.line_indent(indent, "}");
+        } else {
+            let future_temp = self.emit_temp_value(&format!("{prefix}_future"), future, indent)?;
+            self.line_indent(
+                indent,
+                &format!("CielFuture *{raw} = ciel_future_from_handle({future_temp}.handle);"),
+            );
+        }
 
         let output = if output_ty.is_erased_value() {
             None
+        } else if let Some(await_index) = await_index {
+            self.current_async_await_outputs
+                .get(await_index - 1)
+                .and_then(|slot| slot.as_ref().map(|(field, _)| field.clone()))
         } else {
             let output = self.next_temp(&format!("{prefix}_out"));
             self.line_indent(indent, &format!("{};", self.c_decl(output_ty, &output)));
@@ -5431,10 +6379,30 @@ impl<'a> CGenerator<'a> {
             .map(|name| format!("&{name}"))
             .unwrap_or_else(|| "NULL".to_string());
         let rc = self.next_temp(&format!("{prefix}_rc"));
+        let run_fn = if async_await {
+            "ciel_future_poll_trampoline"
+        } else {
+            "ciel_future_run_to_completion_trampoline"
+        };
         self.line_indent(
             indent,
-            &format!("int32_t {rc} = ciel_future_run_to_completion({raw}, {out_arg});"),
+            &format!("int32_t {rc} = {run_fn}({raw}, {out_arg});"),
         );
+        if let Some(ctx) = async_ctx
+            && prefix == "await"
+        {
+            self.line_indent(indent, &format!("if ({rc} == EAGAIN) {{"));
+            self.line_indent(
+                indent + 1,
+                &format!("ciel_future_adopt_pending_operation({ctx}->future, {raw});"),
+            );
+            self.line_indent(indent + 1, "return EAGAIN;");
+            self.line_indent(indent, "}");
+            self.line_indent(indent, &format!("{ctx}->active_future = NULL;"));
+            self.line_indent(indent, &format!("{ctx}->pc = 0;"));
+            self.line_indent(indent, &format!("{ctx}->cleanup_state = 0;"));
+            self.line_indent(indent, &format!("ciel_future_clear_pending_operation({ctx}->future);"));
+        }
         Ok((output.unwrap_or_else(|| "((void)0)".to_string()), rc))
     }
 
@@ -5517,19 +6485,22 @@ impl<'a> CGenerator<'a> {
         let ms_value = self.gen_expr_in_stmt(ms, indent)?;
         let ctx_name = self.async_sleep_context_name(output_ty);
         let run_name = self.async_sleep_run_name(output_ty);
+        let cleanup_name = self.async_sleep_cleanup_name(output_ty);
         let ctx = self.next_temp("sleep_ctx");
         self.line_indent(
             indent,
             &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
         );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
         self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        self.line_indent(indent, &format!("{ctx}->op = NULL;"));
         self.line_indent(indent, &format!("{ctx}->ms = (uint64_t)({ms_value});"));
         let raw = self.next_temp("sleep_future");
         let (size_expr, align_expr) = self.future_result_layout_args(output_ty);
         self.line_indent(
             indent,
             &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {run_name}, {ctx});"
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {run_name}, {ctx}, {cleanup_name});"
             ),
         );
         let (file, line) = self.location_args(expr.span);
@@ -6268,13 +7239,20 @@ impl<'a> CGenerator<'a> {
         let callee = self.gen_expr_in_stmt(callee, indent)?;
         let mut temp_args = Vec::new();
         for arg in args {
-            let value = self.gen_expr_in_stmt(arg, indent)?;
             if arg.ty.is_erased_value() {
+                let value = self.gen_expr_in_stmt(arg, indent)?;
                 self.line_indent(indent, &format!("(void)({value});"));
                 continue;
             }
-            let temp = self.emit_temp_value("defer_arg", arg, indent)?;
-            temp_args.push(temp);
+            if let Some(ctx) = self.current_async_context.clone() {
+                self.current_async_defer_arg_index += 1;
+                let field = format!("{ctx}->defer_arg{}", self.current_async_defer_arg_index);
+                self.emit_expr_store(&field, arg, indent)?;
+                temp_args.push(field);
+            } else {
+                let temp = self.emit_temp_value("defer_arg", arg, indent)?;
+                temp_args.push(temp);
+            }
         }
         Ok(format!("{callee}({})", temp_args.join(", ")))
     }
@@ -8337,11 +9315,12 @@ impl<'a> CGenerator<'a> {
 
     fn async_function_names(&self, def_id: DefId) -> AsyncFunctionNames {
         let base = self.c_name(def_id);
-        AsyncFunctionNames {
-            context: format!("CielAsyncCtx_{base}"),
-            run: format!("CielAsyncRun_{base}"),
+            AsyncFunctionNames {
+                context: format!("CielAsyncCtx_{base}"),
+                run: format!("CielAsyncRun_{base}"),
+                cleanup: format!("CielAsyncCleanup_{base}"),
+            }
         }
-    }
 
     fn async_sleep_context_name(&self, output_ty: &Ty) -> String {
         format!("CielAsyncSleepFutureCtx_{}", mangle_ty_fragment(output_ty))
@@ -8349,6 +9328,10 @@ impl<'a> CGenerator<'a> {
 
     fn async_sleep_run_name(&self, output_ty: &Ty) -> String {
         format!("CielAsyncSleepFutureRun_{}", mangle_ty_fragment(output_ty))
+    }
+
+    fn async_sleep_cleanup_name(&self, output_ty: &Ty) -> String {
+        format!("CielAsyncSleepFutureCleanup_{}", mangle_ty_fragment(output_ty))
     }
 
     fn c_name(&self, def_id: DefId) -> String {
@@ -8922,6 +9905,10 @@ impl<'a> CGenerator<'a> {
 
     fn emit_all_defers(&mut self, indent: usize) {
         let frames = self.defer_stack.clone();
+        self.emit_defer_frames(&frames, indent);
+    }
+
+    fn emit_defer_frames(&mut self, frames: &[Vec<String>], indent: usize) {
         for frame in frames.iter().rev() {
             for call in frame.iter().rev() {
                 self.line_indent(indent, &format!("{call};"));
@@ -8949,10 +9936,15 @@ impl<'a> CGenerator<'a> {
         self.current_heap_locals.contains(&id)
     }
 
+    fn local_is_async_frame(&self, id: LocalId) -> bool {
+        self.current_async_frame_locals.contains_key(&id)
+    }
+
     fn local_c_name(&self, id: LocalId, source_name: &str) -> String {
         self.current_param_locals
             .get(&id)
             .cloned()
+            .or_else(|| self.current_async_frame_locals.get(&id).cloned())
             .unwrap_or_else(|| format!("{source_name}__{}", id.0))
     }
 

@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: is not async-frame-safe across `await`
+// expect-error: raw pointer type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+async Result<usize, Error> hold_generic<T>(T value) {
+    await async_time::sleep_ms(0)?;
+    _ keep = value;
+    return Ok(1);
+}
+
+i32 main() {
+    i64 @raw = 5;
+    *i64 ptr = &raw;
+    Result<usize, Error> value = async::block_on(hold_generic<*i64>(ptr));
+    switch (value) {
+        case Ok(out):
+            return out as i32;
+        case Err(_):
+            return 1;
+    }
+}

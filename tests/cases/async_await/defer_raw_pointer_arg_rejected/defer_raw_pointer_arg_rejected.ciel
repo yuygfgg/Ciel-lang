@@ -1,0 +1,29 @@
+// ciel-test: error
+// expect-error: `defer` argument is not async-frame-safe
+// expect-error: raw pointer type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+void use_ptr(*i64 ptr) {
+    _ value = *ptr;
+}
+
+async Result<void, Error> main_async() {
+    i64 @value = 10;
+    *i64 ptr = &value;
+    defer use_ptr(ptr);
+    await async_time::sleep_ms(0)?;
+    return Ok();
+}
+
+i32 main() {
+    Result<void, Error> value = async::block_on(main_async());
+    switch (value) {
+        case Ok:
+            return 0;
+        case Err(_):
+            return 1;
+    }
+}

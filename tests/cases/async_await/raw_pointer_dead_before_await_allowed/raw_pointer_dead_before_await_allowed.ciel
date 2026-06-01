@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<i64, Error> pointer_is_dead_before_await() {
+    i64 @value = 40;
+    *i64 ptr = &value;
+    i64 before = unsafe { *ptr };
+    await async_time::sleep_ms(0)?;
+    return Ok(before + 2);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(pointer_is_dead_before_await()))));
+    return 0;
+}

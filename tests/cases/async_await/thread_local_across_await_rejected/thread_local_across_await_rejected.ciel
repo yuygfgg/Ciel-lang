@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: ThreadLocal type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/c;
+import /std/os/fd as fd;
+import /std/result;
+
+async Result<i32, Error> main_async() {
+    fd::RawFd raw = fd::stdout();
+    await async_time::sleep_ms(0)?;
+    return Ok(unsafe { fd::raw_fd(raw) } as i32);
+}
+
+i32 main() {
+    Result<i32, Error> value = async::block_on(main_async());
+    switch (value) {
+        case Ok(out):
+            return out;
+        case Err(_):
+            return 1;
+    }
+}

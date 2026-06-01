@@ -1,0 +1,30 @@
+// ciel-test: error
+// expect-error: nullable raw pointer type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+struct Box {
+    i64 value;
+}
+
+async Result<i64, Error> main_async() {
+    Box @box = { value: 7 };
+    ?*Box ptr = &box;
+    await async_time::sleep_ms(0)?;
+    if (ptr == null) {
+        return Ok(0);
+    }
+    return Ok(ptr->value);
+}
+
+i32 main() {
+    Result<i64, Error> value = async::block_on(main_async());
+    switch (value) {
+        case Ok(_):
+            return 0;
+        case Err(_):
+            return 1;
+    }
+}

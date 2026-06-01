@@ -176,6 +176,98 @@ struct CheckedLocalInit {
     assigned: bool,
 }
 
+#[derive(Clone, Debug)]
+struct AsyncLocalInfo {
+    name: String,
+    ty: Ty,
+    static_const_slice: bool,
+}
+
+struct AsyncLocalInfoCollector<'a, 'b> {
+    checker: &'a TypeChecker,
+    infos: &'b mut HashMap<LocalId, AsyncLocalInfo>,
+}
+
+impl ThirVisitor for AsyncLocalInfoCollector<'_, '_> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.checker.async_collect_local_infos_stmt(stmt, self.infos);
+                }
+                if let Some(value) = value {
+                    self.visit_expr(value);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+struct AsyncLocalUseCollector {
+    locals: HashSet<LocalId>,
+}
+
+impl ThirVisitor for AsyncLocalUseCollector {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::Local(local_id, _) => {
+                self.locals.insert(*local_id);
+            }
+            TExprKind::Closure { captures, .. } => {
+                for capture in captures {
+                    self.locals.insert(capture.local_id);
+                }
+            }
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+struct AsyncAwaitValidator<'a, 'b> {
+    checker: &'a mut TypeChecker,
+    infos: &'b HashMap<LocalId, AsyncLocalInfo>,
+    live_after: &'b HashSet<LocalId>,
+}
+
+impl ThirVisitor for AsyncAwaitValidator<'_, '_> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                let mut live = self.live_after.clone();
+                live.extend(TypeChecker::async_expr_used_locals(future));
+                self.checker
+                    .async_check_live_locals_at_await(expr.span, &live, self.infos);
+                self.visit_expr(future);
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+struct AsyncDeferArgFrameSafetyVisitor<'a> {
+    checker: &'a mut TypeChecker,
+}
+
+impl ThirVisitor for AsyncDeferArgFrameSafetyVisitor<'_> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.checker.async_check_defer_arg_frame_safety_stmt(stmt);
+                }
+                if let Some(value) = value {
+                    self.visit_expr(value);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InitState {
     Unassigned,
@@ -4095,11 +4187,719 @@ impl TypeChecker {
                 ),
             ));
         }
+        if sig.is_async && let Some(checked) = checked.as_ref() {
+            self.check_async_frame_safety(&checked.block, params);
+        }
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
         self.current_async_depth = previous_async_depth;
         checked.map(|checked| checked.block)
+    }
+
+    fn check_async_frame_safety(
+        &mut self,
+        block: &TBlock,
+        params: &[(LocalId, String, Ty, BindingMutability)],
+    ) {
+        let mut infos = HashMap::<LocalId, AsyncLocalInfo>::new();
+        for (local_id, name, ty, _) in params {
+            infos.insert(
+                *local_id,
+                AsyncLocalInfo {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    static_const_slice: false,
+                },
+            );
+        }
+        self.async_collect_local_infos_block(block, &mut infos);
+        let live_after = HashSet::new();
+        self.async_live_before_block(block, live_after, &infos);
+        self.async_check_defer_arg_frame_safety_block(block);
+    }
+
+    fn async_check_defer_arg_frame_safety_block(&mut self, block: &TBlock) {
+        for stmt in &block.statements {
+            self.async_check_defer_arg_frame_safety_stmt(stmt);
+        }
+    }
+
+    fn async_check_defer_arg_frame_safety_stmt(&mut self, stmt: &TStmt) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.async_check_defer_arg_frame_safety_block(block);
+            }
+            TStmtKind::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.async_check_defer_arg_frame_safety_expr(init);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.async_check_defer_arg_frame_safety_expr(target);
+                self.async_check_defer_arg_frame_safety_expr(value);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.async_check_defer_arg_frame_safety_expr(cond);
+                self.async_check_defer_arg_frame_safety_block(then_block);
+                if let Some(else_branch) = else_branch {
+                    self.async_check_defer_arg_frame_safety_stmt(else_branch);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.async_check_defer_arg_frame_safety_for_init(init);
+                }
+                if let Some(cond) = cond {
+                    self.async_check_defer_arg_frame_safety_expr(cond);
+                }
+                if let Some(step) = step {
+                    self.async_check_defer_arg_frame_safety_for_init(step);
+                }
+                self.async_check_defer_arg_frame_safety_block(body);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.async_check_defer_arg_frame_safety_expr(expr);
+                for case in cases {
+                    for stmt in &case.statements {
+                        self.async_check_defer_arg_frame_safety_stmt(stmt);
+                    }
+                }
+                for stmt in default {
+                    self.async_check_defer_arg_frame_safety_stmt(stmt);
+                }
+            }
+            TStmtKind::Defer(expr) => {
+                if let TExprKind::Call { args, .. } = &expr.kind {
+                    for arg in args {
+                        if arg.ty.is_erased_value() {
+                            continue;
+                        }
+                        let static_const_slice =
+                            self.async_is_static_const_slice_init(&arg.ty, Some(arg));
+                        let mut visiting = HashSet::new();
+                        if let Some(reason) = self.async_frame_safety_violation(
+                            &arg.ty,
+                            static_const_slice,
+                            "`defer` argument",
+                            &mut visiting,
+                        ) {
+                            self.diagnostics.push(Diagnostic::new(
+                                arg.span,
+                                format!(
+                                    "`defer` argument is not async-frame-safe: {reason}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                self.async_check_defer_arg_frame_safety_expr(expr);
+            }
+            TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.async_check_defer_arg_frame_safety_expr(expr);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn async_check_defer_arg_frame_safety_for_init(&mut self, init: &TForInit) {
+        match init {
+            TForInit::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.async_check_defer_arg_frame_safety_expr(init);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.async_check_defer_arg_frame_safety_expr(target);
+                self.async_check_defer_arg_frame_safety_expr(value);
+            }
+            TForInit::Expr(expr) => self.async_check_defer_arg_frame_safety_expr(expr),
+        }
+    }
+
+    fn async_check_defer_arg_frame_safety_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.async_check_defer_arg_frame_safety_stmt(stmt);
+                }
+                if let Some(value) = value {
+                    self.async_check_defer_arg_frame_safety_expr(value);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(
+                &mut AsyncDeferArgFrameSafetyVisitor { checker: self },
+                expr,
+            ),
+        }
+    }
+
+    fn async_collect_local_infos_block(
+        &self,
+        block: &TBlock,
+        infos: &mut HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        for stmt in &block.statements {
+            self.async_collect_local_infos_stmt(stmt, infos);
+        }
+    }
+
+    fn async_collect_local_infos_stmt(
+        &self,
+        stmt: &TStmt,
+        infos: &mut HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.async_collect_local_infos_block(block, infos);
+            }
+            TStmtKind::VarDecl {
+                ty,
+                name,
+                local_id,
+                init,
+            } => {
+                infos.insert(
+                    *local_id,
+                    AsyncLocalInfo {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        static_const_slice: self.async_is_static_const_slice_init(ty, init.as_ref()),
+                    },
+                );
+                if let Some(init) = init {
+                    self.async_collect_local_infos_expr(init, infos);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.async_collect_local_infos_expr(target, infos);
+                self.async_collect_local_infos_expr(value, infos);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.async_collect_local_infos_expr(cond, infos);
+                self.async_collect_local_infos_block(then_block, infos);
+                if let Some(else_branch) = else_branch {
+                    self.async_collect_local_infos_stmt(else_branch, infos);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.async_collect_local_infos_for_init(init, infos);
+                }
+                if let Some(cond) = cond {
+                    self.async_collect_local_infos_expr(cond, infos);
+                }
+                if let Some(step) = step {
+                    self.async_collect_local_infos_for_init(step, infos);
+                }
+                self.async_collect_local_infos_block(body, infos);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.async_collect_local_infos_expr(expr, infos);
+                for case in cases {
+                    self.async_collect_pattern_infos(&case.pattern, infos);
+                    for stmt in &case.statements {
+                        self.async_collect_local_infos_stmt(stmt, infos);
+                    }
+                }
+                for stmt in default {
+                    self.async_collect_local_infos_stmt(stmt, infos);
+                }
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.async_collect_local_infos_expr(expr, infos);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn async_collect_local_infos_for_init(
+        &self,
+        init: &TForInit,
+        infos: &mut HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        match init {
+            TForInit::VarDecl {
+                ty,
+                name,
+                local_id,
+                init,
+            } => {
+                infos.insert(
+                    *local_id,
+                    AsyncLocalInfo {
+                        name: name.clone(),
+                        ty: ty.clone(),
+                        static_const_slice: self.async_is_static_const_slice_init(ty, init.as_ref()),
+                    },
+                );
+                if let Some(init) = init {
+                    self.async_collect_local_infos_expr(init, infos);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.async_collect_local_infos_expr(target, infos);
+                self.async_collect_local_infos_expr(value, infos);
+            }
+            TForInit::Expr(expr) => self.async_collect_local_infos_expr(expr, infos),
+        }
+    }
+
+    fn async_collect_local_infos_expr(
+        &self,
+        expr: &TExpr,
+        infos: &mut HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.async_collect_local_infos_stmt(stmt, infos);
+                }
+                if let Some(value) = value {
+                    self.async_collect_local_infos_expr(value, infos);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(&mut AsyncLocalInfoCollector { checker: self, infos }, expr),
+        }
+    }
+
+    fn async_collect_pattern_infos(
+        &self,
+        pattern: &TPattern,
+        infos: &mut HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        let mut bindings = Vec::new();
+        pattern.collect_bindings(&mut bindings);
+        for (local_id, name, _, ty) in bindings {
+            infos.insert(
+                *local_id,
+                AsyncLocalInfo {
+                    name: name.clone(),
+                    ty: ty.clone(),
+                    static_const_slice: false,
+                },
+            );
+        }
+    }
+
+    fn async_live_before_block(
+        &mut self,
+        block: &TBlock,
+        mut live: HashSet<LocalId>,
+        infos: &HashMap<LocalId, AsyncLocalInfo>,
+    ) -> HashSet<LocalId> {
+        for stmt in block.statements.iter().rev() {
+            live = self.async_live_before_stmt(stmt, live, infos);
+        }
+        live
+    }
+
+    fn async_live_before_stmt(
+        &mut self,
+        stmt: &TStmt,
+        live_after: HashSet<LocalId>,
+        infos: &HashMap<LocalId, AsyncLocalInfo>,
+    ) -> HashSet<LocalId> {
+        match &stmt.kind {
+            TStmtKind::Block(block) => self.async_live_before_block(block, live_after, infos),
+            TStmtKind::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_validate_awaits_in_expr(init, &live, infos);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TStmtKind::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_validate_awaits_in_expr(value, &live, infos);
+                self.async_validate_awaits_in_expr(target, &live, infos);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                let then_live = self.async_live_before_block(then_block, live_after.clone(), infos);
+                let else_live = else_branch
+                    .as_ref()
+                    .map(|stmt| self.async_live_before_stmt(stmt, live_after.clone(), infos))
+                    .unwrap_or_else(|| live_after.clone());
+                let mut live = then_live;
+                live.extend(else_live);
+                self.async_validate_awaits_in_expr(cond, &live, infos);
+                live.extend(Self::async_expr_used_locals(cond));
+                live
+            }
+            TStmtKind::While { cond, body } => {
+                let mut loop_live = live_after.clone();
+                loop_live.extend(Self::async_expr_used_locals(cond));
+                for _ in 0..2 {
+                    let body_live = self.async_live_before_block(body, loop_live.clone(), infos);
+                    let old_len = loop_live.len();
+                    loop_live.extend(body_live);
+                    loop_live.extend(Self::async_expr_used_locals(cond));
+                    if loop_live.len() == old_len {
+                        break;
+                    }
+                }
+                self.async_validate_awaits_in_expr(cond, &loop_live, infos);
+                loop_live
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                let mut live = live_after;
+                if let Some(step) = step {
+                    live = self.async_live_before_for_init(step, live, infos);
+                }
+                if let Some(cond) = cond {
+                    self.async_validate_awaits_in_expr(cond, &live, infos);
+                    live.extend(Self::async_expr_used_locals(cond));
+                }
+                live = self.async_live_before_block(body, live, infos);
+                if let Some(init) = init {
+                    live = self.async_live_before_for_init(init, live, infos);
+                }
+                live
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                let mut live = HashSet::new();
+                for case in cases {
+                    let mut case_live = live_after.clone();
+                    for stmt in case.statements.iter().rev() {
+                        case_live = self.async_live_before_stmt(stmt, case_live, infos);
+                    }
+                    let mut bindings = Vec::new();
+                    case.pattern.collect_bindings(&mut bindings);
+                    for (local_id, _, _, _) in bindings {
+                        case_live.remove(local_id);
+                    }
+                    live.extend(case_live);
+                }
+                let mut default_live = live_after;
+                for stmt in default.iter().rev() {
+                    default_live = self.async_live_before_stmt(stmt, default_live, infos);
+                }
+                live.extend(default_live);
+                self.async_validate_awaits_in_expr(expr, &live, infos);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => {
+                let mut live = live_after;
+                self.async_validate_awaits_in_expr(expr, &live, infos);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Return(Some(expr)) => {
+                let live = HashSet::new();
+                self.async_validate_awaits_in_expr(expr, &live, infos);
+                Self::async_expr_used_locals(expr)
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => HashSet::new(),
+        }
+    }
+
+    fn async_live_before_for_init(
+        &mut self,
+        init: &TForInit,
+        live_after: HashSet<LocalId>,
+        infos: &HashMap<LocalId, AsyncLocalInfo>,
+    ) -> HashSet<LocalId> {
+        match init {
+            TForInit::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_validate_awaits_in_expr(init, &live, infos);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TForInit::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_validate_awaits_in_expr(value, &live, infos);
+                self.async_validate_awaits_in_expr(target, &live, infos);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TForInit::Expr(expr) => {
+                let mut live = live_after;
+                self.async_validate_awaits_in_expr(expr, &live, infos);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+        }
+    }
+
+    fn async_validate_awaits_in_expr(
+        &mut self,
+        expr: &TExpr,
+        live_after: &HashSet<LocalId>,
+        infos: &HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        let mut live_after = live_after.clone();
+        live_after.extend(Self::async_expr_used_locals(expr));
+        let mut validator = AsyncAwaitValidator {
+            checker: self,
+            infos,
+            live_after: &live_after,
+        };
+        validator.visit_expr(expr);
+    }
+
+    fn async_check_live_locals_at_await(
+        &mut self,
+        span: crate::span::Span,
+        live: &HashSet<LocalId>,
+        infos: &HashMap<LocalId, AsyncLocalInfo>,
+    ) {
+        let mut checked = HashSet::<LocalId>::new();
+        for local_id in live {
+            if !checked.insert(*local_id) {
+                continue;
+            }
+            let Some(info) = infos.get(local_id) else {
+                continue;
+            };
+            let mut visiting = HashSet::new();
+            if let Some(reason) = self.async_frame_safety_violation(
+                &info.ty,
+                info.static_const_slice,
+                &format!("local `{}`", info.name),
+                &mut visiting,
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "`{}` is not async-frame-safe across `await`: {reason}",
+                        info.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn async_frame_safety_violation(
+        &mut self,
+        ty: &Ty,
+        static_const_slice: bool,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        if matches!(
+            ty,
+            Ty::Unknown
+                | Ty::Hole(_)
+                | Ty::Never
+                | Ty::Void
+                | Ty::Bool
+                | Ty::Char
+                | Ty::I8
+                | Ty::I16
+                | Ty::I32
+                | Ty::I64
+                | Ty::U8
+                | Ty::U16
+                | Ty::U32
+                | Ty::U64
+                | Ty::Usize
+                | Ty::F32
+                | Ty::F64
+                | Ty::CSpelling { .. }
+        ) {
+            return None;
+        }
+        if contains_generic(ty) || contains_type_hole(ty) {
+            return Some(format!(
+                "{path} has generic type `{ty}` without a proven async-frame-safety policy"
+            ));
+        }
+        if self.type_implements_thread_local(ty) {
+            return Some(format!("{path} has ThreadLocal type `{ty}`"));
+        }
+        if self.type_implements_share_handle(ty) {
+            return None;
+        }
+        match ty {
+            Ty::Pointer { nullable, .. } => {
+                if *nullable {
+                    Some(format!("{path} has nullable raw pointer type `{ty}`"))
+                } else {
+                    Some(format!("{path} has raw pointer type `{ty}`"))
+                }
+            }
+            Ty::Slice { mutability, elem } => {
+                if *mutability == ViewMutability::Writable {
+                    return Some(format!("{path} has mutable slice type `{ty}`"));
+                }
+                if static_const_slice && matches!(&**elem, Ty::Char) {
+                    None
+                } else {
+                    Some(format!(
+                        "{path} has non-static borrowed read-only slice type `{ty}`"
+                    ))
+                }
+            }
+            Ty::Array { elem, .. } => self.async_frame_safety_violation(
+                elem,
+                false,
+                &format!("{path} element"),
+                visiting,
+            ),
+            Ty::Named { name, args } => {
+                if name == "Future" && args.len() == 1 {
+                    return None;
+                }
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    for (field, field_ty) in fields {
+                        if let Some(reason) = self.async_frame_safety_violation(
+                            &field_ty,
+                            false,
+                            &format!("{path}.{field}"),
+                            visiting,
+                        ) {
+                            visiting.remove(ty);
+                            return Some(reason);
+                        }
+                    }
+                    visiting.remove(ty);
+                    return None;
+                }
+                self.ensure_enum_instance(ty);
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    for variant in enm.variants {
+                        for (idx, payload_ty) in variant.payload.iter().enumerate() {
+                            if let Some(reason) = self.async_frame_safety_violation(
+                                payload_ty,
+                                false,
+                                &format!("{path}.{}[{idx}]", variant.name),
+                                visiting,
+                            ) {
+                                visiting.remove(ty);
+                                return Some(reason);
+                            }
+                        }
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            Ty::ClosureInstance { captures, .. } => {
+                for (idx, capture_ty) in captures.iter().enumerate() {
+                    if let Some(reason) = self.async_frame_safety_violation(
+                        capture_ty,
+                        false,
+                        &format!("{path} closure capture {idx}"),
+                        visiting,
+                    ) {
+                        return Some(reason);
+                    }
+                }
+                None
+            }
+            Ty::Closure { .. } => Some(format!("{path} has erased closure type `{ty}`")),
+            Ty::DynamicInterface { .. } => {
+                Some(format!("{path} has dynamic interface type `{ty}`"))
+            }
+            Ty::Function { .. } => Some(format!("{path} has function pointer type `{ty}`")),
+            Ty::Generic(_) => Some(format!(
+                "{path} has generic type `{ty}` without a proven async-frame-safety policy"
+            )),
+            Ty::Hole(_)
+            | Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Unknown => None,
+        }
+    }
+
+    fn async_is_static_const_slice_init(&self, ty: &Ty, init: Option<&TExpr>) -> bool {
+        matches!(
+            ty,
+            Ty::Slice {
+                mutability: ViewMutability::ReadOnly,
+                elem
+            } if matches!(&**elem, Ty::Char)
+        ) && init.is_some_and(|expr| matches!(expr.kind, TExprKind::Literal(Literal::String(_))))
+    }
+
+    fn async_expr_used_locals(expr: &TExpr) -> HashSet<LocalId> {
+        let mut collector = AsyncLocalUseCollector {
+            locals: HashSet::new(),
+        };
+        collector.visit_expr(expr);
+        collector.locals
     }
 
     fn push_control_context(&mut self, kind: ControlContextKind) {

@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: non-static borrowed read-only slice type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+struct Packet {
+    []const char text;
+}
+
+async Result<usize, Error> main_async() {
+    Packet packet = { text: "hello" };
+    await async_time::sleep_ms(0)?;
+    return Ok(packet.text.len);
+}
+
+i32 main() {
+    Result<usize, Error> value = async::block_on(main_async());
+    switch (value) {
+        case Ok(_):
+            return 0;
+        case Err(_):
+            return 1;
+    }
+}

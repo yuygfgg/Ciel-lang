@@ -19,7 +19,7 @@ use crate::{
     thir::{
         ActorSpawnMode, CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl,
         CheckedInterfaceRef, CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr,
-        TExprKind, TForInit, TPattern, TStmt, TStmtKind,
+        TExprKind, TForInit, TPattern, TSelectArm, TStmt, TStmtKind,
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
@@ -652,6 +652,30 @@ impl MonoContext {
                     future: Box::new(self.rewrite_expr(*future)?),
                 }
             }
+            TExprKind::AsyncSelect { biased, arms } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncSelect {
+                    biased,
+                    arms: arms
+                        .into_iter()
+                        .map(|arm| {
+                            self.mark_awaitable_impl(&arm.future_output_ty, &arm.future.ty);
+                            if let Some(task_output_ty) =
+                                task_output_ty(&self.checked.resolved, &arm.future.ty)
+                            {
+                                self.mark_task_boundary_clone_impls(&task_output_ty);
+                            }
+                            Ok(TSelectArm {
+                                binding_local: arm.binding_local,
+                                binding_name: arm.binding_name,
+                                future: self.rewrite_expr(arm.future)?,
+                                future_output_ty: arm.future_output_ty,
+                                body: self.rewrite_expr(arm.body)?,
+                            })
+                        })
+                        .collect::<DiagResult<Vec<_>>>()?,
+                }
+            }
             TExprKind::AsyncBlockOn { future } => {
                 self.mark_standard_error_code_impl();
                 self.mark_awaitable_impl(&expr.ty, &future.ty);
@@ -674,22 +698,6 @@ impl MonoContext {
                 self.mark_async_op_impls(&op.ty, &output_ty);
                 TExprKind::AsyncOpFuture {
                     op: Box::new(self.rewrite_expr(*op)?),
-                    output_ty,
-                }
-            }
-            TExprKind::AsyncTimeout {
-                future,
-                ms,
-                output_ty,
-            } => {
-                self.mark_standard_error_code_impl();
-                self.mark_awaitable_impl(&output_ty, &future.ty);
-                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
-                    self.mark_task_boundary_clone_impls(&task_output_ty);
-                }
-                TExprKind::AsyncTimeout {
-                    future: Box::new(self.rewrite_expr(*future)?),
-                    ms: Box::new(self.rewrite_expr(*ms)?),
                     output_ty,
                 }
             }
@@ -1323,6 +1331,21 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_task_boundary_clone_result_tys(&task_output_ty);
                 }
             }
+            TExprKind::AsyncSelect { arms, .. } => {
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                for arm in arms {
+                    self.collect_expr(&arm.future);
+                    self.collect_expr(&arm.body);
+                    self.collect_ty(&arm.future_output_ty);
+                    self.collect_ty(&std_future_ty(arm.future_output_ty.clone()));
+                    if let Some(task_output_ty) =
+                        task_output_ty(&self.checked.resolved, &arm.future.ty)
+                    {
+                        self.collect_task_boundary_clone_result_tys(&task_output_ty);
+                    }
+                }
+            }
             TExprKind::AsyncSleep { ms, output_ty } => {
                 self.collect_expr(ms);
                 self.collect_ty(&std_future_ty(output_ty.clone()));
@@ -1338,22 +1361,6 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(output_ty);
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
-            }
-            TExprKind::AsyncTimeout {
-                future,
-                ms,
-                output_ty,
-            } => {
-                self.collect_expr(future);
-                self.collect_expr(ms);
-                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
-                self.collect_ty(&result_ty);
-                self.collect_ty(output_ty);
-                self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
-                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
-                    self.collect_task_boundary_clone_result_tys(&task_output_ty);
-                }
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -2467,14 +2474,7 @@ fn enum_c_name_from_ty(ty: &Ty) -> Option<String> {
 }
 
 fn task_output_ty(resolved: &ResolvedProgram, ty: &Ty) -> Option<Ty> {
-    let Ty::Named { name, args } = ty else {
-        return None;
-    };
-    if args.len() == 1 && std_id::is_std_async_task_type_name(resolved, name) {
-        Some(args[0].clone())
-    } else {
-        None
-    }
+    std_id::std_async_task_output_arg(resolved, ty).cloned()
 }
 
 fn is_strict_generic_growth(previous: &[Ty], next: &[Ty]) -> bool {

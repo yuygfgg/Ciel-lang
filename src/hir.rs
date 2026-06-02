@@ -364,6 +364,14 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug)]
+pub struct SelectArm {
+    pub binding: ast::Ident,
+    pub binding_local: LocalId,
+    pub future: Expr,
+    pub body: Expr,
+}
+
+#[derive(Clone, Debug)]
 pub enum ExprKind {
     Name(NameRef),
     Literal(Literal),
@@ -416,6 +424,10 @@ pub enum ExprKind {
     },
     Try(Box<Expr>),
     Await(Box<Expr>),
+    Select {
+        biased: bool,
+        arms: Vec<SelectArm>,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -1213,6 +1225,26 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             },
             ast::ExprKind::Try(inner) => ExprKind::Try(Box::new(self.lower_expr(inner))),
             ast::ExprKind::Await(inner) => ExprKind::Await(Box::new(self.lower_expr(inner))),
+            ast::ExprKind::Select { biased, arms } => ExprKind::Select {
+                biased: *biased,
+                arms: arms
+                    .iter()
+                    .map(|arm| {
+                        let future = self.lower_expr(&arm.future);
+                        self.push_scope();
+                        let binding_local = self.alloc_local(&arm.binding);
+                        self.insert_existing_local(arm.binding.clone(), binding_local);
+                        let body = self.lower_expr(&arm.body);
+                        self.pop_scope();
+                        SelectArm {
+                            binding: arm.binding.clone(),
+                            binding_local,
+                            future,
+                            body,
+                        }
+                    })
+                    .collect(),
+            },
         };
         Expr {
             span: expr.span,

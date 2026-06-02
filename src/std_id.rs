@@ -1,7 +1,7 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path};
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
-use crate::types::STD_MESSAGE_CLONE_INTERFACE;
+use crate::types::{STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
 
 const STD_RESULT_PATH: &str = "std/result.ciel";
 const STD_RESULT_CORE_PATH: &str = "std/result/core.ciel";
@@ -11,10 +11,16 @@ const STD_MESSAGE_PATH: &str = "std/message.ciel";
 const STD_ACTOR_PATH: &str = "std/actor.ciel";
 const STD_META_PATH: &str = "std/meta.ciel";
 const STD_ASYNC_PATH: &str = "std/async.ciel";
+const STD_ASYNC_CORE_PATH: &str = "std/async/core.ciel";
 const STD_ASYNC_TIME_PATH: &str = "std/async_time.ciel";
 
 fn module_path_matches(resolved: &ResolvedProgram, module: ModuleId, suffix: &str) -> bool {
     resolved.modules[module.0].path.ends_with(Path::new(suffix))
+}
+
+fn module_path_matches_std_async(resolved: &ResolvedProgram, module: ModuleId) -> bool {
+    module_path_matches(resolved, module, STD_ASYNC_PATH)
+        || module_path_matches(resolved, module, STD_ASYNC_CORE_PATH)
 }
 
 fn def_matches(
@@ -134,7 +140,7 @@ pub fn is_std_async_function(
     name: &str,
     expected_name: &str,
 ) -> bool {
-    name == expected_name && module_path_matches(resolved, module, STD_ASYNC_PATH)
+    name == expected_name && module_path_matches_std_async(resolved, module)
 }
 
 pub fn is_std_async_interface(
@@ -148,6 +154,12 @@ pub fn is_std_async_interface(
         DefKind::Interface,
         expected_name,
         STD_ASYNC_PATH,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ASYNC_CORE_PATH,
     )
 }
 
@@ -207,7 +219,7 @@ pub fn is_std_async_type(
     let has_std_def = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && def.kind == DefKind::Struct
-            && module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+            && module_path_matches_std_async(resolved, def.module)
     });
     if has_std_def && ty_name == expected_name {
         return true;
@@ -215,7 +227,7 @@ pub fn is_std_async_type(
     let std_match = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && def.kind == DefKind::Struct
-            && module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+            && module_path_matches_std_async(resolved, def.module)
             && nominal_type_name(resolved, def.id) == ty_name
     });
     if std_match {
@@ -224,7 +236,7 @@ pub fn is_std_async_type(
     let has_user_nominal = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && is_nominal_type_def_kind(&def.kind)
-            && !module_path_matches(resolved, def.module, STD_ASYNC_PATH)
+            && !module_path_matches_std_async(resolved, def.module)
     });
     ty_name == expected_name && !has_user_nominal
 }
@@ -235,6 +247,62 @@ pub fn is_std_async_future_type_name(resolved: &ResolvedProgram, ty_name: &str) 
 
 pub fn is_std_async_task_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
     is_std_async_type(resolved, ty_name, StdAsyncType::Task)
+}
+
+pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_future_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn std_async_task_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_task_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn is_std_async_future_or_task_ty(resolved: &ResolvedProgram, ty: &Ty) -> bool {
+    std_async_future_output_arg(resolved, ty).is_some()
+        || std_async_task_output_arg(resolved, ty).is_some()
+}
+
+pub fn std_async_future_accepts_generated(
+    resolved: &ResolvedProgram,
+    expected: &Ty,
+    actual: &Ty,
+) -> bool {
+    let Some(expected_output) = std_async_future_output_arg(resolved, expected) else {
+        return false;
+    };
+    let Ty::GeneratedFuture { output, .. } = actual else {
+        return false;
+    };
+    expected_output == output.as_ref()
+}
+
+pub fn unify_std_async_future_with_generated(
+    resolved: &ResolvedProgram,
+    pattern: &Ty,
+    actual: &Ty,
+    subst: &mut HashMap<String, Ty>,
+) -> bool {
+    let Some(pattern_output) = std_async_future_output_arg(resolved, pattern) else {
+        return false;
+    };
+    let Ty::GeneratedFuture { output, .. } = actual else {
+        return false;
+    };
+    unify_ty(pattern_output, output, subst)
 }
 
 pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name: &str) -> bool {

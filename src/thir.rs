@@ -264,6 +264,15 @@ pub enum ActorSpawnMode {
 }
 
 #[derive(Clone, Debug)]
+pub struct TSelectArm {
+    pub binding_local: LocalId,
+    pub binding_name: String,
+    pub future: TExpr,
+    pub future_output_ty: Ty,
+    pub body: TExpr,
+}
+
+#[derive(Clone, Debug)]
 pub enum TExprKind {
     Local(LocalId, String),
     Function(DefId, String),
@@ -362,6 +371,10 @@ pub enum TExprKind {
     Await {
         future: Box<TExpr>,
     },
+    AsyncSelect {
+        biased: bool,
+        arms: Vec<TSelectArm>,
+    },
     AsyncBlockOn {
         future: Box<TExpr>,
     },
@@ -371,11 +384,6 @@ pub enum TExprKind {
     },
     AsyncOpFuture {
         op: Box<TExpr>,
-        output_ty: Ty,
-    },
-    AsyncTimeout {
-        future: Box<TExpr>,
-        ms: Box<TExpr>,
         output_ty: Ty,
     },
     AsyncSpawn {
@@ -618,17 +626,19 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
         | TExprKind::Try { expr: inner, .. }
-        | TExprKind::Await { future: inner }
         | TExprKind::AsyncBlockOn { future: inner }
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        TExprKind::Await { future: inner } => visitor.visit_expr(inner),
+        TExprKind::AsyncSelect { arms, .. } => {
+            for arm in arms {
+                visitor.visit_expr(&arm.future);
+                visitor.visit_expr(&arm.body);
+            }
+        }
         TExprKind::AsyncSleep { ms, output_ty: _ } => visitor.visit_expr(ms),
         TExprKind::AsyncOpFuture { op, .. } => visitor.visit_expr(op),
-        TExprKind::AsyncTimeout { future, ms, .. } => {
-            visitor.visit_expr(future);
-            visitor.visit_expr(ms);
-        }
         TExprKind::AsyncSpawn { body, .. } => visitor.visit_expr(body),
         TExprKind::AsyncTaskCancel { task, .. } | TExprKind::AsyncTaskIsFinished { task, .. } => {
             visitor.visit_expr(task)

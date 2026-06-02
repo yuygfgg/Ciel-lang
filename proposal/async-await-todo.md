@@ -163,7 +163,7 @@ Implementation guardrails:
 
 ## Phase 6: Select And Buffered TCP Reads
 
-- [ ] Add compiler-level `select` and `biased select`.
+- [x] Add compiler-level `select` and `biased select`.
       Scope: type-check arms as a flat list of futures, lower to internal
       `SelectSet<R>`, poll every arm once before parking, use fair tie handling
       for default `select`, and source-order priority for `biased select`.
@@ -172,14 +172,14 @@ Implementation guardrails:
       behavior are both tested. Channel receive select coverage lands with
       Phase 7 channels.
 
-- [ ] Enforce selectable future bounds.
+- [x] Enforce selectable future bounds.
       Scope: every losing future must implement `CancelSafe + Abortable`; stale
       completions are discarded only when the contract permits it.
       Tests: raw TCP read, `read_into`, and write are rejected in `select`; a
       cancelled losing `CancelSafe` future does not resume user code; a stale
       completion after cancellation is discarded.
 
-- [ ] Add cancellation-safe buffered TCP reads.
+- [x] Add cancellation-safe buffered TCP reads.
       Scope: add `split`, `AsyncTcpReadHalf`, `AsyncTcpWriteHalf`,
       `BufferedStreamReader`, `buffered_reader`, `read_buffered`, and
       `into_read_half`; `read_buffered` checks its private buffer before

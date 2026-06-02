@@ -370,6 +370,13 @@ pub struct Expr {
 }
 
 #[derive(Clone, Debug)]
+pub struct SelectArm {
+    pub binding: Ident,
+    pub future: Expr,
+    pub body: Expr,
+}
+
+#[derive(Clone, Debug)]
 pub enum ExprKind {
     Name(Vec<Ident>),
     Literal(Literal),
@@ -422,6 +429,10 @@ pub enum ExprKind {
     },
     Try(Box<Expr>),
     Await(Box<Expr>),
+    Select {
+        biased: bool,
+        arms: Vec<SelectArm>,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 26
+
+import /std/async as async;
+import /std/io as io;
+import /std/result;
+
+async Result<usize, Error> ready_value(usize value) {
+    return Ok(value);
+}
+
+async Result<usize, Error> drive() {
+    usize @fair_total = 0;
+    usize @i = 0;
+    while (i < 4) {
+        Result<usize, Error> picked = await select {
+            case left = ready_value(1): left;
+            case right = ready_value(10): right;
+        };
+        fair_total = fair_total + picked?;
+        i = i + 1;
+    }
+
+    usize @biased_total = 0;
+    i = 0;
+    while (i < 4) {
+        Result<usize, Error> picked = await biased select {
+            case left = ready_value(1): left;
+            case right = ready_value(10): right;
+        };
+        biased_total = biased_total + picked?;
+        i = i + 1;
+    }
+
+    return Ok(fair_total + biased_total);
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive()))));
+    return 0;
+}

@@ -266,13 +266,6 @@ impl Ty {
         if self == source {
             return true;
         }
-        if let Ty::Named { name, args } = self
-            && name == "Future"
-            && args.len() == 1
-            && let Ty::GeneratedFuture { output, .. } = source
-        {
-            return args.first() == Some(output);
-        }
         matches!(
             (self, source),
             (
@@ -573,9 +566,6 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .iter()
                 .zip(actual_args.iter())
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
-            Ty::GeneratedFuture { output, .. } if name == "Future" && args.len() == 1 => {
-                unify_ty(&args[0], output, subst)
-            }
             _ => false,
         },
         Ty::GeneratedFuture { name, output, .. } => match actual {

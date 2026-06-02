@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: expected `Future
+// expect-error: got `Future
+
+import /std/async as async;
+import /std/result;
+
+struct Future<T> {
+    T value;
+}
+
+async Result<usize, Error> produce() {
+    return Ok(7);
+}
+
+i32 main() {
+    Future<Result<usize, Error>> local = produce();
+    local;
+    return 0;
+}

@@ -5,16 +5,14 @@ import /std/async as async;
 import /std/async_net as anet;
 import /std/result;
 
-async Result<void, Error> bad_timeout(
+async Result<anet::ReadIntoResult, Error> bad_select(
     anet::AsyncTcpStream stream,
     anet::Bytes buffer
 ) {
     anet::AsyncTcpRead op = anet::read_into_async(stream, buffer)?;
-    _ timed = async::timeout<Result<anet::ReadIntoResult, Error>>(
-        async::future_from_op<anet::AsyncTcpRead, anet::ReadIntoResult>(op),
-        1
-    );
-    return Ok;
+    return await select {
+        case bytes = async::future_from_op<anet::AsyncTcpRead, anet::ReadIntoResult>(op): bytes;
+    };
 }
 
 i32 main() {

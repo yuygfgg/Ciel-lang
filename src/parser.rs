@@ -1477,6 +1477,25 @@ impl Parser {
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
         let token = self.peek().clone();
         match token.kind {
+            TokenKind::Ident
+                if token.lexeme == "biased"
+                    && matches!(self.peek_next().kind, TokenKind::Ident)
+                    && self.peek_next().lexeme == "select"
+                    && matches!(self.peek_n(2).kind, TokenKind::LBrace) =>
+            {
+                self.advance();
+                let select = self.expect_ident("expected `select` after `biased`")?;
+                self.uses_std_async = true;
+                self.parse_select_expr(token.span.merge(select.span), true)
+            }
+            TokenKind::Ident
+                if token.lexeme == "select"
+                    && matches!(self.peek_next().kind, TokenKind::LBrace) =>
+            {
+                self.advance();
+                self.uses_std_async = true;
+                self.parse_select_expr(token.span, false)
+            }
             TokenKind::Ident if token.lexeme == "await" => {
                 self.advance();
                 self.uses_std_async = true;
@@ -1562,6 +1581,38 @@ impl Parser {
             TokenKind::Unsafe => self.parse_unsafe_block_expr(),
             _ => Err(Diagnostic::new(token.span, "expected expression")),
         }
+    }
+
+    fn parse_select_expr(
+        &mut self,
+        start: crate::span::Span,
+        biased: bool,
+    ) -> Result<Expr, Diagnostic> {
+        self.expect(TokenKind::LBrace, "expected `{` after select")?;
+        let mut arms = Vec::new();
+        while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
+            self.expect(TokenKind::Case, "expected `case` in select")?;
+            let binding = self.expect_ident("expected select arm binding")?;
+            self.expect(TokenKind::Eq, "expected `=` after select arm binding")?;
+            let future = self.parse_expr()?;
+            self.expect(TokenKind::Colon, "expected `:` after select arm future")?;
+            let body = self.parse_expr()?;
+            if self.at(TokenKind::Semi) {
+                self.advance();
+            }
+            arms.push(crate::ast::SelectArm {
+                binding,
+                future,
+                body,
+            });
+        }
+        let end = self
+            .expect(TokenKind::RBrace, "expected `}` after select")?
+            .span;
+        Ok(Expr {
+            span: start.merge(end),
+            kind: ExprKind::Select { biased, arms },
+        })
     }
 
     fn parse_unsafe_block_expr(&mut self) -> Result<Expr, Diagnostic> {

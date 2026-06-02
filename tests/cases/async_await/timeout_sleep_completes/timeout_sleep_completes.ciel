@@ -1,6 +1,8 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: 7
+// expect-c-not-contains: CielAsyncTimeoutFuture
+// expect-c-contains: ciel_select_set_new
 
 import /std/async as async;
 import /std/async_time as async_time;

@@ -1,7 +1,7 @@
 export import /std/result;
 export import /std/async/bytes;
-import /std/async as flow;
-import /std/async;
+import /std/async/core as flow;
+import /std/async/core;
 import /std/async/adapter;
 import /std/actor as actor;
 import /std/c as c;

@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: async channel payload type `BadPayload` does not implement `Message`
+
+import /std/async as async;
+import /std/result;
+
+struct BadPayload {
+    *const usize ptr;
+}
+
+async Result<void, Error> send_bad(async::Sender<BadPayload> sender, BadPayload value) {
+    await async::send<BadPayload>(sender, value)?;
+    return Ok;
+}
+
+i32 main() {
+    usize local = 1;
+    async::ChannelPair<BadPayload> pair = must(async::channel<BadPayload>(1));
+    BadPayload value = { ptr: &local };
+    Result<void, Error> result = async::block_on(send_bad(pair.sender, value));
+    return 0;
+}

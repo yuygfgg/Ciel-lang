@@ -270,6 +270,17 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::AsyncSpawn { body, .. } => self.scan_expr(body),
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => self.scan_expr(task),
+            TExprKind::AsyncChannelSend { sender, value, .. }
+            | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+                self.scan_expr(sender);
+                self.scan_expr(value);
+            }
+            TExprKind::AsyncChannelReserve { sender, .. } => self.scan_expr(sender),
+            TExprKind::AsyncChannelRecv { receiver, .. } => self.scan_expr(receiver),
+            TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+                self.scan_expr(permit);
+                self.scan_expr(value);
+            }
             TExprKind::Binary { left, right, .. } => {
                 self.scan_expr(left);
                 self.scan_expr(right);
@@ -540,6 +551,21 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => {
                 self.collect_storage_sources(task, out)
+            }
+            TExprKind::AsyncChannelSend { sender, value, .. }
+            | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+                self.collect_storage_sources(sender, out);
+                self.collect_storage_sources(value, out);
+            }
+            TExprKind::AsyncChannelReserve { sender, .. } => {
+                self.collect_storage_sources(sender, out);
+            }
+            TExprKind::AsyncChannelRecv { receiver, .. } => {
+                self.collect_storage_sources(receiver, out);
+            }
+            TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+                self.collect_storage_sources(permit, out);
+                self.collect_storage_sources(value, out);
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_storage_sources(left, out);

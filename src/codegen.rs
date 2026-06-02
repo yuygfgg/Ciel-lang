@@ -31,7 +31,8 @@ use crate::{
         mangle_constraint_ref, mangle_ty_fragment, meta_array_split_len, meta_named,
         meta_product_ty, meta_ref_array_repr_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
-        std_future_ty, std_meta_repr_marker_ty, std_result_ty, std_task_ty, unify_ty,
+        std_future_ty, std_meta_repr_marker_ty, std_result_ty, std_send_permit_ty, std_task_ty,
+        unify_ty,
     },
 };
 
@@ -136,6 +137,9 @@ struct CodegenPlanData {
     actor_dispatches: BTreeMap<String, ActorDispatch>,
     async_sleep_output_tys: BTreeMap<String, Ty>,
     async_op_contexts: BTreeMap<String, AsyncOpContext>,
+    async_channel_send_payload_tys: BTreeMap<String, Ty>,
+    async_channel_reserve_payload_tys: BTreeMap<String, Ty>,
+    async_channel_recv_payload_tys: BTreeMap<String, Ty>,
     string_literals: BTreeMap<(usize, usize, usize), String>,
     string_literal_names: HashMap<(usize, usize, usize), String>,
     source_locations: BTreeMap<(usize, usize), SourceLocation>,
@@ -432,6 +436,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_closure_contexts();
         self.emit_async_sleep_future_contexts();
         self.emit_async_op_future_contexts();
+        self.emit_async_channel_future_contexts();
 
         self.emit_closure_environment_layouts();
 
@@ -451,6 +456,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_closure_run_prototypes();
         self.emit_async_sleep_future_prototypes();
         self.emit_async_op_future_prototypes();
+        self.emit_async_channel_future_prototypes();
         self.emit_dynamic_shim_prototypes();
         self.line("");
 
@@ -483,6 +489,13 @@ impl<'a> CGenerator<'a> {
         }
         self.emit_async_op_future_runs()?;
         if !self.plan.async_op_contexts.is_empty() {
+            self.line("");
+        }
+        self.emit_async_channel_future_runs()?;
+        if !self.plan.async_channel_send_payload_tys.is_empty()
+            || !self.plan.async_channel_reserve_payload_tys.is_empty()
+            || !self.plan.async_channel_recv_payload_tys.is_empty()
+        {
             self.line("");
         }
 
@@ -1108,6 +1121,56 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_array_returns(&result_ty);
                 self.collect_ty_array_returns(output_ty);
             }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_array_returns(sender);
+                self.collect_expr_array_returns(value);
+                self.collect_ty_array_returns(payload_ty);
+                let result_ty = std_result_ty(Ty::Void, std_error_ty());
+                self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
+                self.collect_ty_array_returns(&result_ty);
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.collect_expr_array_returns(sender);
+                let result_ty =
+                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_error_ty());
+                self.collect_ty_array_returns(payload_ty);
+                self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
+                self.collect_ty_array_returns(&result_ty);
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.collect_expr_array_returns(receiver);
+                let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+                self.collect_ty_array_returns(payload_ty);
+                self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
+                self.collect_ty_array_returns(&result_ty);
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_array_returns(sender);
+                self.collect_expr_array_returns(value);
+                self.collect_ty_array_returns(payload_ty);
+                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_error_ty()));
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_array_returns(permit);
+                self.collect_expr_array_returns(value);
+                self.collect_ty_array_returns(payload_ty);
+                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_error_ty()));
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -1427,6 +1490,53 @@ impl<'a> CGenerator<'a> {
                         output_ty: output_ty.clone(),
                     },
                 );
+            }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_closures(owner, sender);
+                self.collect_expr_closures(owner, value);
+                self.collect_ty_closure(payload_ty);
+                self.plan
+                    .async_channel_send_payload_tys
+                    .insert(mangle_ty_fragment(payload_ty), payload_ty.clone());
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.collect_expr_closures(owner, sender);
+                self.collect_ty_closure(payload_ty);
+                self.plan
+                    .async_channel_reserve_payload_tys
+                    .insert(mangle_ty_fragment(payload_ty), payload_ty.clone());
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.collect_expr_closures(owner, receiver);
+                self.collect_ty_closure(payload_ty);
+                self.plan
+                    .async_channel_recv_payload_tys
+                    .insert(mangle_ty_fragment(payload_ty), payload_ty.clone());
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_closures(owner, sender);
+                self.collect_expr_closures(owner, value);
+                self.collect_ty_closure(payload_ty);
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_closures(owner, permit);
+                self.collect_expr_closures(owner, value);
+                self.collect_ty_closure(payload_ty);
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -1781,6 +1891,51 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_dynamic(output_ty);
                 self.collect_ty_dynamic(&std_result_ty(output_ty.clone(), std_error_ty()));
             }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            }
+            | TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_standard_error_code_dynamic();
+                self.collect_expr_dynamic(sender);
+                self.collect_expr_dynamic(value);
+                self.collect_ty_dynamic(payload_ty);
+                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_error_ty()));
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.collect_standard_error_code_dynamic();
+                self.collect_expr_dynamic(sender);
+                self.collect_ty_dynamic(payload_ty);
+                self.collect_ty_dynamic(&std_result_ty(
+                    std_send_permit_ty(payload_ty.clone()),
+                    std_error_ty(),
+                ));
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.collect_standard_error_code_dynamic();
+                self.collect_expr_dynamic(receiver);
+                self.collect_ty_dynamic(payload_ty);
+                self.collect_ty_dynamic(&std_result_ty(payload_ty.clone(), std_error_ty()));
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.collect_standard_error_code_dynamic();
+                self.collect_expr_dynamic(permit);
+                self.collect_expr_dynamic(value);
+                self.collect_ty_dynamic(payload_ty);
+                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_error_ty()));
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -2064,6 +2219,21 @@ impl<'a> CGenerator<'a> {
             TExprKind::AsyncSleep { ms, .. } => self.collect_expr_locations(ms),
             TExprKind::AsyncOpFuture { op, .. } => self.collect_expr_locations(op),
             TExprKind::AsyncSpawn { body, .. } => self.collect_expr_locations(body),
+            TExprKind::AsyncChannelSend { sender, value, .. }
+            | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+                self.collect_expr_locations(sender);
+                self.collect_expr_locations(value);
+            }
+            TExprKind::AsyncChannelReserve { sender, .. } => {
+                self.collect_expr_locations(sender);
+            }
+            TExprKind::AsyncChannelRecv { receiver, .. } => {
+                self.collect_expr_locations(receiver);
+            }
+            TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+                self.collect_expr_locations(permit);
+                self.collect_expr_locations(value);
+            }
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => self.collect_expr_locations(task),
             TExprKind::Binary { left, right, .. } => {
@@ -2314,6 +2484,21 @@ impl<'a> CGenerator<'a> {
             TExprKind::AsyncSleep { ms, .. } => self.collect_expr_string_literals(ms),
             TExprKind::AsyncOpFuture { op, .. } => self.collect_expr_string_literals(op),
             TExprKind::AsyncSpawn { body, .. } => self.collect_expr_string_literals(body),
+            TExprKind::AsyncChannelSend { sender, value, .. }
+            | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+                self.collect_expr_string_literals(sender);
+                self.collect_expr_string_literals(value);
+            }
+            TExprKind::AsyncChannelReserve { sender, .. } => {
+                self.collect_expr_string_literals(sender);
+            }
+            TExprKind::AsyncChannelRecv { receiver, .. } => {
+                self.collect_expr_string_literals(receiver);
+            }
+            TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+                self.collect_expr_string_literals(permit);
+                self.collect_expr_string_literals(value);
+            }
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => {
                 self.collect_expr_string_literals(task)
@@ -2559,6 +2744,66 @@ impl<'a> CGenerator<'a> {
                 let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.collect_ty_slice(&result_ty);
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_slices(sender);
+                self.collect_expr_slices(value);
+                self.collect_ty_slice(payload_ty);
+                let result_ty = std_result_ty(Ty::Void, std_error_ty());
+                self.collect_ty_slice(&std_future_ty(result_ty.clone()));
+                self.collect_ty_slice(&result_ty);
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.collect_expr_slices(sender);
+                self.collect_ty_slice(payload_ty);
+                let result_ty =
+                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_error_ty());
+                self.collect_ty_slice(&std_future_ty(result_ty.clone()));
+                self.collect_ty_slice(&result_ty);
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.collect_expr_slices(receiver);
+                self.collect_ty_slice(payload_ty);
+                let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+                self.collect_ty_slice(&std_future_ty(result_ty.clone()));
+                self.collect_ty_slice(&result_ty);
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_slices(sender);
+                self.collect_expr_slices(value);
+                self.collect_ty_slice(payload_ty);
+                self.collect_ty_slice(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr_slices(permit);
+                self.collect_expr_slices(value);
+                self.collect_ty_slice(payload_ty);
+                self.collect_ty_slice(&std_result_ty(Ty::Void, std_error_ty()));
                 self.collect_ty_slice(&std_error_code_ty());
                 self.collect_ty_slice(&std_error_trait_ty());
             }
@@ -3367,10 +3612,10 @@ impl<'a> CGenerator<'a> {
                 if let Some(cond) = cond {
                     self.collect_async_await_output_tys_expr(cond, out);
                 }
+                self.collect_async_await_output_tys_block(body, out);
                 if let Some(step) = step {
                     self.collect_async_await_output_tys_for_init(step, out);
                 }
-                self.collect_async_await_output_tys_block(body, out);
             }
             TStmtKind::Switch {
                 expr,
@@ -3854,6 +4099,322 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "if (ctx == NULL || ctx->op == NULL) return;");
             self.line_indent(1, "(void)ciel_async_cancel(ctx->op);");
             self.line_indent(1, "ctx->op = NULL;");
+            self.line("}");
+        }
+        Ok(())
+    }
+
+    fn emit_async_channel_future_contexts(&mut self) {
+        for payload_ty in self
+            .plan
+            .async_channel_send_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let name = self.async_channel_send_context_name(&payload_ty);
+            self.line(&format!("typedef struct {name} {{"));
+            self.line("    CielFuture *future;");
+            self.line("    void *sender;");
+            self.line("    int init_failed;");
+            self.line(&format!(
+                "    {};",
+                self.c_decl(&std_error_ty(), "init_error")
+            ));
+            if !payload_ty.is_erased_value() {
+                self.line(&format!("    {};", self.c_decl(&payload_ty, "value")));
+            }
+            self.line(&format!("}} {name};"));
+        }
+        for payload_ty in self
+            .plan
+            .async_channel_reserve_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let name = self.async_channel_reserve_context_name(&payload_ty);
+            self.line(&format!("typedef struct {name} {{"));
+            self.line("    CielFuture *future;");
+            self.line("    void *sender;");
+            self.line(&format!("}} {name};"));
+        }
+        for payload_ty in self
+            .plan
+            .async_channel_recv_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let name = self.async_channel_recv_context_name(&payload_ty);
+            self.line(&format!("typedef struct {name} {{"));
+            self.line("    CielFuture *future;");
+            self.line("    void *receiver;");
+            self.line(&format!("}} {name};"));
+        }
+        if !self.plan.async_channel_send_payload_tys.is_empty()
+            || !self.plan.async_channel_reserve_payload_tys.is_empty()
+            || !self.plan.async_channel_recv_payload_tys.is_empty()
+        {
+            self.line("");
+        }
+    }
+
+    fn emit_async_channel_future_prototypes(&mut self) {
+        for payload_ty in self
+            .plan
+            .async_channel_send_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "static int32_t {}(void *ctx_raw, void *out_raw);",
+                self.async_channel_send_run_name(&payload_ty)
+            ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_channel_send_cleanup_name(&payload_ty)
+            ));
+        }
+        for payload_ty in self
+            .plan
+            .async_channel_reserve_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "static int32_t {}(void *ctx_raw, void *out_raw);",
+                self.async_channel_reserve_run_name(&payload_ty)
+            ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_channel_reserve_cleanup_name(&payload_ty)
+            ));
+        }
+        for payload_ty in self
+            .plan
+            .async_channel_recv_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "static int32_t {}(void *ctx_raw, void *out_raw);",
+                self.async_channel_recv_run_name(&payload_ty)
+            ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_channel_recv_cleanup_name(&payload_ty)
+            ));
+        }
+    }
+
+    fn emit_async_channel_future_runs(&mut self) -> DiagResult<()> {
+        let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
+        for payload_ty in self
+            .plan
+            .async_channel_send_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let result_ty = std_result_ty(Ty::Void, std_error_ty());
+            let layout = self.result_layout(&result_ty, span)?;
+            let ctx_name = self.async_channel_send_context_name(&payload_ty);
+            let run_name = self.async_channel_send_run_name(&payload_ty);
+            let cleanup_name = self.async_channel_send_cleanup_name(&payload_ty);
+            self.line(&format!(
+                "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(
+                1,
+                &format!(
+                    "{} *out = ({})out_raw;",
+                    layout.c_type,
+                    self.c_pointer_type(&result_ty)
+                ),
+            );
+            self.line_indent(1, "if (ctx->init_failed) {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(&layout, "ctx->init_error")
+                ),
+            );
+            self.line_indent(2, "return 0;");
+            self.line_indent(1, "}");
+            let value_ptr = if payload_ty.is_erased_value() {
+                "NULL".to_string()
+            } else {
+                "&ctx->value".to_string()
+            };
+            self.line_indent(
+                1,
+                &format!(
+                    "int32_t rc = ciel_async_channel_send_poll(ctx->future, (CielAsyncSender *)ctx->sender, {value_ptr});"
+                ),
+            );
+            self.line_indent(1, "if (rc == EAGAIN) return EAGAIN;");
+            self.line_indent(1, "if (rc == 0) {");
+            self.line_indent(
+                2,
+                &format!("*out = {};", self.result_ok_literal(&layout, None)),
+            );
+            self.line_indent(1, "} else {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                ),
+            );
+            self.line_indent(1, "}");
+            self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, "(void)ctx_raw;");
+            self.line_indent(1, "(void)reason;");
+            self.line("}");
+        }
+
+        for payload_ty in self
+            .plan
+            .async_channel_reserve_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let permit_ty = std_send_permit_ty(payload_ty.clone());
+            let result_ty = std_result_ty(permit_ty.clone(), std_error_ty());
+            let layout = self.result_layout(&result_ty, span)?;
+            let ctx_name = self.async_channel_reserve_context_name(&payload_ty);
+            let run_name = self.async_channel_reserve_run_name(&payload_ty);
+            let cleanup_name = self.async_channel_reserve_cleanup_name(&payload_ty);
+            self.line(&format!(
+                "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(
+                1,
+                &format!(
+                    "{} *out = ({})out_raw;",
+                    layout.c_type,
+                    self.c_pointer_type(&result_ty)
+                ),
+            );
+            self.line_indent(1, "CielAsyncSendPermit *permit = NULL;");
+            self.line_indent(
+                1,
+                "int32_t rc = ciel_async_channel_reserve_poll(ctx->future, (CielAsyncSender *)ctx->sender, &permit);",
+            );
+            self.line_indent(1, "if (rc == EAGAIN) return EAGAIN;");
+            self.line_indent(1, "if (rc == 0) {");
+            let permit_value = format!(
+                "({}){{ .handle = (void *)permit }}",
+                self.c_type(&permit_ty)
+            );
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_ok_literal(&layout, Some(&permit_value))
+                ),
+            );
+            self.line_indent(1, "} else {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                ),
+            );
+            self.line_indent(1, "}");
+            self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, "(void)ctx_raw;");
+            self.line_indent(1, "(void)reason;");
+            self.line("}");
+        }
+
+        for payload_ty in self
+            .plan
+            .async_channel_recv_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+            let layout = self.result_layout(&result_ty, span)?;
+            let ctx_name = self.async_channel_recv_context_name(&payload_ty);
+            let run_name = self.async_channel_recv_run_name(&payload_ty);
+            let cleanup_name = self.async_channel_recv_cleanup_name(&payload_ty);
+            self.line(&format!(
+                "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(
+                1,
+                &format!(
+                    "{} *out = ({})out_raw;",
+                    layout.c_type,
+                    self.c_pointer_type(&result_ty)
+                ),
+            );
+            let value = if payload_ty.is_erased_value() {
+                None
+            } else {
+                let value = "value";
+                self.line_indent(1, &format!("{};", self.c_decl(&payload_ty, value)));
+                self.line_indent(1, &format!("memset(&{value}, 0, sizeof({value}));"));
+                Some(value)
+            };
+            let out_ptr = value
+                .map(|value| format!("&{value}"))
+                .unwrap_or_else(|| "NULL".to_string());
+            self.line_indent(
+                1,
+                &format!(
+                    "int32_t rc = ciel_async_channel_recv_poll(ctx->future, (CielAsyncReceiver *)ctx->receiver, {out_ptr});"
+                ),
+            );
+            self.line_indent(1, "if (rc == EAGAIN) return EAGAIN;");
+            self.line_indent(1, "if (rc == 0) {");
+            if let Some(value) = value {
+                self.line_indent(
+                    2,
+                    &format!("*out = {};", self.result_ok_literal(&layout, Some(value))),
+                );
+            } else {
+                self.line_indent(
+                    2,
+                    &format!("*out = {};", self.result_ok_literal(&layout, None)),
+                );
+            }
+            self.line_indent(1, "} else {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                ),
+            );
+            self.line_indent(1, "}");
+            self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, "(void)ctx_raw;");
+            self.line_indent(1, "(void)reason;");
             self.line("}");
         }
         Ok(())
@@ -5214,6 +5775,66 @@ impl<'a> CGenerator<'a> {
                     )]);
                 };
                 self.emit_async_op_expr(expr, op, output_ty, indent)?
+            }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`send` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_channel_send_expr(expr, sender, value, payload_ty, indent)?
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`reserve` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_channel_reserve_expr(expr, sender, payload_ty, indent)?
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`recv` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_channel_recv_expr(expr, receiver, payload_ty, indent)?
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`try_send` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_channel_try_send_expr(expr, sender, value, payload_ty, indent)?
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`permit_send` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_channel_permit_send_expr(expr, permit, value, payload_ty, indent)?
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -7054,6 +7675,18 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, "}");
     }
 
+    fn emit_future_alloc_panic(&mut self, raw: &str, span: crate::span::Span, indent: usize) {
+        let (file, line) = self.location_args(span);
+        self.line_indent(indent, &format!("if ({raw} == NULL) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "ciel_panic_at(\"future allocation failed\", sizeof(\"future allocation failed\") - 1, {file}, {line});"
+            ),
+        );
+        self.line_indent(indent, "}");
+    }
+
     fn emit_async_error_return_from_rc(
         &mut self,
         rc: &str,
@@ -7479,6 +8112,251 @@ impl<'a> CGenerator<'a> {
             "({}){{ .handle = (void *){raw} }}",
             self.c_type(&expr.ty)
         ))
+    }
+
+    fn emit_async_channel_send_expr(
+        &mut self,
+        expr: &TExpr,
+        sender: &TExpr,
+        value: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let ctx_name = self.async_channel_send_context_name(payload_ty);
+        let ctx = self.next_temp("channel_send_ctx");
+        self.line_indent(
+            indent,
+            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
+        );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        let sender_value = self.emit_temp_value("channel_sender", sender, indent)?;
+        self.line_indent(indent, &format!("{ctx}->sender = {sender_value}.handle;"));
+        let source = self.emit_temp_value("channel_send_value", value, indent)?;
+        let clone = self.emit_task_boundary_clone_result_from_ptr(
+            payload_ty,
+            &format!("&{source}"),
+            indent,
+            expr.span,
+        )?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(payload_ty.clone(), std_error_ty()),
+            expr.span,
+        )?;
+        self.line_indent(
+            indent,
+            &format!("if ({clone}.tag == {}) {{", clone_layout.err_index),
+        );
+        self.line_indent(indent + 1, &format!("{ctx}->init_failed = 1;"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{ctx}->init_error = {clone}.as.{}._0;",
+                clone_layout.err_name
+            ),
+        );
+        self.line_indent(indent, "} else {");
+        if !payload_ty.is_erased_value() {
+            self.emit_value_copy(
+                &format!("{ctx}->value"),
+                &format!("{clone}.as.{}._0", clone_layout.ok_name),
+                payload_ty,
+                indent + 1,
+            );
+        }
+        self.line_indent(indent, "}");
+        let raw = self.next_temp("channel_send_future");
+        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
+        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
+        self.line_indent(
+            indent,
+            &format!(
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
+                self.async_channel_send_run_name(payload_ty),
+                self.async_channel_send_cleanup_name(payload_ty)
+            ),
+        );
+        self.emit_future_alloc_panic(&raw, expr.span, indent);
+        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
+        Ok(format!(
+            "({}){{ .handle = (void *){raw} }}",
+            self.c_type(&expr.ty)
+        ))
+    }
+
+    fn emit_async_channel_reserve_expr(
+        &mut self,
+        expr: &TExpr,
+        sender: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let ctx_name = self.async_channel_reserve_context_name(payload_ty);
+        let ctx = self.next_temp("channel_reserve_ctx");
+        self.line_indent(
+            indent,
+            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
+        );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        let sender_value = self.emit_temp_value("channel_reserve_sender", sender, indent)?;
+        self.line_indent(indent, &format!("{ctx}->sender = {sender_value}.handle;"));
+        let raw = self.next_temp("channel_reserve_future");
+        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
+        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
+        self.line_indent(
+            indent,
+            &format!(
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
+                self.async_channel_reserve_run_name(payload_ty),
+                self.async_channel_reserve_cleanup_name(payload_ty)
+            ),
+        );
+        self.emit_future_alloc_panic(&raw, expr.span, indent);
+        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
+        Ok(format!(
+            "({}){{ .handle = (void *){raw} }}",
+            self.c_type(&expr.ty)
+        ))
+    }
+
+    fn emit_async_channel_recv_expr(
+        &mut self,
+        expr: &TExpr,
+        receiver: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let ctx_name = self.async_channel_recv_context_name(payload_ty);
+        let ctx = self.next_temp("channel_recv_ctx");
+        self.line_indent(
+            indent,
+            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
+        );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        let receiver_value = self.emit_temp_value("channel_recv_receiver", receiver, indent)?;
+        self.line_indent(
+            indent,
+            &format!("{ctx}->receiver = {receiver_value}.handle;"),
+        );
+        let raw = self.next_temp("channel_recv_future");
+        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
+        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
+        self.line_indent(
+            indent,
+            &format!(
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
+                self.async_channel_recv_run_name(payload_ty),
+                self.async_channel_recv_cleanup_name(payload_ty)
+            ),
+        );
+        self.emit_future_alloc_panic(&raw, expr.span, indent);
+        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
+        Ok(format!(
+            "({}){{ .handle = (void *){raw} }}",
+            self.c_type(&expr.ty)
+        ))
+    }
+
+    fn emit_async_channel_try_send_expr(
+        &mut self,
+        expr: &TExpr,
+        sender: &TExpr,
+        value: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let result_layout = self.result_layout(&expr.ty, expr.span)?;
+        let result_temp = self.next_temp("channel_try_send_result");
+        let done_label = self.next_temp("channel_try_send_done");
+        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
+        let source = self.emit_temp_value("channel_try_send_value", value, indent)?;
+        let clone = self.emit_task_boundary_clone_result_from_ptr(
+            payload_ty,
+            &format!("&{source}"),
+            indent,
+            expr.span,
+        )?;
+        self.emit_clone_error_jump(
+            &result_temp,
+            &result_layout,
+            &clone,
+            payload_ty,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(payload_ty.clone(), std_error_ty()),
+            expr.span,
+        )?;
+        let sender_value = self.emit_temp_value("channel_try_send_sender", sender, indent)?;
+        let value_arg = if payload_ty.is_erased_value() {
+            "NULL".to_string()
+        } else {
+            format!("&{clone}.as.{}._0", clone_layout.ok_name)
+        };
+        let rc = self.next_temp("channel_try_send_rc");
+        self.line_indent(
+            indent,
+            &format!(
+                "int32_t {rc} = ciel_async_channel_try_send((CielAsyncSender *){sender_value}.handle, {value_arg});"
+            ),
+        );
+        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.line_indent(indent, &format!("{done_label}:;"));
+        Ok(result_temp)
+    }
+
+    fn emit_async_channel_permit_send_expr(
+        &mut self,
+        expr: &TExpr,
+        permit: &TExpr,
+        value: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let result_layout = self.result_layout(&expr.ty, expr.span)?;
+        let result_temp = self.next_temp("channel_permit_send_result");
+        let done_label = self.next_temp("channel_permit_send_done");
+        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
+        let source = self.emit_temp_value("channel_permit_send_value", value, indent)?;
+        let clone = self.emit_task_boundary_clone_result_from_ptr(
+            payload_ty,
+            &format!("&{source}"),
+            indent,
+            expr.span,
+        )?;
+        self.emit_clone_error_jump(
+            &result_temp,
+            &result_layout,
+            &clone,
+            payload_ty,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(payload_ty.clone(), std_error_ty()),
+            expr.span,
+        )?;
+        let permit_value = self.emit_temp_value("channel_send_permit", permit, indent)?;
+        let value_arg = if payload_ty.is_erased_value() {
+            "NULL".to_string()
+        } else {
+            format!("&{clone}.as.{}._0", clone_layout.ok_name)
+        };
+        let rc = self.next_temp("channel_permit_send_rc");
+        self.line_indent(
+            indent,
+            &format!(
+                "int32_t {rc} = ciel_async_send_permit_send((CielAsyncSendPermit *){permit_value}.handle, {value_arg});"
+            ),
+        );
+        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.line_indent(indent, &format!("{done_label}:;"));
+        Ok(result_temp)
     }
 
     fn emit_async_spawn_expr(
@@ -10914,6 +11792,69 @@ impl<'a> CGenerator<'a> {
         )
     }
 
+    fn async_channel_send_context_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelSendFutureCtx_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_send_run_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelSendFutureRun_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_send_cleanup_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelSendFutureCleanup_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_reserve_context_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelReserveFutureCtx_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_reserve_run_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelReserveFutureRun_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_reserve_cleanup_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelReserveFutureCleanup_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_recv_context_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelRecvFutureCtx_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_recv_run_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelRecvFutureRun_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    fn async_channel_recv_cleanup_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncChannelRecvFutureCleanup_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
     fn async_op_impl_name(
         &self,
         interface_name: &str,
@@ -11737,6 +12678,11 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::AsyncSpawn { .. }
         | TExprKind::AsyncTaskCancel { .. }
         | TExprKind::AsyncTaskIsFinished { .. }
+        | TExprKind::AsyncChannelSend { .. }
+        | TExprKind::AsyncChannelTrySend { .. }
+        | TExprKind::AsyncChannelReserve { .. }
+        | TExprKind::AsyncChannelPermitSend { .. }
+        | TExprKind::AsyncChannelRecv { .. }
         | TExprKind::UnsafeBlock { .. } => true,
         TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
             expr_needs_stmt_lowering(expr)

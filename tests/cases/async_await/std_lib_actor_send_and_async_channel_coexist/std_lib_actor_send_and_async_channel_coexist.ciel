@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/lib;
+import /std/async as async;
+import /std/result;
+
+Result<Channel<usize>, Error> handle(Channel<usize> out, usize value) {
+    channel_send(&out, value + 1)?;
+    return Ok(out);
+}
+
+async Result<usize, Error> send_over_async_channel() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    await async::send<usize>(pair.sender, 40)?;
+    usize value = await async::recv<usize>(pair.receiver)?;
+    async::close<usize>(pair.sender)?;
+    async::close_receiver<usize>(pair.receiver)?;
+    return Ok(value);
+}
+
+i32 main() {
+    Channel<usize> out = must(make_channel<usize>());
+    Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(out, handle));
+    must(send(&actor, 1));
+    usize actor_value = must(channel_recv(&out));
+    usize async_value = must(async::block_on(send_over_async_channel()));
+    must(stop(&actor));
+    must(join(&actor));
+    must(channel_close(&out));
+    must(print_value(actor_value + async_value));
+    return 0;
+}

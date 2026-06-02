@@ -3,7 +3,6 @@ export import /std/result;
 export import /std/panic;
 export import /std/c;
 export import /std/io;
-export import /std/async;
 export import /std/async_io;
 export import /std/async_net;
 export import /std/async_time;
@@ -22,7 +21,54 @@ export import /std/env;
 export import /std/crypto;
 export import /std/net;
 
+import /std/async as flow;
+import /std/async/adapter as async_adapter;
 import /std/time as sync_time;
+
+export type Step<S> = flow::Step<S>;
+export type TaskFinish<S, Out> = flow::TaskFinish<S, Out>;
+export type AsyncTask<S, Out> = flow::AsyncTask<S, Out>;
+export type AsyncRunner<S> = flow::AsyncRunner<S>;
+export type Completion<S, Out> = flow::Completion<S, Out>;
+
+export Result<AsyncRunner<S>, Error> spawn_runner<S: Message>(S initial_state) {
+    return flow::spawn_runner<S>(initial_state);
+}
+
+export Completion<S, Out> completion_from_op<
+    S: Message,
+    Out,
+    Op: Message + async_adapter::notify_done<Step<S>> + async_adapter::finish<Out>
+>(Op op) {
+    return flow::completion_from_op<S, Out, Op>(op);
+}
+
+export AsyncTask<S, Out> from_completion<S: Message, Out>(Completion<S, Out> completion) {
+    return flow::from_completion<S, Out>(completion);
+}
+
+export AsyncTask<S, Next> then<S: Message, Out, Next>(
+    AsyncTask<S, Out> task,
+    Result<AsyncTask<S, Next>, Error> |(Out): Message| continuation
+) {
+    return flow::then<S, Out, Next>(task, continuation);
+}
+
+export Result<void, Error> start<S: Message, Out>(
+    AsyncRunner<S> runner,
+    AsyncTask<S, Out> task,
+    TaskFinish<S, Out> finish
+) {
+    return flow::start<S, Out>(runner, task, finish);
+}
+
+export Result<void, Error> stop_runner<S: Message>(*const AsyncRunner<S> runner) {
+    return flow::stop_runner<S>(runner);
+}
+
+export Result<void, Error> join_runner<S: Message>(*const AsyncRunner<S> runner) {
+    return flow::join_runner<S>(runner);
+}
 
 export Result<void, Error> sleep_ms(u64 ms) {
     return sync_time::sleep_ms(ms);

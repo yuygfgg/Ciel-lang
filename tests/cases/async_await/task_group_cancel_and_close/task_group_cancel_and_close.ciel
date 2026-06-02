@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> slow() {
+    await async_time::sleep_ms(100)?;
+    return Ok(1);
+}
+
+i32 main() {
+    async::TaskGroup<usize> group = must(async::task_group<usize>());
+    async::Task<usize> task = must(async::spawn<usize>(slow()));
+    must(async::group_add<usize>(&group, task));
+    must(async::group_cancel_all<usize>(&group));
+    must(async::group_close<usize>(&group));
+    switch (async::block_on(task)) {
+        case Err(_):
+            must(print_value(5));
+        case Ok(_):
+            return 1;
+    }
+    return 0;
+}

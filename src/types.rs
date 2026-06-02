@@ -763,39 +763,49 @@ pub fn callable_ret_params_ty(ty: &Ty) -> Option<(Ty, Vec<Ty>)> {
 }
 
 pub fn contains_generic(ty: &Ty) -> bool {
-    match ty {
-        Ty::Hole(_) => false,
-        Ty::Generic(_) => true,
-        Ty::Pointer { inner, .. } => contains_generic(inner),
-        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_generic(elem),
-        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
-            args.iter().any(contains_generic)
+    let mut stack = vec![ty];
+    while let Some(ty) = stack.pop() {
+        match ty {
+            Ty::Generic(_) => return true,
+            Ty::Pointer { inner, .. } => stack.push(inner),
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. } => stack.push(elem),
+            Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+                stack.extend(args.iter());
+            }
+            Ty::GeneratedFuture { output, .. } => stack.push(output),
+            Ty::Function { ret, params, .. } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+            }
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+                for entry in constraints
+                    .positive
+                    .iter()
+                    .chain(constraints.negative.iter())
+                {
+                    stack.extend(entry.args.iter());
+                }
+            }
+            Ty::ClosureInstance {
+                ret,
+                params,
+                captures,
+                ..
+            } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+                stack.extend(captures.iter());
+            }
+            _ => {}
         }
-        Ty::GeneratedFuture { output, .. } => contains_generic(output),
-        Ty::Function { ret, params, .. } => {
-            contains_generic(ret) || params.iter().any(contains_generic)
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            contains_generic(ret)
-                || params.iter().any(contains_generic)
-                || constraint_bounds_contains_generic(constraints)
-        }
-        Ty::ClosureInstance {
-            ret,
-            params,
-            captures,
-            ..
-        } => {
-            contains_generic(ret)
-                || params.iter().any(contains_generic)
-                || captures.iter().any(contains_generic)
-        }
-        _ => false,
     }
+    false
 }
 
 pub fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
@@ -807,38 +817,49 @@ pub fn constraint_bounds_contains_generic(bounds: &ConstraintBounds) -> bool {
 }
 
 pub fn contains_type_hole(ty: &Ty) -> bool {
-    match ty {
-        Ty::Hole(_) => true,
-        Ty::Pointer { inner, .. } => contains_type_hole(inner),
-        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_type_hole(elem),
-        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
-            args.iter().any(contains_type_hole)
+    let mut stack = vec![ty];
+    while let Some(ty) = stack.pop() {
+        match ty {
+            Ty::Hole(_) => return true,
+            Ty::Pointer { inner, .. } => stack.push(inner),
+            Ty::Array { elem, .. } | Ty::Slice { elem, .. } => stack.push(elem),
+            Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+                stack.extend(args.iter());
+            }
+            Ty::GeneratedFuture { output, .. } => stack.push(output),
+            Ty::Function { ret, params, .. } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+            }
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+                for entry in constraints
+                    .positive
+                    .iter()
+                    .chain(constraints.negative.iter())
+                {
+                    stack.extend(entry.args.iter());
+                }
+            }
+            Ty::ClosureInstance {
+                ret,
+                params,
+                captures,
+                ..
+            } => {
+                stack.push(ret);
+                stack.extend(params.iter());
+                stack.extend(captures.iter());
+            }
+            _ => {}
         }
-        Ty::GeneratedFuture { output, .. } => contains_type_hole(output),
-        Ty::Function { ret, params, .. } => {
-            contains_type_hole(ret) || params.iter().any(contains_type_hole)
-        }
-        Ty::Closure {
-            ret,
-            params,
-            constraints,
-        } => {
-            contains_type_hole(ret)
-                || params.iter().any(contains_type_hole)
-                || constraint_bounds_contains_type_hole(constraints)
-        }
-        Ty::ClosureInstance {
-            ret,
-            params,
-            captures,
-            ..
-        } => {
-            contains_type_hole(ret)
-                || params.iter().any(contains_type_hole)
-                || captures.iter().any(contains_type_hole)
-        }
-        _ => false,
     }
+    false
 }
 
 pub fn constraint_bounds_contains_type_hole(bounds: &ConstraintBounds) -> bool {
@@ -1139,6 +1160,34 @@ pub fn std_task_ty(output_ty: Ty) -> Ty {
     Ty::Named {
         name: "Task".to_string(),
         args: vec![output_ty],
+    }
+}
+
+pub fn std_sender_ty(payload_ty: Ty) -> Ty {
+    Ty::Named {
+        name: "Sender".to_string(),
+        args: vec![payload_ty],
+    }
+}
+
+pub fn std_receiver_ty(payload_ty: Ty) -> Ty {
+    Ty::Named {
+        name: "Receiver".to_string(),
+        args: vec![payload_ty],
+    }
+}
+
+pub fn std_send_permit_ty(payload_ty: Ty) -> Ty {
+    Ty::Named {
+        name: "SendPermit".to_string(),
+        args: vec![payload_ty],
+    }
+}
+
+pub fn std_task_group_ty(payload_ty: Ty) -> Ty {
+    Ty::Named {
+        name: "TaskGroup".to_string(),
+        args: vec![payload_ty],
     }
 }
 

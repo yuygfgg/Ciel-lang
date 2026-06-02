@@ -398,6 +398,29 @@ pub enum TExprKind {
         task: Box<TExpr>,
         task_output_ty: Ty,
     },
+    AsyncChannelSend {
+        sender: Box<TExpr>,
+        value: Box<TExpr>,
+        payload_ty: Ty,
+    },
+    AsyncChannelTrySend {
+        sender: Box<TExpr>,
+        value: Box<TExpr>,
+        payload_ty: Ty,
+    },
+    AsyncChannelReserve {
+        sender: Box<TExpr>,
+        payload_ty: Ty,
+    },
+    AsyncChannelPermitSend {
+        permit: Box<TExpr>,
+        value: Box<TExpr>,
+        payload_ty: Ty,
+    },
+    AsyncChannelRecv {
+        receiver: Box<TExpr>,
+        payload_ty: Ty,
+    },
     MetaAsRefRepr {
         value: Box<TExpr>,
         source_ty: Ty,
@@ -642,6 +665,17 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         TExprKind::AsyncSpawn { body, .. } => visitor.visit_expr(body),
         TExprKind::AsyncTaskCancel { task, .. } | TExprKind::AsyncTaskIsFinished { task, .. } => {
             visitor.visit_expr(task)
+        }
+        TExprKind::AsyncChannelSend { sender, value, .. }
+        | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+            visitor.visit_expr(sender);
+            visitor.visit_expr(value);
+        }
+        TExprKind::AsyncChannelReserve { sender, .. } => visitor.visit_expr(sender),
+        TExprKind::AsyncChannelRecv { receiver, .. } => visitor.visit_expr(receiver),
+        TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+            visitor.visit_expr(permit);
+            visitor.visit_expr(value);
         }
         TExprKind::UnsafeBlock { statements, value } => {
             for stmt in statements {

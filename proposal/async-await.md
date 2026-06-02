@@ -251,10 +251,10 @@ export struct TaskGroup<T> {
 }
 
 export Result<TaskGroup<T>, Error> task_group<T>();
-export Result<void, Error> group_add<T>(*TaskGroup<T> group, Task<T> task);
-export async Result<T, Error> group_next<T>(*TaskGroup<T> group);
-export Result<void, Error> group_cancel_all<T>(*TaskGroup<T> group);
-export Result<void, Error> group_close<T>(*TaskGroup<T> group);
+export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task);
+export async Result<T, Error> group_next<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_close<T>(*const TaskGroup<T> group);
 ```
 
 `group_next` waits for the next task in the group to finish. It does not cancel
@@ -1141,10 +1141,10 @@ export Result<T, Error> block_on<T, F: Future<Result<T, Error>> + Abortable>(
 
 export Result<void, Error> cancel<T>(*Task<T> task);
 export Result<TaskGroup<T>, Error> task_group<T>();
-export Result<void, Error> group_add<T>(*TaskGroup<T> group, Task<T> task);
-export async Result<T, Error> group_next<T>(*TaskGroup<T> group);
-export Result<void, Error> group_cancel_all<T>(*TaskGroup<T> group);
-export Result<void, Error> group_close<T>(*TaskGroup<T> group);
+export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task);
+export async Result<T, Error> group_next<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_close<T>(*const TaskGroup<T> group);
 
 export Result<ChannelPair<T>, Error> channel<T>(usize capacity);
 export async Result<void, Error> send<T>(Sender<T> sender, T value);

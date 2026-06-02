@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 75
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> delayed_value() {
+    await async_time::sleep_ms(1)?;
+    return Ok(7);
+}
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    async::Task<usize> task = async::spawn<usize>(delayed_value())?;
+    Result<usize, Error> picked = await select {
+        case value = async::recv<usize>(pair.receiver): value;
+        case done = task: done;
+    };
+    usize first = picked?;
+    async::try_send<usize>(pair.sender, 5)?;
+    usize second = await async::recv<usize>(pair.receiver)?;
+    async::close<usize>(pair.sender)?;
+    async::close_receiver<usize>(pair.receiver)?;
+    return Ok(first * 10 + second);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

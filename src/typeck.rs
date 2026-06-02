@@ -19,8 +19,8 @@ use crate::{
         meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
         meta_repr_marker_name, meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
-        std_meta_repr_marker_ty, std_result_ty, std_task_ty, substitute_ty, ty_from_primitive,
-        unify_ty,
+        std_meta_repr_marker_ty, std_receiver_ty, std_result_ty, std_send_permit_ty, std_sender_ty,
+        std_task_ty, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -4999,6 +4999,9 @@ impl TypeChecker {
         ) {
             return None;
         }
+        if std_id::is_std_async_runtime_handle_ty(&self.resolved, ty) {
+            return None;
+        }
         if contains_generic(ty) || contains_type_hole(ty) {
             return Some(format!(
                 "{path} has generic type `{ty}` without a proven async-frame-safety policy"
@@ -5035,7 +5038,7 @@ impl TypeChecker {
             }
             Ty::GeneratedFuture { .. } => None,
             Ty::Named { name, args } => {
-                if std_id::is_std_async_future_or_task_ty(&self.resolved, ty) {
+                if std_id::is_std_async_runtime_handle_ty(&self.resolved, ty) {
                     return None;
                 }
                 if !visiting.insert(ty.clone()) {
@@ -7891,6 +7894,21 @@ impl TypeChecker {
         if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "future_from_op") {
             return self.check_async_future_from_op_call(scopes, span, type_args, args);
         }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "send") {
+            return self.check_async_channel_send_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "try_send") {
+            return self.check_async_channel_try_send_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "reserve") {
+            return self.check_async_channel_reserve_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "permit_send") {
+            return self.check_async_channel_permit_send_call(scopes, span, type_args, args);
+        }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "recv") {
+            return self.check_async_channel_recv_call(scopes, span, type_args, args);
+        }
         if std_id::is_std_async_time_function(&self.resolved, sig.module, &sig.name, "sleep_ms") {
             return self.check_async_sleep_ms_call(scopes, span, type_args, args);
         }
@@ -8485,6 +8503,293 @@ impl TypeChecker {
             kind: TExprKind::AsyncOpFuture {
                 op: Box::new(op_expr),
                 output_ty,
+            },
+        })
+    }
+
+    fn explicit_async_payload_ty(
+        &mut self,
+        label: &str,
+        _span: crate::span::Span,
+        type_args: &[Type],
+    ) -> Option<Ty> {
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                type_args[1].span,
+                format!("too many type arguments for `{label}`"),
+            ));
+            return Some(Ty::Unknown);
+        }
+        type_args.first().map(|ty| self.lower_type(ty))
+    }
+
+    fn check_channel_payload_message(&mut self, payload_ty: &Ty, span: crate::span::Span) {
+        if let Some(reason) =
+            self.task_boundary_message_violation(payload_ty, "channel payload", &mut HashSet::new())
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "async channel payload type `{payload_ty}` does not implement `Message`: {reason}"
+                ),
+            ));
+        }
+    }
+
+    fn check_async_channel_sender_arg(
+        &mut self,
+        scopes: &mut LocalScopes,
+        label: &str,
+        arg: &Expr,
+        explicit_payload: Option<&Ty>,
+    ) -> Option<(TExpr, Ty)> {
+        let expected = explicit_payload.map(|ty| std_sender_ty(ty.clone()));
+        let sender = self.check_expr(scopes, arg, expected.as_ref())?;
+        if let Some(expected) = expected.as_ref() {
+            self.require_assignable(expected, &sender.ty, sender.span);
+        }
+        let payload_ty = explicit_payload
+            .cloned()
+            .or_else(|| std_id::std_async_sender_payload_arg(&self.resolved, &sender.ty).cloned());
+        let Some(payload_ty) = payload_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                sender.span,
+                format!("`async::{label}` requires `Sender<T>`, got `{}`", sender.ty),
+            ));
+            return Some((sender, Ty::Unknown));
+        };
+        Some((sender, payload_ty))
+    }
+
+    fn check_async_channel_send_like_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+        label: &str,
+        as_future: bool,
+    ) -> Option<TExpr> {
+        let explicit_payload = self.explicit_async_payload_ty(label, span, type_args);
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("`async::{label}` expects 2 arguments, got {}", args.len()),
+            ));
+        }
+        let Some(sender_arg) = args.first() else {
+            return None;
+        };
+        let (sender, payload_ty) = self.check_async_channel_sender_arg(
+            scopes,
+            label,
+            sender_arg,
+            explicit_payload.as_ref(),
+        )?;
+        let Some(value_arg) = args.get(1) else {
+            return None;
+        };
+        let value = self.check_expr(scopes, value_arg, Some(&payload_ty))?;
+        self.require_assignable(&payload_ty, &value.ty, value.span);
+        self.check_channel_payload_message(&payload_ty, value.span);
+        let result_ty = std_result_ty(Ty::Void, std_error_ty());
+        if as_future {
+            Some(TExpr {
+                span,
+                ty: generated_future_ty(
+                    format!("channel_send_{}", mangle_ty_fragment(&payload_ty)),
+                    result_ty,
+                    false,
+                    true,
+                ),
+                kind: TExprKind::AsyncChannelSend {
+                    sender: Box::new(sender),
+                    value: Box::new(value),
+                    payload_ty,
+                },
+            })
+        } else {
+            Some(TExpr {
+                span,
+                ty: result_ty,
+                kind: TExprKind::AsyncChannelTrySend {
+                    sender: Box::new(sender),
+                    value: Box::new(value),
+                    payload_ty,
+                },
+            })
+        }
+    }
+
+    fn check_async_channel_send_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        self.check_async_channel_send_like_call(scopes, span, type_args, args, "send", true)
+    }
+
+    fn check_async_channel_try_send_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        self.check_async_channel_send_like_call(scopes, span, type_args, args, "try_send", false)
+    }
+
+    fn check_async_channel_reserve_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        let explicit_payload = self.explicit_async_payload_ty("reserve", span, type_args);
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("`async::reserve` expects 1 argument, got {}", args.len()),
+            ));
+        }
+        let Some(sender_arg) = args.first() else {
+            return None;
+        };
+        let (sender, payload_ty) = self.check_async_channel_sender_arg(
+            scopes,
+            "reserve",
+            sender_arg,
+            explicit_payload.as_ref(),
+        )?;
+        let permit_ty = std_send_permit_ty(payload_ty.clone());
+        let result_ty = std_result_ty(permit_ty, std_error_ty());
+        Some(TExpr {
+            span,
+            ty: generated_future_ty(
+                format!("channel_reserve_{}", mangle_ty_fragment(&payload_ty)),
+                result_ty,
+                true,
+                true,
+            ),
+            kind: TExprKind::AsyncChannelReserve {
+                sender: Box::new(sender),
+                payload_ty,
+            },
+        })
+    }
+
+    fn check_async_channel_recv_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        let explicit_payload = self.explicit_async_payload_ty("recv", span, type_args);
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("`async::recv` expects 1 argument, got {}", args.len()),
+            ));
+        }
+        let expected = explicit_payload
+            .as_ref()
+            .map(|ty| std_receiver_ty(ty.clone()));
+        let Some(receiver_arg) = args.first() else {
+            return None;
+        };
+        let receiver = self.check_expr(scopes, receiver_arg, expected.as_ref())?;
+        if let Some(expected) = expected.as_ref() {
+            self.require_assignable(expected, &receiver.ty, receiver.span);
+        }
+        let payload_ty = explicit_payload
+            .or_else(|| {
+                std_id::std_async_receiver_payload_arg(&self.resolved, &receiver.ty).cloned()
+            })
+            .unwrap_or_else(|| {
+                self.diagnostics.push(Diagnostic::new(
+                    receiver.span,
+                    format!(
+                        "`async::recv` requires `Receiver<T>`, got `{}`",
+                        receiver.ty
+                    ),
+                ));
+                Ty::Unknown
+            });
+        self.check_channel_payload_message(&payload_ty, receiver.span);
+        let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+        Some(TExpr {
+            span,
+            ty: generated_future_ty(
+                format!("channel_recv_{}", mangle_ty_fragment(&payload_ty)),
+                result_ty,
+                true,
+                true,
+            ),
+            kind: TExprKind::AsyncChannelRecv {
+                receiver: Box::new(receiver),
+                payload_ty,
+            },
+        })
+    }
+
+    fn check_async_channel_permit_send_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        let explicit_payload = self.explicit_async_payload_ty("permit_send", span, type_args);
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "`async::permit_send` expects 2 arguments, got {}",
+                    args.len()
+                ),
+            ));
+        }
+        let expected = explicit_payload
+            .as_ref()
+            .map(|ty| std_send_permit_ty(ty.clone()));
+        let Some(permit_arg) = args.first() else {
+            return None;
+        };
+        let permit = self.check_expr(scopes, permit_arg, expected.as_ref())?;
+        if let Some(expected) = expected.as_ref() {
+            self.require_assignable(expected, &permit.ty, permit.span);
+        }
+        let payload_ty = explicit_payload
+            .or_else(|| {
+                std_id::std_async_send_permit_payload_arg(&self.resolved, &permit.ty).cloned()
+            })
+            .unwrap_or_else(|| {
+                self.diagnostics.push(Diagnostic::new(
+                    permit.span,
+                    format!(
+                        "`async::permit_send` requires `SendPermit<T>`, got `{}`",
+                        permit.ty
+                    ),
+                ));
+                Ty::Unknown
+            });
+        let Some(value_arg) = args.get(1) else {
+            return None;
+        };
+        let value = self.check_expr(scopes, value_arg, Some(&payload_ty))?;
+        self.require_assignable(&payload_ty, &value.ty, value.span);
+        self.check_channel_payload_message(&payload_ty, value.span);
+        Some(TExpr {
+            span,
+            ty: std_result_ty(Ty::Void, std_error_ty()),
+            kind: TExprKind::AsyncChannelPermitSend {
+                permit: Box::new(permit),
+                value: Box::new(value),
+                payload_ty,
             },
         })
     }

@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 12
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    async::try_send<usize>(pair.sender, 5)?;
+    switch (async::try_send<usize>(pair.sender, 6)) {
+        case Err(_):
+            {}
+        case Ok(_):
+            return Err(async::channel_closed_error());
+    }
+    usize first = await async::recv<usize>(pair.receiver)?;
+    async::SendPermit<usize> permit = await async::reserve<usize>(pair.sender)?;
+    async::permit_send<usize>(permit, 7)?;
+    usize second = await async::recv<usize>(pair.receiver)?;
+    return Ok(first + second);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

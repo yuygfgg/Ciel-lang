@@ -189,7 +189,7 @@ Implementation guardrails:
 
 ## Phase 7: Async Communication
 
-- [ ] Add bounded async channels.
+- [x] Add bounded async channels.
       Scope: add `Sender<T>`, `Receiver<T>`, `SendPermit<T>`, `ChannelPair<T>`,
       `channel`, async `send`, sync `try_send`, async `reserve`, sync
       `permit_send`, async `recv`, `close`, and `close_receiver`.
@@ -197,7 +197,7 @@ Implementation guardrails:
       reports full or closed without suspension; `select` can race channel
       receive with timers and task completion.
 
-- [ ] Add channel lifecycle and cleanup semantics.
+- [x] Add channel lifecycle and cleanup semantics.
       Scope: track sender and receiver counts; last sender wakes receivers;
       last receiver wakes senders and reservations; task-frame cleanup releases
       endpoints before relying on GC finalization.
@@ -205,13 +205,13 @@ Implementation guardrails:
       commits after capacity reservation; dropping, failing, or aborting the
       last endpoint wakes waiters with `channel_closed_error()`.
 
-- [ ] Attach channel payload boundary policy.
+- [x] Attach channel payload boundary policy.
       Scope: channel payloads get hidden `Message` obligations at send/recv
       boundaries.
       Tests: messageable payloads pass; non-messageable payloads fail with a
       boundary diagnostic.
 
-- [ ] Add task groups.
+- [x] Add task groups.
       Scope: add `TaskGroup<T>`, `task_group`, `group_add`, `group_next`,
       `group_cancel_all`, and `group_close` for dynamic concurrency.
       Tests: `group_next` returns completed tasks in completion order without

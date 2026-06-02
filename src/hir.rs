@@ -615,7 +615,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 self.push_generics(&decl.generics);
                 self.push_scope();
                 let generics = self.lower_generics(&decl.generics);
-                let name = self.resolve_name(&[decl.name.clone()], "interface");
+                let name = self.resolve_name(&decl.name, "interface");
                 self.require_def_kind(&name, &[DefKind::Interface], "interface");
                 let args = decl.args.iter().map(|ty| self.lower_type(ty)).collect();
                 let params = decl
@@ -1306,8 +1306,8 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         }
     }
 
-    fn resolve_interface_name(&mut self, ident: &ast::Ident) -> NameRef {
-        let name = self.resolve_name(std::slice::from_ref(ident), "interface");
+    fn resolve_interface_name(&mut self, path: &[ast::Ident]) -> NameRef {
+        let name = self.resolve_name(path, "interface");
         self.require_def_kind(
             &name,
             &[DefKind::Interface, DefKind::InterfaceAlias],

@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> pending_send(async::Sender<usize> sender) {
+    await async::send<usize>(sender, 2)?;
+    return Ok(1);
+}
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    async::try_send<usize>(pair.sender, 1)?;
+    async::Task<usize> task = async::spawn<usize>(pending_send(pair.sender))?;
+    await async_time::sleep_ms(1)?;
+    async::close_receiver<usize>(pair.receiver)?;
+    Result<usize, Error> result = await task;
+    switch (result) {
+        case Err(_):
+            return Ok(5);
+        case Ok(_):
+            return Ok(1);
+    }
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

@@ -199,6 +199,11 @@ fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
 pub enum StdAsyncType {
     Future,
     Task,
+    Sender,
+    Receiver,
+    SendPermit,
+    ChannelPair,
+    TaskGroup,
 }
 
 impl StdAsyncType {
@@ -206,6 +211,11 @@ impl StdAsyncType {
         match self {
             StdAsyncType::Future => "Future",
             StdAsyncType::Task => "Task",
+            StdAsyncType::Sender => "Sender",
+            StdAsyncType::Receiver => "Receiver",
+            StdAsyncType::SendPermit => "SendPermit",
+            StdAsyncType::ChannelPair => "ChannelPair",
+            StdAsyncType::TaskGroup => "TaskGroup",
         }
     }
 }
@@ -249,6 +259,40 @@ pub fn is_std_async_task_type_name(resolved: &ResolvedProgram, ty_name: &str) ->
     is_std_async_type(resolved, ty_name, StdAsyncType::Task)
 }
 
+pub fn is_std_async_sender_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::Sender)
+}
+
+pub fn is_std_async_receiver_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::Receiver)
+}
+
+pub fn is_std_async_send_permit_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::SendPermit)
+}
+
+pub fn is_std_async_channel_pair_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::ChannelPair)
+}
+
+pub fn is_std_async_task_group_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::TaskGroup)
+}
+
+pub fn is_std_async_runtime_handle_ty(resolved: &ResolvedProgram, ty: &Ty) -> bool {
+    let Ty::Named { name, args } = ty else {
+        return false;
+    };
+    args.len() == 1
+        && (is_std_async_future_type_name(resolved, name)
+            || is_std_async_task_type_name(resolved, name)
+            || is_std_async_sender_type_name(resolved, name)
+            || is_std_async_receiver_type_name(resolved, name)
+            || is_std_async_send_permit_type_name(resolved, name)
+            || is_std_async_channel_pair_type_name(resolved, name)
+            || is_std_async_task_group_type_name(resolved, name))
+}
+
 pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
     let Ty::Named { name, args } = ty else {
         return None;
@@ -265,6 +309,59 @@ pub fn std_async_task_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> 
         return None;
     };
     if args.len() == 1 && is_std_async_task_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn std_async_sender_payload_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_sender_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn std_async_receiver_payload_arg<'a>(
+    resolved: &ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_receiver_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn std_async_send_permit_payload_arg<'a>(
+    resolved: &ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_send_permit_type_name(resolved, name) {
+        args.first()
+    } else {
+        None
+    }
+}
+
+pub fn std_async_task_group_payload_arg<'a>(
+    resolved: &ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<&'a Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if args.len() == 1 && is_std_async_task_group_type_name(resolved, name) {
         args.first()
     } else {
         None

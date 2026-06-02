@@ -1,0 +1,80 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 71
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+struct Packet {
+    usize value;
+}
+
+Result<usize, Error> packet_value(Result<Packet, Error> result) {
+    Packet packet = result?;
+    return Ok(packet.value);
+}
+
+async Result<Packet, Error> build_packet(usize seed) {
+    await async_time::sleep_ms(0)?;
+    return Ok({ value: seed + 1 });
+}
+
+async Result<usize, Error> produce(async::Sender<Packet> sender, usize seed) {
+    Packet packet = await build_packet(seed)?;
+    await async::send<Packet>(sender, packet)?;
+    return Ok(packet.value + 10);
+}
+
+async Result<usize, Error> delayed(usize value, u64 ms) {
+    await async_time::sleep_ms(ms)?;
+    return Ok(value);
+}
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<Packet> pair = async::channel<Packet>(1)?;
+    async::Task<usize> producer = async::spawn<usize>(produce(pair.sender, 5))?;
+
+    Packet first = await async::recv<Packet>(pair.receiver)?;
+    usize producer_value = await producer?;
+
+    async::Task<usize> fast = async::spawn<usize>(delayed(7, 1))?;
+    Result<usize, Error> picked = await select {
+        case packet = async::recv<Packet>(pair.receiver): packet_value(packet);
+        case done = fast: done;
+    };
+    usize selected = picked?;
+
+    async::try_send<Packet>(pair.sender, { value: 8 })?;
+    Packet second = await async::recv<Packet>(pair.receiver)?;
+
+    async::TaskGroup<usize> group = async::task_group<usize>()?;
+    async::Task<usize> slow = async::spawn<usize>(delayed(4, 5))?;
+    async::Task<usize> quick = async::spawn<usize>(delayed(3, 1))?;
+    async::group_add<usize>(&group, slow)?;
+    async::group_add<usize>(&group, quick)?;
+    usize first_group = await async::group_next<usize>(&group)?;
+    usize second_group = await async::group_next<usize>(&group)?;
+    async::group_close<usize>(&group)?;
+
+    Result<Result<void, Error>, Error> timed =
+        await async::timeout(async_time::sleep_ms(0), 100);
+    Result<void, Error> inner = timed?;
+    inner?;
+
+    return Ok(
+        first.value +
+        producer_value +
+        selected +
+        second.value +
+        first_group * 10 +
+        second_group
+    );
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

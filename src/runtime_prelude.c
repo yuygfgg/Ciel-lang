@@ -295,6 +295,8 @@ int ciel_errno(void) { return errno; }
 
 int ciel_async_timeout_errno(void) { return ETIMEDOUT; }
 
+int ciel_async_channel_closed_errno(void) { return EPIPE; }
+
 CIEL_MALLOC_LIKE CIEL_RETURNS_NONNULL char *
 ciel_cstr_from_slice(const char *ptr, size_t len) {
     char *out = (char *)ciel_alloc_atomic_array(sizeof(char), len + 1);
@@ -1721,11 +1723,16 @@ bool ciel_crypto_constant_time_eq(const uint8_t *left, size_t left_len,
 
 typedef struct CielActor CielActor;
 typedef struct CielChannel CielChannel;
+typedef struct CielAsyncChannel CielAsyncChannel;
+typedef struct CielAsyncSender CielAsyncSender;
+typedef struct CielAsyncReceiver CielAsyncReceiver;
+typedef struct CielAsyncSendPermit CielAsyncSendPermit;
 typedef struct CielMutex CielMutex;
 typedef struct CielAtomic CielAtomic;
 typedef struct CielBytes CielBytes;
 typedef struct CielAsyncFd CielAsyncFd;
 typedef struct CielAsyncOp CielAsyncOp;
+typedef struct CielTaskGroup CielTaskGroup;
 
 typedef struct CielBufferedReader {
     CielAsyncFd *fd;
@@ -2274,6 +2281,40 @@ struct CielChannel {
     int closed;
 };
 
+typedef struct CielAsyncQueueNode {
+    void *value;
+    struct CielAsyncQueueNode *next;
+} CielAsyncQueueNode;
+
+struct CielAsyncChannel {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    CielAsyncQueueNode *head;
+    CielAsyncQueueNode *tail;
+    size_t len;
+    size_t reserved;
+    size_t capacity;
+    size_t value_size;
+    size_t value_align;
+    size_t live_senders;
+    size_t live_receivers;
+};
+
+struct CielAsyncSender {
+    CielAsyncChannel *channel;
+    uint8_t closed;
+};
+
+struct CielAsyncReceiver {
+    CielAsyncChannel *channel;
+    uint8_t closed;
+};
+
+struct CielAsyncSendPermit {
+    CielAsyncChannel *channel;
+    uint8_t used;
+};
+
 CielChannel *ciel_channel_make(size_t value_size, size_t value_align) {
     ciel_runtime_init();
     CielChannel *channel = (CielChannel *)ciel_alloc(sizeof(CielChannel));
@@ -2346,6 +2387,206 @@ int32_t ciel_channel_close(CielChannel *channel) {
     pthread_mutex_lock(&channel->mutex);
     channel->closed = 1;
     pthread_cond_broadcast(&channel->cond);
+    pthread_mutex_unlock(&channel->mutex);
+    return 0;
+}
+
+static void ciel_async_channel_broadcast(CielAsyncChannel *channel) {
+    if (channel == NULL)
+        return;
+    pthread_mutex_lock(&channel->mutex);
+    pthread_cond_broadcast(&channel->cond);
+    pthread_mutex_unlock(&channel->mutex);
+}
+
+static int32_t ciel_async_channel_enqueue_locked(CielAsyncChannel *channel,
+                                                 const void *value) {
+    if (channel == NULL || (value == NULL && channel->value_size > 0))
+        return EINVAL;
+    CielAsyncQueueNode *node =
+        (CielAsyncQueueNode *)ciel_alloc(sizeof(CielAsyncQueueNode));
+    void *copy = ciel_alloc(channel->value_size == 0 ? 1 : channel->value_size);
+    if (channel->value_size > 0)
+        memcpy(copy, value, channel->value_size);
+    node->value = copy;
+    node->next = NULL;
+    if (channel->tail != NULL)
+        channel->tail->next = node;
+    else
+        channel->head = node;
+    channel->tail = node;
+    channel->len++;
+    pthread_cond_broadcast(&channel->cond);
+    return 0;
+}
+
+static void *ciel_async_channel_pop_locked(CielAsyncChannel *channel) {
+    CielAsyncQueueNode *node = channel->head;
+    if (node == NULL)
+        return NULL;
+    channel->head = node->next;
+    if (channel->head == NULL)
+        channel->tail = NULL;
+    channel->len--;
+    void *value = node->value;
+    pthread_cond_broadcast(&channel->cond);
+    return value;
+}
+
+int32_t ciel_async_channel_make(size_t value_size, size_t value_align,
+                                size_t capacity, CielAsyncSender **sender_out,
+                                CielAsyncReceiver **receiver_out) {
+    if (sender_out == NULL || receiver_out == NULL || value_align == 0 ||
+        capacity == 0)
+        return EINVAL;
+    ciel_runtime_init();
+    CielAsyncChannel *channel =
+        (CielAsyncChannel *)ciel_alloc(sizeof(CielAsyncChannel));
+    memset(channel, 0, sizeof(*channel));
+    channel->capacity = capacity;
+    channel->value_size = value_size;
+    channel->value_align = value_align;
+    channel->live_senders = 1;
+    channel->live_receivers = 1;
+    int rc = pthread_mutex_init(&channel->mutex, NULL);
+    if (rc != 0)
+        return rc;
+    rc = pthread_cond_init(&channel->cond, NULL);
+    if (rc != 0)
+        return rc;
+    CielAsyncSender *sender =
+        (CielAsyncSender *)ciel_alloc(sizeof(CielAsyncSender));
+    sender->channel = channel;
+    sender->closed = 0;
+    CielAsyncReceiver *receiver =
+        (CielAsyncReceiver *)ciel_alloc(sizeof(CielAsyncReceiver));
+    receiver->channel = channel;
+    receiver->closed = 0;
+    *sender_out = sender;
+    *receiver_out = receiver;
+    return 0;
+}
+
+CielAsyncSender *ciel_async_sender_clone(CielAsyncSender *sender) {
+    if (sender == NULL || sender->channel == NULL || sender->closed) {
+        errno = EPIPE;
+        return NULL;
+    }
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        errno = EPIPE;
+        return NULL;
+    }
+    channel->live_senders++;
+    pthread_mutex_unlock(&channel->mutex);
+    CielAsyncSender *clone =
+        (CielAsyncSender *)ciel_alloc(sizeof(CielAsyncSender));
+    clone->channel = channel;
+    clone->closed = 0;
+    return clone;
+}
+
+CielAsyncReceiver *ciel_async_receiver_clone(CielAsyncReceiver *receiver) {
+    if (receiver == NULL || receiver->channel == NULL || receiver->closed) {
+        errno = EPIPE;
+        return NULL;
+    }
+    CielAsyncChannel *channel = receiver->channel;
+    pthread_mutex_lock(&channel->mutex);
+    channel->live_receivers++;
+    pthread_mutex_unlock(&channel->mutex);
+    CielAsyncReceiver *clone =
+        (CielAsyncReceiver *)ciel_alloc(sizeof(CielAsyncReceiver));
+    clone->channel = channel;
+    clone->closed = 0;
+    return clone;
+}
+
+int32_t ciel_async_sender_close(CielAsyncSender *sender) {
+    if (sender == NULL || sender->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (!sender->closed) {
+        sender->closed = 1;
+        if (channel->live_senders > 0)
+            channel->live_senders--;
+        pthread_cond_broadcast(&channel->cond);
+    }
+    pthread_mutex_unlock(&channel->mutex);
+    return 0;
+}
+
+int32_t ciel_async_receiver_close(CielAsyncReceiver *receiver) {
+    if (receiver == NULL || receiver->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = receiver->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (!receiver->closed) {
+        receiver->closed = 1;
+        if (channel->live_receivers > 0)
+            channel->live_receivers--;
+        pthread_cond_broadcast(&channel->cond);
+    }
+    pthread_mutex_unlock(&channel->mutex);
+    return 0;
+}
+
+int32_t ciel_async_channel_try_send(CielAsyncSender *sender,
+                                    const void *value) {
+    if (sender == NULL || sender->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (sender->closed || channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        return EPIPE;
+    }
+    if (channel->len + channel->reserved >= channel->capacity) {
+        pthread_mutex_unlock(&channel->mutex);
+        return EAGAIN;
+    }
+    int32_t rc = ciel_async_channel_enqueue_locked(channel, value);
+    pthread_mutex_unlock(&channel->mutex);
+    return rc;
+}
+
+int32_t ciel_async_send_permit_send(CielAsyncSendPermit *permit,
+                                    const void *value) {
+    if (permit == NULL || permit->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = permit->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (permit->used) {
+        pthread_mutex_unlock(&channel->mutex);
+        return EALREADY;
+    }
+    permit->used = 1;
+    if (channel->reserved > 0)
+        channel->reserved--;
+    if (channel->live_receivers == 0) {
+        pthread_cond_broadcast(&channel->cond);
+        pthread_mutex_unlock(&channel->mutex);
+        return EPIPE;
+    }
+    int32_t rc = ciel_async_channel_enqueue_locked(channel, value);
+    pthread_mutex_unlock(&channel->mutex);
+    return rc;
+}
+
+int32_t ciel_async_send_permit_release(CielAsyncSendPermit *permit) {
+    if (permit == NULL || permit->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = permit->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (!permit->used) {
+        permit->used = 1;
+        if (channel->reserved > 0)
+            channel->reserved--;
+        pthread_cond_broadcast(&channel->cond);
+    }
     pthread_mutex_unlock(&channel->mutex);
     return 0;
 }
@@ -2699,6 +2940,8 @@ typedef struct CielFuture {
     CielAsyncOp *pending_op;
     CielTask *pending_task;
     CielSelectSet *pending_select;
+    CielAsyncChannel *pending_channel;
+    CielTaskGroup *pending_group;
 } CielFuture;
 
 struct CielTask {
@@ -2710,6 +2953,33 @@ struct CielTask {
     uint8_t finished;
     int32_t rc;
 };
+
+typedef struct CielTaskGroupDoneNode {
+    CielTask *task;
+    struct CielTaskGroupDoneNode *next;
+} CielTaskGroupDoneNode;
+
+typedef struct CielTaskGroupTaskNode {
+    CielTask *task;
+    uint8_t completed;
+    struct CielTaskGroupTaskNode *next;
+} CielTaskGroupTaskNode;
+
+struct CielTaskGroup {
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+    CielTaskGroupTaskNode *tasks;
+    CielTaskGroupDoneNode *done_head;
+    CielTaskGroupDoneNode *done_tail;
+    size_t live_tasks;
+    uint8_t closed;
+    uint8_t cancel_all;
+};
+
+typedef struct CielTaskGroupWatch {
+    CielTaskGroup *group;
+    CielTaskGroupTaskNode *node;
+} CielTaskGroupWatch;
 
 typedef struct CielSelectResult {
     size_t index;
@@ -2744,6 +3014,9 @@ typedef struct CielSelectWaiter {
 
 static pthread_mutex_t ciel_select_fairness_mutex = PTHREAD_MUTEX_INITIALIZER;
 static size_t ciel_select_next_start = 0;
+
+static void ciel_async_channel_broadcast(CielAsyncChannel *channel);
+static void ciel_task_group_broadcast(CielTaskGroup *group);
 
 enum {
     CIEL_FUTURE_PENDING = 0,
@@ -4384,6 +4657,8 @@ int32_t ciel_future_cancel(CielFuture *future) {
         return EINVAL;
     CielAsyncOp *op = NULL;
     CielSelectSet *select = NULL;
+    CielAsyncChannel *channel = NULL;
+    CielTaskGroup *group = NULL;
     pthread_mutex_lock(&future->mutex);
     if (future->state == CIEL_FUTURE_COMPLETE ||
         future->state == CIEL_FUTURE_FAILED) {
@@ -4394,15 +4669,23 @@ int32_t ciel_future_cancel(CielFuture *future) {
     future->failure = ECANCELED;
     op = future->pending_op;
     select = future->pending_select;
+    channel = future->pending_channel;
+    group = future->pending_group;
     future->pending_op = NULL;
     future->pending_task = NULL;
     future->pending_select = NULL;
+    future->pending_channel = NULL;
+    future->pending_group = NULL;
     future->generation++;
     pthread_mutex_unlock(&future->mutex);
     if (op != NULL)
         (void)ciel_async_cancel(op);
     if (select != NULL)
         ciel_select_cancel(select);
+    if (channel != NULL)
+        ciel_async_channel_broadcast(channel);
+    if (group != NULL)
+        ciel_task_group_broadcast(group);
     ciel_future_run_cleanup(future, ECANCELED);
     return 0;
 }
@@ -4424,6 +4707,8 @@ static void ciel_future_bind_operation(CielFuture *future, CielAsyncOp *op) {
     future->pending_op = op;
     future->pending_task = NULL;
     future->pending_select = NULL;
+    future->pending_channel = NULL;
+    future->pending_group = NULL;
     pthread_mutex_unlock(&future->mutex);
 
     pthread_mutex_lock(&op->mutex);
@@ -4456,6 +4741,8 @@ static void ciel_future_bind_task(CielFuture *future, CielTask *task) {
     future->pending_task = task;
     future->pending_op = NULL;
     future->pending_select = NULL;
+    future->pending_channel = NULL;
+    future->pending_group = NULL;
     pthread_mutex_unlock(&future->mutex);
 }
 
@@ -4475,6 +4762,54 @@ static void ciel_future_bind_select(CielFuture *future, CielSelectSet *set) {
     future->pending_select = set;
     future->pending_op = NULL;
     future->pending_task = NULL;
+    future->pending_channel = NULL;
+    future->pending_group = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_future_bind_channel(CielFuture *future,
+                                     CielAsyncChannel *channel) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    future->pending_channel = channel;
+    future->pending_op = NULL;
+    future->pending_task = NULL;
+    future->pending_select = NULL;
+    future->pending_group = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static void ciel_future_clear_channel(CielFuture *future,
+                                      CielAsyncChannel *channel) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    if (future->pending_channel == channel)
+        future->pending_channel = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static CIEL_MAYBE_UNUSED void
+ciel_future_bind_task_group(CielFuture *future, CielTaskGroup *group) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    future->pending_group = group;
+    future->pending_op = NULL;
+    future->pending_task = NULL;
+    future->pending_select = NULL;
+    future->pending_channel = NULL;
+    pthread_mutex_unlock(&future->mutex);
+}
+
+static CIEL_MAYBE_UNUSED void
+ciel_future_clear_task_group(CielFuture *future, CielTaskGroup *group) {
+    if (future == NULL)
+        return;
+    pthread_mutex_lock(&future->mutex);
+    if (future->pending_group == group)
+        future->pending_group = NULL;
     pthread_mutex_unlock(&future->mutex);
 }
 
@@ -4534,6 +4869,8 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
         future->pending_op = NULL;
         future->pending_task = NULL;
         future->pending_select = NULL;
+        future->pending_channel = NULL;
+        future->pending_group = NULL;
         if (future->result_size > 0 && out != NULL)
             memcpy(out, future->result, future->result_size);
     } else if (rc == EAGAIN) {
@@ -4543,6 +4880,8 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
         future->pending_op = NULL;
         future->pending_task = NULL;
         future->pending_select = NULL;
+        future->pending_channel = NULL;
+        future->pending_group = NULL;
         future->failure = rc;
     }
     pthread_mutex_unlock(&future->mutex);
@@ -4556,17 +4895,23 @@ void ciel_future_adopt_pending_operation(CielFuture *future,
     CielAsyncOp *op = NULL;
     CielTask *task = NULL;
     CielSelectSet *select = NULL;
+    CielAsyncChannel *channel = NULL;
+    CielTaskGroup *group = NULL;
     if (child != NULL) {
         pthread_mutex_lock(&child->mutex);
         op = child->pending_op;
         task = child->pending_task;
         select = child->pending_select;
+        channel = child->pending_channel;
+        group = child->pending_group;
         pthread_mutex_unlock(&child->mutex);
     }
     pthread_mutex_lock(&future->mutex);
     future->pending_op = op;
     future->pending_task = task;
     future->pending_select = select;
+    future->pending_channel = channel;
+    future->pending_group = group;
     pthread_mutex_unlock(&future->mutex);
 }
 
@@ -4577,7 +4922,166 @@ void ciel_future_clear_pending_operation(CielFuture *future) {
     future->pending_op = NULL;
     future->pending_task = NULL;
     future->pending_select = NULL;
+    future->pending_channel = NULL;
+    future->pending_group = NULL;
     pthread_mutex_unlock(&future->mutex);
+}
+
+int32_t ciel_async_channel_send_poll(CielFuture *future,
+                                     CielAsyncSender *sender,
+                                     const void *value) {
+    if (sender == NULL || sender->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (sender->closed || channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    if (channel->len + channel->reserved >= channel->capacity) {
+        ciel_future_bind_channel(future, channel);
+        pthread_mutex_unlock(&channel->mutex);
+        return EAGAIN;
+    }
+    int32_t rc = ciel_async_channel_enqueue_locked(channel, value);
+    pthread_mutex_unlock(&channel->mutex);
+    ciel_future_clear_channel(future, channel);
+    return rc;
+}
+
+int32_t ciel_async_channel_reserve_poll(CielFuture *future,
+                                        CielAsyncSender *sender,
+                                        CielAsyncSendPermit **out) {
+    if (sender == NULL || sender->channel == NULL || out == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (sender->closed || channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    if (channel->len + channel->reserved >= channel->capacity) {
+        ciel_future_bind_channel(future, channel);
+        pthread_mutex_unlock(&channel->mutex);
+        return EAGAIN;
+    }
+    channel->reserved++;
+    pthread_mutex_unlock(&channel->mutex);
+    ciel_future_clear_channel(future, channel);
+    CielAsyncSendPermit *permit =
+        (CielAsyncSendPermit *)ciel_alloc(sizeof(CielAsyncSendPermit));
+    permit->channel = channel;
+    permit->used = 0;
+    *out = permit;
+    return 0;
+}
+
+int32_t ciel_async_channel_recv_poll(CielFuture *future,
+                                     CielAsyncReceiver *receiver, void *out) {
+    if (receiver == NULL || receiver->channel == NULL ||
+        (out == NULL && receiver->channel->value_size > 0))
+        return EINVAL;
+    CielAsyncChannel *channel = receiver->channel;
+    pthread_mutex_lock(&channel->mutex);
+    void *value = ciel_async_channel_pop_locked(channel);
+    if (value != NULL) {
+        if (channel->value_size > 0)
+            memcpy(out, value, channel->value_size);
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return 0;
+    }
+    if (receiver->closed || channel->live_senders == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    ciel_future_bind_channel(future, channel);
+    pthread_mutex_unlock(&channel->mutex);
+    return EAGAIN;
+}
+
+int32_t ciel_future_await_channel_send(CielFuture *future,
+                                       CielAsyncSender *sender,
+                                       const void *value) {
+    if (future == NULL || sender == NULL || sender->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (sender->closed || channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    if (channel->len + channel->reserved >= channel->capacity) {
+        ciel_future_bind_channel(future, channel);
+        pthread_mutex_unlock(&channel->mutex);
+        return EAGAIN;
+    }
+    int32_t rc = ciel_async_channel_enqueue_locked(channel, value);
+    pthread_mutex_unlock(&channel->mutex);
+    ciel_future_clear_channel(future, channel);
+    return rc;
+}
+
+int32_t ciel_future_await_channel_reserve(CielFuture *future,
+                                          CielAsyncSender *sender,
+                                          CielAsyncSendPermit **permit_out) {
+    if (future == NULL || sender == NULL || sender->channel == NULL ||
+        permit_out == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = sender->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (sender->closed || channel->live_receivers == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    if (channel->len + channel->reserved >= channel->capacity) {
+        ciel_future_bind_channel(future, channel);
+        pthread_mutex_unlock(&channel->mutex);
+        return EAGAIN;
+    }
+    channel->reserved++;
+    pthread_mutex_unlock(&channel->mutex);
+    CielAsyncSendPermit *permit =
+        (CielAsyncSendPermit *)ciel_alloc(sizeof(CielAsyncSendPermit));
+    permit->channel = channel;
+    permit->used = 0;
+    *permit_out = permit;
+    ciel_future_clear_channel(future, channel);
+    return 0;
+}
+
+int32_t ciel_future_await_channel_recv(CielFuture *future,
+                                       CielAsyncReceiver *receiver, void *out) {
+    if (future == NULL || receiver == NULL || receiver->channel == NULL)
+        return EINVAL;
+    CielAsyncChannel *channel = receiver->channel;
+    pthread_mutex_lock(&channel->mutex);
+    if (receiver->closed) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    if (channel->head != NULL) {
+        void *value = ciel_async_channel_pop_locked(channel);
+        if (channel->value_size > 0 && out != NULL)
+            memcpy(out, value, channel->value_size);
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return 0;
+    }
+    if (channel->live_senders == 0) {
+        pthread_mutex_unlock(&channel->mutex);
+        ciel_future_clear_channel(future, channel);
+        return EPIPE;
+    }
+    ciel_future_bind_channel(future, channel);
+    pthread_mutex_unlock(&channel->mutex);
+    return EAGAIN;
 }
 
 static void ciel_task_wait_until_finished(CielTask *task) {
@@ -4600,13 +5104,23 @@ static void ciel_future_wait_until_ready(CielFuture *future) {
     CielAsyncOp *op = future->pending_op;
     CielTask *task = future->pending_task;
     CielSelectSet *select = future->pending_select;
+    CielAsyncChannel *channel = future->pending_channel;
+    CielTaskGroup *group = future->pending_group;
     pthread_mutex_unlock(&future->mutex);
     if (op == NULL) {
         if (select != NULL)
             ciel_select_wait_until_ready(select);
         else if (task != NULL)
             ciel_task_wait_until_finished(task);
-        else
+        else if (channel != NULL) {
+            pthread_mutex_lock(&channel->mutex);
+            pthread_cond_wait(&channel->cond, &channel->mutex);
+            pthread_mutex_unlock(&channel->mutex);
+        } else if (group != NULL) {
+            pthread_mutex_lock(&group->mutex);
+            pthread_cond_wait(&group->cond, &group->mutex);
+            pthread_mutex_unlock(&group->mutex);
+        } else
             sched_yield();
         return;
     }
@@ -4709,6 +5223,137 @@ int32_t ciel_task_is_finished(void *handle, bool *out) {
     pthread_mutex_lock(&task->mutex);
     *out = task->finished != 0;
     pthread_mutex_unlock(&task->mutex);
+    return 0;
+}
+
+static void ciel_task_group_broadcast(CielTaskGroup *group) {
+    if (group == NULL)
+        return;
+    pthread_mutex_lock(&group->mutex);
+    pthread_cond_broadcast(&group->cond);
+    pthread_mutex_unlock(&group->mutex);
+}
+
+CielTaskGroup *ciel_task_group_new(void) {
+    CielTaskGroup *group = (CielTaskGroup *)ciel_alloc(sizeof(CielTaskGroup));
+    memset(group, 0, sizeof(*group));
+    int rc = pthread_mutex_init(&group->mutex, NULL);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    rc = pthread_cond_init(&group->cond, NULL);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    return group;
+}
+
+static void ciel_task_group_watch_run(void *ctx_raw) {
+    CielTaskGroupWatch *watch = (CielTaskGroupWatch *)ctx_raw;
+    if (watch == NULL || watch->group == NULL || watch->node == NULL)
+        return;
+    CielTaskGroup *group = watch->group;
+    CielTaskGroupTaskNode *task_node = watch->node;
+    ciel_task_wait_until_finished(task_node->task);
+    pthread_mutex_lock(&group->mutex);
+    if (!task_node->completed) {
+        task_node->completed = 1;
+        if (group->live_tasks > 0)
+            group->live_tasks--;
+        if (!group->closed) {
+            CielTaskGroupDoneNode *done = (CielTaskGroupDoneNode *)ciel_alloc(
+                sizeof(CielTaskGroupDoneNode));
+            done->task = task_node->task;
+            done->next = NULL;
+            if (group->done_tail != NULL)
+                group->done_tail->next = done;
+            else
+                group->done_head = done;
+            group->done_tail = done;
+        }
+    }
+    pthread_cond_broadcast(&group->cond);
+    pthread_mutex_unlock(&group->mutex);
+}
+
+int32_t ciel_task_group_add(CielTaskGroup *group, void *task_handle) {
+    if (group == NULL || task_handle == NULL)
+        return EINVAL;
+    CielTask *task = (CielTask *)task_handle;
+    CielTaskGroupTaskNode *node =
+        (CielTaskGroupTaskNode *)ciel_alloc(sizeof(CielTaskGroupTaskNode));
+    node->task = task;
+    node->completed = 0;
+    pthread_mutex_lock(&group->mutex);
+    if (group->closed) {
+        pthread_mutex_unlock(&group->mutex);
+        return EPIPE;
+    }
+    node->next = group->tasks;
+    group->tasks = node;
+    group->live_tasks++;
+    pthread_mutex_unlock(&group->mutex);
+    CielTaskGroupWatch *watch =
+        (CielTaskGroupWatch *)ciel_alloc(sizeof(CielTaskGroupWatch));
+    watch->group = group;
+    watch->node = node;
+    dispatch_async_f(ciel_select_waiter_queue(), watch,
+                     ciel_task_group_watch_run);
+    return 0;
+}
+
+void *ciel_task_group_next_task(CielTaskGroup *group) {
+    if (group == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    pthread_mutex_lock(&group->mutex);
+    for (;;) {
+        if (group->done_head != NULL) {
+            CielTaskGroupDoneNode *node = group->done_head;
+            group->done_head = node->next;
+            if (group->done_head == NULL)
+                group->done_tail = NULL;
+            CielTask *task = node->task;
+            pthread_mutex_unlock(&group->mutex);
+            return task;
+        }
+        if (group->closed || group->live_tasks == 0) {
+            pthread_mutex_unlock(&group->mutex);
+            errno = EPIPE;
+            return NULL;
+        }
+        pthread_cond_wait(&group->cond, &group->mutex);
+    }
+}
+
+int32_t ciel_task_group_cancel_all(CielTaskGroup *group) {
+    if (group == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&group->mutex);
+    group->cancel_all = 1;
+    CielTaskGroupTaskNode *tasks = group->tasks;
+    pthread_mutex_unlock(&group->mutex);
+    for (CielTaskGroupTaskNode *node = tasks; node != NULL; node = node->next) {
+        if (!node->completed)
+            (void)ciel_task_cancel(node->task);
+    }
+    ciel_task_group_broadcast(group);
+    return 0;
+}
+
+int32_t ciel_task_group_close(CielTaskGroup *group) {
+    if (group == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&group->mutex);
+    group->closed = 1;
+    group->live_tasks = 0;
+    group->done_head = NULL;
+    group->done_tail = NULL;
+    pthread_cond_broadcast(&group->cond);
+    pthread_mutex_unlock(&group->mutex);
     return 0;
 }
 

@@ -56,6 +56,12 @@ fn ciel_case_metadata_is_valid() {
 
 #[test]
 fn discovered_ciel_cases_pass_their_declared_expectations() {
+    run_with_large_stack("discovered_ciel_cases", || {
+        discovered_ciel_cases_pass_their_declared_expectations_impl()
+    });
+}
+
+fn discovered_ciel_cases_pass_their_declared_expectations_impl() {
     let cases = load_cases().unwrap_or_else(|errors| panic!("{}", errors.join("\n\n")));
     let mut failures = Vec::new();
     for case in cases
@@ -73,6 +79,20 @@ fn discovered_ciel_cases_pass_their_declared_expectations() {
         failures.len(),
         failures.join("\n\n")
     );
+}
+
+fn run_with_large_stack<F>(name: &str, f: F)
+where
+    F: FnOnce() + Send + 'static,
+{
+    let handle = std::thread::Builder::new()
+        .name(name.to_string())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(f)
+        .unwrap_or_else(|error| panic!("failed to spawn `{name}` test thread: {error}"));
+    if let Err(payload) = handle.join() {
+        std::panic::resume_unwind(payload);
+    }
 }
 
 #[test]

@@ -285,7 +285,7 @@ impl Parser {
                 "`- !Capability` is not a valid interface expression",
             ));
         }
-        let name = self.expect_ident("expected interface name")?;
+        let name = self.parse_qualified_ident_path("expected interface name")?;
         let args = self.parse_type_arg_list_opt()?;
         Ok(InterfaceTerm {
             negated,
@@ -297,7 +297,7 @@ impl Parser {
     fn parse_impl_decl(&mut self, is_unsafe: bool) -> Result<ImplDecl, Diagnostic> {
         self.expect(TokenKind::Impl, "expected `impl`")?;
         let generics = self.parse_generic_param_list_opt()?;
-        let name = self.expect_ident("expected interface name after `impl`")?;
+        let name = self.parse_qualified_ident_path("expected interface name after `impl`")?;
         let args = self.parse_type_arg_list_opt()?;
         self.expect(TokenKind::LParen, "expected `(` after impl name")?;
         let params = self.parse_param_list_until_rparen()?;
@@ -514,7 +514,7 @@ impl Parser {
                 "`- !Capability` is not a valid capability expression",
             ));
         }
-        let name = self.expect_ident("expected capability name")?;
+        let name = self.parse_qualified_ident_path("expected capability name")?;
         let args = self.parse_type_arg_list_opt()?;
         Ok(ConstraintTerm {
             negated,
@@ -548,6 +548,17 @@ impl Parser {
             }
         }
         Ok(list)
+    }
+
+    fn parse_qualified_ident_path(
+        &mut self,
+        message: &'static str,
+    ) -> Result<Vec<Ident>, Diagnostic> {
+        let mut path = vec![self.expect_ident(message)?];
+        while self.eat(TokenKind::ColonColon).is_some() {
+            path.push(self.expect_ident("expected name after `::`")?);
+        }
+        Ok(path)
     }
 
     fn parse_type(&mut self) -> Result<Type, Diagnostic> {

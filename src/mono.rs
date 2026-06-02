@@ -31,7 +31,8 @@ use crate::{
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
         std_future_ty, std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
-        std_result_ty, std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
+        std_result_ty, std_send_permit_ty, std_task_ty, ty_contains, ty_from_primitive,
+        type_complexity, unify_ty,
     },
 };
 
@@ -739,6 +740,62 @@ impl MonoContext {
                     task_output_ty,
                 }
             }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                self.mark_task_boundary_clone_impls(&payload_ty);
+                TExprKind::AsyncChannelSend {
+                    sender: Box::new(self.rewrite_expr(*sender)?),
+                    value: Box::new(self.rewrite_expr(*value)?),
+                    payload_ty,
+                }
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                self.mark_task_boundary_clone_impls(&payload_ty);
+                TExprKind::AsyncChannelTrySend {
+                    sender: Box::new(self.rewrite_expr(*sender)?),
+                    value: Box::new(self.rewrite_expr(*value)?),
+                    payload_ty,
+                }
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncChannelReserve {
+                    sender: Box::new(self.rewrite_expr(*sender)?),
+                    payload_ty,
+                }
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                self.mark_task_boundary_clone_impls(&payload_ty);
+                TExprKind::AsyncChannelPermitSend {
+                    permit: Box::new(self.rewrite_expr(*permit)?),
+                    value: Box::new(self.rewrite_expr(*value)?),
+                    payload_ty,
+                }
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncChannelRecv {
+                    receiver: Box::new(self.rewrite_expr(*receiver)?),
+                    payload_ty,
+                }
+            }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
                 source_ty,
@@ -1390,6 +1447,70 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(task);
                 self.collect_ty(task_output_ty);
                 self.collect_ty(&std_task_ty(task_output_ty.clone()));
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelSend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr(sender);
+                self.collect_expr(value);
+                self.collect_ty(payload_ty);
+                let result_ty = std_result_ty(Ty::Void, std_error_ty());
+                self.collect_ty(&std_future_ty(result_ty.clone()));
+                self.collect_ty(&result_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                self.collect_task_boundary_clone_result_tys(payload_ty);
+            }
+            TExprKind::AsyncChannelTrySend {
+                sender,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr(sender);
+                self.collect_expr(value);
+                self.collect_ty(payload_ty);
+                self.collect_ty(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                self.collect_task_boundary_clone_result_tys(payload_ty);
+            }
+            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
+                self.collect_expr(sender);
+                self.collect_ty(payload_ty);
+                let permit_ty = std_send_permit_ty(payload_ty.clone());
+                let result_ty = std_result_ty(permit_ty.clone(), std_error_ty());
+                self.collect_ty(&permit_ty);
+                self.collect_ty(&std_future_ty(result_ty.clone()));
+                self.collect_ty(&result_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+            }
+            TExprKind::AsyncChannelPermitSend {
+                permit,
+                value,
+                payload_ty,
+            } => {
+                self.collect_expr(permit);
+                self.collect_expr(value);
+                self.collect_ty(payload_ty);
+                self.collect_ty(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                self.collect_task_boundary_clone_result_tys(payload_ty);
+            }
+            TExprKind::AsyncChannelRecv {
+                receiver,
+                payload_ty,
+            } => {
+                self.collect_expr(receiver);
+                self.collect_ty(payload_ty);
+                let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+                self.collect_ty(&std_future_ty(result_ty.clone()));
+                self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
             }

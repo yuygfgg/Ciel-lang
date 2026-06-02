@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 10
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<bool, Error> below_limit(usize value, usize limit) {
+    await async_time::sleep_ms(0)?;
+    return Ok(value < limit);
+}
+
+async Result<usize, Error> next_index(usize value) {
+    await async_time::sleep_ms(0)?;
+    return Ok(value + 1);
+}
+
+async Result<usize, Error> add_loop_body(usize sum, usize value) {
+    await async_time::sleep_ms(0)?;
+    return Ok(sum + value + 1);
+}
+
+async Result<usize, Error> drive() {
+    usize @sum = 0;
+    for (usize @i = 0; await below_limit(i, 4)?; i = await next_index(i)?) {
+        sum = await add_loop_body(sum, i)?;
+    }
+    return Ok(sum);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

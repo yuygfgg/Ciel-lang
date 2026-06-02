@@ -1,0 +1,61 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 12
+
+import /std/actor as actor;
+import /std/async/adapter as adapter;
+import /std/channel as channel;
+import /std/io;
+import /std/message;
+import /std/panic;
+import /std/result;
+
+struct DoneOp {
+    usize value;
+}
+
+struct NotifyOp {
+    usize bias;
+}
+
+impl adapter::finish<usize>(DoneOp op) {
+    return Ok(op.value);
+}
+
+impl adapter::notify_done<usize>(NotifyOp op, actor::Actor<usize> actor_handle, usize value) {
+    return actor::send<usize>(&actor_handle, value + op.bias);
+}
+
+Result<Out, Error> run_finish<Out, Op: adapter::finish<Out>>(Op op) {
+    return adapter::finish<Out>(op);
+}
+
+Result<void, Error> run_notify<M: Message, Op: adapter::notify_done<M>>(
+    Op op,
+    actor::Actor<M> target,
+    M value
+) {
+    return adapter::notify_done(op, target, value);
+}
+
+Result<channel::Channel<usize>, Error> record(
+    channel::Channel<usize> out,
+    usize value
+) {
+    channel::channel_send<usize>(&out, value)?;
+    return Ok(out);
+}
+
+i32 main() {
+    channel::Channel<usize> out = must(channel::make_channel<usize>());
+    actor::Actor<usize> target =
+        must(actor::spawn_actor_cloned<channel::Channel<usize>, usize>(out, record));
+    must(run_notify<usize, NotifyOp>({ bias: 5 }, target, 3));
+    usize notified = must(channel::channel_recv<usize>(&out));
+    usize finished = must(run_finish<usize, DoneOp>({ value: 4 }));
+    must(actor::stop<usize>(&target));
+    must(actor::join<usize>(&target));
+    must(channel::channel_close<usize>(&out));
+    must(print_value(notified + finished));
+    return 0;
+}

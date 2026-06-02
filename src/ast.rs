@@ -114,7 +114,7 @@ pub enum InterfaceOp {
 #[derive(Clone, Debug)]
 pub struct InterfaceTerm {
     pub negated: bool,
-    pub name: Ident,
+    pub name: Vec<Ident>,
     pub args: Vec<Type>,
 }
 
@@ -122,7 +122,7 @@ pub struct InterfaceTerm {
 pub struct ImplDecl {
     pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
-    pub name: Ident,
+    pub name: Vec<Ident>,
     pub args: Vec<Type>,
     pub params: Vec<Param>,
     pub body: Block,
@@ -177,7 +177,7 @@ pub struct ConstraintExpr {
 pub struct ConstraintTerm {
     pub negated: bool,
     pub removed: bool,
-    pub name: Ident,
+    pub name: Vec<Ident>,
     pub args: Vec<Type>,
 }
 

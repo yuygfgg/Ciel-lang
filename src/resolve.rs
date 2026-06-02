@@ -462,11 +462,15 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                         decl.name.span,
                     );
                 }
-                ItemKind::Impl(decl) => impls.push(ImplRecord {
-                    module: module.id,
-                    interface_name: decl.name.name.clone(),
-                    span: item.span,
-                }),
+                ItemKind::Impl(decl) => {
+                    if let Some(name) = decl.name.last() {
+                        impls.push(ImplRecord {
+                            module: module.id,
+                            interface_name: name.name.clone(),
+                            span: item.span,
+                        });
+                    }
+                }
                 ItemKind::Function(decl) => {
                     let kind = if decl.abi.as_deref() == Some("C") && decl.body.is_none() {
                         DefKind::ExternFunction

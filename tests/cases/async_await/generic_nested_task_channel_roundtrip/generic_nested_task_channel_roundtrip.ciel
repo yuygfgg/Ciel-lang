@@ -1,0 +1,55 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 17
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/message;
+import /std/panic;
+import /std/result;
+
+struct Weighted<T> {
+    T value;
+    usize weight;
+}
+
+unsafe impl<T: Message> clone_message(*const Weighted<T> value) {
+    T inner = clone_message(&value->value)?;
+    return Ok({ value: inner, weight: value->weight });
+}
+
+async Result<void, Error> send_value<T: Message>(async::Sender<T> sender, T value) {
+    await async_time::sleep_ms(0)?;
+    await async::send<T>(sender, value)?;
+    return Ok;
+}
+
+async Result<T, Error> roundtrip<T: Message>(T value) {
+    async::ChannelPair<T> pair = async::channel<T>(1)?;
+    async::Task<void> task = async::spawn<void>(send_value<T>(pair.sender, value))?;
+    T received = await async::recv<T>(pair.receiver)?;
+    await task?;
+    async::close<T>(pair.sender)?;
+    async::close_receiver<T>(pair.receiver)?;
+    return Ok(received);
+}
+
+async Result<T, Error> relay_twice<T: Message>(T value) {
+    T first = await roundtrip<T>(value)?;
+    return await roundtrip<T>(first);
+}
+
+async Result<usize, Error> drive() {
+    Weighted<usize> seed = { value: 4, weight: 3 };
+    async::Task<Weighted<usize>> task =
+        async::spawn<Weighted<usize>>(relay_twice<Weighted<usize>>(seed))?;
+    Weighted<usize> weighted = await task?;
+    usize plain = await relay_twice<usize>(5)?;
+    return Ok(weighted.value * weighted.weight + plain);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

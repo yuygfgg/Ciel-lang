@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 6
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> drive() {
+    async::TaskGroup<usize> group = async::task_group<usize>()?;
+    async::group_close<usize>(&group)?;
+    Result<usize, Error> next = await async::group_next<usize>(&group);
+    switch (next) {
+        case Err(_):
+            return Ok(6);
+        case Ok(_):
+            return Ok(1);
+    }
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

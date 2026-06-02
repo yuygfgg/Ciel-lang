@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> producer(async::Sender<usize> sender) {
+    await async::send<usize>(sender, 42)?;
+    return Ok(0);
+}
+
+async Result<usize, Error> consumer(async::Receiver<usize> receiver) {
+    return await async::recv<usize>(receiver);
+}
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    async::Task<usize> task = async::spawn<usize>(producer(pair.sender))?;
+    usize value = await consumer(pair.receiver)?;
+    await task?;
+    return Ok(value);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

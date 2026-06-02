@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: CIPE
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/lib;
+
+#c_include "stdio.h"
+
+unsafe extern "C" {
+    i32 putchar(i32 ch);
+}
+
+void mark(i32 ch) {
+    unsafe { putchar(ch) };
+}
+
+async Result<usize, Error> child() {
+    defer mark(67);
+    await async_time::sleep_ms(0)?;
+    return Err(code_error(77));
+}
+
+async Result<usize, Error> parent() {
+    defer mark(80);
+    await async_time::sleep_ms(0)?;
+    {
+        defer mark(73);
+        usize value = await child()?;
+        return Ok(value);
+    }
+}
+
+i32 main() {
+    switch (async::block_on(parent())) {
+        case Ok(_):
+            return 1;
+        case Err(_):
+            mark(69);
+    }
+    return 0;
+}

@@ -2,6 +2,7 @@ export import /std/error;
 export import /std/message;
 export import /std/result;
 import /std/actor as actor;
+import /std/c as c;
 
 export interface<Op, M> Result<void, Error> notify_done(
     Op op,
@@ -10,3 +11,7 @@ export interface<Op, M> Result<void, Error> notify_done(
 );
 
 export interface<Op, Out> Result<Out, Error> finish(Op op);
+
+export unsafe interface<Op> *void raw_operation(*const Op op);
+
+export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);

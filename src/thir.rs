@@ -369,6 +369,10 @@ pub enum TExprKind {
         ms: Box<TExpr>,
         output_ty: Ty,
     },
+    AsyncOpFuture {
+        op: Box<TExpr>,
+        output_ty: Ty,
+    },
     AsyncSpawn {
         body: Box<TExpr>,
         task_output_ty: Ty,
@@ -615,6 +619,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
         TExprKind::AsyncSleep { ms, output_ty: _ } => visitor.visit_expr(ms),
+        TExprKind::AsyncOpFuture { op, .. } => visitor.visit_expr(op),
         TExprKind::AsyncSpawn { body, .. } => visitor.visit_expr(body),
         TExprKind::AsyncTaskCancel { task, .. } | TExprKind::AsyncTaskIsFinished { task, .. } => {
             visitor.visit_expr(task)

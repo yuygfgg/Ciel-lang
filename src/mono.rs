@@ -23,14 +23,15 @@ use crate::{
     },
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
-        ConstraintBounds, ConstraintRef, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+        STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
         aggregate_instance_name, contains_generic, is_clone_message_capability, mangle_ty_fragment,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_future_ty,
-        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name, std_task_ty,
-        ty_contains, ty_from_primitive, type_complexity, unify_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
+        std_future_ty, std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
+        std_result_ty, std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -643,6 +644,7 @@ impl MonoContext {
             }
             TExprKind::Await { future } => {
                 self.mark_standard_error_code_impl();
+                self.mark_awaitable_impl(&expr.ty, &future.ty);
                 if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
                     self.mark_task_boundary_clone_impls(&task_output_ty);
                 }
@@ -652,6 +654,7 @@ impl MonoContext {
             }
             TExprKind::AsyncBlockOn { future } => {
                 self.mark_standard_error_code_impl();
+                self.mark_awaitable_impl(&expr.ty, &future.ty);
                 if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
                     self.mark_task_boundary_clone_impls(&task_output_ty);
                 }
@@ -666,12 +669,22 @@ impl MonoContext {
                     output_ty,
                 }
             }
+            TExprKind::AsyncOpFuture { op, output_ty } => {
+                self.mark_standard_error_code_impl();
+                self.mark_async_op_impls(&op.ty, &output_ty);
+                TExprKind::AsyncOpFuture {
+                    op: Box::new(self.rewrite_expr(*op)?),
+                    output_ty,
+                }
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
             } => {
                 self.mark_standard_error_code_impl();
                 self.mark_task_boundary_clone_impls(&task_output_ty);
+                let spawn_output_ty = std_result_ty(task_output_ty.clone(), std_error_ty());
+                self.mark_awaitable_impl(&spawn_output_ty, &body.ty);
                 if let TExprKind::Closure { captures, .. } = &body.kind {
                     for capture in captures {
                         self.mark_task_boundary_clone_impls(&capture.ty);
@@ -849,6 +862,49 @@ impl MonoContext {
                     STD_ERROR_FORMAT_INTERFACE,
                     &[],
                     &code_ty,
+                )
+            })
+            .map(|implementation| implementation.function_def);
+        if let Some(function_def) = function_def {
+            self.mark_function(function_def);
+        }
+    }
+
+    fn mark_async_op_impls(&mut self, op_ty: &Ty, output_ty: &Ty) {
+        self.mark_async_op_impl("raw_operation", &[], op_ty);
+        self.mark_async_op_impl("poll_done", std::slice::from_ref(output_ty), op_ty);
+    }
+
+    fn mark_awaitable_impl(&mut self, output_ty: &Ty, receiver_ty: &Ty) {
+        let function_def = self
+            .checked
+            .impls
+            .iter()
+            .find(|implementation| {
+                impl_matches_interface_receiver(
+                    implementation,
+                    STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                    std::slice::from_ref(output_ty),
+                    receiver_ty,
+                )
+            })
+            .map(|implementation| implementation.function_def);
+        if let Some(function_def) = function_def {
+            self.mark_function(function_def);
+        }
+    }
+
+    fn mark_async_op_impl(&mut self, interface_name: &str, interface_args: &[Ty], op_ty: &Ty) {
+        let function_def = self
+            .checked
+            .impls
+            .iter()
+            .find(|implementation| {
+                impl_matches_interface_receiver(
+                    implementation,
+                    interface_name,
+                    interface_args,
+                    op_ty,
                 )
             })
             .map(|implementation| implementation.function_def);
@@ -1249,6 +1305,15 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::AsyncSleep { ms, output_ty } => {
                 self.collect_expr(ms);
                 self.collect_ty(&std_future_ty(output_ty.clone()));
+                self.collect_ty(output_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+            }
+            TExprKind::AsyncOpFuture { op, output_ty } => {
+                self.collect_expr(op);
+                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+                self.collect_ty(&std_future_ty(result_ty.clone()));
+                self.collect_ty(&result_ty);
                 self.collect_ty(output_ty);
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
@@ -2364,7 +2429,7 @@ fn task_output_ty(resolved: &ResolvedProgram, ty: &Ty) -> Option<Ty> {
     let Ty::Named { name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && std_id::is_std_async_type_name(resolved, name, "Task") {
+    if args.len() == 1 && std_id::is_std_async_task_type_name(resolved, name) {
         Some(args[0].clone())
     } else {
         None

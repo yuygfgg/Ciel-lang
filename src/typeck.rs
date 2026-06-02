@@ -9,7 +9,8 @@ use crate::{
     std_id,
     thir::*,
     types::{
-        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, STD_ERROR_FORMAT_INTERFACE,
+        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET,
+        STD_ASYNC_AWAITABLE_FUTURE_INTERFACE, STD_ERROR_FORMAT_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
         STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
         closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
@@ -537,6 +538,11 @@ enum ActorLifecycleOp {
 enum AsyncTaskControl {
     Cancel,
     IsFinished,
+}
+
+#[derive(Clone, Debug)]
+struct AwaitableInfo {
+    output_ty: Ty,
 }
 
 pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
@@ -4853,8 +4859,8 @@ impl TypeChecker {
             }
             Ty::Named { name, args } => {
                 if args.len() == 1
-                    && (std_id::is_std_async_type_name(&self.resolved, name, "Future")
-                        || std_id::is_std_async_type_name(&self.resolved, name, "Task"))
+                    && (std_id::is_std_async_future_type_name(&self.resolved, name)
+                        || std_id::is_std_async_task_type_name(&self.resolved, name))
                 {
                     return None;
                 }
@@ -6619,10 +6625,13 @@ impl TypeChecker {
                     ));
                 }
                 let future = self.check_expr(scopes, inner, None)?;
-                let Some(output_ty) = self.future_output_ty(&future.ty) else {
+                let Some(awaitable) = self.awaitable_ty(&future.ty, expr.span) else {
                     self.diagnostics.push(Diagnostic::new(
                         expr.span,
-                        format!("`await` requires `Future<T>`, got `{}`", future.ty),
+                        format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                        ),
                     ));
                     return Some(TExpr {
                         span: expr.span,
@@ -6634,7 +6643,7 @@ impl TypeChecker {
                 };
                 TExpr {
                     span: expr.span,
-                    ty: output_ty,
+                    ty: awaitable.output_ty,
                     kind: TExprKind::Await {
                         future: Box::new(future),
                     },
@@ -7541,6 +7550,9 @@ impl TypeChecker {
         if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "block_on") {
             return self.check_async_block_on_call(scopes, span, type_args, args);
         }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "future_from_op") {
+            return self.check_async_future_from_op_call(scopes, span, type_args, args);
+        }
         if std_id::is_std_async_time_function(&self.resolved, sig.module, &sig.name, "sleep_ms") {
             return self.check_async_sleep_ms_call(scopes, span, type_args, args);
         }
@@ -7974,19 +7986,23 @@ impl TypeChecker {
             ));
         }
         let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
-        let expected_future = explicit_output.as_ref().map(|ty| std_future_ty(ty.clone()));
         let Some(arg) = args.first() else {
             return None;
         };
-        let future = self.check_expr(scopes, arg, expected_future.as_ref())?;
-        if let Some(expected) = expected_future.as_ref() {
-            self.require_assignable(expected, &future.ty, future.span);
-        }
-        let output_ty = explicit_output.or_else(|| self.future_output_ty(&future.ty));
+        let future = self.check_expr(scopes, arg, None)?;
+        let awaitable = self.awaitable_ty(&future.ty, future.span);
+        let output_ty = explicit_output.clone().or_else(|| {
+            awaitable
+                .as_ref()
+                .map(|awaitable| awaitable.output_ty.clone())
+        });
         let Some(output_ty) = output_ty else {
             self.diagnostics.push(Diagnostic::new(
                 future.span,
-                format!("`block_on` requires `Future<T>`, got `{}`", future.ty),
+                format!(
+                    "generic constraint not satisfied: `{}` does not implement `{}`",
+                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                ),
             ));
             return Some(TExpr {
                 span,
@@ -7996,6 +8012,17 @@ impl TypeChecker {
                 },
             });
         };
+        if let Some(awaitable) = awaitable {
+            self.require_assignable(&output_ty, &awaitable.output_ty, future.span);
+        } else {
+            self.diagnostics.push(Diagnostic::new(
+                future.span,
+                format!(
+                    "generic constraint not satisfied: `{}` does not implement `{}`",
+                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                ),
+            ));
+        }
         Some(TExpr {
             span,
             ty: output_ty,
@@ -8034,6 +8061,61 @@ impl TypeChecker {
             ty: std_future_ty(output_ty.clone()),
             kind: TExprKind::AsyncSleep {
                 ms: Box::new(ms),
+                output_ty,
+            },
+        })
+    }
+
+    fn check_async_future_from_op_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if type_args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "`future_from_op` expects 2 type arguments, got {}",
+                    type_args.len()
+                ),
+            ));
+            return None;
+        }
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("call expects 1 arguments, got {}", args.len()),
+            ));
+        }
+        let op_ty = self.lower_type(&type_args[0]);
+        let output_ty = self.lower_type(&type_args[1]);
+        let Some(arg) = args.first() else {
+            return None;
+        };
+        let op_expr = self.check_expr(scopes, arg, Some(&op_ty))?;
+        self.require_assignable(&op_ty, &op_expr.ty, op_expr.span);
+        if !self.type_implements_capability("raw_operation", &[], &op_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "`future_from_op` operation type `{op_ty}` does not implement `raw_operation`"
+                ),
+            ));
+        }
+        if !self.type_implements_capability("poll_done", std::slice::from_ref(&output_ty), &op_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("`future_from_op` operation type `{op_ty}` does not implement `poll_done<{output_ty}>`"),
+            ));
+        }
+        let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+        Some(TExpr {
+            span,
+            ty: std_future_ty(result_ty),
+            kind: TExprKind::AsyncOpFuture {
+                op: Box::new(op_expr),
                 output_ty,
             },
         })
@@ -8136,7 +8218,7 @@ impl TypeChecker {
         let body = if expr_is_closure_literal(arg) {
             self.check_closure_literal_preserving_instance(scopes, arg, expected_closure.as_ref())?
         } else {
-            self.check_expr(scopes, arg, expected_future.as_ref())?
+            self.check_expr(scopes, arg, None)?
         };
 
         let body_output_ty = match &body.kind {
@@ -8149,7 +8231,7 @@ impl TypeChecker {
                 if !*is_async {
                     self.diagnostics.push(Diagnostic::new(
                         body.span,
-                        "`async::spawn` requires a direct async closure or Future<Result<T, Error>>",
+                        "`async::spawn` requires a direct async closure or Awaitable<Result<T, Error>>",
                     ));
                     None
                 } else if !params.is_empty() {
@@ -8178,17 +8260,20 @@ impl TypeChecker {
                         }
                     }
                     callable_ret_params_ty(&body.ty)
-                        .and_then(|(ret, _)| self.future_output_ty(&ret))
+                        .and_then(|(ret, _)| self.awaitable_ty(&ret, body.span))
+                        .map(|awaitable| awaitable.output_ty)
                 }
             }
-            _ => self.future_output_ty(&body.ty),
+            _ => self
+                .awaitable_ty(&body.ty, body.span)
+                .map(|awaitable| awaitable.output_ty),
         };
 
         let Some(result_ty) = body_output_ty else {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
                 format!(
-                    "`async::spawn` requires `Future<Result<T, Error>>`, got `{}`",
+                    "`async::spawn` requires `Awaitable<Result<T, Error>>`, got `{}`",
                     body.ty
                 ),
             ));
@@ -8205,7 +8290,7 @@ impl TypeChecker {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
                 format!(
-                    "`async::spawn` requires `Future<Result<T, Error>>`, got `Future<{result_ty}>`"
+                    "`async::spawn` requires `Awaitable<Result<T, Error>>`, got awaitable yielding `{result_ty}`"
                 ),
             ));
             return Some(TExpr {
@@ -10817,14 +10902,112 @@ impl TypeChecker {
         Some((args[0].clone(), args[1].clone()))
     }
 
+    fn awaitable_ty(&mut self, ty: &Ty, span: crate::span::Span) -> Option<AwaitableInfo> {
+        let implementation = self.find_or_instantiate_awaitable_impl(ty, span)?;
+        let output_ty = interface_non_receiver_args(&implementation.interface_args)
+            .first()
+            .cloned()?;
+        Some(AwaitableInfo { output_ty })
+    }
+
+    fn find_or_instantiate_awaitable_impl(
+        &mut self,
+        receiver_ty: &Ty,
+        span: crate::span::Span,
+    ) -> Option<ImplSig> {
+        let storage_receiver_ty = self.meta_repr_storage_ty(receiver_ty, span);
+        let interface_args = self.awaitable_interface_args(&storage_receiver_ty, span)?;
+        self.find_or_instantiate_impl_by_full_args(
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+            &interface_args,
+            Some(&storage_receiver_ty),
+            span,
+        )
+    }
+
+    fn awaitable_interface_args(
+        &mut self,
+        storage_receiver_ty: &Ty,
+        span: crate::span::Span,
+    ) -> Option<Vec<Ty>> {
+        if !std_id::has_std_async_interface(&self.resolved, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE) {
+            return None;
+        }
+        if let Some(existing) = self.impls.iter().find(|implementation| {
+            implementation.interface_name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|candidate| candidate == storage_receiver_ty)
+                && implementation.interface_args.len() == 2
+                && implementation.interface_args.first() == Some(storage_receiver_ty)
+        }) {
+            return Some(existing.interface_args.clone());
+        }
+
+        let templates = self.generic_impls.clone();
+        let mut matches = Vec::new();
+        for template in templates {
+            if template.interface_name != STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                || template.interface_args.len() != 2
+            {
+                continue;
+            }
+            let mut subst = template
+                .generics
+                .iter()
+                .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
+                .collect::<HashMap<_, _>>();
+            if let Some(pattern) = template.receiver_ty.as_ref()
+                && !unify_ty(pattern, storage_receiver_ty, &mut subst)
+            {
+                continue;
+            }
+            if !unify_ty(&template.interface_args[0], storage_receiver_ty, &mut subst) {
+                continue;
+            }
+            if template
+                .generics
+                .iter()
+                .any(|generic| subst.get(&generic.name).is_none_or(contains_generic))
+            {
+                continue;
+            }
+            let diagnostic_count = self.diagnostics.len();
+            self.check_generic_constraints(&template.generics, &subst, span);
+            if self.diagnostics.len() != diagnostic_count {
+                self.diagnostics.truncate(diagnostic_count);
+                continue;
+            }
+            let concrete_interface_args = template
+                .interface_args
+                .iter()
+                .map(|ty| self.substitute_ty_normalized(ty, &subst, span))
+                .collect::<Vec<_>>();
+            if concrete_interface_args.first() != Some(storage_receiver_ty) {
+                continue;
+            }
+            matches.push(concrete_interface_args);
+        }
+
+        if matches.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "ambiguous impls for awaitable interface `{STD_ASYNC_AWAITABLE_FUTURE_INTERFACE}`"
+                ),
+            ));
+            return None;
+        }
+        matches.into_iter().next()
+    }
+
     fn future_output_ty(&self, ty: &Ty) -> Option<Ty> {
         let Ty::Named { name, args } = ty else {
             return None;
         };
-        if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Future") {
+        if args.len() == 1 && std_id::is_std_async_future_type_name(&self.resolved, name) {
             Some(args[0].clone())
-        } else if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Task") {
-            Some(std_result_ty(args[0].clone(), std_error_ty()))
         } else {
             None
         }
@@ -10834,7 +11017,7 @@ impl TypeChecker {
         let Ty::Named { name, args } = ty else {
             return None;
         };
-        if args.len() == 1 && std_id::is_std_async_type_name(&self.resolved, name, "Task") {
+        if args.len() == 1 && std_id::is_std_async_task_type_name(&self.resolved, name) {
             Some(args[0].clone())
         } else {
             None

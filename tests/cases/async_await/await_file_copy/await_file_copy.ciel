@@ -1,0 +1,60 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 4
+
+import /std/async as async;
+import /std/async_io as aio;
+import /std/io as io;
+import /std/result;
+
+bool same_prefix([]u8 got, []const u8 want) {
+    if (got.len < want.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < want.len) {
+        if (got[i] != want[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+async Result<usize, Error> copy_file() {
+    aio::AsyncFd input = aio::open_async_read("/tmp/ciel_await_file_copy_input.txt")?;
+    aio::AsyncFd output = aio::create_async("/tmp/ciel_await_file_copy_output.txt")?;
+
+    aio::Bytes bytes = await aio::read_bytes(input, 16)?;
+    usize written = await aio::write_bytes(output, bytes)?;
+
+    aio::close_async(input)?;
+    aio::close_async(output)?;
+
+    aio::AsyncFd check = aio::open_async_read("/tmp/ciel_await_file_copy_output.txt")?;
+    aio::Bytes copied = await aio::read_bytes(check, 16)?;
+    aio::close_async(check)?;
+
+    if (aio::bytes_len(copied) != 4) {
+        return Err(code_error(40));
+    }
+    [4]u8 @got = [0;];
+    usize copied_len = aio::bytes_copy_to(copied, got[..])?;
+    [4]u8 want = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
+    if (copied_len != 4 || !same_prefix(got[..], want[..])) {
+        return Err(code_error(41));
+    }
+    return Ok(written);
+}
+
+i32 main() {
+    must(io::with_create<void>("/tmp/ciel_await_file_copy_input.txt", |file| {
+        io::write_text(file, "ping")?;
+        return Ok;
+    }));
+
+    Result<usize, Error> result = async::block_on(copy_file());
+    usize written = must(result);
+    must(io::print_value(written));
+    return 0;
+}

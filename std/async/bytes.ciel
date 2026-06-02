@@ -15,6 +15,7 @@ unsafe extern "C" {
     );
     ?*CielBytes ciel_bytes_prepend(*const u8 prefix, usize prefix_len, *CielBytes bytes);
     usize ciel_bytes_len(*CielBytes bytes);
+    usize ciel_bytes_capacity(*CielBytes bytes);
     c::c_int ciel_bytes_copy_to(*CielBytes bytes, *u8 out, usize cap, *usize copied);
 }
 
@@ -68,6 +69,10 @@ export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) {
 
 export usize bytes_len(Bytes bytes) {
     return unsafe { ciel_bytes_len(raw_bytes(bytes)) };
+}
+
+export usize bytes_capacity(Bytes bytes) {
+    return unsafe { ciel_bytes_capacity(raw_bytes(bytes)) };
 }
 
 export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) {

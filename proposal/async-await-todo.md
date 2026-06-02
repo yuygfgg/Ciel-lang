@@ -44,8 +44,9 @@ Implementation guardrails:
 
 - [x] Type-check the initial final model.
       Scope: async calls return opaque generated futures implementing
-      `Future<Out>`; `await` requires `Future<Out>` and yields `Out`; `?` works
-      after awaiting `Result<T, Error>`.
+      `Awaitable<Out>`; standard `Future<Out>` and `Task<T>` implement
+      Awaitable through `/std/async`; `await` yields `Out`; `?` works after
+      awaiting `Result<T, Error>`.
       Tests: storing a future in a local before `block_on` compiles; awaiting a
       non-future is rejected; using an async call where an ordinary
       `Result<T, Error>` is expected is rejected.
@@ -108,14 +109,14 @@ Implementation guardrails:
 
 ## Phase 4: Awaitable File And TCP I/O
 
-- [ ] Add awaitable `/std/async_io` file operations.
+- [x] Add awaitable `/std/async_io` file operations.
       Scope: add awaitable `read_bytes` and `write_bytes` over the current async
       fd operation backend.
       Tests: a sequential async file-copy fixture uses `await` instead of
       `flow::then`; facade fixtures compile; old flow file-I/O helpers still
       pass.
 
-- [ ] Add awaitable `/std/async_net` TCP operations.
+- [x] Add awaitable `/std/async_net` TCP operations.
       Scope: add awaitable `accept`, `connect`, `read`, `read_into`, `write`,
       and `write_all`, preserving zero-length `Bytes` EOF behavior and reusable
       buffer semantics for `read_into`.
@@ -123,7 +124,7 @@ Implementation guardrails:
       and write; a `read_into` loop reuses `Bytes` capacity; existing
       `std_async_net` flow fixtures still pass.
 
-- [ ] Settle the public `Bytes` location.
+- [x] Settle the public `Bytes` location.
       Scope: move or re-export `Bytes` as the chosen general byte-buffer
       surface without breaking existing `aio::Bytes` and `anet::Bytes` users
       during migration.

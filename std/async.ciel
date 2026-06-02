@@ -4,6 +4,13 @@ export import /std/result;
 import /std/async/adapter;
 import /std/actor as actor;
 
+unsafe extern "C" {
+    opaque struct CielFuture;
+
+    *CielFuture ciel_future_from_handle(*void handle);
+    *CielFuture ciel_task_future_from_handle(*void handle);
+}
+
 export type Step<S> = Result<S, Error> |(S): Message|;
 export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
 export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
@@ -12,13 +19,25 @@ export struct Future<T> {
     *void handle;
 }
 
-export T block_on<T>(Future<T> future);
+export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
+export interface Awaitable<Out> = awaitable_future<Out>;
+
+unsafe impl<T> awaitable_future<T>(*const Future<T> future) {
+    return unsafe { ciel_future_from_handle(future->handle) as *void };
+}
+
+export T block_on<T, A: Awaitable<T>>(A future);
+export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
 
 export struct Task<T> {
     *void handle;
 }
 
-export Result<Task<T>, Error> spawn<T>(Future<Result<T, Error>> body);
+unsafe impl<T> awaitable_future<Result<T, Error>>(*const Task<T> task) {
+    return unsafe { ciel_task_future_from_handle(task->handle) as *void };
+}
+
+export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>>>(A body);
 export Result<void, Error> cancel<T>(*const Task<T> task);
 export Result<bool, Error> is_finished<T>(*const Task<T> task);
 

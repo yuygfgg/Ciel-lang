@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: `async::spawn` requires a direct async closure or Future<Result<T, Error>>
+// expect-error: `async::spawn` requires a direct async closure or Awaitable<Result<T, Error>>
 
 import /std/async as async;
 import /std/result;

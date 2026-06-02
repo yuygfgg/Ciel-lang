@@ -9,7 +9,7 @@ i32 main() {
     aio::AsyncFd input = must(aio::open_async_read("/tmp/ciel_then_input.txt"));
     defer aio::close_async(input);
 
-    aio::AsyncRead read = must(aio::read_bytes(input, 16));
+    aio::AsyncRead read = must(aio::read_bytes_async(input, 16));
     flow::AsyncTask<Channel<usize>, aio::Bytes> task =
         flow::from_completion<Channel<usize>, aio::Bytes>(read);
     task;

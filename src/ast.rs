@@ -9,6 +9,7 @@ pub struct Ident {
 #[derive(Clone, Debug)]
 pub struct AstFile {
     pub items: Vec<Item>,
+    pub uses_std_async: bool,
 }
 
 #[derive(Clone, Debug)]

@@ -16,7 +16,7 @@ i32 main() {
     Actor<aio::AsyncWrite> actor = must(spawn_actor_cloned<Channel<usize>, aio::AsyncWrite>(done, handle));
     aio::AsyncFd fd = must(aio::create_async("/tmp/ciel_async_write_fixture.txt"));
     aio::Bytes bytes = must(aio::bytes_copy([116 as u8, 101 as u8, 115 as u8, 116 as u8]));
-    aio::AsyncWrite op = must(aio::write_bytes(fd, bytes));
+    aio::AsyncWrite op = must(aio::write_bytes_async(fd, bytes));
     must(aio::notify_write_done(&op, &actor, op));
     usize written = must(channel_recv(&done));
     must(print_value(written));

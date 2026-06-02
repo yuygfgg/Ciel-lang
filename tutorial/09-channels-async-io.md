@@ -259,7 +259,7 @@ Result<void, Error> handle(
 The actor starts the operation:
 
 ```ciel
-aio::AsyncRead op = aio::read_bytes(fd, 16)?;
+aio::AsyncRead op = aio::read_bytes_async(fd, 16)?;
 ```
 
 That returns an operation token, not the bytes. The actor then registers a

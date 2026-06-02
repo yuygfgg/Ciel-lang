@@ -68,6 +68,14 @@ unsafe impl share_handle_marker(*const AsyncWrite value) {
     return true;
 }
 
+unsafe impl raw_operation(*const AsyncRead op) {
+    return op->handle;
+}
+
+unsafe impl raw_operation(*const AsyncWrite op) {
+    return op->handle;
+}
+
 Error runtime_error() {
     c::c_int code = unsafe { ciel_errno() };
     if ((code as i64) == 0) {
@@ -141,7 +149,7 @@ export Result<void, Error> close_async(AsyncFd fd) {
     return Ok;
 }
 
-export Result<AsyncRead, Error> read_bytes(AsyncFd fd, usize max_len) {
+export Result<AsyncRead, Error> read_bytes_async(AsyncFd fd, usize max_len) {
     ?*CielAsyncOp raw = unsafe { ciel_async_read_bytes(raw_async_fd(fd), max_len) };
     if (raw == null) {
         return Err(runtime_error());
@@ -149,7 +157,7 @@ export Result<AsyncRead, Error> read_bytes(AsyncFd fd, usize max_len) {
     return Ok({ handle: raw as *void });
 }
 
-export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data) {
+export Result<AsyncWrite, Error> write_bytes_async(AsyncFd fd, Bytes data) {
     ?*CielAsyncOp raw = unsafe { ciel_async_write_bytes(raw_async_fd(fd), raw_bytes(data)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -157,11 +165,21 @@ export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data) {
     return Ok({ handle: raw as *void });
 }
 
+export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len) {
+    AsyncRead op = read_bytes_async(fd, max_len)?;
+    return await flow::future_from_op<AsyncRead, Bytes>(op);
+}
+
+export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data) {
+    AsyncWrite op = write_bytes_async(fd, data)?;
+    return await flow::future_from_op<AsyncWrite, usize>(op);
+}
+
 export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
     AsyncFd fd,
     usize max_len
 ) {
-    AsyncRead op = read_bytes(fd, max_len)?;
+    AsyncRead op = read_bytes_async(fd, max_len)?;
     return Ok(flow::completion_from_op<S, Bytes, AsyncRead>(op));
 }
 
@@ -169,7 +187,7 @@ export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Messa
     AsyncFd fd,
     Bytes data
 ) {
-    AsyncWrite op = write_bytes(fd, data)?;
+    AsyncWrite op = write_bytes_async(fd, data)?;
     return Ok(flow::completion_from_op<S, usize, AsyncWrite>(op));
 }
 
@@ -274,6 +292,18 @@ impl finish<Bytes>(AsyncRead op) {
     return finish_read(op);
 }
 
+unsafe impl poll_done<Bytes>(AsyncRead op, *Bytes out) {
+    ?*CielBytes @raw = null;
+    c::c_int rc = unsafe { ciel_async_finish_read(raw_async_read(op), &raw) };
+    if ((rc as i64) == 0) {
+        if (raw == null) {
+            return 5 as c::c_int;
+        }
+        out->handle = raw as *void;
+    }
+    return rc;
+}
+
 impl<M: Message> notify_done(
     AsyncWrite op,
     actor::Actor<M> actor_handle,
@@ -284,4 +314,13 @@ impl<M: Message> notify_done(
 
 impl finish<usize>(AsyncWrite op) {
     return finish_write(op);
+}
+
+unsafe impl poll_done<usize>(AsyncWrite op, *usize out) {
+    usize @written = 0;
+    c::c_int rc = unsafe { ciel_async_finish_write(raw_async_write(op), &written) };
+    if ((rc as i64) == 0) {
+        *out = written;
+    }
+    return rc;
 }

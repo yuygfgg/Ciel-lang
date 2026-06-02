@@ -1,0 +1,85 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 8
+
+import /std/async as async;
+import /std/async_net as anet;
+import /std/io as io;
+import /std/net as net;
+import /std/result;
+
+bool same_prefix([]u8 got, []const u8 want) {
+    if (got.len < want.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < want.len) {
+        if (got[i] != want[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
+    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    [3]u8 payload = [97 as u8, 98 as u8, 99 as u8];
+    anet::Bytes out = anet::bytes_copy(payload[..])?;
+    await anet::write_all(server, out)?;
+    anet::shutdown_write(server)?;
+    anet::close_stream(server)?;
+    return Ok(3);
+}
+
+async Result<usize, Error> read_with_reused_buffer(net::SocketAddr bound) {
+    anet::AsyncTcpStream client = await anet::connect(bound)?;
+    [8]u8 zeroes = [0;];
+    anet::Bytes buffer = anet::bytes_copy(zeroes[..])?;
+    usize cap = anet::bytes_capacity(buffer);
+
+    anet::ReadIntoResult first = await anet::read_into(client, buffer)?;
+    if (first.read != 3 || anet::bytes_len(first.bytes) != 3) {
+        return Err(code_error(50));
+    }
+    if (anet::bytes_capacity(first.bytes) != cap) {
+        return Err(code_error(51));
+    }
+
+    [3]u8 @got = [0;];
+    usize copied = anet::bytes_copy_to(first.bytes, got[..])?;
+    [3]u8 want = [97 as u8, 98 as u8, 99 as u8];
+    if (copied != 3 || !same_prefix(got[..], want[..])) {
+        return Err(code_error(52));
+    }
+
+    anet::ReadIntoResult eof = await anet::read_into(client, first.bytes)?;
+    if (eof.read != 0 || anet::bytes_len(eof.bytes) != 0) {
+        return Err(code_error(53));
+    }
+    if (anet::bytes_capacity(eof.bytes) != cap) {
+        return Err(code_error(54));
+    }
+
+    anet::close_stream(client)?;
+    return Ok(cap);
+}
+
+async Result<usize, Error> drive() {
+    anet::AsyncTcpListener listener =
+        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    net::SocketAddr bound = anet::listener_addr(listener)?;
+    async::Task<usize> server = async::spawn<usize>(write_payload(listener))?;
+    usize cap = await read_with_reused_buffer(bound)?;
+    usize written = await server?;
+    if (written != 3) {
+        return Err(code_error(55));
+    }
+    anet::close_listener(listener)?;
+    return Ok(cap);
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive()))));
+    return 0;
+}

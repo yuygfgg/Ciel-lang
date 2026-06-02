@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied
+// expect-error: does not implement `awaitable_future`
+
+import /std/async_io as aio;
+import /std/result;
+
+async Result<aio::Bytes, Error> bad(aio::AsyncFd file) {
+    aio::AsyncRead op = aio::read_bytes_async(file, 16)?;
+    return await op;
+}

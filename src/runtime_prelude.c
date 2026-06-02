@@ -2576,6 +2576,7 @@ ssize_t ciel_file_write(uint32_t slot, uint32_t generation, const void *buf,
 
 typedef struct CielBytes {
     size_t len;
+    size_t cap;
     uint8_t *data;
 } CielBytes;
 
@@ -2587,11 +2588,13 @@ static void ciel_bytes_finalizer(void *obj, void *client_data) {
     free(bytes->data);
     bytes->data = NULL;
     bytes->len = 0;
+    bytes->cap = 0;
 }
 
 static CielBytes *ciel_bytes_new(size_t len) {
     CielBytes *bytes = (CielBytes *)ciel_alloc_atomic(sizeof(CielBytes));
     bytes->len = len;
+    bytes->cap = len;
     bytes->data = (uint8_t *)malloc(len == 0 ? 1 : len);
     if (bytes->data == NULL) {
         fputs("out of memory\n", stderr);
@@ -2772,6 +2775,10 @@ CielBytes *ciel_bytes_prepend(const uint8_t *prefix, size_t prefix_len,
 
 size_t ciel_bytes_len(CielBytes *bytes) {
     return bytes == NULL ? 0 : bytes->len;
+}
+
+size_t ciel_bytes_capacity(CielBytes *bytes) {
+    return bytes == NULL ? 0 : bytes->cap;
 }
 
 int32_t ciel_bytes_copy_to(CielBytes *bytes, uint8_t *out, size_t cap,
@@ -3049,6 +3056,7 @@ static void ciel_async_complete_stream(CielAsyncOp *op, int error,
         op->result_fd = stream;
     }
     op->complete = 1;
+    pthread_cond_broadcast(&op->cond);
     ciel_async_send_notification_locked(op);
     pthread_mutex_unlock(&op->mutex);
     if (canceled && stream != NULL)
@@ -3178,6 +3186,69 @@ CielAsyncOp *ciel_async_tcp_read_bytes(CielAsyncFd *fd, size_t max_len) {
       ssize_t n = 0;
       do {
           n = read(raw, bytes->data, max_len);
+      } while (n < 0 && errno == EINTR);
+      if (n < 0) {
+          int err = errno == 0 ? EIO : errno;
+          if (err == EAGAIN
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+              || err == EWOULDBLOCK
+#endif
+          ) {
+              ciel_runtime_leave_callback();
+              return;
+          }
+          ciel_async_cancel_source(op);
+          ciel_async_complete(op, err, bytes, 0);
+          ciel_runtime_leave_callback();
+          return;
+      }
+      bytes->len = (size_t)n;
+      ciel_async_cancel_source(op);
+      ciel_async_complete(op, 0, bytes, 0);
+      ciel_runtime_leave_callback();
+    });
+    dispatch_resume(source);
+    return op;
+}
+
+CielAsyncOp *ciel_async_tcp_read_into(CielAsyncFd *fd, CielBytes *bytes) {
+    if (bytes == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
+    int raw = -1;
+    int32_t rc = ciel_async_fd_raw_snapshot(fd, &raw);
+    if (rc != 0) {
+        errno = rc;
+        return NULL;
+    }
+    CielAsyncOp *op = ciel_async_op_new(CIEL_ASYNC_READ, fd);
+    if (op == NULL)
+        return NULL;
+    size_t cap = bytes->cap;
+    bytes->len = 0;
+    op->bytes = bytes;
+    if (cap == 0) {
+        ciel_async_complete(op, 0, bytes, 0);
+        return op;
+    }
+    dispatch_source_t source = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_READ, (uintptr_t)raw, 0, ciel_async_net_queue());
+    if (source == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
+    op->source = source;
+    dispatch_source_set_event_handler(source, ^{
+      int32_t attach_rc = ciel_runtime_enter_callback();
+      if (attach_rc != 0) {
+          ciel_async_cancel_source(op);
+          ciel_async_complete(op, attach_rc, bytes, 0);
+          return;
+      }
+      ssize_t n = 0;
+      do {
+          n = read(raw, bytes->data, cap);
       } while (n < 0 && errno == EINTR);
       if (n < 0) {
           int err = errno == 0 ? EIO : errno;

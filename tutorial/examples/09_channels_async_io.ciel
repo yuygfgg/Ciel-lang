@@ -25,7 +25,7 @@ Result<void, Error> handle(
     switch (msg) {
         case Start(fd):
             // Start one async read. This returns immediately with an operation token.
-            aio::AsyncRead op = aio::read_bytes(fd, 16)?;
+            aio::AsyncRead op = aio::read_bytes_async(fd, 16)?;
 
             // Build the completion message, then seal it into the same safe envelope type.
             ReaderMsg completed = ReadDone(op);

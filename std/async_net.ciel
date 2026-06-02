@@ -35,6 +35,7 @@ unsafe extern "C" {
 
     c::c_int ciel_async_close(*CielAsyncFd fd);
     ?*CielAsyncOp ciel_async_tcp_read_bytes(*CielAsyncFd fd, usize max_len);
+    ?*CielAsyncOp ciel_async_tcp_read_into(*CielAsyncFd fd, *CielBytes bytes);
     ?*CielAsyncOp ciel_async_tcp_write_bytes(*CielAsyncFd fd, *CielBytes bytes);
     c::c_int ciel_async_notify_read(*CielAsyncOp op, *CielActor actor, *void message);
     c::c_int ciel_async_notify_write(*CielAsyncOp op, *CielActor actor, *void message);
@@ -65,6 +66,11 @@ export struct AsyncTcpRead {
 
 export struct AsyncTcpWrite {
     *void handle;
+}
+
+export struct ReadIntoResult {
+    Bytes bytes;
+    usize read;
 }
 
 unsafe impl clone_message(*const AsyncTcpListener value) {
@@ -112,6 +118,31 @@ unsafe impl share_handle_marker(*const AsyncTcpRead value) {
 }
 
 unsafe impl share_handle_marker(*const AsyncTcpWrite value) {
+    return true;
+}
+
+unsafe impl raw_operation(*const AsyncAccept op) {
+    return op->handle;
+}
+
+unsafe impl raw_operation(*const AsyncConnect op) {
+    return op->handle;
+}
+
+unsafe impl raw_operation(*const AsyncTcpRead op) {
+    return op->handle;
+}
+
+unsafe impl raw_operation(*const AsyncTcpWrite op) {
+    return op->handle;
+}
+
+unsafe impl clone_message(*const ReadIntoResult value) {
+    Bytes cloned = clone_message(&value->bytes)?;
+    return Ok({ bytes: cloned, read: value->read });
+}
+
+unsafe impl share_handle_marker(*const ReadIntoResult value) {
     return true;
 }
 
@@ -275,6 +306,47 @@ export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes dat
         return Err(runtime_error());
     }
     return Ok({ handle: raw as *void });
+}
+
+export Result<AsyncTcpRead, Error> read_into_async(AsyncTcpStream stream, Bytes buffer) {
+    ?*CielAsyncOp raw = unsafe { ciel_async_tcp_read_into(raw_stream(stream), raw_bytes(buffer)) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
+export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) {
+    AsyncAccept op = accept_async(listener)?;
+    return await flow::future_from_op<AsyncAccept, AsyncTcpStream>(op);
+}
+
+export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr) {
+    AsyncConnect op = connect_async(addr)?;
+    return await flow::future_from_op<AsyncConnect, AsyncTcpStream>(op);
+}
+
+export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len) {
+    AsyncTcpRead op = read_bytes(stream, max_len)?;
+    return await flow::future_from_op<AsyncTcpRead, Bytes>(op);
+}
+
+export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer) {
+    AsyncTcpRead op = read_into_async(stream, buffer)?;
+    return await flow::future_from_op<AsyncTcpRead, ReadIntoResult>(op);
+}
+
+export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data) {
+    AsyncTcpWrite op = write_bytes(stream, data)?;
+    return await flow::future_from_op<AsyncTcpWrite, usize>(op);
+}
+
+export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data) {
+    usize written = await write(stream, data)?;
+    if (written != bytes_len(data)) {
+        return Err(text_error("short tcp write"));
+    }
+    return Ok;
 }
 
 export Result<void, Error> notify_accept_done<M: Message>(
@@ -478,6 +550,18 @@ impl finish<AsyncTcpStream>(AsyncAccept op) {
     return finish_accept(op);
 }
 
+unsafe impl poll_done<AsyncTcpStream>(AsyncAccept op, *AsyncTcpStream out) {
+    ?*CielAsyncFd @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_finish_accept(raw_accept(op), &raw) };
+    if ((rc as i64) == 0) {
+        if (raw == null) {
+            return 5 as c::c_int;
+        }
+        out->handle = raw as *void;
+    }
+    return rc;
+}
+
 impl<M: Message> notify_done(
     AsyncConnect op,
     actor::Actor<M> actor_handle,
@@ -488,6 +572,18 @@ impl<M: Message> notify_done(
 
 impl finish<AsyncTcpStream>(AsyncConnect op) {
     return finish_connect(op);
+}
+
+unsafe impl poll_done<AsyncTcpStream>(AsyncConnect op, *AsyncTcpStream out) {
+    ?*CielAsyncFd @raw = null;
+    c::c_int rc = unsafe { ciel_async_tcp_finish_connect(raw_connect(op), &raw) };
+    if ((rc as i64) == 0) {
+        if (raw == null) {
+            return 5 as c::c_int;
+        }
+        out->handle = raw as *void;
+    }
+    return rc;
 }
 
 impl<M: Message> notify_done(
@@ -502,6 +598,32 @@ impl finish<Bytes>(AsyncTcpRead op) {
     return finish_read(op);
 }
 
+unsafe impl poll_done<Bytes>(AsyncTcpRead op, *Bytes out) {
+    ?*CielBytes @raw = null;
+    c::c_int rc = unsafe { ciel_async_finish_read(raw_read(op), &raw) };
+    if ((rc as i64) == 0) {
+        if (raw == null) {
+            return 5 as c::c_int;
+        }
+        out->handle = raw as *void;
+    }
+    return rc;
+}
+
+unsafe impl poll_done<ReadIntoResult>(AsyncTcpRead op, *ReadIntoResult out) {
+    ?*CielBytes @raw = null;
+    c::c_int rc = unsafe { ciel_async_finish_read(raw_read(op), &raw) };
+    if ((rc as i64) == 0) {
+        if (raw == null) {
+            return 5 as c::c_int;
+        }
+        Bytes bytes = { handle: raw as *void };
+        out->bytes = bytes;
+        out->read = bytes_len(bytes);
+    }
+    return rc;
+}
+
 impl<M: Message> notify_done(
     AsyncTcpWrite op,
     actor::Actor<M> actor_handle,
@@ -512,4 +634,13 @@ impl<M: Message> notify_done(
 
 impl finish<usize>(AsyncTcpWrite op) {
     return finish_write(op);
+}
+
+unsafe impl poll_done<usize>(AsyncTcpWrite op, *usize out) {
+    usize @written = 0;
+    c::c_int rc = unsafe { ciel_async_finish_write(raw_write(op), &written) };
+    if ((rc as i64) == 0) {
+        *out = written;
+    }
+    return rc;
 }

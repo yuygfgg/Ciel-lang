@@ -21,7 +21,7 @@ i32 main() {
     Channel<usize> done = must(make_channel<usize>());
     Actor<aio::AsyncRead> actor = must(spawn_actor_cloned<Channel<usize>, aio::AsyncRead>(done, handle));
     aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_async_read_fixture.txt"));
-    aio::AsyncRead op = must(aio::read_bytes(fd, 16));
+    aio::AsyncRead op = must(aio::read_bytes_async(fd, 16));
     must(aio::notify_read_done(&op, &actor, op));
     usize len = must(channel_recv(&done));
     must(print_value(len));

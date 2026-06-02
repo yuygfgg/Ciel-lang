@@ -1,5 +1,6 @@
 // ciel-test: error
-// expect-error: `await` requires `Future<T>`, got `Future<usize>`
+// expect-error: generic constraint not satisfied
+// expect-error: does not implement `awaitable_future`
 
 import /std/result;
 

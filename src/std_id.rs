@@ -137,6 +137,27 @@ pub fn is_std_async_function(
     name == expected_name && module_path_matches(resolved, module, STD_ASYNC_PATH)
 }
 
+pub fn is_std_async_interface(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ASYNC_PATH,
+    )
+}
+
+pub fn has_std_async_interface(resolved: &ResolvedProgram, expected_name: &str) -> bool {
+    resolved
+        .defs
+        .iter()
+        .any(|def| is_std_async_interface(resolved, def.id, expected_name))
+}
+
 pub fn is_std_async_time_function(
     resolved: &ResolvedProgram,
     module: ModuleId,
@@ -162,11 +183,27 @@ fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
     }
 }
 
-pub fn is_std_async_type_name(
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StdAsyncType {
+    Future,
+    Task,
+}
+
+impl StdAsyncType {
+    fn name(self) -> &'static str {
+        match self {
+            StdAsyncType::Future => "Future",
+            StdAsyncType::Task => "Task",
+        }
+    }
+}
+
+pub fn is_std_async_type(
     resolved: &ResolvedProgram,
     ty_name: &str,
-    expected_name: &str,
+    expected: StdAsyncType,
 ) -> bool {
+    let expected_name = expected.name();
     let has_std_def = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && def.kind == DefKind::Struct
@@ -190,6 +227,14 @@ pub fn is_std_async_type_name(
             && !module_path_matches(resolved, def.module, STD_ASYNC_PATH)
     });
     ty_name == expected_name && !has_user_nominal
+}
+
+pub fn is_std_async_future_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::Future)
+}
+
+pub fn is_std_async_task_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_async_type(resolved, ty_name, StdAsyncType::Task)
 }
 
 pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name: &str) -> bool {

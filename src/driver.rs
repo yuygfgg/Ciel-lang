@@ -182,6 +182,11 @@ impl ModuleLoader {
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
+        if ast.uses_std_async {
+            let import_path = self.resolve_import_path(&parent, "/std/async");
+            self.load_file(&import_path)?;
+        }
+
         for item in &ast.items {
             if let crate::ast::ItemKind::Import(import) = &item.kind {
                 let import_path = self.resolve_import_path(&parent, &import.path.raw);

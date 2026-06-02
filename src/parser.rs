@@ -13,6 +13,7 @@ struct Parser {
     pos: usize,
     diagnostics: Vec<Diagnostic>,
     inherited_type_abi: Option<String>,
+    uses_std_async: bool,
 }
 
 impl Parser {
@@ -22,6 +23,7 @@ impl Parser {
             pos: 0,
             diagnostics: Vec::new(),
             inherited_type_abi: None,
+            uses_std_async: false,
         }
     }
 
@@ -38,7 +40,10 @@ impl Parser {
         }
 
         if self.diagnostics.is_empty() {
-            Ok(AstFile { items })
+            Ok(AstFile {
+                items,
+                uses_std_async: self.uses_std_async,
+            })
         } else {
             Err(self.diagnostics)
         }
@@ -381,6 +386,7 @@ impl Parser {
         };
         let is_async = if self.at_ident_named("async") {
             self.advance();
+            self.uses_std_async = true;
             true
         } else {
             false
@@ -1473,6 +1479,7 @@ impl Parser {
         match token.kind {
             TokenKind::Ident if token.lexeme == "await" => {
                 self.advance();
+                self.uses_std_async = true;
                 let inner = self.parse_postfix_without_try()?;
                 let span = token.span.merge(inner.span);
                 Ok(Expr {
@@ -1485,6 +1492,7 @@ impl Parser {
                     && matches!(self.peek_next().kind, TokenKind::PipePipe | TokenKind::Pipe) =>
             {
                 self.advance();
+                self.uses_std_async = true;
                 self.parse_closure_expr_with_async(token.span, true)
             }
             TokenKind::Ident => {

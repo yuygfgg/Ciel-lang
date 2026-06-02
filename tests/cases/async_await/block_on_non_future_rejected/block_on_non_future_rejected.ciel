@@ -1,5 +1,6 @@
 // ciel-test: error
-// expect-error: `block_on` requires `Future<T>`
+// expect-error: generic constraint not satisfied
+// expect-error: does not implement `awaitable_future`
 
 import /std/async as async;
 

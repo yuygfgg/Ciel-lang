@@ -29,6 +29,8 @@ pure-library-message < unsafe[manual policy impls become unsafe]
 
 unsafe <= generic-growable-storage[trusted raw storage construction]
 metaprogramming <= generic-growable-storage[type size and alignment]
+metaprogramming < schema-reflection
+schema-reflection :> serialization[instance-free structural decode schema]
 
 metaprogramming :> error-box[structural representation]
 pure-library-message || error-box[structural formatting policy]

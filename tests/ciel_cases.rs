@@ -55,10 +55,35 @@ fn ciel_case_metadata_is_valid() {
 }
 
 #[test]
+#[ignore = "per-fixture tests are generated at build time"]
 fn discovered_ciel_cases_pass_their_declared_expectations() {
     run_with_large_stack("discovered_ciel_cases", || {
         discovered_ciel_cases_pass_their_declared_expectations_impl()
     });
+}
+
+fn run_generated_case(relative_path: &'static str) {
+    run_with_large_stack(relative_path, move || {
+        let path = cases_root().join(relative_path);
+        let case = parse_case(&path)
+            .and_then(|case| {
+                validate_case(&case)?;
+                Ok(case)
+            })
+            .unwrap_or_else(|error| panic!("{}: {error}", case_label(&path)));
+        assert!(
+            !matches!(case.kind, TestKind::Dependency | TestKind::Manual),
+            "generated test targeted inactive fixture `{}`",
+            case_label(&path)
+        );
+        if let Err(error) = run_case(&case) {
+            panic!("{}:\n{error}", case_label(&case.path));
+        }
+    });
+}
+
+mod generated_ciel_cases {
+    include!(concat!(env!("OUT_DIR"), "/ciel_case_tests.rs"));
 }
 
 fn discovered_ciel_cases_pass_their_declared_expectations_impl() {
@@ -525,8 +550,9 @@ fn run_case(case: &Case) -> Result<(), String> {
                 compile_c(&case.path, &c, "warn.exe", &["-Wall", "-Wextra", "-Werror"])?;
             }
             let exe = compile_c(&case.path, &c, "run.exe", &[])?;
+            let run_args = resolve_run_args(case)?;
             let output = Command::new(&exe)
-                .args(&case.run_args)
+                .args(&run_args)
                 .output()
                 .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
             check_output(case, &output)
@@ -591,8 +617,9 @@ fn run_case(case: &Case) -> Result<(), String> {
         TestKind::KnownFailRun => {
             let c = compile_case(case)?;
             let exe = compile_c(&case.path, &c, "known_fail_run.exe", &[])?;
+            let run_args = resolve_run_args(case)?;
             let output = Command::new(&exe)
-                .args(&case.run_args)
+                .args(&run_args)
                 .output()
                 .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
             match check_output(case, &output) {
@@ -612,6 +639,26 @@ fn run_case(case: &Case) -> Result<(), String> {
         },
         TestKind::Dependency | TestKind::Manual => Ok(()),
     }
+}
+
+fn resolve_run_args(case: &Case) -> Result<Vec<String>, String> {
+    let mut resolved = Vec::new();
+    for arg in &case.run_args {
+        let Some(suffix) = arg.strip_prefix("@tmp/") else {
+            resolved.push(arg.clone());
+            continue;
+        };
+        let tmp_dir = temp_artifact(&case.path, "tmp");
+        fs::create_dir_all(&tmp_dir)
+            .map_err(|error| format!("failed to create `{}`: {error}", tmp_dir.display()))?;
+        let path = tmp_dir.join(suffix);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|error| format!("failed to create `{}`: {error}", parent.display()))?;
+        }
+        resolved.push(path.display().to_string());
+    }
+    Ok(resolved)
 }
 
 fn compile_case(case: &Case) -> Result<String, String> {

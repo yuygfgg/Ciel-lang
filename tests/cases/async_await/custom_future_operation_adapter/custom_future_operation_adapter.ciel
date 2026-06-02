@@ -1,12 +1,14 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: 5
+// run-arg: @tmp/custom_future_operation_adapter.txt
 
 import /std/async as async;
 import /std/async;
 import /std/async/adapter;
 import /std/async_io as aio;
 import /std/c as c;
+import /std/env as env;
 import /std/io as io;
 import /std/result;
 
@@ -51,11 +53,12 @@ async Result<usize, Error> read_with_wrapper(aio::AsyncFd file) {
 }
 
 i32 main() {
-    must(io::with_create<void>("/tmp/ciel_custom_future_operation_adapter.txt", |file| {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
         io::write_text(file, "hello")?;
         return Ok;
     }));
-    aio::AsyncFd file = must(aio::open_async_read("/tmp/ciel_custom_future_operation_adapter.txt"));
+    aio::AsyncFd file = must(aio::open_async_read(path));
     usize len = must(async::block_on(read_with_wrapper(file)));
     must(aio::close_async(file));
     must(io::print_value(len));

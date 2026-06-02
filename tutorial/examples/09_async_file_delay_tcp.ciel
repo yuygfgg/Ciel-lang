@@ -1,12 +1,15 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: 4
+// run-arg: @tmp/tutorial_payload.txt
+// run-arg: @tmp/tutorial_target.txt
 
 import /std/lib;
 import /std/async as flow;
 import /std/async_io as aio;
 import /std/async_net as anet;
 import /std/async_time as atime;
+import /std/env as env;
 import /std/net as net;
 
 Result<net::SocketAddr, Error> address_from_bytes(aio::Bytes bytes) {
@@ -49,7 +52,9 @@ Result<flow::AsyncTask<S, usize>, Error> route_and_send_task<S: Message>(
 }
 
 i32 main() {
-    expect(with_create<void>("/tmp/ciel_tutorial_payload.txt", |file| {
+    []const char payload_path = expect(env::arg(1), "payload path argument missing");
+    []const char target_path = expect(env::arg(2), "target path argument missing");
+    expect(with_create<void>(payload_path, |file| {
         write_text(file, "ping")?;
         return Ok;
     }), "create payload file failed");
@@ -66,7 +71,7 @@ i32 main() {
         net::addr_write(bound, target_text[..]),
         "format listener address failed"
     );
-    expect(with_create<void>("/tmp/ciel_tutorial_target.txt", |file| {
+    expect(with_create<void>(target_path, |file| {
         write_text(file, target_text[..target_len])?;
         return Ok;
     }), "create target file failed");
@@ -97,14 +102,14 @@ i32 main() {
 
     aio::AsyncFd payload_file =
         expect(
-            aio::open_async_read("/tmp/ciel_tutorial_payload.txt"),
+            aio::open_async_read(payload_path),
             "open payload file failed"
         );
     defer aio::close_async(payload_file);
 
     aio::AsyncFd target_file =
         expect(
-            aio::open_async_read("/tmp/ciel_tutorial_target.txt"),
+            aio::open_async_read(target_path),
             "open target file failed"
         );
     defer aio::close_async(target_file);

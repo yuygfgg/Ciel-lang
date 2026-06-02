@@ -1,13 +1,18 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: 4
+// run-arg: @tmp/then_input.txt
+// run-arg: @tmp/then_output.txt
 
 import /std/lib;
 import /std/async as flow;
 import /std/async_io as aio;
+import /std/env as env;
 
 i32 main() {
-    must(with_create<void>("/tmp/ciel_then_input.txt", |file| {
+    []const char input_path = must(env::arg(1));
+    []const char output_path = must(env::arg(2));
+    must(with_create<void>(input_path, |file| {
         write_text(file, "ping")?;
         return Ok;
     }));
@@ -16,10 +21,10 @@ i32 main() {
     flow::AsyncRunner<Channel<usize>> worker =
         must(flow::spawn_runner<Channel<usize>>(done));
 
-    aio::AsyncFd input = must(aio::open_async_read("/tmp/ciel_then_input.txt"));
+    aio::AsyncFd input = must(aio::open_async_read(input_path));
     defer aio::close_async(input);
 
-    aio::AsyncFd output = must(aio::create_async("/tmp/ciel_then_output.txt"));
+    aio::AsyncFd output = must(aio::create_async(output_path));
     defer aio::close_async(output);
 
     flow::AsyncTask<Channel<usize>, aio::Bytes> read =

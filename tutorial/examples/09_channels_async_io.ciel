@@ -1,9 +1,11 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: 5
+// run-arg: @tmp/tutorial_async_read.txt
 
 import /std/lib;
 import /std/async_io as aio;
+import /std/env as env;
 import /std/meta as meta;
 
 enum ReaderMsg {
@@ -50,7 +52,8 @@ Result<void, Error> handle(
 
 i32 main() {
     // Prepare stable input for the example.
-    must(with_create<void>("/tmp/ciel_tutorial_async_read.txt", |file| {
+    []const char path = must(env::arg(1));
+    must(with_create<void>(path, |file| {
         write_text(file, "hello")?;
         return Ok;
     }));
@@ -66,7 +69,7 @@ i32 main() {
         ));
 
     // Open an async file handle. The read itself starts inside the actor handler.
-    aio::AsyncFd fd = must(aio::open_async_read("/tmp/ciel_tutorial_async_read.txt"));
+    aio::AsyncFd fd = must(aio::open_async_read(path));
     defer aio::close_async(fd);
 
     // Tell the actor to begin the read. The handler receives the actor's own

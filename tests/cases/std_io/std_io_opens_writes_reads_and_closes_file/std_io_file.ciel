@@ -1,16 +1,19 @@
 // ciel-test: run
 // expect-exit: 0
 // expect-stdout: file-output
+// run-arg: @tmp/std_io_fixture.txt
 
+import /std/env as env;
 import /std/io;
 
 i32 main() {
-    must(with_create<void>("/tmp/ciel_std_io_fixture.txt", |file| {
+    []const char path = must(env::arg(1));
+    must(with_create<void>(path, |file| {
         write_text(file, "file-output")?;
         return Ok;
     }));
 
-    usize n = must(with_open_read<usize>("/tmp/ciel_std_io_fixture.txt", |file| {
+    usize n = must(with_open_read<usize>(path, |file| {
         [32]u8 @buffer = [0;];
         usize read_count = read(file, buffer[..])?;
         return Ok(read_count);

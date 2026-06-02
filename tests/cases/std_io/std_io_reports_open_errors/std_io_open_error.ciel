@@ -1,10 +1,13 @@
 // ciel-test: run
 // expect-exit: 7
+// run-arg: @tmp/std_io_missing_file_should_not_exist
 
+import /std/env as env;
 import /std/io;
 
 i32 main() {
-    Result<void, Error> result = with_open_read("/tmp/ciel_std_io_missing_file_should_not_exist", |file| {
+    []const char path = must(env::arg(1));
+    Result<void, Error> result = with_open_read(path, |file| {
         return Ok;
     });
     switch (result) {

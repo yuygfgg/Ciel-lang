@@ -3,12 +3,14 @@ export import /std/message;
 export import /std/result;
 import /std/async/adapter;
 import /std/actor as actor;
+import /std/c as c;
 
 unsafe extern "C" {
     opaque struct CielFuture;
 
     *CielFuture ciel_future_from_handle(*void handle);
     *CielFuture ciel_task_future_from_handle(*void handle);
+    c::c_int ciel_async_timeout_errno();
 }
 
 export type Step<S> = Result<S, Error> |(S): Message|;
@@ -22,12 +24,26 @@ export struct Future<T> {
 export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
 export interface Awaitable<Out> = awaitable_future<Out>;
 
+export unsafe interface<F> bool cancel_safe_marker(*const F future);
+export interface CancelSafe = cancel_safe_marker;
+
+export unsafe interface<F> Result<void, Error> abort_future(*F future);
+export interface Abortable = abort_future;
+
 unsafe impl<T> awaitable_future<T>(*const Future<T> future) {
     return unsafe { ciel_future_from_handle(future->handle) as *void };
 }
 
-export T block_on<T, A: Awaitable<T>>(A future);
+export T block_on<T, A: Awaitable<T> + Abortable>(A future);
 export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
+export Future<Result<Out, Error>> timeout<Out, A: Awaitable<Out> + CancelSafe + Abortable>(
+    A future,
+    u64 ms
+);
+
+export Error timeout_error() {
+    return code_error(unsafe { ciel_async_timeout_errno() } as i64);
+}
 
 export struct Task<T> {
     *void handle;
@@ -37,9 +53,21 @@ unsafe impl<T> awaitable_future<Result<T, Error>>(*const Task<T> task) {
     return unsafe { ciel_task_future_from_handle(task->handle) as *void };
 }
 
-export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>>>(A body);
+export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(A body);
 export Result<void, Error> cancel<T>(*const Task<T> task);
 export Result<bool, Error> is_finished<T>(*const Task<T> task);
+
+unsafe impl<T> cancel_safe_marker(*const Task<T> task) {
+    return true;
+}
+
+unsafe impl<T> abort_future(*Task<T> task) {
+    return cancel(task);
+}
+
+unsafe impl<T> abort_future(*Future<T> future) {
+    return Ok;
+}
 
 unsafe impl<T: Message> clone_message(*const Task<T> value) {
     return Ok(*value);

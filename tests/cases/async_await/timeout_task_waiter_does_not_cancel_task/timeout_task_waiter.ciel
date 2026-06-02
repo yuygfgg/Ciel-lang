@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 42
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> slow_value() {
+    await async_time::sleep_ms(30)?;
+    return Ok(42);
+}
+
+i32 main() {
+    async::Task<usize> task = must(async::spawn<usize>(slow_value()));
+    Result<Result<usize, Error>, Error> early = async::block_on(async::timeout(task, 1));
+    switch (early) {
+        case Err(_):
+            {}
+        case Ok(_):
+            return 1;
+    }
+    must(print_value(must(async::block_on(task))));
+    return 0;
+}

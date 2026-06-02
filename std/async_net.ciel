@@ -1,6 +1,7 @@
 export import /std/result;
 export import /std/async/bytes;
 import /std/async as flow;
+import /std/async;
 import /std/async/adapter;
 import /std/actor as actor;
 import /std/c as c;
@@ -135,6 +136,14 @@ unsafe impl raw_operation(*const AsyncTcpRead op) {
 
 unsafe impl raw_operation(*const AsyncTcpWrite op) {
     return op->handle;
+}
+
+unsafe impl cancel_safe_marker(*const AsyncAccept op) {
+    return true;
+}
+
+unsafe impl cancel_safe_marker(*const AsyncConnect op) {
+    return true;
 }
 
 unsafe impl clone_message(*const ReadIntoResult value) {
@@ -476,6 +485,22 @@ export Result<void, Error> cancel_write(AsyncTcpWrite op) {
         return Err(code_error(rc as i64));
     }
     return Ok;
+}
+
+unsafe impl abort_future(*AsyncAccept op) {
+    return cancel_accept(*op);
+}
+
+unsafe impl abort_future(*AsyncConnect op) {
+    return cancel_connect(*op);
+}
+
+unsafe impl abort_future(*AsyncTcpRead op) {
+    return cancel_read(*op);
+}
+
+unsafe impl abort_future(*AsyncTcpWrite op) {
+    return cancel_write(*op);
 }
 
 export Result<flow::Completion<S, AsyncTcpStream>, Error> accept_completion<S: Message>(

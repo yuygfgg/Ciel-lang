@@ -138,7 +138,8 @@ fn collect_layout_edges_from_ty(
         Ty::Array { elem, .. } => {
             collect_layout_edges_from_ty(elem, aggregate_names, graph, edges);
         }
-        Ty::Pointer { .. }
+        Ty::GeneratedFuture { .. }
+        | Ty::Pointer { .. }
         | Ty::Slice { .. }
         | Ty::Function { .. }
         | Ty::Closure { .. }

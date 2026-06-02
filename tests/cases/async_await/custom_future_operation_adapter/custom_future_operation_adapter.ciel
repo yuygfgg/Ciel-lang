@@ -3,6 +3,7 @@
 // expect-stdout: 5
 
 import /std/async as async;
+import /std/async;
 import /std/async/adapter;
 import /std/async_io as aio;
 import /std/c as c;
@@ -36,6 +37,10 @@ unsafe impl poll_done<aio::Bytes>(WrappedRead op, *aio::Bytes out) {
         out->handle = raw as *void;
     }
     return rc;
+}
+
+unsafe impl abort_future(*WrappedRead op) {
+    return aio::cancel_read(op->inner);
 }
 
 async Result<usize, Error> read_with_wrapper(aio::AsyncFd file) {

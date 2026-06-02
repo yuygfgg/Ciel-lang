@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: does not implement `abort_future`
+
+import /std/async;
+import /std/result;
+
+struct Wrapped<T> {
+    Future<T> inner;
+}
+
+unsafe impl<T> awaitable_future<T>(*const Wrapped<T> awaitable) {
+    return awaitable->inner.handle;
+}
+
+Result<Task<usize>, Error> start(Wrapped<Result<usize, Error>> wrapped) {
+    return spawn<usize>(wrapped);
+}
+
+i32 main() {
+    return 0;
+}

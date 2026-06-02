@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: does not implement `cancel_safe_marker`
+
+import /std/async as async;
+import /std/async_net as anet;
+import /std/result;
+
+async Result<usize, Error> bad_timeout(anet::AsyncTcpStream stream, anet::Bytes data) {
+    anet::AsyncTcpWrite op = anet::write_bytes(stream, data)?;
+    return await async::timeout(async::future_from_op<anet::AsyncTcpWrite, usize>(op), 1)?;
+}
+
+i32 main() {
+    return 0;
+}

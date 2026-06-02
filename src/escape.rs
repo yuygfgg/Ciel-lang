@@ -261,6 +261,10 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::AsyncSleep { ms, .. } => self.scan_expr(ms),
             TExprKind::AsyncOpFuture { op, .. } => self.scan_expr(op),
+            TExprKind::AsyncTimeout { future, ms, .. } => {
+                self.scan_expr(future);
+                self.scan_expr(ms);
+            }
             TExprKind::AsyncSpawn { body, .. } => self.scan_expr(body),
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => self.scan_expr(task),
@@ -524,6 +528,10 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::AsyncSleep { ms, .. } => self.collect_storage_sources(ms, out),
             TExprKind::AsyncOpFuture { op, .. } => self.collect_storage_sources(op, out),
+            TExprKind::AsyncTimeout { future, ms, .. } => {
+                self.collect_storage_sources(future, out);
+                self.collect_storage_sources(ms, out);
+            }
             TExprKind::AsyncSpawn { body, .. } => self.collect_storage_sources(body, out),
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => {

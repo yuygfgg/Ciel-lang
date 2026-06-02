@@ -27,11 +27,11 @@ use crate::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
         STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, clone_message_capability,
-        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
-        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_marker_name, meta_sum_ty, retained_closure_capabilities, std_error_code_ty,
-        std_error_trait_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty, std_result_ty,
-        std_task_ty, unify_ty,
+        generated_future_output_ty, generated_future_ty, is_clone_message_capability,
+        mangle_constraint_ref, mangle_ty_fragment, meta_array_split_len, meta_named,
+        meta_product_ty, meta_ref_array_repr_ty, meta_repr_marker_name, meta_sum_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
+        std_future_ty, std_meta_repr_marker_ty, std_result_ty, std_task_ty, unify_ty,
     },
 };
 
@@ -135,6 +135,7 @@ struct CodegenPlanData {
     retained_closure_witnesses: BTreeMap<String, RetainedClosureWitness>,
     actor_dispatches: BTreeMap<String, ActorDispatch>,
     async_sleep_output_tys: BTreeMap<String, Ty>,
+    async_timeout_output_tys: BTreeMap<String, Ty>,
     async_op_contexts: BTreeMap<String, AsyncOpContext>,
     string_literals: BTreeMap<(usize, usize, usize), String>,
     string_literal_names: HashMap<(usize, usize, usize), String>,
@@ -431,6 +432,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_function_contexts();
         self.emit_async_closure_contexts();
         self.emit_async_sleep_future_contexts();
+        self.emit_async_timeout_future_contexts();
         self.emit_async_op_future_contexts();
 
         self.emit_closure_environment_layouts();
@@ -450,6 +452,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_function_run_prototypes();
         self.emit_async_closure_run_prototypes();
         self.emit_async_sleep_future_prototypes();
+        self.emit_async_timeout_future_prototypes();
         self.emit_async_op_future_prototypes();
         self.emit_dynamic_shim_prototypes();
         self.line("");
@@ -479,6 +482,10 @@ impl<'a> CGenerator<'a> {
 
         self.emit_async_sleep_future_runs()?;
         if !self.plan.async_sleep_output_tys.is_empty() {
+            self.line("");
+        }
+        self.emit_async_timeout_future_runs()?;
+        if !self.plan.async_timeout_output_tys.is_empty() {
             self.line("");
         }
         self.emit_async_op_future_runs()?;
@@ -1101,6 +1108,17 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_array_returns(&result_ty);
                 self.collect_ty_array_returns(output_ty);
             }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.collect_expr_array_returns(future);
+                self.collect_expr_array_returns(ms);
+                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+                self.collect_ty_array_returns(&result_ty);
+                self.collect_ty_array_returns(output_ty);
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -1413,6 +1431,17 @@ impl<'a> CGenerator<'a> {
                         output_ty: output_ty.clone(),
                     },
                 );
+            }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.collect_expr_closures(owner, future);
+                self.collect_expr_closures(owner, ms);
+                self.plan
+                    .async_timeout_output_tys
+                    .insert(mangle_ty_fragment(output_ty), output_ty.clone());
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -1759,6 +1788,17 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_dynamic(output_ty);
                 self.collect_ty_dynamic(&std_result_ty(output_ty.clone(), std_error_ty()));
             }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.collect_standard_error_code_dynamic();
+                self.collect_expr_dynamic(future);
+                self.collect_expr_dynamic(ms);
+                self.collect_ty_dynamic(output_ty);
+                self.collect_ty_dynamic(&std_result_ty(output_ty.clone(), std_error_ty()));
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -2035,6 +2075,10 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::AsyncSleep { ms, .. } => self.collect_expr_locations(ms),
             TExprKind::AsyncOpFuture { op, .. } => self.collect_expr_locations(op),
+            TExprKind::AsyncTimeout { future, ms, .. } => {
+                self.collect_expr_locations(future);
+                self.collect_expr_locations(ms);
+            }
             TExprKind::AsyncSpawn { body, .. } => self.collect_expr_locations(body),
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => self.collect_expr_locations(task),
@@ -2279,6 +2323,10 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::AsyncSleep { ms, .. } => self.collect_expr_string_literals(ms),
             TExprKind::AsyncOpFuture { op, .. } => self.collect_expr_string_literals(op),
+            TExprKind::AsyncTimeout { future, ms, .. } => {
+                self.collect_expr_string_literals(future);
+                self.collect_expr_string_literals(ms);
+            }
             TExprKind::AsyncSpawn { body, .. } => self.collect_expr_string_literals(body),
             TExprKind::AsyncTaskCancel { task, .. }
             | TExprKind::AsyncTaskIsFinished { task, .. } => {
@@ -2517,6 +2565,19 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_slice(output_ty);
                 let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
+                self.collect_ty_slice(&result_ty);
+                self.collect_ty_slice(&std_error_code_ty());
+                self.collect_ty_slice(&std_error_trait_ty());
+            }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.collect_expr_slices(future);
+                self.collect_expr_slices(ms);
+                self.collect_ty_slice(output_ty);
+                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
                 self.collect_ty_slice(&result_ty);
                 self.collect_ty_slice(&std_error_code_ty());
                 self.collect_ty_slice(&std_error_trait_ty());
@@ -3654,6 +3715,200 @@ impl<'a> CGenerator<'a> {
         Ok(())
     }
 
+    fn emit_async_timeout_future_contexts(&mut self) {
+        for output_ty in self
+            .plan
+            .async_timeout_output_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let name = self.async_timeout_context_name(&output_ty);
+            self.line(&format!("typedef struct {name} {{"));
+            self.line("    CielFuture *future;");
+            self.line("    CielFuture *child;");
+            self.line("    CielAsyncOp *sleep;");
+            self.line("    uint64_t ms;");
+            if !output_ty.is_erased_value() {
+                self.line(&format!("    {};", self.c_decl(&output_ty, "child_out")));
+            }
+            self.line(&format!("}} {name};"));
+        }
+        if !self.plan.async_timeout_output_tys.is_empty() {
+            self.line("");
+        }
+    }
+
+    fn emit_async_timeout_future_prototypes(&mut self) {
+        for output_ty in self
+            .plan
+            .async_timeout_output_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "static int32_t {}(void *ctx_raw, void *out_raw);",
+                self.async_timeout_run_name(&output_ty)
+            ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_timeout_cleanup_name(&output_ty)
+            ));
+        }
+    }
+
+    fn emit_async_timeout_future_runs(&mut self) -> DiagResult<()> {
+        for output_ty in self
+            .plan
+            .async_timeout_output_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
+            let ctx_name = self.async_timeout_context_name(&output_ty);
+            let run_name = self.async_timeout_run_name(&output_ty);
+            let cleanup_name = self.async_timeout_cleanup_name(&output_ty);
+            let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+            let layout = self.result_layout(&result_ty, span)?;
+            self.line(&format!(
+                "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(
+                1,
+                &format!(
+                    "{} *out = ({})out_raw;",
+                    layout.c_type,
+                    self.c_pointer_type(&result_ty)
+                ),
+            );
+            self.line_indent(1, "if (ctx == NULL || ctx->child == NULL) {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(&layout, &self.error_code_literal("EINVAL"))
+                ),
+            );
+            self.line_indent(2, "return 0;");
+            self.line_indent(1, "}");
+            let child_out_arg = if output_ty.is_erased_value() {
+                "NULL".to_string()
+            } else {
+                "&ctx->child_out".to_string()
+            };
+            self.line_indent(
+                1,
+                &format!(
+                    "int32_t child_rc = ciel_future_poll_trampoline(ctx->child, {child_out_arg});"
+                ),
+            );
+            self.line_indent(1, "if (child_rc == 0) {");
+            self.line_indent(2, "if (ctx->sleep != NULL) {");
+            self.line_indent(3, "(void)ciel_async_cancel(ctx->sleep);");
+            self.line_indent(3, "ctx->sleep = NULL;");
+            self.line_indent(2, "}");
+            if output_ty.is_erased_value() {
+                self.line_indent(
+                    2,
+                    &format!("*out = {};", self.result_ok_literal(&layout, None)),
+                );
+            } else {
+                self.line_indent(
+                    2,
+                    &format!(
+                        "*out = {};",
+                        self.result_ok_literal(&layout, Some("ctx->child_out"))
+                    ),
+                );
+            }
+            self.line_indent(2, "return 0;");
+            self.line_indent(1, "}");
+            self.line_indent(1, "if (child_rc != EAGAIN) {");
+            self.line_indent(2, "if (ctx->sleep != NULL) {");
+            self.line_indent(3, "(void)ciel_async_cancel(ctx->sleep);");
+            self.line_indent(3, "ctx->sleep = NULL;");
+            self.line_indent(2, "}");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.error_code_literal("child_rc")
+                    )
+                ),
+            );
+            self.line_indent(2, "return 0;");
+            self.line_indent(1, "}");
+            self.line_indent(1, "if (ctx->sleep == NULL) {");
+            self.line_indent(2, "ctx->sleep = ciel_async_sleep_ms(ctx->ms);");
+            self.line_indent(2, "if (ctx->sleep == NULL) {");
+            self.line_indent(
+                3,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.error_code_literal("errno == 0 ? EIO : errno")
+                    )
+                ),
+            );
+            self.line_indent(3, "return 0;");
+            self.line_indent(2, "}");
+            self.line_indent(1, "}");
+            self.line_indent(1, "int32_t sleep_rc = ciel_async_finish_sleep(ctx->sleep);");
+            self.line_indent(1, "if (sleep_rc == EAGAIN) {");
+            self.line_indent(2, "return EAGAIN;");
+            self.line_indent(1, "}");
+            self.line_indent(1, "ctx->sleep = NULL;");
+            self.line_indent(1, "if (sleep_rc == 0) {");
+            self.line_indent(2, "(void)ciel_future_cancel(ctx->child);");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.error_code_literal("ETIMEDOUT")
+                    )
+                ),
+            );
+            self.line_indent(1, "} else {");
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.error_code_literal("sleep_rc")
+                    )
+                ),
+            );
+            self.line_indent(1, "}");
+            self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(1, "(void)reason;");
+            self.line_indent(1, "if (ctx == NULL) return;");
+            self.line_indent(1, "if (ctx->sleep != NULL) {");
+            self.line_indent(2, "(void)ciel_async_cancel(ctx->sleep);");
+            self.line_indent(2, "ctx->sleep = NULL;");
+            self.line_indent(1, "}");
+            self.line_indent(1, "if (ctx->child != NULL) {");
+            self.line_indent(2, "(void)ciel_future_cancel(ctx->child);");
+            self.line_indent(2, "ctx->child = NULL;");
+            self.line_indent(1, "}");
+            self.line("}");
+        }
+        Ok(())
+    }
+
     fn emit_async_op_future_contexts(&mut self) {
         for context in self
             .plan
@@ -3841,7 +4096,7 @@ impl<'a> CGenerator<'a> {
 
     fn gen_async_function(&mut self, function: &CheckedFunction, body: &TBlock) -> DiagResult<()> {
         let names = self.async_function_names(function.def_id);
-        let future_ty = std_future_ty(function.ret.clone());
+        let future_ty = self.function_call_return_ty(function);
         self.emit_line_directive(body.span);
         self.line(&format!("{} {{", self.function_decl(function, false)));
         let ctx = self.next_temp("async_ctx");
@@ -3992,7 +4247,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(1, "(void)reason;");
         self.line_indent(1, "if (ctx == NULL || ctx->cleanup_state == 0) return;");
         self.line_indent(1, "if (ctx->active_future != NULL) {");
-        self.line_indent(2, "(void)ciel_future_cancel(ctx->active_future);");
+        self.line_indent(2, "(void)ciel_future_abort(ctx->active_future);");
         self.line_indent(2, "ctx->active_future = NULL;");
         self.line_indent(1, "}");
         self.line_indent(1, "switch (ctx->cleanup_state) {");
@@ -5143,6 +5398,19 @@ impl<'a> CGenerator<'a> {
                     )]);
                 };
                 self.emit_async_op_expr(expr, op, output_ty, indent)?
+            }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`timeout` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_timeout_expr(expr, future, ms, output_ty, indent)?
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -6901,6 +7169,16 @@ impl<'a> CGenerator<'a> {
         output_ty: &Ty,
         indent: usize,
     ) -> DiagResult<()> {
+        if generated_future_output_ty(future_ty)
+            .as_ref()
+            .is_some_and(|actual_output| actual_output == output_ty)
+        {
+            self.line_indent(
+                indent,
+                &format!("{raw} = (CielFuture *){future_temp}.handle;"),
+            );
+            return Ok(());
+        }
         let impl_name = self.awaitable_future_impl_name(output_ty, future_ty)?;
         self.line_indent(
             indent,
@@ -7072,6 +7350,61 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("{ctx}->ms = (uint64_t)({ms_value});"));
         let raw = self.next_temp("sleep_future");
         let (size_expr, align_expr) = self.future_result_layout_args(output_ty);
+        self.line_indent(
+            indent,
+            &format!(
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {run_name}, {ctx}, {cleanup_name});"
+            ),
+        );
+        let (file, line) = self.location_args(expr.span);
+        self.line_indent(indent, &format!("if ({raw} == NULL) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "ciel_panic_at(\"future allocation failed\", sizeof(\"future allocation failed\") - 1, {file}, {line});"
+            ),
+        );
+        self.line_indent(indent, "}");
+        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
+        Ok(format!(
+            "({}){{ .handle = (void *){raw} }}",
+            self.c_type(&expr.ty)
+        ))
+    }
+
+    fn emit_async_timeout_expr(
+        &mut self,
+        expr: &TExpr,
+        future: &TExpr,
+        ms: &TExpr,
+        output_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let future_temp = self.emit_temp_value("timeout_child", future, indent)?;
+        let child_raw = self.next_temp("timeout_child_raw");
+        self.line_indent(indent, &format!("CielFuture *{child_raw} = NULL;"));
+        self.emit_awaitable_future_raw(&child_raw, &future_temp, &future.ty, output_ty, indent)?;
+        let ms_value = self.gen_expr_in_stmt(ms, indent)?;
+        let ctx_name = self.async_timeout_context_name(output_ty);
+        let run_name = self.async_timeout_run_name(output_ty);
+        let cleanup_name = self.async_timeout_cleanup_name(output_ty);
+        let ctx = self.next_temp("timeout_ctx");
+        self.line_indent(
+            indent,
+            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
+        );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        self.line_indent(indent, &format!("{ctx}->child = {child_raw};"));
+        self.line_indent(indent, &format!("{ctx}->sleep = NULL;"));
+        self.line_indent(indent, &format!("{ctx}->ms = (uint64_t)({ms_value});"));
+        let raw = self.next_temp("timeout_future");
+        let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+        let (size_expr, align_expr) = self.future_result_layout_args(&result_ty);
+        self.line_indent(
+            indent,
+            "// TODO(async-await phase 6): implement timeout as a pure library wrapper over select.",
+        );
         self.line_indent(
             indent,
             &format!(
@@ -10500,7 +10833,12 @@ impl<'a> CGenerator<'a> {
 
     fn function_call_return_ty(&self, function: &CheckedFunction) -> Ty {
         if function.is_async {
-            std_future_ty(function.ret.clone())
+            generated_future_ty(
+                format!("fn_{}", function.def_id.0),
+                function.ret.clone(),
+                false,
+                true,
+            )
         } else {
             function.ret.clone()
         }
@@ -10535,6 +10873,27 @@ impl<'a> CGenerator<'a> {
     fn async_sleep_cleanup_name(&self, output_ty: &Ty) -> String {
         format!(
             "CielAsyncSleepFutureCleanup_{}",
+            mangle_ty_fragment(output_ty)
+        )
+    }
+
+    fn async_timeout_context_name(&self, output_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTimeoutFutureCtx_{}",
+            mangle_ty_fragment(output_ty)
+        )
+    }
+
+    fn async_timeout_run_name(&self, output_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTimeoutFutureRun_{}",
+            mangle_ty_fragment(output_ty)
+        )
+    }
+
+    fn async_timeout_cleanup_name(&self, output_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTimeoutFutureCleanup_{}",
             mangle_ty_fragment(output_ty)
         )
     }
@@ -10620,6 +10979,9 @@ impl<'a> CGenerator<'a> {
     }
 
     fn future_output_ty_for_codegen(&self, ty: &Ty) -> Option<Ty> {
+        if let Some(output_ty) = generated_future_output_ty(ty) {
+            return Some(output_ty);
+        }
         let Ty::Named { name, args } = ty else {
             return None;
         };
@@ -10716,6 +11078,9 @@ impl<'a> CGenerator<'a> {
                     name,
                 )
             }
+            Ty::GeneratedFuture { output, .. } => {
+                self.c_decl_qualified(&std_future_ty((**output).clone()), name, top_const)
+            }
             Ty::DynamicInterface { .. } => c_base_decl(
                 &c_qualified_base(&self.dynamic_type_name(ty), top_const),
                 name,
@@ -10798,7 +11163,8 @@ impl<'a> CGenerator<'a> {
             | Ty::DynamicInterface { .. }
             | Ty::Function { .. }
             | Ty::Closure { .. }
-            | Ty::ClosureInstance { .. } => true,
+            | Ty::ClosureInstance { .. }
+            | Ty::GeneratedFuture { .. } => true,
             Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer(elem),
             Ty::Named { .. }
             | Ty::CSpelling { .. }
@@ -10902,6 +11268,7 @@ impl<'a> CGenerator<'a> {
             Ty::Array { .. }
             | Ty::Slice { .. }
             | Ty::Named { .. }
+            | Ty::GeneratedFuture { .. }
             | Ty::DynamicInterface { .. }
             | Ty::Closure { .. }
             | Ty::ClosureInstance { .. }
@@ -11397,6 +11764,7 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::AsyncBlockOn { .. }
         | TExprKind::AsyncSleep { .. }
         | TExprKind::AsyncOpFuture { .. }
+        | TExprKind::AsyncTimeout { .. }
         | TExprKind::AsyncSpawn { .. }
         | TExprKind::AsyncTaskCancel { .. }
         | TExprKind::AsyncTaskIsFinished { .. }

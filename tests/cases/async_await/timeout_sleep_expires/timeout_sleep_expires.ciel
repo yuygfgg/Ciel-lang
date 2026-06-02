@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 9
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+i32 main() {
+    Result<Result<void, Error>, Error> result =
+        async::block_on(async::timeout(async_time::sleep_ms(50), 0));
+    switch (result) {
+        case Err(_):
+            must(print_value(9));
+        case Ok(_):
+            return 1;
+    }
+    return 0;
+}

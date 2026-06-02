@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: does not implement `cancel_safe_marker`
+
+import /std/async as async;
+import /std/async_io as aio;
+import /std/result;
+
+async Result<aio::Bytes, Error> bad_timeout(aio::AsyncFd file) {
+    aio::AsyncRead op = aio::read_bytes_async(file, 16)?;
+    return await async::timeout(async::future_from_op<aio::AsyncRead, aio::Bytes>(op), 1)?;
+}
+
+i32 main() {
+    return 0;
+}

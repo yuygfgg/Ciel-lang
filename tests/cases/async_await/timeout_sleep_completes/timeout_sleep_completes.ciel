@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> run_timer() {
+    Result<void, Error> inner = await async::timeout(async_time::sleep_ms(0), 100)?;
+    inner?;
+    return Ok(7);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(run_timer()))));
+    return 0;
+}

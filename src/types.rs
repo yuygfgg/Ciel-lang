@@ -24,6 +24,8 @@ pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
 pub const STD_MESSAGE_SHARE_HANDLE_INTERFACE: &str = "share_handle_marker";
 pub const STD_MESSAGE_THREAD_LOCAL_INTERFACE: &str = "thread_local_marker";
 pub const STD_ASYNC_AWAITABLE_FUTURE_INTERFACE: &str = "awaitable_future";
+pub const STD_ASYNC_CANCEL_SAFE_INTERFACE: &str = "cancel_safe_marker";
+pub const STD_ASYNC_ABORT_FUTURE_INTERFACE: &str = "abort_future";
 
 pub fn clone_message_capability() -> ConstraintRef {
     ConstraintRef {
@@ -87,6 +89,12 @@ pub enum Ty {
     Named {
         name: String,
         args: Vec<Ty>,
+    },
+    GeneratedFuture {
+        name: String,
+        output: Box<Ty>,
+        cancel_safe: bool,
+        abortable: bool,
     },
     Generic(String),
     DynamicInterface {
@@ -258,6 +266,13 @@ impl Ty {
         if self == source {
             return true;
         }
+        if let Ty::Named { name, args } = self
+            && name == "Future"
+            && args.len() == 1
+            && let Ty::GeneratedFuture { output, .. } = source
+        {
+            return args.first() == Some(output);
+        }
         matches!(
             (self, source),
             (
@@ -408,6 +423,17 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
         },
+        Ty::GeneratedFuture {
+            name,
+            output,
+            cancel_safe,
+            abortable,
+        } => Ty::GeneratedFuture {
+            name: name.clone(),
+            output: Box::new(substitute_ty(output, subst)),
+            cancel_safe: *cancel_safe,
+            abortable: *abortable,
+        },
         Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
@@ -547,6 +573,17 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .iter()
                 .zip(actual_args.iter())
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
+            Ty::GeneratedFuture { output, .. } if name == "Future" && args.len() == 1 => {
+                unify_ty(&args[0], output, subst)
+            }
+            _ => false,
+        },
+        Ty::GeneratedFuture { name, output, .. } => match actual {
+            Ty::GeneratedFuture {
+                name: actual_name,
+                output: actual_output,
+                ..
+            } if name == actual_name => unify_ty(output, actual_output, subst),
             _ => false,
         },
         Ty::DynamicInterface { name, args } => match actual {
@@ -744,6 +781,7 @@ pub fn contains_generic(ty: &Ty) -> bool {
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(contains_generic)
         }
+        Ty::GeneratedFuture { output, .. } => contains_generic(output),
         Ty::Function { ret, params, .. } => {
             contains_generic(ret) || params.iter().any(contains_generic)
         }
@@ -786,6 +824,7 @@ pub fn contains_type_hole(ty: &Ty) -> bool {
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(contains_type_hole)
         }
+        Ty::GeneratedFuture { output, .. } => contains_type_hole(output),
         Ty::Function { ret, params, .. } => {
             contains_type_hole(ret) || params.iter().any(contains_type_hole)
         }
@@ -828,6 +867,7 @@ pub fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| contains_any_generic_name(arg, names))
         }
+        Ty::GeneratedFuture { output, .. } => contains_any_generic_name(output, names),
         Ty::Function { ret, params, .. } => {
             contains_any_generic_name(ret, names)
                 || params
@@ -886,6 +926,7 @@ pub fn type_complexity(ty: &Ty) -> usize {
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             1 + args.iter().map(type_complexity).sum::<usize>()
         }
+        Ty::GeneratedFuture { output, .. } => 1 + type_complexity(output),
         Ty::Function { ret, params, .. } => {
             1 + type_complexity(ret) + params.iter().map(type_complexity).sum::<usize>()
         }
@@ -949,6 +990,7 @@ pub fn ty_contains(container: &Ty, needle: &Ty) -> bool {
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| ty_contains(arg, needle))
         }
+        Ty::GeneratedFuture { output, .. } => ty_contains(output, needle),
         Ty::Function { ret, params, .. } => {
             ty_contains(ret, needle) || params.iter().any(|param| ty_contains(param, needle))
         }
@@ -1080,6 +1122,27 @@ pub fn std_future_ty(output_ty: Ty) -> Ty {
         name: "Future".to_string(),
         args: vec![output_ty],
     }
+}
+
+pub fn generated_future_ty(
+    name: impl Into<String>,
+    output_ty: Ty,
+    cancel_safe: bool,
+    abortable: bool,
+) -> Ty {
+    Ty::GeneratedFuture {
+        name: name.into(),
+        output: Box::new(output_ty),
+        cancel_safe,
+        abortable,
+    }
+}
+
+pub fn generated_future_output_ty(ty: &Ty) -> Option<Ty> {
+    let Ty::GeneratedFuture { output, .. } = ty else {
+        return None;
+    };
+    Some((**output).clone())
 }
 
 pub fn std_task_ty(output_ty: Ty) -> Ty {
@@ -1262,6 +1325,7 @@ pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
         Ty::Named { name, args } => {
             meta_repr_marker_name(name).is_some() || args.iter().any(contains_meta_repr_marker)
         }
+        Ty::GeneratedFuture { output, .. } => contains_meta_repr_marker(output),
         Ty::Pointer { inner, .. } => contains_meta_repr_marker(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_repr_marker(elem),
         Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_repr_marker),
@@ -1354,6 +1418,9 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
             format!("{prefix}_{}", mangle_ty_fragment(elem))
         }
         Ty::Named { name, args } => aggregate_instance_name(name, args),
+        Ty::GeneratedFuture { name, output, .. } => {
+            format!("generated_future_{name}_{}", mangle_ty_fragment(output))
+        }
         Ty::Generic(name) => format!("gen_{name}"),
         Ty::DynamicInterface { name, args } => {
             if args.is_empty() {
@@ -1580,6 +1647,7 @@ impl fmt::Display for Ty {
                     )
                 }
             }
+            Ty::GeneratedFuture { output, .. } => write!(f, "Future<{output}>"),
             Ty::Generic(name) => write!(f, "{name}"),
             Ty::DynamicInterface { name, args } => {
                 if args.is_empty() {

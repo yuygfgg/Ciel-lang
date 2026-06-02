@@ -677,6 +677,22 @@ impl MonoContext {
                     output_ty,
                 }
             }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.mark_standard_error_code_impl();
+                self.mark_awaitable_impl(&output_ty, &future.ty);
+                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                    self.mark_task_boundary_clone_impls(&task_output_ty);
+                }
+                TExprKind::AsyncTimeout {
+                    future: Box::new(self.rewrite_expr(*future)?),
+                    ms: Box::new(self.rewrite_expr(*ms)?),
+                    output_ty,
+                }
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -876,6 +892,11 @@ impl MonoContext {
     }
 
     fn mark_awaitable_impl(&mut self, output_ty: &Ty, receiver_ty: &Ty) {
+        if let Ty::GeneratedFuture { output, .. } = receiver_ty
+            && output.as_ref() == output_ty
+        {
+            return;
+        }
         let function_def = self
             .checked
             .impls
@@ -1318,6 +1339,22 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_error_code_ty());
                 self.collect_ty(&std_error_trait_ty());
             }
+            TExprKind::AsyncTimeout {
+                future,
+                ms,
+                output_ty,
+            } => {
+                self.collect_expr(future);
+                self.collect_expr(ms);
+                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+                self.collect_ty(&result_ty);
+                self.collect_ty(output_ty);
+                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_trait_ty());
+                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                    self.collect_task_boundary_clone_result_tys(&task_output_ty);
+                }
+            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -1552,6 +1589,10 @@ impl<'a> AggregateCollector<'a> {
             }
             Ty::Pointer { inner, .. } => self.collect_ty(inner),
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.collect_ty(elem),
+            Ty::GeneratedFuture { output, .. } => {
+                self.collect_ty(output);
+                self.collect_ty(&std_future_ty((**output).clone()));
+            }
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.collect_ty(arg);

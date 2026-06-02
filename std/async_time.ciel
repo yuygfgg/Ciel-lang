@@ -1,5 +1,6 @@
 export import /std/result;
 import /std/async as flow;
+import /std/async;
 import /std/async/adapter;
 import /std/actor as actor;
 import /std/c as c;
@@ -28,6 +29,10 @@ unsafe impl clone_message(*const AsyncSleep value) {
 }
 
 unsafe impl share_handle_marker(*const AsyncSleep value) {
+    return true;
+}
+
+unsafe impl cancel_safe_marker(*const AsyncSleep op) {
     return true;
 }
 
@@ -90,6 +95,10 @@ export Result<void, Error> cancel_sleep(AsyncSleep op) {
         return Err(code_error(rc as i64));
     }
     return Ok;
+}
+
+unsafe impl abort_future(*AsyncSleep op) {
+    return cancel_sleep(*op);
 }
 
 export Result<flow::Completion<S, void>, Error> sleep_ms_completion<S: Message>(u64 ms) {

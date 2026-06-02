@@ -132,14 +132,14 @@ Implementation guardrails:
 
 ## Phase 5: Cancellation, Abort, And Timeout
 
-- [ ] Complete generation-routed operation abort.
+- [x] Complete generation-routed operation abort.
       Scope: external completions route by actor mailbox id, task id, operation
       id, and generation; callbacks enqueue routed events and never dereference
       async frames or task-state pointers.
       Tests: aborting a suspended libdispatch-backed operation drops the async
       frame while a queued callback later posts only a stale completion event.
 
-- [ ] Implement trusted `CancelSafe` and `Abortable`.
+- [x] Implement trusted `CancelSafe` and `Abortable`.
       Scope: primitive and generated futures implement these capabilities only
       when their behavior actually preserves protocol state or supports bounded
       abort cleanup; do not infer `CancelSafe` merely because child awaits are
@@ -147,13 +147,13 @@ Implementation guardrails:
       Tests: a multi-await frame reader is not inferred `CancelSafe`; a
       non-`Abortable` future is rejected in a cancellable task.
 
-- [ ] Add task abort behavior.
+- [x] Add task abort behavior.
       Scope: cancelling a task aborts the currently suspended operation,
       detaches the frame from operation tokens, and runs deterministic cleanup.
       Tests: cancelling a task with a pending raw TCP read closes or poisons the
       stream and terminates without leaking its task actor.
 
-- [ ] Add `async::timeout`.
+- [x] Add `async::timeout`.
       Scope: timeout uses the same internal registration machinery that later
       backs `select`; `timeout(task)` cancels only the waiter, not the running
       task's internal protocol state.
@@ -161,14 +161,41 @@ Implementation guardrails:
       write are rejected by timeout as not `CancelSafe`; a non-`CancelSafe`
       protocol reader isolated in a task survives waiter timeout.
 
-## Phase 6: Async Communication
+## Phase 6: Select And Buffered TCP Reads
+
+- [ ] Add compiler-level `select` and `biased select`.
+      Scope: type-check arms as a flat list of futures, lower to internal
+      `SelectSet<R>`, poll every arm once before parking, use fair tie handling
+      for default `select`, and source-order priority for `biased select`.
+      Tests: `select` races timer, task completion, and cancellable TCP
+      connect/accept futures; flat-list fair tie behavior and biased tie
+      behavior are both tested. Channel receive select coverage lands with
+      Phase 7 channels.
+
+- [ ] Enforce selectable future bounds.
+      Scope: every losing future must implement `CancelSafe + Abortable`; stale
+      completions are discarded only when the contract permits it.
+      Tests: raw TCP read, `read_into`, and write are rejected in `select`; a
+      cancelled losing `CancelSafe` future does not resume user code; a stale
+      completion after cancellation is discarded.
+
+- [ ] Add cancellation-safe buffered TCP reads.
+      Scope: add `split`, `AsyncTcpReadHalf`, `AsyncTcpWriteHalf`,
+      `BufferedStreamReader`, `buffered_reader`, `read_buffered`, and
+      `into_read_half`; `read_buffered` checks its private buffer before
+      registering socket readiness and serializes or rejects overlapping reads.
+      Tests: buffered read fixtures cover normal reads, EOF, residual private
+      buffer bytes winning `select` immediately, and overlapping read policy.
+
+## Phase 7: Async Communication
 
 - [ ] Add bounded async channels.
       Scope: add `Sender<T>`, `Receiver<T>`, `SendPermit<T>`, `ChannelPair<T>`,
       `channel`, async `send`, sync `try_send`, async `reserve`, sync
       `permit_send`, async `recv`, `close`, and `close_receiver`.
       Tests: task send/recv works; full channel suspends `send`; `try_send`
-      reports full or closed without suspension.
+      reports full or closed without suspension; `select` can race channel
+      receive with timers and task completion.
 
 - [ ] Add channel lifecycle and cleanup semantics.
       Scope: track sender and receiver counts; last sender wakes receivers;
@@ -190,30 +217,6 @@ Implementation guardrails:
       Tests: `group_next` returns completed tasks in completion order without
       cancelling unfinished tasks; `group_cancel_all` aborts unfinished tasks
       through `Abortable`; closing a group releases remaining handles.
-
-## Phase 7: Select And Buffered TCP Reads
-
-- [ ] Add compiler-level `select` and `biased select`.
-      Scope: type-check arms as a flat list of futures, lower to internal
-      `SelectSet<R>`, poll every arm once before parking, use fair tie handling
-      for default `select`, and source-order priority for `biased select`.
-      Tests: `select` races timer, channel receive, and task completion;
-      flat-list fair tie behavior and biased tie behavior are both tested.
-
-- [ ] Enforce selectable future bounds.
-      Scope: every losing future must implement `CancelSafe + Abortable`; stale
-      completions are discarded only when the contract permits it.
-      Tests: raw TCP read, `read_into`, and write are rejected in `select`; a
-      cancelled losing `CancelSafe` future does not resume user code; a stale
-      completion after cancellation is discarded.
-
-- [ ] Add cancellation-safe buffered TCP reads.
-      Scope: add `split`, `AsyncTcpReadHalf`, `AsyncTcpWriteHalf`,
-      `BufferedStreamReader`, `buffered_reader`, `read_buffered`, and
-      `into_read_half`; `read_buffered` checks its private buffer before
-      registering socket readiness and serializes or rejects overlapping reads.
-      Tests: buffered read fixtures cover normal reads, EOF, residual private
-      buffer bytes winning `select` immediately, and overlapping read policy.
 
 ## Phase 8: Migration And Flow Removal
 

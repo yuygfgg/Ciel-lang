@@ -10,13 +10,14 @@ use crate::{
     thir::*,
     types::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET,
-        STD_ASYNC_AWAITABLE_FUTURE_INTERFACE, STD_ERROR_FORMAT_INTERFACE,
-        STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
-        closure_instance_satisfies_signature, closure_shape_satisfies, contains_any_generic_name,
-        contains_generic, contains_type_hole, mangle_ty_fragment, meta_named, meta_product_ty,
-        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
-        meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
+        STD_ASYNC_ABORT_FUTURE_INTERFACE, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+        STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
+        aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
+        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
+        generated_future_output_ty, generated_future_ty, mangle_ty_fragment, meta_named,
+        meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
+        meta_repr_marker_name, meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
         std_meta_repr_marker_ty, std_result_ty, std_task_ty, substitute_ty, ty_from_primitive,
         unify_ty,
@@ -545,6 +546,32 @@ struct AwaitableInfo {
     output_ty: Ty,
 }
 
+struct AsyncSuspensionCapabilityVisitor<'a> {
+    checker: &'a mut TypeChecker,
+    await_count: usize,
+    abortable: bool,
+}
+
+impl ThirVisitor for AsyncSuspensionCapabilityVisitor<'_> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                self.await_count += 1;
+                if !self.checker.type_implements_capability(
+                    STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                    &[],
+                    &future.ty,
+                ) {
+                    self.abortable = false;
+                }
+                self.visit_expr(future);
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
 pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
     TypeChecker::new(hir).check()
 }
@@ -639,6 +666,11 @@ fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
     } else {
         def.name.clone()
     }
+}
+
+fn is_std_source_path(path: &std::path::Path) -> bool {
+    path.components()
+        .any(|component| component.as_os_str() == "std")
 }
 
 fn collect_policy_marker_templates(
@@ -772,6 +804,8 @@ struct TypeChecker {
     impls: Vec<ImplSig>,
     generic_impls: Vec<GenericImplTemplate>,
     generic_functions: HashMap<DefId, GenericFunctionTemplate>,
+    async_function_cancel_safety: HashMap<DefId, bool>,
+    async_function_abortability: HashMap<DefId, bool>,
     generated_functions: Vec<CheckedFunction>,
     pending_impl_bodies: Vec<QueuedImplBody>,
     type_subst_stack: Vec<HashMap<String, Ty>>,
@@ -816,6 +850,8 @@ impl TypeChecker {
             impls: Vec::new(),
             generic_impls: Vec::new(),
             generic_functions: HashMap::new(),
+            async_function_cancel_safety: HashMap::new(),
+            async_function_abortability: HashMap::new(),
             generated_functions: Vec::new(),
             pending_impl_bodies: Vec::new(),
             type_subst_stack: Vec::new(),
@@ -848,7 +884,8 @@ impl TypeChecker {
 
         let mut checked_functions = Vec::new();
 
-        let modules = self.hir_modules.clone();
+        let mut modules = self.hir_modules.clone();
+        modules.sort_by_key(|module| (!is_std_source_path(&module.path), module.id.0));
         for module in &modules {
             for item in &module.items {
                 match &item.kind {
@@ -2351,6 +2388,7 @@ impl TypeChecker {
                         .collect(),
                 }
             }
+            Ty::GeneratedFuture { .. } => ty.clone(),
             Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
                 name: name.clone(),
                 args: args
@@ -4205,12 +4243,122 @@ impl TypeChecker {
             && let Some(checked) = checked.as_ref()
         {
             self.check_async_frame_safety(&checked.block, params);
+            let (cancel_safe, abortable) = self.async_block_capabilities(&checked.block);
+            self.async_function_cancel_safety
+                .insert(sig.def_id, cancel_safe);
+            self.async_function_abortability
+                .insert(sig.def_id, abortable);
         }
         self.current_return_ty = previous_return_ty;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
         self.current_async_depth = previous_async_depth;
         checked.map(|checked| checked.block)
+    }
+
+    fn async_block_capabilities(&mut self, block: &TBlock) -> (bool, bool) {
+        let mut visitor = AsyncSuspensionCapabilityVisitor {
+            checker: self,
+            await_count: 0,
+            abortable: true,
+        };
+        visitor.visit_block(block);
+        let await_count = visitor.await_count;
+        let abortable = visitor.abortable;
+        drop(visitor);
+        let cancel_safe =
+            await_count == 0 || self.async_block_is_transparent_cancel_safe_forwarder(block);
+        (cancel_safe, abortable)
+    }
+
+    fn async_closure_body_capabilities(&mut self, body: &TClosureBody) -> (bool, bool) {
+        let mut visitor = AsyncSuspensionCapabilityVisitor {
+            checker: self,
+            await_count: 0,
+            abortable: true,
+        };
+        visitor.visit_closure_body(body);
+        let await_count = visitor.await_count;
+        let abortable = visitor.abortable;
+        drop(visitor);
+        let cancel_safe =
+            await_count == 0 || self.async_closure_body_is_transparent_cancel_safe_forwarder(body);
+        (cancel_safe, abortable)
+    }
+
+    fn async_block_is_transparent_cancel_safe_forwarder(&mut self, block: &TBlock) -> bool {
+        let Some((prefix, future)) = self.transparent_cancel_safe_return_future(&block.statements)
+        else {
+            return false;
+        };
+        self.transparent_cancel_safe_future(prefix, future)
+    }
+
+    fn async_closure_body_is_transparent_cancel_safe_forwarder(
+        &mut self,
+        body: &TClosureBody,
+    ) -> bool {
+        match body {
+            TClosureBody::Block(block) => {
+                self.async_block_is_transparent_cancel_safe_forwarder(block)
+            }
+            TClosureBody::Expr(expr) => self
+                .transparent_cancel_safe_await_future(expr)
+                .is_some_and(|future| {
+                    self.type_implements_capability(
+                        STD_ASYNC_CANCEL_SAFE_INTERFACE,
+                        &[],
+                        &future.ty,
+                    )
+                }),
+        }
+    }
+
+    fn transparent_cancel_safe_return_future<'a>(
+        &self,
+        statements: &'a [TStmt],
+    ) -> Option<(&'a [TStmt], &'a TExpr)> {
+        let (last, prefix) = statements.split_last()?;
+        let TStmtKind::Return(Some(expr)) = &last.kind else {
+            return None;
+        };
+        self.transparent_cancel_safe_await_future(expr)
+            .map(|future| (prefix, future))
+    }
+
+    fn transparent_cancel_safe_await_future<'a>(&self, expr: &'a TExpr) -> Option<&'a TExpr> {
+        match &expr.kind {
+            TExprKind::Await { future } => Some(future),
+            TExprKind::Try { expr, .. } => self.transparent_cancel_safe_await_future(expr),
+            _ => None,
+        }
+    }
+
+    fn transparent_cancel_safe_future(&mut self, prefix: &[TStmt], future: &TExpr) -> bool {
+        if !self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], &future.ty) {
+            return false;
+        }
+        if prefix.is_empty() {
+            return true;
+        }
+        if prefix.len() != 1 {
+            return false;
+        }
+        let TExprKind::AsyncOpFuture { op, .. } = &future.kind else {
+            return false;
+        };
+        let TExprKind::Local(op_id, _) = &op.kind else {
+            return false;
+        };
+        let TStmtKind::VarDecl {
+            local_id,
+            init: Some(_),
+            ..
+        } = &prefix[0].kind
+        else {
+            return false;
+        };
+        local_id == op_id
     }
 
     fn check_async_frame_safety(
@@ -4857,6 +5005,7 @@ impl TypeChecker {
             Ty::Array { elem, .. } => {
                 self.async_frame_safety_violation(elem, false, &format!("{path} element"), visiting)
             }
+            Ty::GeneratedFuture { .. } => None,
             Ty::Named { name, args } => {
                 if args.len() == 1
                     && (std_id::is_std_async_future_type_name(&self.resolved, name)
@@ -7553,6 +7702,9 @@ impl TypeChecker {
         if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "future_from_op") {
             return self.check_async_future_from_op_call(scopes, span, type_args, args);
         }
+        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "timeout") {
+            return self.check_async_timeout_call(scopes, span, type_args, args);
+        }
         if std_id::is_std_async_time_function(&self.resolved, sig.module, &sig.name, "sleep_ms") {
             return self.check_async_sleep_ms_call(scopes, span, type_args, args);
         }
@@ -7581,7 +7733,7 @@ impl TypeChecker {
             );
         }
         let call_ret = if call_sig.is_async {
-            std_future_ty(call_sig.ret.clone())
+            self.async_function_future_ty(call_sig.def_id, call_sig.ret.clone())
         } else {
             call_sig.ret.clone()
         };
@@ -7873,6 +8025,11 @@ impl TypeChecker {
         if is_async {
             self.check_async_closure_frame_safety(&checked_body, &checked_params, &captures);
         }
+        let (closure_cancel_safe, closure_abortable) = if is_async {
+            self.async_closure_body_capabilities(&checked_body)
+        } else {
+            (false, false)
+        };
 
         let result_ty = if let Some((expected_ret, expected_params, target_fn)) = expected_sig {
             let expected_ret = self.resolve_type_holes(&expected_ret);
@@ -7880,6 +8037,16 @@ impl TypeChecker {
                 .iter()
                 .map(|param| self.resolve_type_holes(param))
                 .collect::<Vec<_>>();
+            let closure_ret = if is_async {
+                self.async_closure_future_ty(
+                    id,
+                    ret_ty.clone(),
+                    closure_cancel_safe,
+                    closure_abortable,
+                )
+            } else {
+                expected_ret.clone()
+            };
             if target_fn {
                 if !captures.is_empty() {
                     self.diagnostics.push(Diagnostic::new(
@@ -7890,20 +8057,25 @@ impl TypeChecker {
                 Ty::Function {
                     is_unsafe: false,
                     abi: None,
-                    ret: Box::new(expected_ret),
+                    ret: Box::new(closure_ret),
                     params: expected_params,
                 }
             } else {
                 Ty::ClosureInstance {
                     id,
-                    ret: Box::new(expected_ret),
+                    ret: Box::new(closure_ret),
                     params: expected_params,
                     captures: capture_tys,
                 }
             }
         } else {
             let ret_ty = if is_async {
-                std_future_ty(ret_ty.clone())
+                self.async_closure_future_ty(
+                    id,
+                    ret_ty.clone(),
+                    closure_cancel_safe,
+                    closure_abortable,
+                )
             } else {
                 ret_ty.clone()
             };
@@ -8023,6 +8195,15 @@ impl TypeChecker {
                 ),
             ));
         }
+        if !self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], &future.ty) {
+            self.diagnostics.push(Diagnostic::new(
+                future.span,
+                format!(
+                    "generic constraint not satisfied: `{}` does not implement `{}`",
+                    future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
+                ),
+            ));
+        }
         Some(TExpr {
             span,
             ty: output_ty,
@@ -8058,7 +8239,7 @@ impl TypeChecker {
         let output_ty = std_result_ty(Ty::Void, std_error_ty());
         Some(TExpr {
             span,
-            ty: std_future_ty(output_ty.clone()),
+            ty: self.async_sleep_future_ty(output_ty.clone()),
             kind: TExprKind::AsyncSleep {
                 ms: Box::new(ms),
                 output_ty,
@@ -8111,11 +8292,108 @@ impl TypeChecker {
             ));
         }
         let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+        let future_ty = self.async_op_future_ty(&op_expr.ty, result_ty.clone(), span);
         Some(TExpr {
             span,
-            ty: std_future_ty(result_ty),
+            ty: future_ty,
             kind: TExprKind::AsyncOpFuture {
                 op: Box::new(op_expr),
+                output_ty,
+            },
+        })
+    }
+
+    fn check_async_timeout_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if type_args.len() > 1 {
+            self.diagnostics.push(Diagnostic::new(
+                type_args[1].span,
+                "too many type arguments for `timeout`",
+            ));
+            return None;
+        }
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("timeout expects 2 arguments, got {}", args.len()),
+            ));
+        }
+        let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
+        let Some(future_arg) = args.first() else {
+            return None;
+        };
+        let Some(ms_arg) = args.get(1) else {
+            return None;
+        };
+        let future = self.check_expr(scopes, future_arg, None)?;
+        let ms = self.check_expr(scopes, ms_arg, Some(&Ty::U64))?;
+        self.require_assignable(&Ty::U64, &ms.ty, ms.span);
+        let awaitable = self.awaitable_ty(&future.ty, future.span);
+        let output_ty = explicit_output.clone().or_else(|| {
+            awaitable
+                .as_ref()
+                .map(|awaitable| awaitable.output_ty.clone())
+        });
+        let Some(output_ty) = output_ty else {
+            self.diagnostics.push(Diagnostic::new(
+                future.span,
+                format!(
+                    "generic constraint not satisfied: `{}` does not implement `{}`",
+                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                ),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: TExprKind::AsyncTimeout {
+                    future: Box::new(future),
+                    ms: Box::new(ms),
+                    output_ty: Ty::Unknown,
+                },
+            });
+        };
+        if let Some(awaitable) = awaitable {
+            self.require_assignable(&output_ty, &awaitable.output_ty, future.span);
+        } else {
+            self.diagnostics.push(Diagnostic::new(
+                future.span,
+                format!(
+                    "generic constraint not satisfied: `{}` does not implement `{}`",
+                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                ),
+            ));
+        }
+        for capability in [
+            STD_ASYNC_CANCEL_SAFE_INTERFACE,
+            STD_ASYNC_ABORT_FUTURE_INTERFACE,
+        ] {
+            if !self.type_implements_capability(capability, &[], &future.ty) {
+                self.diagnostics.push(Diagnostic::new(
+                    future.span,
+                    format!(
+                        "generic constraint not satisfied: `{}` does not implement `{}`",
+                        future.ty, capability
+                    ),
+                ));
+            }
+        }
+        let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+        Some(TExpr {
+            span,
+            ty: generated_future_ty(
+                format!("timeout_{}", mangle_ty_fragment(&result_ty)),
+                result_ty,
+                false,
+                true,
+            ),
+            kind: TExprKind::AsyncTimeout {
+                future: Box::new(future),
+                ms: Box::new(ms),
                 output_ty,
             },
         })
@@ -8221,6 +8499,7 @@ impl TypeChecker {
             self.check_expr(scopes, arg, None)?
         };
 
+        let mut body_future_ty = None::<Ty>;
         let body_output_ty = match &body.kind {
             TExprKind::Closure {
                 is_async,
@@ -8259,14 +8538,18 @@ impl TypeChecker {
                             ));
                         }
                     }
-                    callable_ret_params_ty(&body.ty)
-                        .and_then(|(ret, _)| self.awaitable_ty(&ret, body.span))
-                        .map(|awaitable| awaitable.output_ty)
+                    callable_ret_params_ty(&body.ty).and_then(|(ret, _)| {
+                        body_future_ty = Some(ret.clone());
+                        self.awaitable_ty(&ret, body.span)
+                            .map(|awaitable| awaitable.output_ty)
+                    })
                 }
             }
-            _ => self
-                .awaitable_ty(&body.ty, body.span)
-                .map(|awaitable| awaitable.output_ty),
+            _ => {
+                body_future_ty = Some(body.ty.clone());
+                self.awaitable_ty(&body.ty, body.span)
+                    .map(|awaitable| awaitable.output_ty)
+            }
         };
 
         let Some(result_ty) = body_output_ty else {
@@ -8306,6 +8589,16 @@ impl TypeChecker {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
                 format!("`async::spawn` task error type must be `Error`, got `{err_ty}`"),
+            ));
+        }
+        if let Some(future_ty) = &body_future_ty
+            && !self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], future_ty)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "generic constraint not satisfied: `{future_ty}` does not implement `{STD_ASYNC_ABORT_FUTURE_INTERFACE}`"
+                ),
             ));
         }
         if let Some(expected_output) = &expected_output {
@@ -10205,6 +10498,23 @@ impl TypeChecker {
         if self.type_implements_compiler_provided_meta_marker(interface_name, args, receiver_ty) {
             return true;
         }
+        if let Ty::GeneratedFuture {
+            output,
+            cancel_safe,
+            abortable,
+            ..
+        } = receiver_ty
+        {
+            return (interface_name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
+                && args.len() == 1
+                && args.first() == Some(output))
+                || (interface_name == STD_ASYNC_CANCEL_SAFE_INTERFACE
+                    && args.is_empty()
+                    && *cancel_safe)
+                || (interface_name == STD_ASYNC_ABORT_FUTURE_INTERFACE
+                    && args.is_empty()
+                    && *abortable);
+        }
         if retained_closure_proves_capability(receiver_ty, interface_name, args) {
             return true;
         }
@@ -10212,6 +10522,9 @@ impl TypeChecker {
             || self
                 .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
                 .is_some()
+            || ((interface_name == STD_ASYNC_CANCEL_SAFE_INTERFACE
+                || interface_name == STD_ASYNC_ABORT_FUTURE_INTERFACE)
+                && self.generic_impl_matches_without_constraints(interface_name, args, receiver_ty))
     }
 
     fn type_implements_compiler_provided_meta_marker(
@@ -10341,6 +10654,7 @@ impl TypeChecker {
             Ty::Array { elem, .. } => {
                 self.task_boundary_message_violation(elem, &format!("{path} element"), visiting)
             }
+            Ty::GeneratedFuture { .. } => None,
             Ty::Named { name, args } => {
                 if !visiting.insert(ty.clone()) {
                     return Some(format!("{path} is recursive through `{ty}`"));
@@ -10903,11 +11217,66 @@ impl TypeChecker {
     }
 
     fn awaitable_ty(&mut self, ty: &Ty, span: crate::span::Span) -> Option<AwaitableInfo> {
+        if let Some(output_ty) = generated_future_output_ty(ty) {
+            return Some(AwaitableInfo { output_ty });
+        }
         let implementation = self.find_or_instantiate_awaitable_impl(ty, span)?;
         let output_ty = interface_non_receiver_args(&implementation.interface_args)
             .first()
             .cloned()?;
         Some(AwaitableInfo { output_ty })
+    }
+
+    fn async_function_future_ty(&self, def_id: DefId, output_ty: Ty) -> Ty {
+        generated_future_ty(
+            format!("fn_{}", def_id.0),
+            output_ty,
+            self.async_function_cancel_safety
+                .get(&def_id)
+                .copied()
+                .unwrap_or(false),
+            self.async_function_abortability
+                .get(&def_id)
+                .copied()
+                .unwrap_or(true),
+        )
+    }
+
+    fn async_closure_future_ty(
+        &self,
+        id: usize,
+        output_ty: Ty,
+        cancel_safe: bool,
+        abortable: bool,
+    ) -> Ty {
+        generated_future_ty(format!("closure_{id}"), output_ty, cancel_safe, abortable)
+    }
+
+    fn async_sleep_future_ty(&self, output_ty: Ty) -> Ty {
+        generated_future_ty(
+            format!("sleep_ms_{}", mangle_ty_fragment(&output_ty)),
+            output_ty,
+            true,
+            true,
+        )
+    }
+
+    fn async_op_future_ty(&mut self, op_ty: &Ty, result_ty: Ty, span: crate::span::Span) -> Ty {
+        let storage_op_ty = self.meta_repr_storage_ty(op_ty, span);
+        let cancel_safe =
+            self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], &storage_op_ty);
+        let abortable =
+            self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], &storage_op_ty);
+        generated_future_ty(
+            format!(
+                "op_{}_{}",
+                mangle_ty_fragment(&storage_op_ty),
+                mangle_ty_fragment(&result_ty)
+            ),
+            result_ty,
+            cancel_safe,
+            abortable,
+        )
     }
 
     fn find_or_instantiate_awaitable_impl(
@@ -11003,6 +11372,9 @@ impl TypeChecker {
     }
 
     fn future_output_ty(&self, ty: &Ty) -> Option<Ty> {
+        if let Some(output_ty) = generated_future_output_ty(ty) {
+            return Some(output_ty);
+        }
         let Ty::Named { name, args } = ty else {
             return None;
         };
@@ -11245,6 +11617,7 @@ fn type_contains_plain_never_value(ty: &Ty) -> bool {
     match ty {
         Ty::Never => true,
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_plain_never_value(elem),
+        Ty::GeneratedFuture { output, .. } => type_contains_plain_never_value(output),
         Ty::Function { params, .. }
         | Ty::Closure { params, .. }
         | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_never_value),
@@ -11277,6 +11650,7 @@ fn type_contains_closure(ty: &Ty) -> bool {
         Ty::Closure { .. } | Ty::ClosureInstance { .. } => true,
         Ty::Pointer { inner, .. } => type_contains_closure(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_closure(elem),
+        Ty::GeneratedFuture { output, .. } => type_contains_closure(output),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(type_contains_closure)
         }

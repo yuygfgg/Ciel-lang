@@ -1,6 +1,7 @@
 export import /std/result;
 export import /std/async/bytes;
 import /std/async as flow;
+import /std/async;
 import /std/async/adapter;
 import /std/actor as actor;
 import /std/c as c;
@@ -278,6 +279,14 @@ export Result<void, Error> cancel_write(AsyncWrite op) {
         return Err(code_error(rc as i64));
     }
     return Ok;
+}
+
+unsafe impl abort_future(*AsyncRead op) {
+    return cancel_read(*op);
+}
+
+unsafe impl abort_future(*AsyncWrite op) {
+    return cancel_write(*op);
 }
 
 impl<M: Message> notify_done(

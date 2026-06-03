@@ -391,7 +391,7 @@ async Result<void, Error> run_server_async(
 ) {
     anet::AsyncTcpListener control_listener = anet::listen_async(control_addr)?;
     anet::AsyncTcpListener public_listener = anet::listen_async(public_addr)?;
-    _ event_channel = async::channel<meta::Repr<ServerEvent>>(128)?;
+    _ event_channel = async::channel<meta::Repr<ServerEvent>>(8192)?;
     _ control_accept =
         async::spawn<void>(server_control_accept_loop(control_listener, event_channel.sender))?;
     _ public_accept =

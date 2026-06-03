@@ -1,9 +1,9 @@
 export import /std/result;
 export import /std/async/bytes;
 import /std/async as async;
-import /std/async/core as flow;
+import /std/async/core as async_core;
 import /std/async/core;
-import /std/async/adapter;
+import /std/async/internal/adapter;
 import /std/actor as actor;
 import /std/c as c;
 import /std/message;
@@ -492,12 +492,12 @@ export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
 
 export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) {
     AsyncAccept op = accept_async(listener)?;
-    return await flow::future_from_op<AsyncAccept, AsyncTcpStream>(op);
+    return await async_core::future_from_op<AsyncAccept, AsyncTcpStream>(op);
 }
 
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr) {
     AsyncConnect op = connect_async(addr)?;
-    return await flow::future_from_op<AsyncConnect, AsyncTcpStream>(op);
+    return await async_core::future_from_op<AsyncConnect, AsyncTcpStream>(op);
 }
 
 export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) {
@@ -507,22 +507,22 @@ export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr,
 
 export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len) {
     AsyncTcpRead op = read_bytes(stream, max_len)?;
-    return await flow::future_from_op<AsyncTcpRead, Bytes>(op);
+    return await async_core::future_from_op<AsyncTcpRead, Bytes>(op);
 }
 
 export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer) {
     AsyncTcpRead op = read_into_async(stream, buffer)?;
-    return await flow::future_from_op<AsyncTcpRead, ReadIntoResult>(op);
+    return await async_core::future_from_op<AsyncTcpRead, ReadIntoResult>(op);
 }
 
 export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data) {
     AsyncTcpWrite op = write_bytes(stream, data)?;
-    return await flow::future_from_op<AsyncTcpWrite, usize>(op);
+    return await async_core::future_from_op<AsyncTcpWrite, usize>(op);
 }
 
 export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data) {
     AsyncTcpWrite op = write_half_bytes(half, data)?;
-    return await flow::future_from_op<AsyncTcpWrite, usize>(op);
+    return await async_core::future_from_op<AsyncTcpWrite, usize>(op);
 }
 
 export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data) {
@@ -568,7 +568,7 @@ export async Result<Bytes, Error> read_buffered(
     usize max_len
 ) {
     AsyncBufferedRead op = read_buffered_async(reader, max_len)?;
-    return await flow::future_from_op<AsyncBufferedRead, Bytes>(op);
+    return await async_core::future_from_op<AsyncBufferedRead, Bytes>(op);
 }
 
 export async Result<Bytes, Error> read_exact_buffered(
@@ -576,7 +576,7 @@ export async Result<Bytes, Error> read_exact_buffered(
     usize len
 ) {
     AsyncBufferedRead op = read_exact_buffered_async(reader, len)?;
-    return await flow::future_from_op<AsyncBufferedRead, Bytes>(op);
+    return await async_core::future_from_op<AsyncBufferedRead, Bytes>(op);
 }
 
 export Result<void, Error> notify_accept_done<M: Message>(
@@ -734,66 +734,6 @@ unsafe impl abort_future(*AsyncTcpWrite op) {
 
 unsafe impl abort_future(*AsyncBufferedRead op) {
     return cancel_buffered_read(*op);
-}
-
-export Result<flow::Completion<S, AsyncTcpStream>, Error> accept_completion<S: Message>(
-    AsyncTcpListener listener
-) {
-    AsyncAccept op = accept_async(listener)?;
-    return Ok(flow::completion_from_op<S, AsyncTcpStream, AsyncAccept>(op));
-}
-
-export Result<flow::Completion<S, AsyncTcpStream>, Error> connect_completion<S: Message>(
-    net::SocketAddr addr
-) {
-    AsyncConnect op = connect_async(addr)?;
-    return Ok(flow::completion_from_op<S, AsyncTcpStream, AsyncConnect>(op));
-}
-
-export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
-    AsyncTcpStream stream,
-    usize max_len
-) {
-    AsyncTcpRead op = read_bytes(stream, max_len)?;
-    return Ok(flow::completion_from_op<S, Bytes, AsyncTcpRead>(op));
-}
-
-export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
-    AsyncTcpStream stream,
-    Bytes data
-) {
-    AsyncTcpWrite op = write_bytes(stream, data)?;
-    return Ok(flow::completion_from_op<S, usize, AsyncTcpWrite>(op));
-}
-
-export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> accept_task<S: Message>(
-    AsyncTcpListener listener
-) {
-    flow::Completion<S, AsyncTcpStream> completion = accept_completion<S>(listener)?;
-    return Ok(flow::from_completion<S, AsyncTcpStream>(completion));
-}
-
-export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> connect_task<S: Message>(
-    net::SocketAddr addr
-) {
-    flow::Completion<S, AsyncTcpStream> completion = connect_completion<S>(addr)?;
-    return Ok(flow::from_completion<S, AsyncTcpStream>(completion));
-}
-
-export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
-    AsyncTcpStream stream,
-    usize max_len
-) {
-    flow::Completion<S, Bytes> completion = read_bytes_completion<S>(stream, max_len)?;
-    return Ok(flow::from_completion<S, Bytes>(completion));
-}
-
-export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
-    AsyncTcpStream stream,
-    Bytes data
-) {
-    flow::Completion<S, usize> completion = write_bytes_completion<S>(stream, data)?;
-    return Ok(flow::from_completion<S, usize>(completion));
 }
 
 impl<M: Message> notify_done(

@@ -1,7 +1,6 @@
 export import /std/result;
-import /std/async/core as flow;
 import /std/async/core;
-import /std/async/adapter;
+import /std/async/internal/adapter;
 import /std/actor as actor;
 import /std/c as c;
 import /std/message;
@@ -99,16 +98,6 @@ export Result<void, Error> cancel_sleep(AsyncSleep op) {
 
 unsafe impl abort_future(*AsyncSleep op) {
     return cancel_sleep(*op);
-}
-
-export Result<flow::Completion<S, void>, Error> sleep_ms_completion<S: Message>(u64 ms) {
-    AsyncSleep op = sleep_ms_async(ms)?;
-    return Ok(flow::completion_from_op<S, void, AsyncSleep>(op));
-}
-
-export Result<flow::AsyncTask<S, void>, Error> sleep_ms_task<S: Message>(u64 ms) {
-    flow::Completion<S, void> completion = sleep_ms_completion<S>(ms)?;
-    return Ok(flow::from_completion<S, void>(completion));
 }
 
 impl<M: Message> notify_done(

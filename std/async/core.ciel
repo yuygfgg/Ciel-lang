@@ -1,8 +1,6 @@
 export import /std/error;
 export import /std/message;
 export import /std/result;
-import /std/async/adapter;
-import /std/actor as actor;
 import /std/c as c;
 import /std/meta;
 
@@ -35,10 +33,6 @@ unsafe extern "C" {
     ?*CielTaskGroup ciel_task_group_new();
     ?*void ciel_task_group_next_task(*CielTaskGroup group);
 }
-
-export type Step<S> = Result<S, Error> |(S): Message|;
-export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
-export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
 
 export struct Future<T> {
     *void handle;
@@ -249,109 +243,4 @@ export Result<void, Error> group_close<T>(*const TaskGroup<T> group) {
         return Err(code_error(rc as i64));
     }
     return Ok;
-}
-
-export struct AsyncRunner<S> {
-    actor::Actor<Step<S>> actor_handle;
-}
-
-export struct Completion<S, Out> {
-    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
-    Result<Out, Error> |(): Message| finish;
-}
-
-unsafe impl<S> clone_message(*const AsyncRunner<S> value) {
-    return Ok(*value);
-}
-
-unsafe impl<S> share_handle_marker(*const AsyncRunner<S> value) {
-    return true;
-}
-
-Result<S, Error> run_step<S>(S state, Step<S> step) {
-    return step(state);
-}
-
-Result<actor::Actor<Step<S>>, Error> spawn_step_actor<S: Message>(S initial_state) {
-    return actor::spawn_actor_cloned<S, Step<S>>(initial_state, |S state, Step<S> step| {
-        return step(state);
-    });
-}
-
-export Result<AsyncRunner<S>, Error> spawn_runner<S: Message>(S initial_state) {
-    actor::Actor<Step<S>> actor_handle = spawn_step_actor<S>(initial_state)?;
-    return Ok({ actor_handle: actor_handle });
-}
-
-export Completion<S, Out> completion_from_op<
-    S: Message,
-    Out,
-    Op: Message + notify_done<Step<S>> + finish<Out>
->(Op op) {
-    Op notify_op = op;
-    Op finish_op = op;
-    return {
-        notify: |actor::Actor<Step<S>> actor_handle, Step<S> message| {
-            return notify_done(notify_op, actor_handle, message);
-        },
-        finish: || {
-            return finish<Out>(finish_op);
-        },
-    };
-}
-
-Result<S, Error> schedule_completion<S: Message, Out>(
-    S state,
-    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify,
-    Result<Out, Error> |(): Message| finish,
-    actor::Actor<Step<S>> actor_handle,
-    TaskFinish<S, Out> continuation
-) {
-    Step<S> resume = |S current| {
-        Out value = finish()?;
-        return continuation(current, value);
-    };
-
-    notify(actor_handle, resume)?;
-    return Ok(state);
-}
-
-export AsyncTask<S, Out> from_completion<S: Message, Out>(Completion<S, Out> completion) {
-    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify = completion.notify;
-    Result<Out, Error> |(): Message| finish = completion.finish;
-    return |S state, actor::Actor<Step<S>> actor_handle, TaskFinish<S, Out> continuation| {
-        return schedule_completion<S, Out>(state, notify, finish, actor_handle, continuation);
-    };
-}
-
-export AsyncTask<S, Next> then<S: Message, Out, Next>(
-    AsyncTask<S, Out> task,
-    Result<AsyncTask<S, Next>, Error> |(Out): Message| continuation
-) {
-    return |S state, actor::Actor<Step<S>> actor_handle, TaskFinish<S, Next> finish| {
-        return task(state, actor_handle, |S current, Out value| {
-            AsyncTask<S, Next> next = continuation(value)?;
-            return next(current, actor_handle, finish);
-        });
-    };
-}
-
-export Result<void, Error> start<S: Message, Out>(
-    AsyncRunner<S> runner,
-    AsyncTask<S, Out> task,
-    TaskFinish<S, Out> finish
-) {
-    actor::Actor<Step<S>> actor_handle = runner.actor_handle;
-    Step<S> step = |S state| {
-        return task(state, actor_handle, finish);
-    };
-    return actor::send(&actor_handle, step);
-}
-
-export Result<void, Error> stop_runner<S: Message>(*const AsyncRunner<S> runner) {
-    return actor::stop(&runner->actor_handle);
-}
-
-export Result<void, Error> join_runner<S: Message>(*const AsyncRunner<S> runner) {
-    return actor::join(&runner->actor_handle);
 }

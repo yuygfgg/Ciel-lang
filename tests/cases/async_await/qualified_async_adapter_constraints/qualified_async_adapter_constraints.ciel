@@ -3,7 +3,7 @@
 // expect-stdout: 12
 
 import /std/actor as actor;
-import /std/async/adapter as adapter;
+import /std/async/internal/adapter as adapter;
 import /std/channel as channel;
 import /std/io;
 import /std/message;

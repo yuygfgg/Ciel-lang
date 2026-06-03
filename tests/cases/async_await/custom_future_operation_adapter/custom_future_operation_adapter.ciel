@@ -5,7 +5,7 @@
 
 import /std/async as async;
 import /std/async;
-import /std/async/adapter;
+import /std/async/internal/adapter;
 import /std/async_io as aio;
 import /std/c as c;
 import /std/env as env;

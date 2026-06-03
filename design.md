@@ -97,6 +97,11 @@ true type unsafe void while
 `fn` is not reserved. It is a contextual token recognized only while parsing a
 function-pointer type suffix.
 
+`async`, `await`, `select`, and `biased select` are contextual syntax. They are
+recognized only in async function declarations, async closure expressions,
+await expressions, and select expressions. They remain ordinary identifiers in
+module paths and other positions, so `/std/async` is a valid import path.
+
 Primitive type names are also reserved:
 
 ```text
@@ -527,7 +532,8 @@ InterfaceTerm       ::= [ "!" ] Identifier [ TypeArgList ]
 ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ TypeArgList ]
                         "(" [ ParamList ] ")" Block
 
-FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] FunctionSignature ( Block | ";" )
+FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] [ "async" ] FunctionSignature
+                        ( Block | ";" )
 FunctionSignature   ::= Type Identifier [ GenericParamList ]
                         "(" [ ParamList ] ")"
 
@@ -647,6 +653,25 @@ constructing it with a struct literal or projecting one of its fields requires
 At most one function body may exist for a given fully qualified name. A
 non-`extern` function declaration ending in `;` is a prototype and must match
 the eventual body exactly. `extern "C"` declarations do not require a Ciel body.
+
+An `async` function is declared by writing `async` before the ordinary return
+type:
+
+```rust
+async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
+    Bytes header = await read_exact(stream, 8)?;
+    usize len = decode_len(header)?;
+    return await read_exact(stream, len);
+}
+```
+
+The written return type is the value produced when the function is awaited.
+Calling an async function creates a first-class future whose concrete type is
+compiler-generated and opaque. That generated type implements the standard
+`Future<Out>`/`Awaitable<Out>` surface for the function's written output type.
+Async functions may be declared or prototyped like ordinary Ciel functions, but
+they cannot use a C ABI; exporting or importing an async `extern "C"` function
+is rejected.
 
 `unsafe` on a function makes calls to that function require an unsafe block.
 The function body is still ordinary checked code; unsafe operations inside it
@@ -802,10 +827,16 @@ PrimaryExpr     ::= Identifier
                  | StructLiteral
                  | ArrayLiteral
                  | ClosureExpr
+                 | AwaitExpr
+                 | SelectExpr
                  | UnsafeBlockExpr
                  | "(" Expr ")"
 
 UnsafeBlockExpr ::= "unsafe" "{" { Statement } [ Expr ] "}"
+
+AwaitExpr       ::= "await" PostfixExpr
+SelectExpr      ::= [ "biased" ] "select" "{" SelectArm { SelectArm } "}"
+SelectArm       ::= "case" Identifier "=" Expr ":" Expr [ ";" ]
 
 QualifiedName   ::= Identifier "::" Identifier { "::" Identifier }
 Literal         ::= IntegerLiteral | FloatLiteral | CharLiteral
@@ -815,7 +846,7 @@ StructLiteral   ::= "{" [ FieldInit { "," FieldInit } [ "," ] ] "}"
 FieldInit       ::= Identifier ":" Expr
 ArrayLiteral    ::= "[" [ Expr { "," Expr } [ "," ] | Expr ";" [ IntegerLiteral ] ] "]"
 
-ClosureExpr     ::= ClosureIntro ClosureBody
+ClosureExpr     ::= [ "async" ] ClosureIntro ClosureBody
 ClosureIntro    ::= "||" | "|" ClosureParamList "|"
 ClosureParamList ::= ClosureParam { "," ClosureParam } [ "," ]
 ClosureParam    ::= BindingName | Type BindingName
@@ -911,9 +942,71 @@ enclosing function. `defer`, `?`, definite assignment, and return-path analysis
 inside a closure use the same rules as a function body. An expression-bodied
 closure returns the value of its expression and cannot contain statements.
 
+An async closure is written by prefixing a closure literal with `async`:
+
+```rust
+async || work()
+async |usize value| {
+    return compute(value);
+}
+```
+
+An async closure body uses the same async rules as an async function body. A
+direct async closure passed to `async::spawn` is checked by the compiler as a
+task boundary: result values and captured values that cross into the spawned
+task must satisfy the hidden `Message` obligations described in Section 16. The
+closure does not need to be manually retained as a `: Message` closure unless
+the surrounding API requires an ordinary messageable closure value.
+
 A call suffix may call a function item, function-pointer value, or closure
 value. Closure arguments are evaluated in source order, then the closure's
 generated call function is invoked with its environment and the arguments.
+
+Calling an async function or async closure produces a future value immediately;
+it does not run the body to completion at the call site. `await future` is valid
+only inside an async body or inside compiler-recognized async bridges such as
+`async::block_on`. The operand must implement `Awaitable<Out>`, and the await
+expression has type `Out`. If `Out` is `Result<T, Error>`, ordinary `?`
+propagation composes after the await:
+
+```rust
+Bytes bytes = await socket_read(stream)?;
+```
+
+The future's concrete frame type is compiler-generated and opaque. Users can
+store futures in locals, pass them to `async::spawn`, pass them to `select`, or
+await them, but they cannot name or inspect the generated frame layout. Dropping
+a future before it has registered an operation is allowed. Cancelling a running
+future is allowed only through APIs whose contracts prove the required
+`CancelSafe` or `Abortable` capability.
+
+`select` constructs a future that races a flat set of future expressions:
+
+```rust
+usize result = await select {
+    case bytes = reader::read_buffered(reader, 4096): handle(bytes);
+    case slept = async_time::sleep_ms(100): timeout(slept);
+};
+```
+
+Every arm future must produce the same selected result type through its arm
+body. The compiler polls every arm once before parking so ready buffered data,
+completed tasks, channels, and timers cannot be missed. Default `select` uses
+fair tie handling; `biased select` uses source-order priority. Losing futures
+must implement `CancelSafe + Abortable`, because the runtime must be allowed to
+cancel them without discarding protocol state. Raw TCP reads, reusable-buffer
+reads, and writes are therefore rejected in `select`; buffered reads, timers,
+connect/accept, tasks, and async channel receives can participate when their
+standard-library capability contracts permit it.
+
+Values live across an `await` are stored in an actor-owned async frame. Safe
+Ciel permits owned frame-safe locals and direct local static read-only slices
+across suspension. It rejects raw pointers, nullable pointers, mutable slices,
+non-static borrowed slices, thread-local handles, forbidden closure captures,
+and compound values containing reference-view fields. This frame-safety rule is
+compiler-private in the MVP: ordinary users should fix the reported local or
+move data into an owned value rather than name a public `AsyncFrameSafe`
+capability.
 
 `if`, `while`, and `for` conditions must have type `bool`. A missing `for`
 condition is treated as `true`. In `for (init; cond; step)`, `init` runs once,
@@ -1578,9 +1671,10 @@ make a local object shareable across actors.
 
 ## 16. Concurrency and Actors
 
-Ciel's concurrency model is actor-first. Asynchronous work is expressed through
-actor mailboxes, channels, and synchronized handles provided by the standard
-library and runtime.
+Ciel's concurrency model is actor-backed and async/await-first. Ordinary
+asynchronous I/O is expressed through async functions, futures, tasks, async
+channels, timeouts, and `select`. Actors remain the runtime isolation model and
+the low-level compatibility API for code that needs explicit mailboxes.
 
 The model has four parts:
 
@@ -1594,6 +1688,30 @@ The model has four parts:
 Ordinary pointers and slices are actor-local. They may be used freely inside
 the actor that owns the pointed-to data. Cross-actor APIs accept message values
 or synchronized handles, not borrowed interior pointers into another actor.
+
+An async task is an isolated execution domain with an actor-owned continuation
+frame. The runtime resumes a suspended task by routing operation completions,
+task completions, channel events, or select results through task and operation
+identity, not by storing frame pointers in external callbacks. Generated future
+frames are cleaned up deterministically on normal return, error return, panic,
+task cancellation, and task abort. Immediate completions resume through a
+trampoline so ready await chains do not grow the native C stack and do not
+starve other ready tasks.
+
+Values cross task ownership at `async::spawn`, task result delivery, async
+channel send/receive, task groups, and low-level actor mailboxes. These
+boundaries attach hidden or explicit `Message` obligations. Values that remain
+inside one task do not need to be `Message`; they only need to satisfy the
+frame-safety rule if they live across an await.
+
+Cancellation has two levels. Cancelling a future in `timeout` or `select` is a
+protocol-preserving operation and requires `CancelSafe + Abortable`. Aborting a
+task is a termination operation: the runtime may cancel or close the currently
+suspended operation, detach the async frame from operation tokens, and run
+frame cleanup so the task can finish without waiting for stale external
+callbacks. Stale completions are routed by actor mailbox id, task id, operation
+id, and generation and are discarded when their token no longer owns the task
+slot.
 
 An actor handle is a shareable reference to a mailbox:
 
@@ -1805,9 +1923,10 @@ helpers that attach the current thread to BDWGC/libgc on first entry and detach
 only when the outermost callback scope exits.
 
 On supported targets, asynchronous file-descriptor operations use public
-dispatch I/O APIs through runtime shims. The actor model remains mailbox-based:
-async completion resumes work by sending a message to an actor rather than by
-suspending and restoring a hidden stack frame.
+dispatch I/O APIs through runtime shims. Low-level operation-token APIs can
+still notify explicit actor mailboxes for compatibility. High-level
+async/await code wraps the same operation tokens in futures and resumes tasks
+through runtime-owned task and operation routing state.
 
 Resource wrappers define their own policy. `/std/io::File` is actor-local by
 default. A wrapper that crosses actors implements `Message` by explicitly
@@ -2394,7 +2513,6 @@ export import /std/result;
 export import /std/panic;
 export import /std/c;
 export import /std/io;
-export import /std/async;
 export import /std/async_io;
 export import /std/async_net;
 export import /std/async_time;
@@ -2406,7 +2524,10 @@ export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
 export import /std/buf;
+export import /std/bytes;
+export import /std/text;
 export import /std/map;
+export import /std/shared_map;
 export import /std/time;
 export import /std/env;
 export import /std/crypto;
@@ -2540,9 +2661,9 @@ export Result<void, Error> sleep_ms(u64 ms);
 monotonic clock reports milliseconds from an unspecified steady epoch and must
 not go backwards during one process run. `sleep_ms` blocks the current OS worker
 thread until the requested duration has elapsed or a platform error is reported;
-it is intended for simple backoff, tests, and blocking utility code. Actor
-continuations that must stay non-blocking should use an async completion style
-timer API if one is added later.
+it is intended for simple backoff, tests, and blocking utility code. Async
+tasks and actor continuations that must stay non-blocking should use
+`/std/async_time::sleep_ms` or the lower-level async timer operation-token API.
 
 ```rust
 // /std/env
@@ -2738,63 +2859,141 @@ descriptor. The scoped `with_tcp_*` helpers follow the `/std/io` pattern and
 close the opened resource on normal and error returns from the body.
 
 ```rust
-// /std/async
-import /std/async/adapter;
-import /std/actor as actor;
+// /std/bytes
+export import /std/async/bytes;
 
-export type Step<S> = Result<S, Error> |(S): Message|;
-export type TaskFinish<S, Out> = Result<S, Error> |(S, Out): Message|;
-export type AsyncTask<S, Out> = Result<S, Error> |(S, actor::Actor<Step<S>>, TaskFinish<S, Out>): Message|;
-
-export struct AsyncRunner<S> {
-    actor::Actor<Step<S>> actor_handle;
-}
-
-export struct Completion<S, Out> {
-    Result<void, Error> |(actor::Actor<Step<S>>, Step<S>): Message| notify;
-    Result<Out, Error> |(): Message| finish;
-}
-
-export Result<AsyncRunner<S>, Error> spawn_runner<S: Message>(S initial_state);
-
-export Completion<S, Out> completion_from_op<
-    S: Message,
-    Out,
-    Op: Message + notify_done<Step<S>> + finish<Out>
->(Op op);
-
-export AsyncTask<S, Out> from_completion<S: Message, Out>(Completion<S, Out> completion);
-
-export AsyncTask<S, Next> then<S: Message, Out, Next>(
-    AsyncTask<S, Out> task,
-    Result<AsyncTask<S, Next>, Error> |(Out): Message| continuation
-);
-
-export Result<void, Error> start<S: Message, Out>(
-    AsyncRunner<S> runner,
-    AsyncTask<S, Out> task,
-    TaskFinish<S, Out> finish
-);
-
-export Result<void, Error> stop_runner<S: Message>(*const AsyncRunner<S> runner);
-export Result<void, Error> join_runner<S: Message>(*const AsyncRunner<S> runner);
+export Result<Bytes, Error> bytes_empty();
+export Result<Bytes, Error> bytes_from_text([]const char text);
+export Result<[]u8, Error> bytes_to_slice(Bytes bytes);
+export Result<Bytes, Error> bytes_append(Bytes left, Bytes right);
 ```
 
-`/std/async` provides generic actor-continuation helpers. `AsyncRunner<S>` owns
-the step actor that stores state `S`. `AsyncTask<S, Out>` is a one-shot async
-flow that eventually produces `Out`. `then` composes task values by feeding the
-first task's output to a continuation that returns the next task. `start` sends
-the composed task to the runner and supplies the final state-updating callback.
-No stack frame is suspended.
-
-`Completion<S, Out>` is the lower-level one-shot completion value used by
-operation adapters. `from_completion` wraps a completion as a task. Application
-code should normally use operation-specific task constructors such as
-`read_bytes_task` and `write_bytes_task`.
+`Bytes` is the general immutable owned byte buffer used by async file and TCP
+APIs. It is a runtime-backed handle, implements `Message` through explicit
+standard-library policy, and can be copied into slices when mutable inspection
+is needed. `/std/bytes` is the general facade; `/std/async/bytes` remains the
+implementation module exported by older async modules.
 
 ```rust
-// /std/async/adapter
+// /std/async
+export import /std/async/core;
+
+export struct Future<T> {
+    *void handle;
+}
+
+export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
+export interface Awaitable<Out> = awaitable_future<Out>;
+
+export unsafe interface<F> bool cancel_safe_marker(*const F future);
+export interface CancelSafe = cancel_safe_marker;
+
+export unsafe interface<F> Result<void, Error> abort_future(*F future);
+export interface Abortable = abort_future;
+export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
+
+export T block_on<T, A: Awaitable<T> + Abortable>(A future);
+export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
+
+export Error timeout_error();
+export Error channel_closed_error();
+
+export struct Task<T> {
+    *void handle;
+}
+
+export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
+    A body
+);
+export Result<void, Error> cancel<T>(*const Task<T> task);
+export Result<bool, Error> is_finished<T>(*const Task<T> task);
+
+export struct Sender<T> {
+    *void handle;
+}
+
+export struct Receiver<T> {
+    *void handle;
+}
+
+export struct SendPermit<T> {
+    *void handle;
+}
+
+export struct ChannelPair<T> {
+    Sender<T> sender;
+    Receiver<T> receiver;
+}
+
+export Result<ChannelPair<T>, Error> channel<T>(usize capacity);
+export async Result<void, Error> send<T>(Sender<T> sender, T value);
+export Result<void, Error> try_send<T>(Sender<T> sender, T value);
+export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender);
+export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value);
+export async Result<T, Error> recv<T>(Receiver<T> receiver);
+export Result<void, Error> close<T>(Sender<T> sender);
+export Result<void, Error> close_receiver<T>(Receiver<T> receiver);
+
+export struct TaskGroup<T> {
+    *void handle;
+}
+
+export Result<TaskGroup<T>, Error> task_group<T>();
+export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task);
+export async Result<T, Error> group_next<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_close<T>(*const TaskGroup<T> group);
+
+export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
+    A future,
+    u64 ms
+);
+```
+
+`/std/async` is the user-facing async/await surface. `Future<T>` is a
+runtime-backed future handle; compiler-generated async functions and closures
+also implement `Awaitable<T>` without exposing their generated frame type.
+`block_on` is the synchronous bridge for `main`, tests, and embedding hosts; it
+starts a future on the task runtime and blocks the current thread until the
+future returns. Async bodies should use `await` instead of nested `block_on`.
+
+`Task<T>` is an awaitable handle to a spawned task. `spawn` starts an awaitable
+body whose output is `Result<T, Error>`. The compiler attaches hidden
+`Message` obligations to spawned-task captures and to `T`, because those values
+cross task ownership. `cancel` aborts the task's current suspended operation
+and runs deterministic cleanup; awaiting a cancelled task produces the stable
+runtime cancellation error. `is_finished` reports whether the task has reached
+a terminal state.
+
+Async channels are bounded. `send` waits for capacity, `try_send` reports full
+or closed without suspension, `reserve` waits for capacity and returns a
+permit, and `permit_send` commits a value into a reserved slot. Sender and
+receiver lifetimes wake the opposite side: the last sender wakes receivers, and
+the last receiver wakes senders and outstanding reservations with
+`channel_closed_error()`. Channel payloads carry hidden `Message` obligations
+at send and receive boundaries.
+
+Task groups support dynamic concurrency. `group_next` returns completed task
+results in completion order without cancelling unfinished tasks. `group_cancel_all`
+aborts unfinished tasks through `Abortable`, and `group_close` releases the
+remaining group handle state.
+
+`timeout` races a selectable future with a timer. Timing out cancels only the
+waiter future; it does not assume that an arbitrary underlying protocol can
+discard partial state. The operand therefore must satisfy
+`SelectableFuture<Out>`, which is `Awaitable<Out> + CancelSafe + Abortable`.
+
+The old public flow API is removed. `/std/async` no longer exports
+`AsyncRunner<S>`, `AsyncTask<S, Out>`, `Completion<S, Out>`, `spawn_runner`,
+`from_completion`, `then`, `start`, `stop_runner`, or `join_runner`. The old
+public `/std/async/adapter` module is also gone; operation-token adapters live
+under the internal namespace below for stdlib lowering and implementation
+tests.
+
+```rust
+// /std/async/internal/adapter
 import /std/actor as actor;
+import /std/c as c;
 
 export interface<Op, M> Result<void, Error> notify_done(
     Op op,
@@ -2803,25 +3002,24 @@ export interface<Op, M> Result<void, Error> notify_done(
 );
 
 export interface<Op, Out> Result<Out, Error> finish(Op op);
+export unsafe interface<Op> *void raw_operation(*const Op op);
+export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);
 ```
 
-`/std/async/adapter` is the operation-adapter layer. Libraries that introduce a
-new runtime operation implement `notify_done` and `finish`, then wrap the raw
-operation with `completion_from_op` and usually expose an operation-specific
-constructor that returns `AsyncTask<S, Out>`.
+The internal adapter namespace describes runtime operation tokens. `notify_done`
+and `finish` support low-level actor completion tests and compatibility code.
+`raw_operation` and `poll_done` are used by `future_from_op` to wrap a one-shot
+runtime operation as a future. Normal application code should call awaitable
+stdlib functions such as `async_io::read_bytes`, `async_net::read`, or
+`async_time::sleep_ms` instead of implementing operation adapters directly.
 
 ```rust
 // /std/async_io
-import /std/async as flow;
-import /std/async/adapter;
-import /std/actor;
+export import /std/result;
+export import /std/async/bytes;
+import /std/actor as actor;
 import /std/io;
-import /std/message;
 import /std/os/fd as os_fd;
-
-export struct Bytes {
-    *void handle;
-}
 
 export struct AsyncFd {
     *void handle;
@@ -2835,10 +3033,6 @@ export struct AsyncWrite {
     *void handle;
 }
 
-export Result<Bytes, Error> bytes_copy([]const u8 data);
-export usize bytes_len(Bytes bytes);
-export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out);
-
 export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode);
 export Result<AsyncFd, Error> open_async_read([]const char path);
 export Result<AsyncFd, Error> create_async([]const char path);
@@ -2846,97 +3040,62 @@ export Result<AsyncFd, Error> append_async([]const char path);
 export unsafe Result<AsyncFd, Error> async_from_raw_fd(os_fd::RawFd fd);
 export Result<void, Error> close_async(AsyncFd fd);
 
-export Result<AsyncRead, Error> read_bytes(AsyncFd fd, usize max_len);
-export Result<AsyncWrite, Error> write_bytes(AsyncFd fd, Bytes data);
-export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
-    AsyncFd fd,
-    usize max_len
-);
-export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
-    AsyncFd fd,
-    Bytes data
-);
-export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
-    AsyncFd fd,
-    usize max_len
-);
-export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
-    AsyncFd fd,
-    Bytes data
-);
+export Result<AsyncRead, Error> read_bytes_async(AsyncFd fd, usize max_len);
+export Result<AsyncWrite, Error> write_bytes_async(AsyncFd fd, Bytes data);
+export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len);
+export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data);
 
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncRead op,
     *const actor::Actor<M> actor_handle,
     M message
 );
-
 export Result<void, Error> notify_write_done<M: Message>(
     *const AsyncWrite op,
     *const actor::Actor<M> actor_handle,
     M message
 );
-
 export Result<Bytes, Error> finish_read(AsyncRead op);
 export Result<usize, Error> finish_write(AsyncWrite op);
 export Result<void, Error> cancel_read(AsyncRead op);
 export Result<void, Error> cancel_write(AsyncWrite op);
-
-impl<M: Message> notify_done(
-    AsyncRead op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_read_done(&op, &actor_handle, message);
-}
-
-impl finish<Bytes>(AsyncRead op) {
-    return finish_read(op);
-}
-
-impl<M: Message> notify_done(
-    AsyncWrite op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_write_done(&op, &actor_handle, message);
-}
-
-impl finish<usize>(AsyncWrite op) {
-    return finish_write(op);
-}
 ```
 
-`/std/async_io` provides actor-oriented asynchronous file-descriptor
-operations. Starting an operation returns an operation token immediately. The
-caller then registers a completion message for an actor. When the runtime
-observes the final dispatch I/O callback for that operation, it sends the
-preboxed message to the actor mailbox. The actor later calls `finish_read` or
-`finish_write` to consume the result. `read_bytes_completion` and
-`write_bytes_completion` wrap those raw operations as `Completion<S, Out>`.
-`read_bytes_task` and `write_bytes_task` expose the usual high-level task API,
-so callers can use `flow::then` instead of spelling a separate
-completion-message enum for simple pipelines.
-
-`Bytes`, `AsyncFd`, `AsyncRead`, and `AsyncWrite` are runtime-backed handle
-types. They are fixed-size handle values and may implement `Message` through
-explicit standard-library policy impls. `Bytes` represents immutable owned byte
-storage. `AsyncRead` and `AsyncWrite` are one-shot operation handles whose
-results may be finished exactly once.
+`/std/async_io` provides awaitable file-descriptor operations. The high-level
+`read_bytes` and `write_bytes` functions are async functions and are the normal
+API. The `*_async`, `notify_*`, `finish_*`, and `cancel_*` operation-token
+functions remain low-level compatibility hooks. Raw fd reads and writes are
+`Abortable` but not `CancelSafe` by default because cancellation may hide
+offset changes or partial writes.
 
 ```rust
 // /std/async_net
-import /std/async as flow;
-import /std/async/adapter;
-import /std/actor;
-import /std/net;
+export import /std/result;
 export import /std/async/bytes;
+import /std/net;
 
 export struct AsyncTcpListener {
     *void handle;
 }
 
 export struct AsyncTcpStream {
+    *void handle;
+}
+
+export struct AsyncTcpReadHalf {
+    *void handle;
+}
+
+export struct AsyncTcpWriteHalf {
+    *void handle;
+}
+
+export struct AsyncTcpSplit {
+    AsyncTcpReadHalf read;
+    AsyncTcpWriteHalf write;
+}
+
+export struct BufferedStreamReader {
     *void handle;
 }
 
@@ -2956,39 +3115,66 @@ export struct AsyncTcpWrite {
     *void handle;
 }
 
+export struct AsyncBufferedRead {
+    *void handle;
+}
+
+export struct ReadIntoResult {
+    Bytes bytes;
+    usize read;
+}
+
 export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr);
 export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener);
 export Result<void, Error> close_listener(AsyncTcpListener listener);
 export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener);
 export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr);
+export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener);
+export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
+export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms);
+
 export Result<void, Error> close_stream(AsyncTcpStream stream);
+export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream);
 export Result<void, Error> shutdown_read(AsyncTcpStream stream);
+export Result<void, Error> shutdown_read_half(AsyncTcpReadHalf half);
 export Result<void, Error> shutdown_write(AsyncTcpStream stream);
+export Result<void, Error> shutdown_write_half(AsyncTcpWriteHalf half);
 export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream);
 export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream);
 
 export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len);
+export Result<AsyncTcpRead, Error> read_into_async(AsyncTcpStream stream, Bytes buffer);
 export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data);
-export Result<void, Error> notify_accept_done<M: Message>(
-    *const AsyncAccept op,
-    *const actor::Actor<M> actor_handle,
-    M message
+export Result<AsyncTcpWrite, Error> write_half_bytes(AsyncTcpWriteHalf half, Bytes data);
+export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len);
+export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer);
+export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data);
+export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data);
+export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data);
+export async Result<void, Error> write_all_half(AsyncTcpWriteHalf half, Bytes data);
+
+export Result<BufferedStreamReader, Error> buffered_reader(
+    AsyncTcpReadHalf half,
+    usize capacity
 );
-export Result<void, Error> notify_connect_done<M: Message>(
-    *const AsyncConnect op,
-    *const actor::Actor<M> actor_handle,
-    M message
+export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader reader);
+export Result<AsyncBufferedRead, Error> read_buffered_async(
+    BufferedStreamReader reader,
+    usize max_len
 );
-export Result<void, Error> notify_read_done<M: Message>(
-    *const AsyncTcpRead op,
-    *const actor::Actor<M> actor_handle,
-    M message
+export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
+    BufferedStreamReader reader,
+    usize len
 );
-export Result<void, Error> notify_write_done<M: Message>(
-    *const AsyncTcpWrite op,
-    *const actor::Actor<M> actor_handle,
-    M message
+export async Result<Bytes, Error> read_buffered(
+    BufferedStreamReader reader,
+    usize max_len
 );
+export async Result<Bytes, Error> read_exact_buffered(
+    BufferedStreamReader reader,
+    usize len
+);
+
 export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op);
 export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op);
 export Result<Bytes, Error> finish_read(AsyncTcpRead op);
@@ -2997,109 +3183,41 @@ export Result<void, Error> cancel_accept(AsyncAccept op);
 export Result<void, Error> cancel_connect(AsyncConnect op);
 export Result<void, Error> cancel_read(AsyncTcpRead op);
 export Result<void, Error> cancel_write(AsyncTcpWrite op);
-export Result<flow::Completion<S, AsyncTcpStream>, Error> accept_completion<S: Message>(
-    AsyncTcpListener listener
-);
-export Result<flow::Completion<S, AsyncTcpStream>, Error> connect_completion<S: Message>(
-    net::SocketAddr addr
-);
-export Result<flow::Completion<S, Bytes>, Error> read_bytes_completion<S: Message>(
-    AsyncTcpStream stream,
-    usize max_len
-);
-export Result<flow::Completion<S, usize>, Error> write_bytes_completion<S: Message>(
-    AsyncTcpStream stream,
-    Bytes data
-);
-export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> accept_task<S: Message>(
-    AsyncTcpListener listener
-);
-export Result<flow::AsyncTask<S, AsyncTcpStream>, Error> connect_task<S: Message>(
-    net::SocketAddr addr
-);
-export Result<flow::AsyncTask<S, Bytes>, Error> read_bytes_task<S: Message>(
-    AsyncTcpStream stream,
-    usize max_len
-);
-export Result<flow::AsyncTask<S, usize>, Error> write_bytes_task<S: Message>(
-    AsyncTcpStream stream,
-    Bytes data
-);
-
-impl<M: Message> notify_done(
-    AsyncAccept op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_accept_done(&op, &actor_handle, message);
-}
-
-impl finish<AsyncTcpStream>(AsyncAccept op) {
-    return finish_accept(op);
-}
-
-impl<M: Message> notify_done(
-    AsyncConnect op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_connect_done(&op, &actor_handle, message);
-}
-
-impl finish<AsyncTcpStream>(AsyncConnect op) {
-    return finish_connect(op);
-}
-
-impl<M: Message> notify_done(
-    AsyncTcpRead op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_read_done(&op, &actor_handle, message);
-}
-
-impl finish<Bytes>(AsyncTcpRead op) {
-    return finish_read(op);
-}
-
-impl<M: Message> notify_done(
-    AsyncTcpWrite op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_write_done(&op, &actor_handle, message);
-}
-
-impl finish<usize>(AsyncTcpWrite op) {
-    return finish_write(op);
-}
+export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op);
 ```
 
-`/std/async_net` provides actor-oriented asynchronous TCP operations. It uses
-`/std/net::SocketAddr` for address values, but it does not reuse blocking
-`TcpListener` or `TcpStream` handles. Async TCP listeners, streams, and
-operation tokens are runtime-backed shareable handles with explicit
-standard-library `Message` policy. `accept_async`, `connect_async`,
-`read_bytes`, and `write_bytes` return one-shot operation tokens. The
-corresponding `finish_*` functions consume each result exactly once, and the
-`*_completion` / `*_task` helpers expose the usual `/std/async` flow shape.
+`/std/async_net` provides awaitable TCP operations over nonblocking runtime
+handles. `accept` and `connect` are `CancelSafe + Abortable`, so they can be
+used directly with `timeout` and `select`. `read` returns zero-length `Bytes`
+for EOF. `read_into` moves an owned `Bytes` buffer into the future and returns
+the same owned buffer with the number of bytes read so hot loops can reuse
+capacity without keeping a mutable slice live across await.
 
-Async TCP reads complete with up to `max_len` bytes once data or EOF is
-available; a zero-length `Bytes` value represents EOF. Async TCP writes take
-`Bytes`, not a borrowed slice, because the runtime may hold the data after the
-caller's actor handler has returned.
+Raw TCP `read`, `read_into`, `write`, and `write_all` are `Abortable` but not
+`CancelSafe`; they are rejected by `SelectableFuture` bounds. Task abort may
+close or poison the stream to release a stuck operation, but a losing
+`select`/`timeout` cannot keep using the same stream after possibly discarding
+bytes, losing an owned buffer, or observing partial writes.
+
+Selectable stream reads use `BufferedStreamReader`. The reader owns the read
+half and a private buffer. `read_buffered` is `CancelSafe + Abortable` because
+cancellation preserves already-read bytes inside that private buffer and abort
+releases the pending read. The reader serializes or rejects overlapping reads.
+It polls its user-space buffer before registering socket readiness, so a
+previous read that drained the fd into the private buffer can make a later
+`select` arm ready immediately.
 
 ```rust
 // /std/async_time
-import /std/async as flow;
-import /std/async/adapter;
-import /std/actor;
+export import /std/result;
+import /std/actor as actor;
 
 export struct AsyncSleep {
     *void handle;
 }
 
 export Result<AsyncSleep, Error> sleep_ms_async(u64 ms);
+export async Result<void, Error> sleep_ms(u64 ms);
 export Result<void, Error> notify_sleep_done<M: Message>(
     *const AsyncSleep op,
     *const actor::Actor<M> actor_handle,
@@ -3107,36 +3225,14 @@ export Result<void, Error> notify_sleep_done<M: Message>(
 );
 export Result<void, Error> finish_sleep(AsyncSleep op);
 export Result<void, Error> cancel_sleep(AsyncSleep op);
-export Result<flow::Completion<S, void>, Error> sleep_ms_completion<S: Message>(u64 ms);
-export Result<flow::AsyncTask<S, void>, Error> sleep_ms_task<S: Message>(u64 ms);
-
-impl<M: Message> notify_done(
-    AsyncSleep op,
-    actor::Actor<M> actor_handle,
-    M message
-) {
-    return notify_sleep_done(&op, &actor_handle, message);
-}
-
-impl finish<void>(AsyncSleep op) {
-    return finish_sleep(op);
-}
 ```
 
-`/std/async_time` provides actor-oriented monotonic timers. `sleep_ms_async`
-returns a one-shot `AsyncSleep` operation token immediately; registering a
-completion message does not block the actor handler or a flow runner. A
-zero-delay sleep still completes through the async completion path. `finish_sleep`
-consumes a completed operation exactly once, and `cancel_sleep` cancels a
-pending timer token and suppresses its completion message if cancellation wins.
-`sleep_ms_completion` and `sleep_ms_task` expose the usual `/std/async` flow
-shape with `void` output.
-
-Timer policy is deliberately narrow. `/std/async_time` provides timer and
-cancellation building blocks, but protocol-specific heartbeat, missed-pong,
-retry, and timeout policy belongs in application code. A generic timeout helper
-should be added only if it can cancel the losing operation without leaving a
-late completion queued for an actor.
+`/std/async_time` provides monotonic awaitable timers. `sleep_ms` is the normal
+async timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
+`notify_sleep_done`, `finish_sleep`, and `cancel_sleep` remain low-level
+operation-token compatibility hooks. Timer policy is deliberately narrow:
+protocol-specific heartbeat, missed-pong, retry, and deadline behavior belongs
+in application code or in helpers such as `async::timeout`.
 
 These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime

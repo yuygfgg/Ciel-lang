@@ -16,9 +16,10 @@ Ciel is garbage-collected. Local values do not expose stack or heap placement;
 the compiler chooses storage and promotes values to the GC heap when required
 for safety. Safe Ciel prevents dangling local-address use, null dereference of
 non-null pointers, unchecked enum pattern omissions, and unsafe C ABI mismatch
-inside Ciel declarations. Safe concurrency is actor-first: ordinary mutable
-objects are actor-local, cross-actor communication uses explicit `Message`
-conversion, and shared identity is exposed only through synchronized handles.
+inside Ciel declarations. Safe concurrency is async/await-first and
+actor-backed: ordinary mutable objects are task-local or actor-local,
+cross-domain communication uses explicit or hidden `Message` obligations, and
+shared identity is exposed only through synchronized handles.
 Allocation placement is a compiler and runtime decision rather than a
 source-level operation.
 
@@ -973,12 +974,8 @@ propagation composes after the await:
 Bytes bytes = await socket_read(stream)?;
 ```
 
-The future's concrete frame type is compiler-generated and opaque. Users can
-store futures in locals, pass them to `async::spawn`, pass them to `select`, or
-await them, but they cannot name or inspect the generated frame layout. Dropping
-a future before it has registered an operation is allowed. Cancelling a running
-future is allowed only through APIs whose contracts prove the required
-`CancelSafe` or `Abortable` capability.
+The full execution, task, cancellation, and frame-safety rules for async
+functions, futures, and `await` are specified in Section 16.
 
 `select` constructs a future that races a flat set of future expressions:
 
@@ -990,23 +987,8 @@ usize result = await select {
 ```
 
 Every arm future must produce the same selected result type through its arm
-body. The compiler polls every arm once before parking so ready buffered data,
-completed tasks, channels, and timers cannot be missed. Default `select` uses
-fair tie handling; `biased select` uses source-order priority. Losing futures
-must implement `CancelSafe + Abortable`, because the runtime must be allowed to
-cancel them without discarding protocol state. Raw TCP reads, reusable-buffer
-reads, and writes are therefore rejected in `select`; buffered reads, timers,
-connect/accept, tasks, and async channel receives can participate when their
-standard-library capability contracts permit it.
-
-Values live across an `await` are stored in an actor-owned async frame. Safe
-Ciel permits owned frame-safe locals and direct local static read-only slices
-across suspension. It rejects raw pointers, nullable pointers, mutable slices,
-non-static borrowed slices, thread-local handles, forbidden closure captures,
-and compound values containing reference-view fields. This frame-safety rule is
-compiler-private in the MVP: ordinary users should fix the reported local or
-move data into an owned value rather than name a public `AsyncFrameSafe`
-capability.
+body. Fairness, cancellation-safety, timeout lowering, and selectable future
+rules are specified in Section 16.
 
 `if`, `while`, and `for` conditions must have type `bool`. A missing `for`
 condition is treated as `true`. In `for (init; cond; step)`, `init` runs once,
@@ -1669,14 +1651,290 @@ Escape analysis decides storage placement. Actor isolation and `Message`
 capability checks are the concurrency safety proof; promotion alone does not
 make a local object shareable across actors.
 
-## 16. Concurrency and Actors
+## 16. Async/Await
 
-Ciel's concurrency model is actor-backed and async/await-first. Ordinary
-asynchronous I/O is expressed through async functions, futures, tasks, async
-channels, timeouts, and `select`. Actors remain the runtime isolation model and
-the low-level compatibility API for code that needs explicit mailboxes.
+Ciel's ordinary asynchronous programming model is stackless async/await.
+Programmers write async functions, futures, tasks, async channels, timeouts,
+and `select`. The runtime is actor-backed, but ordinary async I/O does not
+require users to name `Actor<M>`, build mailbox messages, or manually handle
+operation-token completions.
 
-The model has four parts:
+### Async Functions and Futures
+
+An async function or async closure call evaluates its callee, arguments, and
+captures in ordinary source order, then constructs a future value. The call
+does not block the current thread, does not run the async body to completion at
+the call site, and does not create a concurrent task by itself.
+
+The written return type of an async function is the value produced when its
+future is awaited:
+
+```rust
+async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
+    Bytes header = await async_net::read(stream, 8)?;
+    usize len = decode_len(header)?;
+    return await async_net::read(stream, len);
+}
+
+_ future = read_frame(stream);
+Bytes frame = await read_frame(stream)?;
+```
+
+The concrete future type generated for `read_frame` is opaque. It implements
+`Awaitable<Result<Bytes, Error>>`, and may also implement `CancelSafe` or
+`Abortable` when its body proves the corresponding contract. Users can store a
+future in a local, pass it to `async::spawn`, pass it to `select`, pass it to a
+generic future combinator, or await it. Users cannot name the generated frame
+type, inspect its layout, or reach into another task's frame through the future.
+
+Compiler-generated futures are single-consumer values. After a generated future
+has completed, awaiting it again is invalid unless the particular future type
+explicitly documents reusable await behavior. Dropping a future that has not
+registered a pending operation is allowed. Dropping or cancelling a pending
+future while the current task continues is allowed only through a path that has
+proved `CancelSafe`; tearing down a pending future because its owning task is
+terminating requires `Abortable`.
+
+### Await
+
+`await expr` is valid only inside an async body or inside a compiler-recognized
+synchronous bridge such as `async::block_on`. The operand is evaluated exactly
+once and must implement `Awaitable<Out>`. The expression has type `Out`, and
+ordinary `?` propagation composes after the await:
+
+```rust
+Bytes bytes = await async_net::read(stream, 16384)?;
+```
+
+Awaiting a ready future yields its value without parking the task. Awaiting a
+pending future stores the current program counter, nested future state, and
+every live frame-safe local in the task's async frame, registers a wakeup with
+the runtime, and returns control to the scheduler. Suspension parks only the
+current task, not the OS thread.
+
+Resumption continues at the source point after the `await`. No native C stack
+frame is preserved across suspension; all state needed after the suspension
+lives in the generated async frame. Immediate completions resume through a
+task-local trampoline so a chain of ready awaits cannot grow the native C stack
+without bound or monopolize the executor.
+
+`defer`, definite assignment, return-path analysis, and `?` keep their ordinary
+meaning in async bodies. The async-specific rule is that initialized frame
+fields and active cleanup actions must be tracked by program-counter state, so
+normal return, `Err` return, panic, cancellation, and abort all run the correct
+non-awaiting cleanup before the frame is released.
+
+### Tasks
+
+`async::spawn` starts an awaitable body as an independent task:
+
+```rust
+Task<usize> task = async::spawn(async || compute_size(path))?;
+usize size = await task?;
+```
+
+The body passed to `spawn` must be awaitable with output `Result<T, Error>` and
+must be abortable. `Task<T>` is itself awaitable with output
+`Result<T, Error>`: awaiting a task waits for normal completion, failure, or
+cancellation of that task. Cancelling a wait on a task handle does not cancel
+the running task; it unregisters the waiter. `async::cancel` requests task
+termination through the task's abort path.
+
+Spawning is a task-ownership boundary. Values captured by a directly spawned
+async closure and the task result `T` must satisfy hidden `Message`
+obligations, because they cross from one task owner to another. The source API
+does not require users to write these bounds on ordinary calls to `spawn`; the
+compiler attaches the obligations at the boundary, resolves structural
+messageability when possible, and reports the failing captured value or result
+field when proof fails.
+When a hidden async boundary uses a structural `meta::Repr<T>` crossing path,
+that fact is local to the boundary. It does not make the original nominal type
+implement `Message` for explicit low-level actor APIs or for any API spelling a
+public `T: Message` bound.
+
+Values created inside the spawned async body are task-local. They do not need
+to implement `Message` merely because they live across `await`; they only need
+to satisfy async-frame safety. Moving an already existing non-`Message` value
+from one task into a new task is not supported by the high-level safe spawn API.
+Such a transfer requires an explicit synchronized handle, an owned message
+representation, or a future unsafe ownership-transfer facility.
+
+### Async Channels and Task Groups
+
+Async tasks communicate through bounded async channels:
+
+```rust
+ChannelPair<Bytes> ch = async::channel<Bytes>(1024)?;
+Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
+await async::send(ch.sender, payload)?;
+await writer?;
+```
+
+`send` suspends when the channel is full, which provides backpressure. `try_send`
+is the non-suspending fast path. `reserve` waits for capacity and returns a
+permit; `permit_send` then commits a value synchronously. This split matters for
+cancellation: waiting for capacity through `reserve` is cancellation-safe, but
+dropping a pending `send(value)` may otherwise discard a value that was moved
+into the send operation.
+
+Channel payloads cross task ownership and therefore carry hidden `Message`
+obligations at send and receive boundaries. Channel endpoint liveness is
+deterministic: closing or destroying the last sender wakes receivers after the
+buffer is drained, and closing or destroying the last receiver wakes blocked
+senders and reservations with `channel_closed_error()`. Task cleanup must
+release channel endpoints stored in async frames before the task is considered
+finished; GC finalization is not a scheduling guarantee.
+
+`select` handles a static set of futures known at compile time. Dynamic
+concurrency uses task groups. `group_next` waits for the next task in the group
+to finish and does not cancel the remaining tasks. `group_cancel_all` aborts
+unfinished tasks through their task abort paths.
+
+### Select and Timeout
+
+`select` races a flat set of future expressions and produces one result:
+
+```rust
+Event event = await select {
+    case bytes = async_net::read_buffered(reader, 16384):
+        Event::Bytes(bytes?)
+
+    case command = async::recv(commands):
+        Event::Command(command?)
+
+    case tick = async_time::sleep_ms(5000):
+        tick?;
+        Event::Tick
+};
+```
+
+The whole `select` expression is awaited. Arm expressions are futures, not
+nested `await` expressions. Each arm binds the completed arm value and evaluates
+an arm body whose result must be assignable to the common `select` result type.
+`?` inside an arm propagates from the enclosing async function.
+
+Every arm future must implement `SelectableFuture<ArmOut>`, which is
+`Awaitable<ArmOut> + CancelSafe + Abortable`. The compiler and stdlib lower a
+select expression to an internal select-set future that polls every arm once
+before parking, so ready buffered data, completed tasks, channel messages, and
+expired timers cannot be missed. Default `select` chooses fairly among all
+ready arms; `biased select` is the explicit source-order priority form. Losing
+futures are cancelled only after their `CancelSafe` contract permits it.
+
+`async::timeout(future, ms)` is a convenience wrapper over the same model. It
+races the operand with a timer and, on timeout, cancels only the waiting future.
+It does not assume that an arbitrary protocol future can discard partial state.
+
+### Cancel and Abort
+
+Cancellation and abort are distinct operations:
+
+1. Cancel abandons one pending future while the current task continues. This is
+   what happens to losing futures in `select` and `timeout`.
+2. Abort terminates the owning task's current suspended operation because the
+   task is ending through cancellation, panic, or runtime teardown.
+
+`CancelSafe` is a behavioral promise that cancelling a pending future cannot
+lose user-visible data, corrupt protocol state, or hide a side effect in a
+resource that remains usable. It is not derived merely because every awaited
+operation inside a future is itself `CancelSafe`; multi-await protocol code can
+consume state before a later suspension.
+
+`Abortable` is a behavioral promise that the runtime can tear down the current
+pending operation and run task cleanup in bounded time. An abort path may close
+a socket, deregister a timer, poison a handle, or make a resource unusable, as
+long as later aliases observe a defined error instead of unsynchronized state.
+
+Raw TCP reads, reusable-buffer reads, and writes are abortable but not
+cancellation-safe by default: abort may close the stream to release the task,
+but a losing race must not silently discard bytes, lose an owned buffer, or hide
+a partial write while the task continues. Buffered reads, timers, connect,
+accept, task waits, channel receives, and channel reservations can be selectable
+when their stdlib contracts preserve state.
+
+External callbacks must never capture async frame pointers, task-state
+pointers, or pointers into user frame storage. A runtime operation token owns
+callback-visible result storage and contains routing data such as actor mailbox
+id, task id, operation id, and generation. Callback completion enqueues a hidden
+resume event. The actor-backed resume dispatcher validates the ids and
+generation before resuming a task; stale events clean up operation-owned
+storage and do not touch the released async frame.
+
+### Frame Safety and Boundary Policy
+
+Async-frame safety is separate from `Message`. `Message` is required when a
+value crosses task ownership or enters a low-level actor mailbox:
+
+1. values captured by a spawned task body;
+2. task result values delivered through `Task<T>`;
+3. async channel payloads;
+4. task-group result payloads;
+5. explicit low-level actor mailbox payloads.
+
+Task-local values that remain inside one task do not need `Message`. If they
+are live across an `await`, they must be safe to store in the private async
+frame. Safe code allows owned scalars, structs, enums, arrays, owned runtime
+handles documented as frame-safe, values satisfying `Message`, direct local
+static read-only slices such as string literals, and compiler-generated
+operation keys.
+
+Safe code rejects the following values across `await`: raw pointers, nullable
+raw pointers, mutable slices, borrowed read-only slices whose owner is not
+syntactically static, thread-local handles, closures that capture forbidden
+locals, and compound values whose transitive fields may contain those rejected
+views or handles. In the first implementation, compound values containing slice
+or reference-view fields are rejected across await unless the compiler has an
+explicit built-in proof that the representation is owned and frame-safe.
+
+```rust
+[]const u8 view = buffer[0..n];
+await async_time::sleep_ms(1)?;
+use(view); // error: borrowed slice crosses await
+
+[]const char msg = "start processing";
+await async_time::sleep_ms(1)?;
+print(msg); // ok: string-literal storage is static and read-only
+```
+
+The frame-safety predicate is compiler-private. Ordinary users should fix the
+reported local, move the data into an owned value such as `Bytes`, or construct
+the non-message resource inside the task that owns it.
+
+### Lowering and Execution Invariants
+
+The compiler lowers each async function and async closure to an opaque
+stackless future type. The generated frame stores a program counter, live
+locals, nested future state, operation keys, initialized-field state, and
+cleanup state. Spawning a task moves the future into actor-owned task storage;
+awaiting a nested future keeps that nested state in the same task frame.
+
+Each task is in one of the runtime states `Ready`, `Suspended`, `Cancelling`,
+`Finished`, or `Failed`. The runtime never resumes two continuations of the
+same task concurrently. Awaiting I/O suspends only the task. Task termination
+runs deterministic cleanup before the task is considered finished. Hidden
+resume events are not user-visible messages and cannot carry arbitrary user
+payloads.
+
+Safe async concurrency follows these invariants:
+
+1. every async frame is owned by exactly one task;
+2. task-local frame values are never exposed through task handles, channels, or
+   resume events;
+3. every value crossing task ownership is cloned, moved, or stored through a
+   proven `Message` path;
+4. task handles and channel endpoints are opaque synchronized handles, not
+   pointers into async frames;
+5. external callbacks route completions through runtime-owned operation tokens;
+6. stale completions are discarded only when the relevant `CancelSafe` or
+   `Abortable` contract permits dropping them.
+
+## 17. Concurrency and Actors
+
+Ciel's low-level actor model is the runtime isolation model behind
+async/await and the explicit mailbox API for advanced code. Ordinary
+asynchronous I/O should use the async/await surface in Section 16.
+
+The actor model has four parts:
 
 1. an actor is an isolated execution domain with private mutable state
 2. actor code processes one message at a time
@@ -1688,30 +1946,6 @@ The model has four parts:
 Ordinary pointers and slices are actor-local. They may be used freely inside
 the actor that owns the pointed-to data. Cross-actor APIs accept message values
 or synchronized handles, not borrowed interior pointers into another actor.
-
-An async task is an isolated execution domain with an actor-owned continuation
-frame. The runtime resumes a suspended task by routing operation completions,
-task completions, channel events, or select results through task and operation
-identity, not by storing frame pointers in external callbacks. Generated future
-frames are cleaned up deterministically on normal return, error return, panic,
-task cancellation, and task abort. Immediate completions resume through a
-trampoline so ready await chains do not grow the native C stack and do not
-starve other ready tasks.
-
-Values cross task ownership at `async::spawn`, task result delivery, async
-channel send/receive, task groups, and low-level actor mailboxes. These
-boundaries attach hidden or explicit `Message` obligations. Values that remain
-inside one task do not need to be `Message`; they only need to satisfy the
-frame-safety rule if they live across an await.
-
-Cancellation has two levels. Cancelling a future in `timeout` or `select` is a
-protocol-preserving operation and requires `CancelSafe + Abortable`. Aborting a
-task is a termination operation: the runtime may cancel or close the currently
-suspended operation, detach the async frame from operation tokens, and run
-frame cleanup so the task can finish without waiting for stale external
-callbacks. Stale completions are routed by actor mailbox id, task id, operation
-id, and generation and are discarded when their token no longer owns the task
-slot.
 
 An actor handle is a shareable reference to a mailbox:
 
@@ -2070,7 +2304,7 @@ mutable pointers. This guarantee depends on correct compiler checks, correct
 standard-library implementations, and trusted C wrappers honoring their declared
 policies.
 
-## 17. Standard Library Boundary
+## 18. Standard Library Boundary
 
 The compiler treats the standard library as ordinary Ciel source except for the
 generic `/std/meta` helpers and runtime hooks explicitly named in this
@@ -2091,11 +2325,11 @@ import /std/actor;
 ```
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
-`/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async`,
-`/std/async_io`, `/std/async_net`, `/std/async_time`, `/std/message`,
-`/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
-`/std/codec`, `/std/buf`, `/std/map`, `/std/time`, `/std/env`,
-`/std/crypto`, and `/std/net`.
+`/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
+`/std/async_net`, `/std/async_time`, `/std/message`, `/std/meta`,
+`/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`, `/std/codec`,
+`/std/buf`, `/std/bytes`, `/std/text`, `/std/map`, `/std/shared_map`,
+`/std/time`, `/std/env`, `/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2184,6 +2418,13 @@ export import /std/format/number;
 ```
 
 ```rust
+// /std/format/number
+export []const char u64_to_string(u64 value);
+export []const char usize_to_string(usize value);
+export []const char i64_to_string(i64 value);
+```
+
+```rust
 // /std/panic
 unsafe extern "C" {
     noescape never ciel_panic(*const char message, usize len);
@@ -2206,13 +2447,35 @@ termination.
 #c_include "stdint.h"
 
 export extern "C" {
+    type c_char = "char";
+    type c_schar = "signed char";
+    type c_uchar = "unsigned char";
+    type c_short = "short";
+    type c_ushort = "unsigned short";
     type c_int = "int";
+    type c_uint = "unsigned int";
     type c_long = "long";
+    type c_ulong = "unsigned long";
+    type c_long_long = "long long";
+    type c_ulong_long = "unsigned long long";
+    type c_float = "float";
+    type c_double = "double";
+
     type c_size_t = "size_t";
     type c_ptrdiff_t = "ptrdiff_t";
     type c_intptr_t = "intptr_t";
     type c_uintptr_t = "uintptr_t";
+    type c_intmax_t = "intmax_t";
+    type c_uintmax_t = "uintmax_t";
 }
+
+#if !is_target_os("windows")
+#c_include "sys/types.h"
+
+export extern "C" {
+    type c_ssize_t = "ssize_t";
+}
+#endif
 
 export type c_string = *char;
 export type const_c_string = *const char;
@@ -2259,8 +2522,12 @@ export Result<R, Error> with_append<R: Message>(
 
 export Result<usize, Error> read(File file, []u8 out);
 export Result<usize, Error> write(File file, []const u8 data);
+export Result<usize, Error> write_text_once(File file, []const char text);
 export Result<void, Error> write_all(File file, []const u8 data);
 export Result<void, Error> write_text(File file, []const char text);
+
+export []const char f32_to_string(f32 value);
+export []const char f64_to_string(f64 value);
 
 export Result<void, Error> write_value<T: printable>(File file, T value);
 export Result<void, Error> write_format(File file, []const char fmt, []printable values);
@@ -2311,6 +2578,23 @@ export RawFd stderr();
 `RawFd` is a low-level interop type. It is actor-local by default and requires
 unsafe operations for adoption and extraction.
 
+```rust
+// /std/io_posix
+import /std/c as c;
+
+#c_include "unistd.h"
+
+export unsafe extern "C" {
+    c::c_ssize_t read(c::c_int fd, *void buf, c::c_size_t count);
+    c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
+    c::c_int close(c::c_int fd);
+}
+```
+
+`/std/io_posix` exposes raw POSIX `read`, `write`, and `close` declarations for
+low-level interop code. It is unsafe and platform-specific; ordinary file code
+should use `/std/io` or `/std/async_io`.
+
 Formatted printing uses `{}` placeholders and a `[]printable` slice, so callers
 can pass heterogeneous printable values through dynamic interface erasure:
 
@@ -2320,6 +2604,7 @@ print("{} = {}", ["answer", 42 as usize]);
 
 ```rust
 // /std/message
+import /std/error;
 import /std/result;
 import /std/meta as meta;
 
@@ -2352,6 +2637,13 @@ export interface CielFnValue = ciel_fn_value_marker;
 export interface<T> bool closure_value_marker(*const T value);
 export interface ClosureValue = closure_value_marker;
 
+export struct HNil {}
+
+export struct HCons<H, T> {
+    H head;
+    T tail;
+}
+
 export struct FieldRef<T> {
     []const char name;
     *const T value;
@@ -2372,6 +2664,13 @@ export struct Payload<T> {
     T value;
 }
 
+export enum CoNil {}
+
+export enum Coproduct<H, T> {
+    This(H),
+    Next(T),
+}
+
 export struct VariantRef<P> {
     []const char name;
     P payload;
@@ -2380,6 +2679,30 @@ export struct VariantRef<P> {
 export struct Variant<P> {
     []const char name;
     P payload;
+}
+
+export struct ArrayNil {}
+
+export struct ArrayChunk1<T> { T item0; }
+export struct ArrayChunk2<T> { T item0; T item1; }
+export struct ArrayChunk3<T> { T item0; T item1; T item2; }
+export struct ArrayChunk4<T> { T item0; T item1; T item2; T item3; }
+export struct ArrayChunk5<T> { T item0; T item1; T item2; T item3; T item4; }
+export struct ArrayChunk6<T> { T item0; T item1; T item2; T item3; T item4; T item5; }
+export struct ArrayChunk7<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; }
+export struct ArrayChunk8<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; }
+export struct ArrayChunk9<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; }
+export struct ArrayChunk10<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; }
+export struct ArrayChunk11<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; }
+export struct ArrayChunk12<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; }
+export struct ArrayChunk13<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; }
+export struct ArrayChunk14<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; }
+export struct ArrayChunk15<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; }
+export struct ArrayChunk16<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; T item15; }
+
+export struct ArrayCat<L, R> {
+    L left;
+    R right;
 }
 
 export RefRepr<T> as_ref_repr<T>(*const T value);
@@ -2427,6 +2750,10 @@ export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch);
 
 ```rust
 // /std/atomic
+export import /std/error;
+export import /std/message;
+export import /std/result;
+
 export enum MemoryOrder {
     Relaxed,
     Acquire,
@@ -2487,6 +2814,7 @@ export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
 ```rust
 // /std/sync
 import /std/result;
+import /std/message;
 import /std/meta;
 
 export struct Mutex<T> {
@@ -2503,7 +2831,15 @@ export interface<F, T, R> Result<Update<T, R>, Error> update_value(
     T value
 );
 
-export Result<R, Error> mutex_update<T, F, R>(*const Mutex<T> mutex, *const F f);
+export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial);
+export Result<R, Error> mutex_update<T: Message, F, R>(
+    *const Mutex<T> mutex,
+    *const F f
+);
+export Result<R, Error> mutex_with<T, R: Message>(
+    *const Mutex<T> mutex,
+    Result<R, Error> |(*T)| body
+);
 ```
 
 ```rust
@@ -2532,6 +2868,8 @@ export import /std/time;
 export import /std/env;
 export import /std/crypto;
 export import /std/net;
+
+export Result<void, Error> sleep_ms(u64 ms);
 ```
 
 ```rust
@@ -2565,6 +2903,8 @@ export []const u8 byte_buf_slice(*const ByteBuf buf);
 export []u8 byte_buf_mut_slice(*ByteBuf buf);
 export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional);
 export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data);
+export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional);
+export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional);
 export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count);
 ```
 
@@ -2574,6 +2914,10 @@ callers use `byte_buf_new` and the exported operations. Slice-returning
 functions expose views into the buffer's initialized prefix. `byte_buf_clear`
 sets the initialized length to zero without releasing capacity, and
 `byte_buf_reserve` grows while preserving existing bytes.
+`byte_buf_spare_mut_slice` and `byte_buf_commit_tail` support staged appends:
+callers reserve writable tail space, fill it through the returned slice, then
+commit the number of bytes actually initialized. This pattern is used by frame
+readers that copy async `Bytes` into reusable buffers.
 `byte_buf_discard_prefix` removes an initialized prefix and shifts the
 remaining bytes down, which supports frame parsers that retain partial input
 between async reads.
@@ -2604,10 +2948,24 @@ export enum RemoveResult<V> {
     Missing,
 }
 
+export enum GetResult<V> {
+    MapFound(V),
+    MapMissing,
+}
+
+export enum PopResult<K, V> {
+    Popped(K, V),
+    Empty,
+}
+
 export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>();
 export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map);
 export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map);
 export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
+    *const HashMap<K, V> map,
+    K key
+);
+export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
 );
@@ -2619,6 +2977,9 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
 export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
+);
+export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
+    *HashMap<K, V> map
 );
 export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
     *HashMap<K, V> map,
@@ -2638,6 +2999,10 @@ usize count = hash_map_len(&table);
 
 `HashMap<K, V>` itself is the type witness for operations that take the map;
 ordinary map operations do not need separate `meta::Type<T>` tag values.
+`hash_map_get` returns a cloned value and therefore requires `V: Message`;
+`hash_map_with` is the scoped mutable-access API for values that should not be
+cloned. `hash_map_pop_any` removes one arbitrary entry, which is useful for
+draining actor-local work queues and for implementing synchronized facades.
 
 `/std/map` provides an actor-local mutable hash table. It uses separate
 chaining with GC-backed nodes and a runtime-allocated bucket array. `HashMap`
@@ -2648,6 +3013,61 @@ Structural policies cover `/std/meta` product and sum nodes used by
 `meta::RefRepr<T>` and `meta::Repr<T>`, so visible structs and enums can opt in
 with explicit `hash_key` and `key_eq` wrappers that delegate to the structural
 representation.
+
+```rust
+// /std/shared_map
+import /std/result;
+import /std/map as map;
+import /std/message;
+import /std/sync;
+
+unsafe struct SharedMapState<K, V> {
+    map::HashMap<K, V> inner;
+}
+
+export struct SharedMap<K, V> {
+    sync::Mutex<SharedMapState<K, V>> state;
+}
+
+export enum SharedMapGet<V> {
+    SharedMapFound(V),
+    SharedMapMissing,
+}
+
+export enum SharedMapPop<K, V> {
+    SharedMapItem(K, V),
+    SharedMapEmpty,
+}
+
+export interface shared_map_key = map::map_key + Message;
+
+export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Message>();
+export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key,
+    V value
+);
+export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key
+);
+export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key
+);
+export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared
+);
+export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared
+);
+```
+
+`/std/shared_map` wraps an actor-local `HashMap` in a shareable `Mutex` handle.
+Keys must be both `map_key` and `Message`, and values must be `Message`, because
+operations clone values across the synchronized boundary. It is intended for
+registries and routing tables shared by async tasks or actors, while
+`/std/map` remains the cheaper actor-local storage primitive.
 
 ```rust
 // /std/time
@@ -2859,6 +3279,32 @@ descriptor. The scoped `with_tcp_*` helpers follow the `/std/io` pattern and
 close the opened resource on normal and error returns from the body.
 
 ```rust
+// /std/async/bytes
+export import /std/result;
+
+export struct Bytes {
+    *void handle;
+}
+
+export Result<Bytes, Error> bytes_copy([]const u8 data);
+export Result<Bytes, Error> bytes_copy_chars([]const char text);
+export Result<Bytes, Error> bytes_concat([]const u8 left, []const u8 right);
+export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes);
+export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len);
+export usize bytes_len(Bytes bytes);
+export usize bytes_capacity(Bytes bytes);
+export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out);
+export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out);
+```
+
+`/std/async/bytes` is the implementation module for immutable runtime-backed
+owned byte buffers. `Bytes` implements `Message` as a shareable handle. The
+copy helpers allocate new immutable handles from slices; `bytes_slice` creates
+a subrange handle; `bytes_copy_to` and `bytes_copy_to_chars` copy into caller
+provided mutable buffers. `bytes_capacity` exposes backing capacity for APIs
+such as async TCP `read_into`, where a returned buffer can be reused.
+
+```rust
 // /std/bytes
 export import /std/async/bytes;
 
@@ -2873,6 +3319,29 @@ APIs. It is a runtime-backed handle, implements `Message` through explicit
 standard-library policy, and can be copied into slices when mutable inspection
 is needed. `/std/bytes` is the general facade; `/std/async/bytes` remains the
 implementation module exported by older async modules.
+
+```rust
+// /std/text
+export import /std/result;
+import /std/bytes as bytes;
+
+export struct Text {
+    bytes::Bytes bytes;
+}
+
+export Result<Text, Error> text_empty();
+export Result<Text, Error> text_copy([]const char text);
+export usize text_len(Text text);
+export Result<bytes::Bytes, Error> text_to_bytes(Text text);
+export Result<[]char, Error> text_to_chars(Text text);
+export Result<[]const char, Error> text_to_slice(Text text);
+```
+
+`/std/text` wraps immutable owned bytes as text-oriented data. It does not yet
+perform Unicode normalization or validation beyond preserving byte contents.
+`Text` implements `Message` as a shareable handle, so it is suitable for actor
+and async-task payloads. Conversion helpers copy the contents out when mutable
+or slice inspection is needed.
 
 ```rust
 // /std/async
@@ -2983,17 +3452,12 @@ waiter future; it does not assume that an arbitrary underlying protocol can
 discard partial state. The operand therefore must satisfy
 `SelectableFuture<Out>`, which is `Awaitable<Out> + CancelSafe + Abortable`.
 
-The old public flow API is removed. `/std/async` no longer exports
-`AsyncRunner<S>`, `AsyncTask<S, Out>`, `Completion<S, Out>`, `spawn_runner`,
-`from_completion`, `then`, `start`, `stop_runner`, or `join_runner`. The old
-public `/std/async/adapter` module is also gone; operation-token adapters live
-under the internal namespace below for stdlib lowering and implementation
-tests.
-
 ```rust
 // /std/async/internal/adapter
 import /std/actor as actor;
 import /std/c as c;
+import /std/message;
+import /std/result;
 
 export interface<Op, M> Result<void, Error> notify_done(
     Op op,
@@ -3007,7 +3471,8 @@ export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);
 ```
 
 The internal adapter namespace describes runtime operation tokens. `notify_done`
-and `finish` support low-level actor completion tests and compatibility code.
+and `finish` support low-level actor completion tests and direct operation
+integration.
 `raw_operation` and `poll_done` are used by `future_from_op` to wrap a one-shot
 runtime operation as a future. Normal application code should call awaitable
 stdlib functions such as `async_io::read_bytes`, `async_net::read`, or
@@ -3019,6 +3484,7 @@ export import /std/result;
 export import /std/async/bytes;
 import /std/actor as actor;
 import /std/io;
+import /std/message;
 import /std/os/fd as os_fd;
 
 export struct AsyncFd {
@@ -3064,14 +3530,16 @@ export Result<void, Error> cancel_write(AsyncWrite op);
 `/std/async_io` provides awaitable file-descriptor operations. The high-level
 `read_bytes` and `write_bytes` functions are async functions and are the normal
 API. The `*_async`, `notify_*`, `finish_*`, and `cancel_*` operation-token
-functions remain low-level compatibility hooks. Raw fd reads and writes are
-`Abortable` but not `CancelSafe` by default because cancellation may hide
-offset changes or partial writes.
+functions are low-level hooks for direct actor-completion integration. Raw fd
+reads and writes are `Abortable` but not `CancelSafe` by default because
+cancellation may hide offset changes or partial writes.
 
 ```rust
 // /std/async_net
 export import /std/result;
 export import /std/async/bytes;
+import /std/actor as actor;
+import /std/message;
 import /std/net;
 
 export struct AsyncTcpListener {
@@ -3175,6 +3643,27 @@ export async Result<Bytes, Error> read_exact_buffered(
     usize len
 );
 
+export Result<void, Error> notify_accept_done<M: Message>(
+    *const AsyncAccept op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_connect_done<M: Message>(
+    *const AsyncConnect op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_read_done<M: Message>(
+    *const AsyncTcpRead op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+export Result<void, Error> notify_write_done<M: Message>(
+    *const AsyncTcpWrite op,
+    *const actor::Actor<M> actor_handle,
+    M message
+);
+
 export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op);
 export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op);
 export Result<Bytes, Error> finish_read(AsyncTcpRead op);
@@ -3199,6 +3688,11 @@ close or poison the stream to release a stuck operation, but a losing
 `select`/`timeout` cannot keep using the same stream after possibly discarding
 bytes, losing an owned buffer, or observing partial writes.
 
+The `*_async`, `notify_*`, `finish_*`, and `cancel_*` functions are low-level
+operation-token hooks for actor completion tests and direct operation
+integration. Normal async application code should prefer `accept`, `connect`,
+`read`, `write`, and the buffered reader helpers.
+
 Selectable stream reads use `BufferedStreamReader`. The reader owns the read
 half and a private buffer. `read_buffered` is `CancelSafe + Abortable` because
 cancellation preserves already-read bytes inside that private buffer and abort
@@ -3211,6 +3705,7 @@ previous read that drained the fd into the private buffer can make a later
 // /std/async_time
 export import /std/result;
 import /std/actor as actor;
+import /std/message;
 
 export struct AsyncSleep {
     *void handle;
@@ -3229,8 +3724,9 @@ export Result<void, Error> cancel_sleep(AsyncSleep op);
 
 `/std/async_time` provides monotonic awaitable timers. `sleep_ms` is the normal
 async timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
-`notify_sleep_done`, `finish_sleep`, and `cancel_sleep` remain low-level
-operation-token compatibility hooks. Timer policy is deliberately narrow:
+`notify_sleep_done`, `finish_sleep`, and `cancel_sleep` are low-level
+operation-token hooks for direct actor-completion integration. Timer policy is
+deliberately narrow:
 protocol-specific heartbeat, missed-pong, retry, and deadline behavior belongs
 in application code or in helpers such as `async::timeout`.
 
@@ -3238,7 +3734,7 @@ These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime
 hook.
 
-## 18. C Interop and ABI
+## 19. C Interop and ABI
 
 `extern "C"` declarations are C ABI declarations. C APIs require explicit
 pointer nullability and view mutability: users write `*T`, `*const T`, `?*T`,
@@ -3419,7 +3915,7 @@ GC pointers must use `CielRoot` or another explicit root mechanism.
 
 `ciel_thread_attach` returns `0` on success and a nonzero value on failure.
 
-## 19. Debug Information
+## 20. Debug Information
 
 A debug build emits target debug information through the generated C compiler.
 The Ciel compiler:
@@ -3433,7 +3929,7 @@ The Ciel compiler:
 The minimum debug contract is source-line mapping, readable panic locations,
 and deterministic generated names.
 
-## 20. C Backend Lowering
+## 21. C Backend Lowering
 
 Ciel keeps source-level value semantics. The generated C ABI for internal Ciel
 functions may avoid large copies:

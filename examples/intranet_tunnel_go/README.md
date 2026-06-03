@@ -1,7 +1,6 @@
 # Go Intranet Tunnel Reference
 
-This module is the Go reference implementation for `../intranet-tunnel-prd.md`
-and mirrors the Ciel demo's public behavior:
+This module is the Go reference implementation for `../intranet-tunnel-prd.md`.
 
 - `tunnel-server` listens on a control port and a public client port.
 - `tunnel-agent` connects to the control port, authenticates with the

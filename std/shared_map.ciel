@@ -1,3 +1,4 @@
+// Re-exports Result for shared-map operations.
 export import /std/result;
 import /std/map as map;
 import /std/message;
@@ -8,15 +9,18 @@ unsafe struct SharedMapState<K, V> {
     map::HashMap<K, V> inner;
 }
 
+// Shareable synchronized hash map backed by a Mutex-protected actor-local map.
 export struct SharedMap<K, V> {
     sync::Mutex<SharedMapState<K, V>> state;
 }
 
+// Result of reading a cloned value from a SharedMap.
 export enum SharedMapGet<V> {
     SharedMapFound(V),
     SharedMapMissing,
 }
 
+// Result of removing an arbitrary entry from a SharedMap.
 export enum SharedMapPop<K, V> {
     SharedMapItem(K, V),
     SharedMapEmpty,
@@ -56,8 +60,10 @@ unsafe impl<K: Message, V: Message> share_handle_marker(*const SharedMap<K, V> v
     return true;
 }
 
+// Constraint alias for keys that can be hashed and sent across concurrency boundaries.
 export interface shared_map_key = map::map_key + Message;
 
+// Creates an empty shared map whose keys and values are Message values.
 export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Message>() {
     map::HashMap<K, V> inner = map::hash_map_new<K, V>()?;
     SharedMapState<K, V> state = unsafe { { inner: inner } };
@@ -65,6 +71,7 @@ export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Messa
     return Ok({ state: mutex });
 }
 
+// Inserts or replaces a value under key while holding the map lock.
 export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key,
@@ -76,6 +83,7 @@ export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, 
     );
 }
 
+// Looks up key while holding the lock and returns a cloned value when present.
 export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
@@ -94,6 +102,7 @@ export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Messa
     );
 }
 
+// Removes key while holding the lock and returns the stored value when present.
 export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
@@ -112,6 +121,7 @@ export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Me
     );
 }
 
+// Removes and returns an arbitrary entry while holding the lock.
 export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) {
@@ -129,6 +139,7 @@ export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V
     );
 }
 
+// Returns the current entry count while holding the lock.
 export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) {

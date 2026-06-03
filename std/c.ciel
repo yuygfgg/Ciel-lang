@@ -1,36 +1,61 @@
 #c_include "stddef.h"
 #c_include "stdint.h"
 
+// C ABI scalar and integer typedef spellings for extern "C" declarations.
 export extern "C" {
+    // C plain char.
     type c_char = "char";
+    // C signed char.
     type c_schar = "signed char";
+    // C unsigned char.
     type c_uchar = "unsigned char";
+    // C signed short.
     type c_short = "short";
+    // C unsigned short.
     type c_ushort = "unsigned short";
+    // C signed int.
     type c_int = "int";
+    // C unsigned int.
     type c_uint = "unsigned int";
+    // C signed long.
     type c_long = "long";
+    // C unsigned long.
     type c_ulong = "unsigned long";
+    // C signed long long.
     type c_long_long = "long long";
+    // C unsigned long long.
     type c_ulong_long = "unsigned long long";
+    // C float.
     type c_float = "float";
+    // C double.
     type c_double = "double";
 
+    // C size_t.
     type c_size_t = "size_t";
+    // C ptrdiff_t.
     type c_ptrdiff_t = "ptrdiff_t";
+    // C intptr_t.
     type c_intptr_t = "intptr_t";
+    // C uintptr_t.
     type c_uintptr_t = "uintptr_t";
+    // C intmax_t.
     type c_intmax_t = "intmax_t";
+    // C uintmax_t.
     type c_uintmax_t = "uintmax_t";
 }
 
 #if !is_target_os("windows")
 #c_include "sys/types.h"
 
+// POSIX ssize_t spelling, available on non-Windows targets.
 export extern "C" {
+    // POSIX ssize_t.
     type c_ssize_t = "ssize_t";
 }
 #endif
 
+// Mutable NUL-terminated C string pointer.
 export type c_string = *char;
+
+// Read-only NUL-terminated C string pointer.
 export type const_c_string = *const char;

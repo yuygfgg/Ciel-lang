@@ -1,3 +1,4 @@
+// User-facing async facade re-exporting futures, tasks, channels, and groups.
 export import /std/async/core;
 import /std/async_time as async_time;
 
@@ -7,6 +8,7 @@ Result<Out, Error> timeout_elapsed<Out>(Result<void, Error> sleep_result) {
 }
 
 // TODO(async-await channels): keep timeout on this pure select wrapper and add channel receive coverage when channels land.
+// Races a selectable future with a timer and returns timeout_error on expiry.
 export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
     A future,
     u64 ms

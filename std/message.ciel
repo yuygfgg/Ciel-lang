@@ -1,22 +1,39 @@
+// Re-exports the standard Error type used by clone_message.
 export import /std/error;
+
+// Re-exports Result for marker interface signatures.
 export import /std/result;
 import /std/meta;
 import /std/meta as meta;
 
+// Clones a value for transfer across actor, task, channel, or shared-handle
+// boundaries. Unsafe implementations must produce an independent safe message.
 export unsafe interface<T> Result<T, Error> clone_message(*const T value);
 
+// Marks runtime-backed handles that may be shared across concurrency boundaries.
 // Reserved marker: policy is defined by explicit library/runtime implementations.
 export unsafe interface<T> bool share_handle_marker(*const T value);
 
+// Marks values that must remain actor-local or thread-local.
 // Reserved marker: policy is defined by explicit library/runtime implementations.
 export unsafe interface<T> bool thread_local_marker(*const T value);
 
+// Internal alias for the clone_message marker.
 export interface MessageInternal = clone_message;
+
+// Internal alias for shareable handle policy.
 export interface ShareHandleInternal = share_handle_marker;
+
+// Internal alias for thread-local policy.
 export interface ThreadLocalInternal = thread_local_marker;
 
+// Values that can cross concurrency boundaries and are not thread-local.
 export interface Message = MessageInternal + !ThreadLocalInternal;
+
+// Message values that also represent shareable synchronized handles.
 export interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
+
+// Values explicitly confined to one actor or thread.
 export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 
 unsafe impl clone_message(*const void value) {

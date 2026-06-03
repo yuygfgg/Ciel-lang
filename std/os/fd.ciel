@@ -1,6 +1,7 @@
 import /std/c as c;
 import /std/message;
 
+// Low-level raw OS file descriptor. Safe code cannot construct one directly.
 export unsafe struct RawFd {
     c::c_int raw;
 }
@@ -9,22 +10,27 @@ unsafe impl thread_local_marker(*const RawFd value) {
     return true;
 }
 
+// Unsafely adopts an integer as a RawFd.
 export unsafe RawFd from_raw_fd(c::c_int raw) {
     return unsafe { { raw: raw } };
 }
 
+// Unsafely extracts the integer descriptor from a RawFd.
 export unsafe c::c_int raw_fd(RawFd fd) {
     return unsafe { fd.raw };
 }
 
+// Returns RawFd for standard input.
 export RawFd stdin() {
     return unsafe { from_raw_fd(0 as c::c_int) };
 }
 
+// Returns RawFd for standard output.
 export RawFd stdout() {
     return unsafe { from_raw_fd(1 as c::c_int) };
 }
 
+// Returns RawFd for standard error.
 export RawFd stderr() {
     return unsafe { from_raw_fd(2 as c::c_int) };
 }

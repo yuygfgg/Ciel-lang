@@ -1,6 +1,8 @@
 import /std/error/core;
 import /std/result/core;
 
+// Converts an arbitrary ErrorTrait result into Result<T, Error> and adds context
+// only on the error path.
 export Result<T, Error> error_context<T, E: ErrorTrait>(
     Result<T, E> result,
     []const char context,
@@ -13,6 +15,7 @@ export Result<T, Error> error_context<T, E: ErrorTrait>(
     }
 }
 
+// Void-specialized form of error_context for Result<void, E>.
 export Result<void, Error> error_context_void<E: ErrorTrait>(
     Result<void, E> result,
     []const char context,

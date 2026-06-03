@@ -1,3 +1,4 @@
+// Re-exports Result for ByteBuf operations.
 export import /std/result;
 import /std/c as c;
 import /std/message;
@@ -8,30 +9,36 @@ unsafe extern "C" {
     c::c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
 }
 
+// Growable GC-backed byte buffer. Safe code must construct it with byte_buf_new.
 export unsafe struct ByteBuf {
     []u8 storage;
     usize len;
 }
 
+// Creates an empty ByteBuf with at least the requested initial capacity.
 export Result<ByteBuf, Error> byte_buf_new(usize capacity) {
     []u8 storage = unsafe { ciel_runtime_u8_alloc_slice(capacity) };
     return Ok(unsafe { { storage: storage, len: 0 } });
 }
 
+// Returns the number of initialized bytes in the buffer.
 export usize byte_buf_len(*const ByteBuf buf) {
     return unsafe { buf->len };
 }
 
+// Resets the initialized length to zero without releasing capacity.
 export void byte_buf_clear(*ByteBuf buf) {
     unsafe {
         buf->len = 0;
     };
 }
 
+// Returns a read-only view of the initialized byte prefix.
 export []const u8 byte_buf_slice(*const ByteBuf buf) {
     return unsafe { buf->storage[..buf->len] };
 }
 
+// Returns a mutable view of the initialized byte prefix.
 export []u8 byte_buf_mut_slice(*ByteBuf buf) {
     return unsafe { buf->storage[..buf->len] };
 }
@@ -65,6 +72,7 @@ usize grown_capacity(usize current, usize needed) {
     return next;
 }
 
+// Ensures room for additional bytes after the initialized prefix.
 export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
@@ -85,6 +93,7 @@ export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) {
     return Ok;
 }
 
+// Appends a byte slice to the initialized prefix, growing as needed.
 export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
     byte_buf_reserve(buf, data.len)?;
     usize len = byte_buf_len(buf);
@@ -100,12 +109,14 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
     return Ok;
 }
 
+// Reserves additional uninitialized tail space and returns a mutable view to it.
 export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) {
     byte_buf_reserve(buf, additional)?;
     usize len = byte_buf_len(buf);
     return Ok(unsafe { buf->storage[len..(len + additional)] });
 }
 
+// Marks additional bytes previously written through byte_buf_spare_mut_slice as initialized.
 export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
@@ -118,6 +129,7 @@ export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) 
     return Ok;
 }
 
+// Removes count initialized bytes from the front and shifts the remaining bytes down.
 export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) {
     usize len = byte_buf_len(buf);
     if (count > len) {

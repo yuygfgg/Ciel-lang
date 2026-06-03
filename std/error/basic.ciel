@@ -1,19 +1,23 @@
 import /std/error/core;
 import /std/format as format;
 
+// Error payload backed by a caller-provided text message.
 export struct TextError {
     []const char text;
 }
 
+// Error payload backed by an integer code, usually an OS or runtime status.
 export struct CodeError {
     i64 code;
 }
 
+// Creates a standard Error from a text message.
 export Error text_error([]const char text) {
     TextError error = { text: text };
     return error_box(error);
 }
 
+// Creates a standard Error from an integer status code.
 export Error code_error(i64 code) {
     CodeError error = { code: code };
     return error_box(error);

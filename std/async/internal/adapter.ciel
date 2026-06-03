@@ -1,17 +1,26 @@
+// Re-exports Error for low-level operation adapter signatures.
 export import /std/error;
+
+// Re-exports Message for actor notification payloads.
 export import /std/message;
+
+// Re-exports Result for adapter interfaces.
 export import /std/result;
 import /std/actor as actor;
 import /std/c as c;
 
+// Registers actor_handle to receive message when op completes.
 export interface<Op, M> Result<void, Error> notify_done(
     Op op,
     actor::Actor<M> actor_handle,
     M message
 );
 
+// Finishes op and converts the runtime result into Out.
 export interface<Op, Out> Result<Out, Error> finish(Op op);
 
+// Returns the raw runtime operation pointer for op.
 export unsafe interface<Op> *void raw_operation(*const Op op);
 
+// Polls op without suspending; returns a C status code and writes Out on success.
 export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);

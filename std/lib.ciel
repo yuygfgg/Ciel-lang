@@ -1,30 +1,78 @@
+// Re-exports standard Error and error-context helpers.
 export import /std/error;
+
+// Re-exports Result and unwrap helpers.
 export import /std/result;
+
+// Re-exports panic.
 export import /std/panic;
+
+// Re-exports C ABI type aliases.
 export import /std/c;
+
+// Re-exports blocking scoped I/O and formatting helpers.
 export import /std/io;
+
+// Re-exports async file-descriptor I/O.
 export import /std/async_io;
+
+// Re-exports async TCP networking.
 export import /std/async_net;
+
+// Re-exports async timers.
 export import /std/async_time;
+
+// Re-exports Message, ShareHandle, and ThreadLocal policies.
 export import /std/message;
+
+// Re-exports type-layout and structural-representation helpers.
 export import /std/meta;
+
+// Re-exports actor handles and actor runtime functions.
 export import /std/actor;
+
+// Re-exports blocking channels.
 export import /std/channel;
+
+// Re-exports synchronized handles such as Mutex.
 export import /std/sync;
+
+// Re-exports atomic handles and operations.
 export import /std/atomic;
+
+// Re-exports fixed-width integer codec helpers.
 export import /std/codec;
+
+// Re-exports growable byte buffers.
 export import /std/buf;
+
+// Re-exports owned immutable byte buffers.
 export import /std/bytes;
+
+// Re-exports owned text values.
 export import /std/text;
+
+// Re-exports actor-local hash maps.
 export import /std/map;
+
+// Re-exports synchronized shared hash maps.
 export import /std/shared_map;
+
+// Re-exports blocking time helpers.
 export import /std/time;
+
+// Re-exports process argument helpers.
 export import /std/env;
+
+// Re-exports cryptographic RNG, hash, MAC, and comparison helpers.
 export import /std/crypto;
+
+// Re-exports blocking TCP networking.
 export import /std/net;
 
 import /std/time as sync_time;
 
+// Compatibility wrapper for blocking sleep exposed by the standard facade.
 export Result<void, Error> sleep_ms(u64 ms) {
     return sync_time::sleep_ms(ms);
 }

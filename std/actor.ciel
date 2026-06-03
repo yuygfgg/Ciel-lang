@@ -1,7 +1,13 @@
+// Re-exports Error for actor creation and lifecycle failures.
 export import /std/error;
+
+// Re-exports Message constraints used by actor payloads and handlers.
 export import /std/message;
+
+// Re-exports Result for actor APIs.
 export import /std/result;
 
+// Shareable handle to an actor whose mailbox accepts values of type M.
 export struct Actor<M> {
     *void handle;
 }
@@ -14,25 +20,29 @@ unsafe impl<M> share_handle_marker(*const Actor<M> value) {
     return true;
 }
 
-// Compiler built-in: clones the initial state and lowers to the runtime actor backend.
+// Spawns an actor with cloned message-safe state and a value-in/value-out handler.
+// Compiler built-in: lowers to the runtime actor backend.
 export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
 );
 
-// Compiler built-in: constructs non-message actor state inside the actor-owned
-// storage boundary. The handler receives the actor's self handle for each
-// message, so state does not need fake self placeholders.
+// Spawns an actor whose state is created inside the actor-owned boundary.
+// The handler receives a mutable state pointer and the actor's self handle.
+// Compiler built-in: supports non-Message state that never leaves the actor.
 export Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
     Result<S, Error> |(): Message| init,
     Result<void, Error> |(*S, Actor<M>, M): Message| handler
 );
 
+// Sends a cloned message value to an actor mailbox.
 // Compiler built-in: clones the payload before enqueueing it.
 export Result<void, Error> send<M: Message>(*const Actor<M> actor, M value);
 
-// Compiler built-in: requests actor shutdown.
+// Requests actor shutdown after already queued messages are handled.
+// Compiler built-in.
 export Result<void, Error> stop<M: Message>(*const Actor<M> actor);
 
-// Compiler built-in: waits for the actor worker to finish.
+// Waits for the actor worker to finish.
+// Compiler built-in.
 export Result<void, Error> join<M: Message>(*const Actor<M> actor);

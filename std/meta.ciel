@@ -1,91 +1,110 @@
-// Compiler built-ins: lowered to C sizeof/alignof for the concrete type argument.
+// Returns the size in bytes of the concrete type argument.
 export usize type_size<T>();
+
+// Returns the alignment in bytes of the concrete type argument.
 export usize type_align<T>();
 
 // Zero-sized type witness used by APIs that need a type as an input value.
 export struct Type<T> {}
 
-// Compiler-recognized structural representation markers.
-// Type checking normalizes these markers to the ordinary SOP types below.
+// Read-only structural representation marker for a visible type.
+// Type checking normalizes this marker to the ordinary SOP types below.
 export struct RefRepr<T> {}
+
+// Owned structural representation marker for a visible type.
+// Type checking normalizes this marker to the ordinary SOP types below.
 export struct Repr<T> {}
 
-// Compiler-provided marker facts. User code cannot implement these interfaces;
-// the compiler only proves them for Ciel ABI function pointers and concrete
-// closure instance values respectively.
+// Compiler-provided marker fact for Ciel ABI function-pointer values.
+// User code cannot implement this interface directly.
 export interface<T> bool ciel_fn_value_marker(*const T value);
+
+// Constraint alias for Ciel ABI function-pointer values.
 export interface CielFnValue = ciel_fn_value_marker;
 
+// Compiler-provided marker fact for concrete closure instance values.
+// User code cannot implement this interface directly.
 export interface<T> bool closure_value_marker(*const T value);
+
+// Constraint alias for concrete closure instance values.
 export interface ClosureValue = closure_value_marker;
 
-// Product lists.
+// Empty product-list node used in structural representations.
 export struct HNil {}
 
+// Product-list cons node used in structural representations.
 export struct HCons<H, T> {
     H head;
     T tail;
 }
 
-// Named struct fields.
+// Borrowed named struct field in a RefRepr product.
 export struct FieldRef<T> {
     []const char name;
     *const T value;
 }
 
+// Owned named struct field in a Repr product.
 export struct Field<T> {
     []const char name;
     T value;
 }
 
-// Positional enum payloads.
+// Borrowed positional enum payload in a RefRepr sum variant.
 export struct PayloadRef<T> {
     usize index;
     *const T value;
 }
 
+// Owned positional enum payload in a Repr sum variant.
 export struct Payload<T> {
     usize index;
     T value;
 }
 
-// Sum lists.
+// Empty sum-list node used in structural representations.
 export enum CoNil {}
 
+// Sum-list cons node used in structural representations.
 export enum Coproduct<H, T> {
     This(H),
     Next(T),
 }
 
+// Borrowed named enum variant in a RefRepr sum.
 export struct VariantRef<P> {
     []const char name;
     P payload;
 }
 
+// Owned named enum variant in a Repr sum.
 export struct Variant<P> {
     []const char name;
     P payload;
 }
 
-// Fixed-size array representation nodes. Array chunks are intentionally
-// bounded so large arrays build a shallow ArrayCat tree instead of a long list.
+// Empty fixed-size array representation node.
 export struct ArrayNil {}
 
+// Fixed-size array representation node for one element.
 export struct ArrayChunk1<T> {
     T item0;
 }
 
+// Fixed-size array representation node for two elements.
 export struct ArrayChunk2<T> {
     T item0;
     T item1;
 }
 
+// Fixed-size array representation node for three elements.
 export struct ArrayChunk3<T> {
     T item0;
     T item1;
     T item2;
 }
 
+// Fixed-size array representation node for four elements.
 export struct ArrayChunk4<T> {
     T item0;
     T item1;
@@ -93,6 +112,7 @@ export struct ArrayChunk4<T> {
     T item3;
 }
 
+// Fixed-size array representation node for five elements.
 export struct ArrayChunk5<T> {
     T item0;
     T item1;
@@ -101,6 +121,7 @@ export struct ArrayChunk5<T> {
     T item4;
 }
 
+// Fixed-size array representation node for six elements.
 export struct ArrayChunk6<T> {
     T item0;
     T item1;
@@ -110,6 +131,7 @@ export struct ArrayChunk6<T> {
     T item5;
 }
 
+// Fixed-size array representation node for seven elements.
 export struct ArrayChunk7<T> {
     T item0;
     T item1;
@@ -120,6 +142,7 @@ export struct ArrayChunk7<T> {
     T item6;
 }
 
+// Fixed-size array representation node for eight elements.
 export struct ArrayChunk8<T> {
     T item0;
     T item1;
@@ -131,6 +154,7 @@ export struct ArrayChunk8<T> {
     T item7;
 }
 
+// Fixed-size array representation node for nine elements.
 export struct ArrayChunk9<T> {
     T item0;
     T item1;
@@ -143,6 +167,7 @@ export struct ArrayChunk9<T> {
     T item8;
 }
 
+// Fixed-size array representation node for ten elements.
 export struct ArrayChunk10<T> {
     T item0;
     T item1;
@@ -156,6 +181,7 @@ export struct ArrayChunk10<T> {
     T item9;
 }
 
+// Fixed-size array representation node for eleven elements.
 export struct ArrayChunk11<T> {
     T item0;
     T item1;
@@ -170,6 +196,7 @@ export struct ArrayChunk11<T> {
     T item10;
 }
 
+// Fixed-size array representation node for twelve elements.
 export struct ArrayChunk12<T> {
     T item0;
     T item1;
@@ -185,6 +212,7 @@ export struct ArrayChunk12<T> {
     T item11;
 }
 
+// Fixed-size array representation node for thirteen elements.
 export struct ArrayChunk13<T> {
     T item0;
     T item1;
@@ -201,6 +229,7 @@ export struct ArrayChunk13<T> {
     T item12;
 }
 
+// Fixed-size array representation node for fourteen elements.
 export struct ArrayChunk14<T> {
     T item0;
     T item1;
@@ -218,6 +247,7 @@ export struct ArrayChunk14<T> {
     T item13;
 }
 
+// Fixed-size array representation node for fifteen elements.
 export struct ArrayChunk15<T> {
     T item0;
     T item1;
@@ -236,6 +266,7 @@ export struct ArrayChunk15<T> {
     T item14;
 }
 
+// Fixed-size array representation node for sixteen elements.
 export struct ArrayChunk16<T> {
     T item0;
     T item1;
@@ -255,12 +286,17 @@ export struct ArrayChunk16<T> {
     T item15;
 }
 
+// Concatenates two fixed-size array representation subtrees.
 export struct ArrayCat<L, R> {
     L left;
     R right;
 }
 
-// Compiler built-ins: lowered from visible type layouts.
+// Builds a borrowed structural representation from a visible value layout.
 export RefRepr<T> as_ref_repr<T>(*const T value);
+
+// Builds an owned structural representation by copying from a visible value.
 export Repr<T> into_repr<T>(*const T value);
+
+// Reconstructs a visible value from its owned structural representation.
 export T from_repr<T>(Repr<T> value);

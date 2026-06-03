@@ -1,3 +1,4 @@
+// Re-exports Result for Text operations.
 export import /std/result;
 import /std/bytes as bytes;
 import /std/message;
@@ -6,6 +7,7 @@ unsafe extern "C" {
     []char ciel_runtime_char_alloc_slice(usize len);
 }
 
+// Immutable runtime-backed text value stored as owned bytes.
 export struct Text {
     bytes::Bytes bytes;
 }
@@ -19,23 +21,28 @@ unsafe impl share_handle_marker(*const Text value) {
     return true;
 }
 
+// Returns an empty Text value.
 export Result<Text, Error> text_empty() {
     return Ok({ bytes: bytes::bytes_empty()? });
 }
 
+// Copies a character slice into an owned Text value.
 export Result<Text, Error> text_copy([]const char text) {
     return Ok({ bytes: bytes::bytes_from_text(text)? });
 }
 
+// Returns the byte length of the Text value.
 export usize text_len(Text text) {
     return bytes::bytes_len(text.bytes);
 }
 
+// Returns a cloned owned Bytes handle for the Text contents.
 export Result<bytes::Bytes, Error> text_to_bytes(Text text) {
     bytes::Bytes copied = clone_message(&text.bytes)?;
     return Ok(copied);
 }
 
+// Copies Text contents into a mutable character slice allocation.
 export Result<[]char, Error> text_to_chars(Text text) {
     usize len = text_len(text);
     []char out = unsafe { ciel_runtime_char_alloc_slice(len) };
@@ -46,6 +53,7 @@ export Result<[]char, Error> text_to_chars(Text text) {
     return Ok(out);
 }
 
+// Copies Text contents into a read-only character slice.
 export Result<[]const char, Error> text_to_slice(Text text) {
     []char chars = text_to_chars(text)?;
     return Ok(chars);

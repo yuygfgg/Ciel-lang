@@ -1,16 +1,22 @@
+// Formats an error-like value into a stable diagnostic message slice.
 export interface<T> []const char format_error(*const T error);
+
+// Constraint alias for values that can be boxed into the standard Error type.
 export interface ErrorTrait = format_error;
 
+// Type-erased standard error with optional user-facing context and source.
 export struct Error {
     ErrorTrait value;
     []const char context;
     ?*const Error source;
 }
 
+// Boxes any ErrorTrait value as a standard Error without extra context.
 export Error error_box(ErrorTrait error) {
     return { value: error, context: "", source: null };
 }
 
+// Wraps a standard Error with a new context string while preserving the source.
 export Error error_with_context(Error source, []const char context) {
     Error source_copy = source;
     return { value: source.value, context: context, source: &source_copy };
@@ -23,6 +29,7 @@ impl format_error(*const Error error) {
     return format_error(error->value);
 }
 
+// Returns the display message for a standard Error.
 export []const char error_message(*const Error error) {
     return format_error(error);
 }

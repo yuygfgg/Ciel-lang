@@ -1,3 +1,4 @@
+// Re-exports Result for hash-map operations.
 export import /std/result;
 import /std/message;
 import /std/meta as meta;
@@ -10,8 +11,13 @@ unsafe extern "C" {
     void ciel_map_bucket_set(*void buckets, usize index, ?*void value);
 }
 
+// Computes a seeded hash for keys used by HashMap.
 export interface<T> u64 hash_key(*const T value, u64 seed);
+
+// Tests two keys for equality under the same key policy.
 export interface<T> bool key_eq(*const T left, *const T right);
+
+// Constraint alias for types usable as HashMap keys.
 export interface map_key = hash_key + key_eq;
 
 struct Node<K, V> {
@@ -21,6 +27,7 @@ struct Node<K, V> {
     ?*Node<K, V> next;
 }
 
+// Actor-local mutable hash table. Safe code must construct it with hash_map_new.
 export unsafe struct HashMap<K, V> {
     *void buckets;
     usize capacity;
@@ -28,21 +35,25 @@ export unsafe struct HashMap<K, V> {
     u64 seed;
 }
 
+// Result of inserting into a map.
 export enum InsertResult<V> {
     Inserted,
     Replaced(V),
 }
 
+// Result of removing a key from a map.
 export enum RemoveResult<V> {
     Removed(V),
     Missing,
 }
 
+// Result of reading a cloned value from a map.
 export enum GetResult<V> {
     MapFound(V),
     MapMissing,
 }
 
+// Result of removing an arbitrary entry from a map.
 export enum PopResult<K, V> {
     Popped(K, V),
     Empty,
@@ -233,16 +244,19 @@ Result<void, Error> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
     return hash_map_rehash<K, V>(map, capacity * 2);
 }
 
+// Creates an empty actor-local hash map.
 export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>() {
     usize capacity = initial_capacity();
     *void buckets = unsafe { ciel_map_alloc_buckets(capacity) };
     return Ok(unsafe { { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() } });
 }
 
+// Returns the number of entries currently stored in the map.
 export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) {
     return unsafe { map->len };
 }
 
+// Removes all entries while keeping the map reusable.
 export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) {
     usize @capacity = unsafe { map->capacity };
     if (capacity == 0) {
@@ -256,6 +270,7 @@ export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) {
     };
 }
 
+// Returns whether the map currently contains key.
 export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
     *const HashMap<K, V> map,
     K key
@@ -279,6 +294,7 @@ export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
     }
 }
 
+// Looks up key and returns a cloned Message value when present.
 export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
@@ -303,6 +319,7 @@ export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
     }
 }
 
+// Inserts or replaces a value for key, returning any replaced value.
 export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
@@ -336,6 +353,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     return Ok(Inserted);
 }
 
+// Removes key and returns the stored value when present.
 export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
@@ -372,6 +390,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     }
 }
 
+// Removes and returns an arbitrary entry, or Empty when the map has no entries.
 export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
     *HashMap<K, V> map
 ) {
@@ -396,6 +415,7 @@ export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
     return Ok(Empty);
 }
 
+// Gives body scoped mutable access to an existing value for key.
 export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
     *HashMap<K, V> map,
     K key,

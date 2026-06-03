@@ -1,5 +1,10 @@
+// Re-exports Error for atomic runtime failures.
 export import /std/error;
+
+// Re-exports Message so atomic handles can be shared between actors.
 export import /std/message;
+
+// Re-exports Result for atomic APIs.
 export import /std/result;
 import /std/c as c;
 import /std/meta;
@@ -24,6 +29,7 @@ unsafe extern "C" {
     ?*void ciel_atomic_fetch_sub(*CielAtomic atomic, *const void value, c::c_int order);
 }
 
+// Memory ordering accepted by atomic operations.
 export enum MemoryOrder {
     Relaxed,
     Acquire,
@@ -32,19 +38,27 @@ export enum MemoryOrder {
     SeqCst,
 }
 
+// Shareable runtime-backed atomic value handle.
 export struct Atomic<T> {
     *void handle;
 }
 
+// Result of compare-exchange: whether the swap happened and the previous value.
 export struct CompareExchange<T> {
     bool exchanged;
     T previous;
 }
 
+// Marker for types supported by Atomic<T>.
 export unsafe interface<T> bool atomic_value_marker(*const T value);
+
+// Constraint alias for all atomic value types.
 export interface AtomicValue = atomic_value_marker;
 
+// Marker for Atomic<T> types that also support arithmetic fetch operations.
 export unsafe interface<T> bool atomic_integer_marker(*const T value);
+
+// Constraint alias for atomic integer types.
 export interface AtomicInteger = atomic_integer_marker;
 
 unsafe impl atomic_value_marker(*const bool value) {
@@ -185,6 +199,7 @@ bool valid_compare_failure_order(MemoryOrder success, MemoryOrder failure) {
     return unsafe { atomic->handle as *CielAtomic };
 }
 
+// Creates an atomic handle initialized with the provided supported value.
 export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
     T local = initial;
     ?*CielAtomic raw = unsafe { ciel_atomic_make(type_size<T>(), type_align<T>(), &local as *const void) };
@@ -194,6 +209,7 @@ export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
     return Ok({ handle: raw as *void });
 }
 
+// Atomically loads and returns the current value.
 export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) {
     if (valid_load_order(order) == false) {
         return Err(invalid_memory_order());
@@ -206,6 +222,7 @@ export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, Mem
     return Ok(*typed);
 }
 
+// Atomically stores a new value. Release and SeqCst-style store orders are valid.
 export Result<void, Error> atomic_store<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
@@ -222,6 +239,7 @@ export Result<void, Error> atomic_store<T: AtomicValue>(
     return Ok;
 }
 
+// Atomically replaces the value and returns the previous value.
 export Result<T, Error> atomic_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
@@ -236,6 +254,8 @@ export Result<T, Error> atomic_exchange<T: AtomicValue>(
     return Ok(*typed);
 }
 
+// Atomically compares with expected, stores desired on success, and returns
+// whether the exchange happened plus the previous value.
 export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T expected,
@@ -267,6 +287,7 @@ export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>
     });
 }
 
+// Atomically adds value and returns the previous integer value.
 export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
@@ -281,6 +302,7 @@ export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
     return Ok(*typed);
 }
 
+// Atomically subtracts value and returns the previous integer value.
 export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,

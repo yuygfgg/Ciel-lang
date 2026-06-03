@@ -2,6 +2,7 @@ unsafe extern "C" {
     noescape never ciel_panic(*const char message, usize len);
 }
 
+// Reports a panic message to the runtime and terminates the process.
 export never panic([]const char message) {
     unsafe {
         ciel_panic(message.ptr, message.len);

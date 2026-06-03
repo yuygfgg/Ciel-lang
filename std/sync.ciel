@@ -1,5 +1,10 @@
+// Re-exports Error for synchronized handle failures.
 export import /std/error;
+
+// Re-exports Message for values stored behind synchronized handles.
 export import /std/message;
+
+// Re-exports Result for synchronization APIs.
 export import /std/result;
 import /std/c as c;
 import /std/meta;
@@ -13,15 +18,18 @@ unsafe extern "C" {
     c::c_int ciel_mutex_unlock(*CielMutex mutex);
 }
 
+// Shareable mutex handle protecting a Message value.
 export struct Mutex<T> {
     *void handle;
 }
 
+// Replacement value and caller result returned by update_value.
 export struct Update<T, R> {
     T value;
     R result;
 }
 
+// Functional update policy consumed by mutex_update.
 export interface<F, T, R> Result<Update<T, R>, Error> update_value(*const F updater, T value);
 
 unsafe impl<T> clone_message(*const Mutex<T> value) {
@@ -44,6 +52,7 @@ void unlock_mutex(*CielMutex mutex) {
     unsafe { ciel_mutex_unlock(mutex) };
 }
 
+// Creates a mutex by cloning the initial Message value into synchronized storage.
 export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
     T local = initial;
     T cloned = clone_message(&local)?;
@@ -54,6 +63,8 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
     return Ok({ handle: raw as *void });
 }
 
+// Locks the mutex, clones the current value, applies update_value, and stores
+// the returned replacement before unlocking.
 export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *const F updater) {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
@@ -71,6 +82,7 @@ export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *c
     return Ok(next.result);
 }
 
+// Locks the mutex and gives the body scoped mutable access to the protected value.
 export Result<R, Error> mutex_with<T, R: Message>(
     *const Mutex<T> mutex,
     Result<R, Error> |(*T)| body

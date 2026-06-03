@@ -1,3 +1,4 @@
+// Standard success-or-error sum type used by fallible std APIs.
 export enum Result<T, E> {
     Ok(T),
     Err(E),

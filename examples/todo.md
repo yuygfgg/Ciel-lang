@@ -314,25 +314,6 @@ driven by `test.sh`; they are not part of the repository-wide fixture harness.
       command.
       Tests: documentation-only task; run `git diff --check`.
 
-- [ ] Standardize the remaining demo-local unsafe boundaries.
-      Move reusable unsafe pieces out of `examples/intranet_tunnel/runtime.ciel`
-      and into trusted standard-library modules: boxed allocation for
-      library-owned nodes, a generic actor-local FIFO queue, and safe
-      optional/slot wrappers for runtime handles that are initialized after
-      construction. Do not make `HashMap` or raw pointer shells generally
-      `Message`.
-      Tests: demo code has no demo-local FFI import for boxed allocation;
-      negative fixtures still reject sending live `HashMap` storage; wrapper
-      tests cover uninitialized-slot rejection and initialized-slot access.
-
-- [ ] Remove remaining placeholder runtime stream handles from the tunnel demo.
-      `Actor<M>` placeholders have been eliminated by `spawn_actor_state`;
-      replace the remaining fake `AsyncTcpStream` placeholders with
-      standard-library optional slots.
-      Tests: stream state construction does not fabricate raw stream handles;
-      using an empty slot reports a standard error instead of reaching a raw
-      handle.
-
 ## Final Acceptance
 
 - [ ] Run focused standard-library tests for codec, buffer, map, time,

@@ -1,3 +1,4 @@
+// Re-exports Result and Error helpers for blocking I/O APIs.
 export import /std/result;
 import /std/c as c;
 import /std/format as format;
@@ -24,15 +25,20 @@ unsafe extern "C" {
     c::c_int ciel_file_stderr(*u32 out_slot, *u32 out_generation);
 }
 
+// File open mode used by scoped blocking file helpers.
 export enum OpenMode {
     Read,
     Write,
     Append,
 }
 
+// Converts a value to a printable character slice.
 export interface<T> []const char to_string(*const T value);
+
+// Constraint alias for values accepted by formatting and printing helpers.
 export interface printable = to_string;
 
+// Returns the current runtime errno/error code as a standard Error.
 export Error last_error() {
     return code_error(unsafe { ciel_errno() } as i64);
 }
@@ -81,6 +87,7 @@ Result<File, Error> stderr_file() {
     return Ok(file);
 }
 
+// Opens path in mode, passes a scoped File token to body, and closes on return.
 export Result<R, Error> with_open<R: Message>(
     []const char path,
     OpenMode mode,
@@ -91,6 +98,7 @@ export Result<R, Error> with_open<R: Message>(
     return body(file);
 }
 
+// Opens path for reading and closes it after body returns.
 export Result<R, Error> with_open_read<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
@@ -98,6 +106,7 @@ export Result<R, Error> with_open_read<R: Message>(
     return with_open(path, Read, body);
 }
 
+// Opens path for writing/truncation and closes it after body returns.
 export Result<R, Error> with_create<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
@@ -105,6 +114,7 @@ export Result<R, Error> with_create<R: Message>(
     return with_open(path, Write, body);
 }
 
+// Opens path for appending and closes it after body returns.
 export Result<R, Error> with_append<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
@@ -112,6 +122,7 @@ export Result<R, Error> with_append<R: Message>(
     return with_open(path, Append, body);
 }
 
+// Reads up to out.len bytes from a scoped File token.
 export Result<usize, Error> read(File file, []u8 out) {
     c::c_ssize_t n = unsafe { ciel_file_read(file.slot, file.generation, out.ptr as *void, out.len) };
     if ((n as i64) < 0) {
@@ -120,6 +131,7 @@ export Result<usize, Error> read(File file, []u8 out) {
     return Ok(n as usize);
 }
 
+// Writes up to data.len bytes to a scoped File token.
 export Result<usize, Error> write(File file, []const u8 data) {
     c::c_ssize_t n = unsafe { ciel_file_write(file.slot, file.generation, data.ptr as *const void, data.len) };
     if ((n as i64) < 0) {
@@ -128,6 +140,7 @@ export Result<usize, Error> write(File file, []const u8 data) {
     return Ok(n as usize);
 }
 
+// Writes up to text.len bytes to a scoped File token without retrying short writes.
 export Result<usize, Error> write_text_once(File file, []const char text) {
     c::c_ssize_t n = unsafe { ciel_file_write(file.slot, file.generation, text.ptr as *const void, text.len) };
     if ((n as i64) < 0) {
@@ -136,6 +149,7 @@ export Result<usize, Error> write_text_once(File file, []const char text) {
     return Ok(n as usize);
 }
 
+// Writes the full byte slice, retrying short writes until complete.
 export Result<void, Error> write_all(File file, []const u8 data) {
     usize @offset = 0;
     while (offset < data.len) {
@@ -148,6 +162,7 @@ export Result<void, Error> write_all(File file, []const u8 data) {
     return Ok;
 }
 
+// Writes the full character slice, retrying short writes until complete.
 export Result<void, Error> write_text(File file, []const char text) {
     usize @offset = 0;
     while (offset < text.len) {
@@ -160,12 +175,14 @@ export Result<void, Error> write_text(File file, []const char text) {
     return Ok;
 }
 
+// Formats an f32 value as a character slice.
 export []const char f32_to_string(f32 value) {
     [64]char @buf = ['\0';];
     usize len = unsafe { ciel_f32_to_string(value, &buf[0], 64) };
     return buf[..len];
 }
 
+// Formats an f64 value as a character slice.
 export []const char f64_to_string(f64 value) {
     [64]char @buf = ['\0';];
     usize len = unsafe { ciel_f64_to_string(value, &buf[0], 64) };
@@ -236,11 +253,13 @@ impl to_string(*const Error value) {
     return error_message(value);
 }
 
+// Writes a printable value to a scoped File token.
 export Result<void, Error> write_value<T: printable>(File file, T value) {
     T local = value;
     return write_text(file, to_string(&local));
 }
 
+// Writes fmt to file, replacing each "{}" placeholder with the next printable value.
 export Result<void, Error> write_format(File file, []const char fmt, []printable values) {
     usize @start = 0;
     usize @i = 0;
@@ -266,18 +285,21 @@ export Result<void, Error> write_format(File file, []const char fmt, []printable
     return Ok;
 }
 
+// Writes a printable value to stdout.
 export Result<void, Error> print_value<T: printable>(T value) {
     File file = stdout_file()?;
     defer close_scoped_file(file);
     return write_value(file, value);
 }
 
+// Writes a printable value to stderr.
 export Result<void, Error> eprint_value<T: printable>(T value) {
     File file = stderr_file()?;
     defer close_scoped_file(file);
     return write_value(file, value);
 }
 
+// Writes a printable value plus newline to stdout.
 export Result<void, Error> println_value<T: printable>(T value) {
     File file = stdout_file()?;
     defer close_scoped_file(file);
@@ -285,6 +307,7 @@ export Result<void, Error> println_value<T: printable>(T value) {
     return write_text(file, "\n");
 }
 
+// Writes a printable value plus newline to stderr.
 export Result<void, Error> eprintln_value<T: printable>(T value) {
     File file = stderr_file()?;
     defer close_scoped_file(file);
@@ -292,18 +315,21 @@ export Result<void, Error> eprintln_value<T: printable>(T value) {
     return write_text(file, "\n");
 }
 
+// Writes a formatted message to stdout.
 export Result<void, Error> print([]const char fmt, []printable values) {
     File file = stdout_file()?;
     defer close_scoped_file(file);
     return write_format(file, fmt, values);
 }
 
+// Writes a formatted message to stderr.
 export Result<void, Error> eprint([]const char fmt, []printable values) {
     File file = stderr_file()?;
     defer close_scoped_file(file);
     return write_format(file, fmt, values);
 }
 
+// Writes a formatted message plus newline to stdout.
 export Result<void, Error> println([]const char fmt, []printable values) {
     File file = stdout_file()?;
     defer close_scoped_file(file);
@@ -311,6 +337,7 @@ export Result<void, Error> println([]const char fmt, []printable values) {
     return write_text(file, "\n");
 }
 
+// Writes a formatted message plus newline to stderr.
 export Result<void, Error> eprintln([]const char fmt, []printable values) {
     File file = stderr_file()?;
     defer close_scoped_file(file);

@@ -1,3 +1,4 @@
+// Facade re-export for the runtime-backed Bytes type and raw byte helpers.
 export import /std/async/bytes;
 import /std/async/bytes as raw;
 import /std/result;
@@ -6,15 +7,18 @@ unsafe extern "C" {
     []u8 ciel_runtime_u8_alloc_slice(usize len);
 }
 
+// Returns an empty owned Bytes value.
 export Result<raw::Bytes, Error> bytes_empty() {
     [1]u8 empty = [0;];
     return raw::bytes_copy(empty[..0]);
 }
 
+// Copies UTF-8/text bytes into an owned Bytes value.
 export Result<raw::Bytes, Error> bytes_from_text([]const char text) {
     return raw::bytes_copy_chars(text);
 }
 
+// Copies an owned Bytes value into a mutable byte slice allocation.
 export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) {
     usize len = raw::bytes_len(bytes);
     []u8 out = unsafe { ciel_runtime_u8_alloc_slice(len) };
@@ -25,6 +29,7 @@ export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) {
     return Ok(out);
 }
 
+// Appends two owned Bytes values and returns a new owned Bytes value.
 export Result<raw::Bytes, Error> bytes_append(raw::Bytes left, raw::Bytes right) {
     []u8 left_slice = bytes_to_slice(left)?;
     []u8 right_slice = bytes_to_slice(right)?;

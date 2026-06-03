@@ -1,10 +1,19 @@
 import /std/result;
 import /std/meta as meta;
 
+// Returns the encoded byte length for a fixed-width integer-like value.
 export interface<T> usize encoded_len(T value);
+
+// Writes a value in big-endian byte order into an existing output slice.
 export interface<T> Result<void, Error> put_be([]u8 out, T value);
+
+// Writes a value in little-endian byte order into an existing output slice.
 export interface<T> Result<void, Error> put_le([]u8 out, T value);
+
+// Reads a value of T from big-endian bytes using a type witness.
 export interface<T> Result<T, Error> get_be(meta::Type<T> tag, []const u8 data);
+
+// Reads a value of T from little-endian bytes using a type witness.
 export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
 
 Error short_output_error() {
@@ -15,6 +24,7 @@ Error short_input_error() {
     return text_error("codec input buffer too short");
 }
 
+// Allocates the fixed-width big-endian encoding for value.
 export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value) {
     usize len = encoded_len(value);
     if (len == 1) {
@@ -40,6 +50,7 @@ export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value) {
     return Err(text_error("unsupported codec integer width"));
 }
 
+// Allocates the fixed-width little-endian encoding for value.
 export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value) {
     usize len = encoded_len(value);
     if (len == 1) {

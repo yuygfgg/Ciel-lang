@@ -1,4 +1,11 @@
+// Re-exports the core Result enum so /std/error users can name Result directly.
 export import /std/result/core;
+
+// Re-exports the standard Error type and ErrorTrait interface.
 export import /std/error/core;
+
+// Re-exports basic text and code error constructors.
 export import /std/error/basic;
+
+// Re-exports helpers that attach context to fallible results.
 export import /std/error/context;

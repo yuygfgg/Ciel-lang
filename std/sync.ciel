@@ -70,3 +70,18 @@ export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *c
     *slot = replacement;
     return Ok(next.result);
 }
+
+export Result<R, Error> mutex_with<T, R: Message>(
+    *const Mutex<T> mutex,
+    Result<R, Error> |(*T)| body
+) {
+    *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
+    ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
+    if (raw_slot == null) {
+        return Err(runtime_error());
+    }
+    defer unlock_mutex(raw_mutex);
+
+    *T slot = unsafe { raw_slot as *T };
+    return body(slot);
+}

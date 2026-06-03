@@ -5039,23 +5039,79 @@ impl<'a> CGenerator<'a> {
                 }
             }
             TPattern::Variant {
+                enum_type_name,
                 variant_name,
+                variant_index,
                 payload,
                 ..
             } => {
+                let physical_payload =
+                    self.checked_enum_variant_payload(enum_type_name, *variant_index)?;
                 let mut physical_idx = 0;
-                for pattern in payload {
-                    if pattern.ty().is_erased_value() {
+                for payload_pattern in payload {
+                    if payload_pattern.ty().is_erased_value() {
                         continue;
                     }
                     let idx = physical_idx;
                     physical_idx += 1;
+                    let Some(source_ty) = physical_payload.get(idx) else {
+                        return Err(vec![Diagnostic::new(
+                            None,
+                            format!(
+                                "internal error: enum `{enum_type_name}` payload layout is missing field {idx}"
+                            ),
+                        )]);
+                    };
                     let child = format!("{value_expr}.as.{variant_name}._{idx}");
-                    self.emit_pattern_bindings(pattern, &child, indent)?;
+                    let child = if source_ty == payload_pattern.ty() {
+                        child
+                    } else {
+                        let adapted = self.value_initializer_for_type(
+                            source_ty,
+                            payload_pattern.ty(),
+                            &child,
+                            None,
+                        )?;
+                        let temp = self.next_temp("pattern_payload");
+                        self.line_indent(
+                            indent,
+                            &format!("{} = {adapted};", self.c_decl(payload_pattern.ty(), &temp)),
+                        );
+                        temp
+                    };
+                    self.emit_pattern_bindings(payload_pattern, &child, indent)?;
                 }
             }
         }
         Ok(())
+    }
+
+    fn checked_enum_variant_payload(
+        &self,
+        enum_type_name: &str,
+        variant_index: usize,
+    ) -> DiagResult<Vec<Ty>> {
+        let Some(enm) = self
+            .program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == enum_type_name)
+        else {
+            return Err(vec![Diagnostic::new(
+                None,
+                format!("internal error: missing enum layout `{enum_type_name}`"),
+            )]);
+        };
+        let Some(variant) = enm.variants.get(variant_index) else {
+            return Err(vec![Diagnostic::new(
+                None,
+                format!(
+                    "internal error: enum `{enum_type_name}` has no variant at index {variant_index}"
+                ),
+            )]);
+        };
+        Ok(variant.payload.clone())
     }
 
     fn gen_for_init(&mut self, init: &TForInit) -> DiagResult<String> {
@@ -5340,7 +5396,10 @@ impl<'a> CGenerator<'a> {
                 variant_index,
                 payload,
             } => {
+                let physical_payload =
+                    self.checked_enum_variant_payload(type_name, *variant_index)?;
                 let mut payload_fields = Vec::new();
+                let mut physical_idx = 0usize;
                 for value in payload {
                     let value_code = self.value_initializer_for_checked_expr(value, stmt_indent)?;
                     if value.ty.is_erased_value() {
@@ -5349,6 +5408,25 @@ impl<'a> CGenerator<'a> {
                         }
                         continue;
                     }
+                    let Some(target_ty) = physical_payload.get(physical_idx) else {
+                        return Err(vec![Diagnostic::new(
+                            expr.span,
+                            format!(
+                                "internal error: enum `{type_name}` payload layout is missing field {physical_idx}"
+                            ),
+                        )]);
+                    };
+                    physical_idx += 1;
+                    let value_code = if &value.ty == target_ty {
+                        value_code
+                    } else {
+                        self.value_initializer_for_type(
+                            &value.ty,
+                            target_ty,
+                            &value_code,
+                            Some(expr.span),
+                        )?
+                    };
                     let idx = payload_fields.len();
                     payload_fields.push(format!("._{} = {}", idx, value_code));
                 }
@@ -6178,6 +6256,101 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn value_initializer_for_type(
+        &mut self,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_expr: &str,
+        span: Option<crate::span::Span>,
+    ) -> DiagResult<String> {
+        if source_ty == target_ty {
+            return Ok(self.value_or_initializer_from_expr(target_ty, source_expr));
+        }
+        if let Some(value) =
+            self.policy_leaf_value_initializer(source_ty, target_ty, source_expr, span)?
+        {
+            return Ok(value);
+        }
+        Err(vec![Diagnostic::new(
+            span,
+            format!("internal error: cannot adapt value `{source_ty}` to `{target_ty}`"),
+        )])
+    }
+
+    fn policy_leaf_value_initializer(
+        &mut self,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_expr: &str,
+        span: Option<crate::span::Span>,
+    ) -> DiagResult<Option<String>> {
+        let (
+            Ty::Named {
+                name: source_name,
+                args: source_args,
+            },
+            Ty::Named {
+                name: target_name,
+                args: target_args,
+            },
+        ) = (source_ty, target_ty)
+        else {
+            return Ok(None);
+        };
+        if source_name != target_name
+            || source_args.len() != target_args.len()
+            || !self.type_matches_meta_policy_marker(source_ty)
+            || !self.type_matches_meta_policy_marker(target_ty)
+        {
+            return Ok(None);
+        }
+        let source_fields = match self.struct_fields_for_ty(
+            span.unwrap_or_else(|| crate::span::Span::new(crate::span::FileId(0), 0, 0)),
+            source_ty,
+        ) {
+            Ok(fields) => fields,
+            Err(_) => return Ok(None),
+        };
+        let target_fields = match self.struct_fields_for_ty(
+            span.unwrap_or_else(|| crate::span::Span::new(crate::span::FileId(0), 0, 0)),
+            target_ty,
+        ) {
+            Ok(fields) => fields,
+            Err(_) => return Ok(None),
+        };
+        if source_fields.len() != target_fields.len() {
+            return Ok(None);
+        }
+        let mut fields = Vec::new();
+        for ((source_field, source_field_ty), (target_field, target_field_ty)) in
+            source_fields.iter().zip(target_fields.iter())
+        {
+            if source_field != target_field {
+                return Ok(None);
+            }
+            if target_field_ty.is_erased_value() {
+                continue;
+            }
+            if source_field_ty.is_erased_value() {
+                return Ok(None);
+            }
+            let source_field_expr = format!("({source_expr}).{source_field}");
+            let value = self.value_initializer_for_type(
+                source_field_ty,
+                target_field_ty,
+                &source_field_expr,
+                span,
+            )?;
+            fields.push(format!(".{target_field} = {value}"));
+        }
+        let c_type = self.c_type(target_ty);
+        Ok(Some(if fields.is_empty() {
+            format!("({c_type}){{0}}")
+        } else {
+            format!("({c_type}){{ {} }}", fields.join(", "))
+        }))
+    }
+
     fn emit_expr_store(&mut self, target: &str, value: &TExpr, indent: usize) -> DiagResult<()> {
         if value.ty.is_erased_value() {
             let value = self.gen_expr_in_stmt(value, indent)?;
@@ -6789,6 +6962,14 @@ impl<'a> CGenerator<'a> {
             let mut subst = HashMap::new();
             unify_ty(pattern, ty, &mut subst)
         })
+    }
+
+    fn type_matches_meta_policy_marker(&self, ty: &Ty) -> bool {
+        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        self.type_matches_share_handle_template(&leaf_ty)
+            || self.share_handle_impl(&leaf_ty).is_some()
+            || self.type_matches_thread_local_template(&leaf_ty)
+            || self.thread_local_impl(&leaf_ty).is_some()
     }
 
     fn emit_meta_enum_ref_repr(
@@ -10896,7 +11077,7 @@ impl<'a> CGenerator<'a> {
 
     fn emit_actor_dispatch(&mut self, dispatch: &ActorDispatch) -> DiagResult<()> {
         let result_ty = match dispatch.mode {
-            ActorSpawnMode::Cloned => std_result_ty(dispatch.state_ty.clone(), std_error_ty()),
+            ActorSpawnMode::Cloned => self.callable_ret_params(&dispatch.handler_ty)?.0,
             ActorSpawnMode::State => std_result_ty(Ty::Void, std_error_ty()),
         };
         let result_layout = self.result_layout(
@@ -12623,7 +12804,10 @@ fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
 }
 
 fn prelude_defines_slice_type(name: &str) -> bool {
-    matches!(name, "CielSlice_u8" | "CielConstSlice_char")
+    matches!(
+        name,
+        "CielSlice_u8" | "CielSlice_char" | "CielConstSlice_char"
+    )
 }
 
 fn string_literal_len(raw: &str) -> usize {

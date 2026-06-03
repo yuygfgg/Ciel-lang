@@ -1,7 +1,7 @@
 use std::{collections::HashMap, path::Path};
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
-use crate::types::{STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
+use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
 
 const STD_RESULT_PATH: &str = "std/result.ciel";
 const STD_RESULT_CORE_PATH: &str = "std/result/core.ciel";
@@ -416,6 +416,27 @@ pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name
         expected_name,
         STD_META_PATH,
     )
+}
+
+pub fn is_std_meta_sop_node_name(name: &str) -> bool {
+    matches!(
+        name,
+        "HNil"
+            | "HCons"
+            | "FieldRef"
+            | "Field"
+            | "PayloadRef"
+            | "Payload"
+            | "CoNil"
+            | "Coproduct"
+            | "VariantRef"
+            | "Variant"
+            | "ArrayNil"
+            | "ArrayCat"
+    ) || name
+        .strip_prefix("ArrayChunk")
+        .and_then(|suffix| suffix.parse::<usize>().ok())
+        .is_some_and(|len| (1..=META_ARRAY_CHUNK_SIZE).contains(&len))
 }
 
 pub fn is_std_meta_interface(

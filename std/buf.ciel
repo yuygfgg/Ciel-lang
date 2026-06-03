@@ -1,5 +1,6 @@
 export import /std/result;
 import /std/c as c;
+import /std/message;
 
 unsafe extern "C" {
     []u8 ciel_runtime_u8_alloc_slice(usize len);
@@ -136,4 +137,10 @@ export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) {
         buf->len = remaining;
     };
     return Ok;
+}
+
+unsafe impl clone_message(*const ByteBuf value) {
+    ByteBuf @out = byte_buf_new(byte_buf_len(value))?;
+    byte_buf_push_slice(&out, byte_buf_slice(value))?;
+    return Ok(out);
 }

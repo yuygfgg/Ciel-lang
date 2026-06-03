@@ -1,0 +1,59 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/bytes as bytes;
+import /std/io as io;
+import /std/panic;
+import /std/result;
+import /std/text as text;
+
+bool chars_equal([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool bytes_equal([]const u8 left, []const u8 right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i32 main() {
+    text::Text owned = must(text::text_copy("payload"));
+    if (text::text_len(owned) != 7) {
+        return 1;
+    }
+    []char chars = must(text::text_to_chars(owned));
+    if (!chars_equal(chars, "payload")) {
+        return 2;
+    }
+    bytes::Bytes from_text = must(text::text_to_bytes(owned));
+    []u8 raw = must(bytes::bytes_to_slice(from_text));
+    [7]u8 expected = [
+        112 as u8, 97 as u8, 121 as u8, 108 as u8,
+        111 as u8, 97 as u8, 100 as u8
+    ];
+    if (!bytes_equal(raw, expected[..])) {
+        return 3;
+    }
+    must(io::print_value(raw.len));
+    return 0;
+}

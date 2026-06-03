@@ -50,6 +50,16 @@ i64 main() {
         return 5;
     }
 
+    map::GetResult<i64> initial_get = must(map::hash_map_get(&table, 7 as u32));
+    switch (initial_get) {
+        case map::MapFound(value):
+            if (value != 10) {
+                return 15;
+            }
+        case map::MapMissing:
+            return 16;
+    }
+
     if (insert_code(must(map::hash_map_insert(&table, 7 as u32, 20))) != 10) {
         return 6;
     }
@@ -76,6 +86,14 @@ i64 main() {
         return Ok(*value);
     }))) {
         return 10;
+    }
+
+    map::GetResult<i64> missing_get = must(map::hash_map_get(&table, 9 as u32));
+    switch (missing_get) {
+        case map::MapFound(_):
+            return 17;
+        case map::MapMissing:
+            {}
     }
 
     if (remove_code(must(map::hash_map_remove(&table, 7 as u32))) != 25) {

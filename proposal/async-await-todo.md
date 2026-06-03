@@ -225,7 +225,7 @@ Implementation guardrails:
       boundaries, and only then the low-level actor compatibility story.
       Tests: tutorial fixtures compile, run, and assert observable output.
 
-- [ ] Migrate the intranet tunnel.
+- [x] Migrate the intranet tunnel.
       Scope: replace public flow chains with tasks, async channels, awaitable
       TCP, and awaitable timers.
       Tests: intranet tunnel integration tests pass on the async/await API.

@@ -1,639 +1,459 @@
-import /std/actor;
+import /std/async as async;
 import /std/async_net as anet;
-import /std/channel;
 import /std/io as io;
-import /std/map as map;
 import /std/meta as meta;
 import /std/net as net;
 import /std/result;
 import ./cli as cli;
 import ./protocol/auth as auth;
 import ./protocol/codec as tunnel_codec;
-import ./protocol/error as tunnel_error;
 import ./protocol/frame as frame;
-import ./protocol/state as tunnel_state;
 import ./runtime as rt;
 
-enum ServerMsg {
-    ServerStart(void),
-    ControlAccepted(anet::AsyncAccept),
-    PublicAccepted(anet::AsyncAccept),
-    ControlReadDone(anet::AsyncTcpRead),
-    PublicReadDone(u32, anet::AsyncTcpRead),
-    ControlWriteDone(anet::AsyncTcpWrite),
-    ClientWriteDone(u32, anet::AsyncTcpWrite),
+enum ServerEvent {
+    ServerControlAccepted(anet::AsyncTcpStream),
+    ServerPublicAccepted(anet::AsyncTcpStream),
+    ServerControlClosed(u32),
 }
 
-struct ServerStream {
-    anet::AsyncTcpStream client;
-    tunnel_state::ServerStreamState state;
-    rt::BytesQueue client_out;
-    bool client_write_busy;
-    bool client_read_pending;
-    bool client_eof;
-    bool agent_eof;
-    bool client_write_closed;
+struct ServerControlState {
+    u32 epoch;
+    async::Sender<anet::Bytes> writer;
+    rt::StreamRegistry streams;
 }
 
-struct ServerCore {
-    anet::AsyncTcpListener control_listener;
-    anet::AsyncTcpListener public_listener;
-    bool control_accept_pending;
-    anet::AsyncTcpStream control;
-    bool has_control;
-    bool authenticated;
-    bool control_read_pending;
-    bool control_write_busy;
-    bool close_control_after_writes;
-    rt::BytesQueue control_out;
-    rt::FrameReader control_reader;
-    map::HashMap<u32, ServerStream> streams;
-    u32 next_stream_id;
-    []const char route;
-    []u8 psk;
-    Channel<i64> done;
+enum ServerActiveControl {
+    ServerNoControl,
+    ServerHasControl(ServerControlState),
 }
 
-meta::Repr<ServerMsg> server_msg(ServerMsg msg) {
-    ServerMsg local = msg;
-    return meta::into_repr(&local);
+enum ServerHelloResult {
+    ServerHelloAccepted(anet::Bytes),
+    ServerHelloRejected(anet::Bytes),
 }
 
-Result<ServerStream, Error> new_server_stream(anet::AsyncTcpStream client) {
-    return Ok({
-        client: client,
-        state: tunnel_state::ServerPendingAgentOpen,
-        client_out: rt::bytes_queue_new(),
-        client_write_busy: false,
-        client_read_pending: false,
-        client_eof: false,
-        agent_eof: false,
-        client_write_closed: false
-    });
-}
 
-bool should_remove_server_stream(*const ServerStream stream) {
-    return stream->client_eof &&
-        stream->agent_eof &&
-        !stream->client_write_busy &&
-        rt::bytes_queue_is_empty(&stream->client_out);
-}
-
-void close_client(anet::AsyncTcpStream stream) {
-    anet::shutdown_read(stream);
-    anet::shutdown_write(stream);
-    anet::close_stream(stream);
-}
-
-void maybe_shutdown_client_write(*ServerStream stream) {
-    if (stream->agent_eof &&
-        !stream->client_write_busy &&
-        rt::bytes_queue_is_empty(&stream->client_out) &&
-        !stream->client_write_closed
-    ) {
-        anet::shutdown_write(stream->client);
-        stream->client_write_closed = true;
-    }
-}
-
-Result<void, Error> remove_server_stream(*ServerCore core, u32 stream_id) {
-    map::RemoveResult<ServerStream> removed =
-        map::hash_map_remove(&core->streams, stream_id)?;
-    switch (removed) {
-        case map::Removed(stream):
-            close_client(stream.client);
-            return Ok;
-        case map::Missing:
-            return Ok;
-    }
-}
-
-Result<void, Error> schedule_control_accept(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle
+async Result<void, Error> send_server_event(
+    async::Sender<meta::Repr<ServerEvent>> events,
+    ServerEvent event
 ) {
-    if (core->control_accept_pending) {
-        return Ok;
-    }
-    anet::AsyncAccept op = anet::accept_async(core->control_listener)?;
-    core->control_accept_pending = true;
-    Result<void, Error> notified =
-        anet::notify_accept_done(&op, &actor_handle, server_msg(ControlAccepted(op)));
-    switch (notified) {
-        case Ok:
-            return Ok;
-        case Err(error):
-            core->control_accept_pending = false;
-            anet::cancel_accept(op);
-            return Err(error);
-    }
-}
-
-Result<void, Error> schedule_public_accept(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle
-) {
-    anet::AsyncAccept op = anet::accept_async(core->public_listener)?;
-    anet::notify_accept_done(&op, &actor_handle, server_msg(PublicAccepted(op)))?;
+    await async::send<meta::Repr<ServerEvent>>(events, meta::into_repr(&event))?;
     return Ok;
 }
 
-Result<void, Error> schedule_control_read(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle
-) {
-    if (!core->has_control || core->control_read_pending) {
-        return Ok;
+u32 next_server_stream_id(u32 stream_id) {
+    u32 next = stream_id + (1 as u32);
+    if (next == (0 as u32)) {
+        return 1 as u32;
     }
-    anet::AsyncTcpRead op = anet::read_bytes(core->control, frame::max_payload_len())?;
-    core->control_read_pending = true;
-    anet::notify_read_done(&op, &actor_handle, server_msg(ControlReadDone(op)))?;
+    return next;
+}
+
+async Result<void, Error> server_control_accept_loop(
+    anet::AsyncTcpListener listener,
+    async::Sender<meta::Repr<ServerEvent>> events
+) {
+    while (true) {
+        anet::AsyncTcpStream stream = await anet::accept(listener)?;
+        await send_server_event(events, ServerControlAccepted(stream))?;
+    }
     return Ok;
 }
 
-Result<void, Error> schedule_public_read(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    u32 stream_id
+async Result<void, Error> server_public_accept_loop(
+    anet::AsyncTcpListener listener,
+    async::Sender<meta::Repr<ServerEvent>> events
 ) {
-    return map::hash_map_with(&core->streams, stream_id, |stream| {
-        if (stream->client_eof || stream->client_read_pending) {
-            return Ok;
-        }
-        anet::AsyncTcpRead op = anet::read_bytes(stream->client, 16384)?;
-        stream->client_read_pending = true;
-        Actor<meta::Repr<ServerMsg>> notify_actor = actor_handle;
-        anet::notify_read_done(
-            &op,
-            &notify_actor,
-            server_msg(PublicReadDone(stream_id, op))
-        )?;
-        return Ok;
-    });
-}
-
-Result<void, Error> close_control(*ServerCore core, Actor<meta::Repr<ServerMsg>> actor_handle) {
-    bool had_control = core->has_control;
-    if (core->has_control) {
-        io::eprintln_value("tunnel-server: closing control connection")?;
-        anet::shutdown_read(core->control);
-        anet::shutdown_write(core->control);
-        anet::close_stream(core->control);
+    while (true) {
+        anet::AsyncTcpStream stream = await anet::accept(listener)?;
+        await send_server_event(events, ServerPublicAccepted(stream))?;
     }
-    core->has_control = false;
-    core->authenticated = false;
-    core->control_read_pending = false;
-    core->control_write_busy = false;
-    core->close_control_after_writes = false;
-    core->control_out = rt::bytes_queue_new();
-    core->control_reader = rt::frame_reader_new()?;
-    if (!had_control && core->control_accept_pending) {
-        return Ok;
-    }
-    Result<void, Error> scheduled = schedule_control_accept(core, actor_handle);
-    switch (scheduled) {
-        case Ok:
-            io::eprintln_value("tunnel-server: waiting for next control connection")?;
-            return Ok;
-        case Err(error):
-            io::eprintln("tunnel-server: failed to accept next control connection: {}", [error])?;
-            return Err(error);
-    }
-}
-
-Result<void, Error> start_control_write(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::Bytes bytes
-) {
-    if (!core->has_control) {
-        return Ok;
-    }
-    anet::AsyncTcpWrite op = anet::write_bytes(core->control, bytes)?;
-    core->control_write_busy = true;
-    anet::notify_write_done(&op, &actor_handle, server_msg(ControlWriteDone(op)))?;
     return Ok;
 }
 
-Result<void, Error> enqueue_control_bytes(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::Bytes bytes
+async Result<void, Error> server_control_writer(
+    anet::AsyncTcpStream stream,
+    async::Receiver<anet::Bytes> receiver
 ) {
-    if (core->control_write_busy) {
-        rt::bytes_queue_push(&core->control_out, bytes)?;
-        return Ok;
-    }
-    return start_control_write(core, actor_handle, bytes);
-}
-
-Result<void, Error> send_control_frame_bytes(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    frame::FrameKind kind,
-    u32 stream_id,
-    anet::Bytes payload
-) {
-    anet::Bytes encoded = rt::encode_frame_from_bytes(kind, stream_id, payload)?;
-    return enqueue_control_bytes(core, actor_handle, encoded);
-}
-
-Result<void, Error> send_control_frame_slice(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    frame::FrameKind kind,
-    u32 stream_id,
-    []const u8 payload
-) {
-    anet::Bytes encoded = rt::encode_frame_from_slice(kind, stream_id, payload)?;
-    return enqueue_control_bytes(core, actor_handle, encoded);
-}
-
-Result<void, Error> send_control_empty(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    frame::FrameKind kind,
-    u32 stream_id
-) {
-    anet::Bytes empty = rt::empty_bytes()?;
-    return send_control_frame_bytes(core, actor_handle, kind, stream_id, empty);
-}
-
-Result<void, Error> enqueue_client_bytes(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    u32 stream_id,
-    anet::Bytes bytes
-) {
-    return map::hash_map_with(&core->streams, stream_id, |stream| {
-        if (stream->client_write_busy) {
-            rt::bytes_queue_push(&stream->client_out, bytes)?;
-            return Ok;
-        }
-        anet::AsyncTcpWrite op = anet::write_bytes(stream->client, bytes)?;
-        stream->client_write_busy = true;
-        Actor<meta::Repr<ServerMsg>> notify_actor = actor_handle;
-        anet::notify_write_done(
-            &op,
-            &notify_actor,
-            server_msg(ClientWriteDone(stream_id, op))
-        )?;
-        return Ok;
-    });
-}
-
-Result<void, Error> handle_control_write_done(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::AsyncTcpWrite op
-) {
-    anet::finish_write(op)?;
-    rt::BytesQueuePop next = rt::bytes_queue_pop(&core->control_out);
-    switch (next) {
-        case rt::BytesQueueItem(bytes):
-            start_control_write(core, actor_handle, bytes)?;
-            return Ok;
-        case rt::BytesQueueEmpty:
-            core->control_write_busy = false;
-            if (core->close_control_after_writes) {
-                io::eprintln_value("tunnel-server: control writes drained")?;
-                close_control(core, actor_handle)?;
-            }
-            return Ok;
-    }
-}
-
-Result<void, Error> handle_client_write_done(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    u32 stream_id,
-    anet::AsyncTcpWrite op
-) {
-    anet::finish_write(op)?;
-    bool remove = map::hash_map_with(&core->streams, stream_id, |stream| {
-        rt::BytesQueuePop next = rt::bytes_queue_pop(&stream->client_out);
+    while (true) {
+        _ next = await async::recv<anet::Bytes>(receiver);
         switch (next) {
-            case rt::BytesQueueItem(bytes):
-                anet::AsyncTcpWrite next_op = anet::write_bytes(stream->client, bytes)?;
-                Actor<meta::Repr<ServerMsg>> notify_actor = actor_handle;
-                anet::notify_write_done(
-                    &next_op,
-                    &notify_actor,
-                    server_msg(ClientWriteDone(stream_id, next_op))
-                )?;
-                stream->client_write_busy = true;
-                return Ok(false);
-            case rt::BytesQueueEmpty:
-                stream->client_write_busy = false;
-                maybe_shutdown_client_write(stream);
-                return Ok(should_remove_server_stream(stream));
+            case Ok(bytes):
+                _ wrote = await anet::write_all(stream, bytes);
+                switch (wrote) {
+                    case Ok:
+                        {}
+                    case Err(error):
+                        rt::close_stream_silent(stream);
+                        return Err(error);
+                }
+            case Err(_):
+                rt::close_stream_silent(stream);
+                return Ok;
         }
-    })?;
-    if (remove) {
-        remove_server_stream(core, stream_id)?;
     }
     return Ok;
 }
 
-Result<void, Error> handle_hello(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
+Result<ServerHelloResult, Error> prepare_server_hello(
+    *const rt::AuthConfig auth_config,
     rt::AsyncFrame incoming
 ) {
     []u8 payload = rt::bytes_to_slice(incoming.payload)?;
     auth::Hello hello = auth::decode_hello(payload)?;
+    []const char route = rt::auth_config_route(auth_config)?;
+    []u8 psk = rt::auth_config_psk(auth_config)?;
     io::eprintln_value("tunnel-server: received hello")?;
-    auth::verify_hello(hello, core->route, core->psk)?;
-    []u8 ok_payload = auth::encode_hello_ok()?;
-    send_control_frame_slice(core, actor_handle, frame::HelloOk, 0 as u32, ok_payload)?;
-    core->authenticated = true;
-    io::eprintln("tunnel-server: agent authenticated for route {}", [core->route])?;
-    return Ok;
+    Result<void, Error> verified =
+        auth::verify_hello(
+            hello,
+            route,
+            psk
+        );
+    switch (verified) {
+        case Ok:
+            []u8 ok_payload = auth::encode_hello_ok()?;
+            anet::Bytes encoded =
+                rt::encode_frame_from_slice(frame::HelloOk, 0 as u32, ok_payload)?;
+            io::eprintln(
+                "tunnel-server: agent authenticated for route {}",
+                [route]
+            )?;
+            return Ok(ServerHelloAccepted(encoded));
+        case Err(error):
+            io::eprintln("tunnel-server: rejecting agent: {}", [error])?;
+            []u8 error_payload =
+                tunnel_codec::encode_error_message(error_message(&error))?;
+            anet::Bytes encoded =
+                rt::encode_frame_from_slice(frame::ErrorFrame, 0 as u32, error_payload)?;
+            return Ok(ServerHelloRejected(encoded));
+    }
 }
 
-Result<void, Error> reject_hello(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    Error error
+async Result<void, Error> handle_server_handshake(
+    anet::BufferedStreamReader reader,
+    async::Sender<anet::Bytes> writer,
+    rt::AuthConfig auth_config
 ) {
-    io::eprintln("tunnel-server: rejecting agent: {}", [error])?;
-    []u8 payload = tunnel_codec::encode_error_message(error_message(&error))?;
-    send_control_frame_slice(core, actor_handle, frame::ErrorFrame, 0 as u32, payload)?;
-    core->close_control_after_writes = true;
-    return Ok;
+    rt::AsyncFrame incoming = await rt::read_frame(reader)?;
+    if (!rt::kind_is(incoming.kind, frame::Hello)) {
+        return Err(text_error("protocol error: expected Hello"));
+    }
+    ServerHelloResult hello = prepare_server_hello(&auth_config, incoming)?;
+    switch (hello) {
+        case ServerHelloAccepted(encoded):
+            await rt::send_control_bytes(writer, encoded)?;
+            return Ok;
+        case ServerHelloRejected(encoded):
+            await rt::send_control_bytes(writer, encoded)?;
+            return Err(text_error("authentication rejected"));
+    }
 }
 
-Result<void, Error> handle_open_result(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    rt::AsyncFrame incoming
-) {
-    []u8 payload = rt::bytes_to_slice(incoming.payload)?;
-    tunnel_codec::OpenResultPayload result = tunnel_codec::decode_open_result(payload)?;
-    if (!result.ok) {
-        io::eprintln("tunnel-server: stream {} open failed", [incoming.stream_id])?;
-        remove_server_stream(core, incoming.stream_id)?;
-        return Ok;
-    }
-    bool present = map::hash_map_with(&core->streams, incoming.stream_id, |stream| {
-        stream->state =
-            tunnel_state::server_transition(stream->state, tunnel_state::ServerAgentOpenSucceeded)?;
-        return Ok(true);
-    })?;
-    if (present) {
-        io::eprintln("tunnel-server: stream {} open", [incoming.stream_id])?;
-        schedule_public_read(core, actor_handle, incoming.stream_id)?;
-    }
-    return Ok;
-}
-
-Result<void, Error> handle_control_data(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    rt::AsyncFrame incoming
-) {
-    return enqueue_client_bytes(core, actor_handle, incoming.stream_id, incoming.payload);
-}
-
-Result<void, Error> handle_agent_close_write(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    u32 stream_id
-) {
-    io::eprintln("tunnel-server: stream {} agent write closed", [stream_id])?;
-    bool remove = map::hash_map_with(&core->streams, stream_id, |stream| {
-        stream->state =
-            tunnel_state::server_transition(stream->state, tunnel_state::ServerAgentEof)?;
-        stream->agent_eof = true;
-        maybe_shutdown_client_write(stream);
-        return Ok(should_remove_server_stream(stream));
-    })?;
-    if (remove) {
-        remove_server_stream(core, stream_id)?;
-    }
-    return Ok;
-}
-
-Result<void, Error> handle_control_frame(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    rt::AsyncFrame incoming
-) {
-    if (!core->authenticated) {
-        if (rt::kind_is(incoming.kind, frame::Hello)) {
-            Result<void, Error> accepted = handle_hello(core, actor_handle, incoming);
-            switch (accepted) {
-                case Ok:
-                    return Ok;
-                case Err(error):
-                    return reject_hello(core, actor_handle, error);
-            }
-        }
-        return close_control(core, actor_handle);
-    }
-
-    if (rt::kind_is(incoming.kind, frame::OpenResult)) {
-        return handle_open_result(core, actor_handle, incoming);
-    }
-    if (rt::kind_is(incoming.kind, frame::Data)) {
-        return handle_control_data(core, actor_handle, incoming);
-    }
-    if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
-        return handle_agent_close_write(core, actor_handle, incoming.stream_id);
-    }
-    if (rt::kind_is(incoming.kind, frame::CloseStream)) {
-        return remove_server_stream(core, incoming.stream_id);
-    }
-    if (rt::kind_is(incoming.kind, frame::Ping)) {
-        return send_control_empty(core, actor_handle, frame::Pong, 0 as u32);
-    }
-    if (rt::kind_is(incoming.kind, frame::Pong)) {
-        return Ok;
-    }
-    return close_control(core, actor_handle);
-}
-
-Result<void, Error> drain_control_frames(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle
+async Result<void, Error> server_control_reader(
+    anet::BufferedStreamReader reader,
+    ServerControlState control,
+    async::Sender<meta::Repr<ServerEvent>> events
 ) {
     while (true) {
-        rt::FrameReadResult next = rt::frame_reader_next(&core->control_reader)?;
-        switch (next) {
-            case rt::NeedMore:
+        Result<rt::AsyncFrame, Error> read = await rt::read_frame(reader);
+        switch (read) {
+            case Ok(incoming):
+                if (
+                    rt::kind_is(incoming.kind, frame::OpenResult) ||
+                    rt::kind_is(incoming.kind, frame::Data) ||
+                    rt::kind_is(incoming.kind, frame::CloseWrite) ||
+                    rt::kind_is(incoming.kind, frame::CloseStream)
+                ) {
+                    rt::StreamRegistryGet found =
+                        rt::stream_registry_get(control.streams, incoming.stream_id)?;
+                    switch (found) {
+                        case rt::StreamRegistryFound(sender):
+                            await rt::send_stream_event(sender, rt::StreamFrame(incoming))?;
+                        case rt::StreamRegistryMissing:
+                            {}
+                    }
+                } else if (rt::kind_is(incoming.kind, frame::Ping)) {
+                    await rt::send_control_empty(control.writer, frame::Pong, 0 as u32)?;
+                } else if (rt::kind_is(incoming.kind, frame::Pong)) {
+                    {}
+                } else {
+                    io::eprintln_value(
+                        "tunnel-server: protocol error: illegal control frame"
+                    )?;
+                    async::close<anet::Bytes>(control.writer)?;
+                    await send_server_event(events, ServerControlClosed(control.epoch))?;
+                    return Ok;
+                }
+            case Err(error):
+                io::eprintln("tunnel-server: control read error: {}", [error])?;
+                async::close<anet::Bytes>(control.writer)?;
+                await send_server_event(events, ServerControlClosed(control.epoch))?;
                 return Ok;
-            case rt::FrameReady(incoming):
-                handle_control_frame(core, actor_handle, incoming)?;
         }
     }
     return Ok;
 }
 
-Result<void, Error> handle_control_read_done(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::AsyncTcpRead op
+async Result<ServerControlState, Error> accept_server_control(
+    anet::AsyncTcpStream stream,
+    rt::AuthConfig auth_config,
+    u32 epoch,
+    async::Sender<meta::Repr<ServerEvent>> events
 ) {
-    core->control_read_pending = false;
-    if (!core->has_control) {
-        anet::finish_read(op);
-        return Ok;
+    anet::AsyncTcpSplit split = anet::split(stream)?;
+    anet::BufferedStreamReader reader =
+        anet::buffered_reader(split.read, frame::max_payload_len())?;
+    async::ChannelPair<anet::Bytes> writer_channel = async::channel<anet::Bytes>(128)?;
+    _ control_writer = async::spawn<void>(server_control_writer(stream, writer_channel.receiver))?;
+
+    _ handshaken = await handle_server_handshake(reader, writer_channel.sender, auth_config);
+    switch (handshaken) {
+        case Ok:
+            {}
+        case Err(error):
+            async::close<anet::Bytes>(writer_channel.sender)?;
+            return Err(error);
     }
-    anet::Bytes bytes = anet::finish_read(op)?;
-    if (anet::bytes_len(bytes) == 0) {
-        return close_control(core, actor_handle);
-    }
-    rt::frame_reader_push(&core->control_reader, bytes)?;
-    drain_control_frames(core, actor_handle)?;
-    return schedule_control_read(core, actor_handle);
+
+    ServerControlState control = {
+        epoch: epoch,
+        writer: writer_channel.sender,
+        streams: rt::stream_registry_new()?
+    };
+    _ control_reader = async::spawn<void>(server_control_reader(reader, control, events))?;
+    return Ok(control);
 }
 
-Result<void, Error> handle_public_read_done(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
+void server_stream_cleanup(
     u32 stream_id,
-    anet::AsyncTcpRead op
+    anet::AsyncTcpStream client,
+    ServerControlState control
 ) {
-    anet::Bytes bytes = anet::finish_read(op)?;
-    usize len = anet::bytes_len(bytes);
-    bool remove = map::hash_map_with(&core->streams, stream_id, |stream| {
-        stream->client_read_pending = false;
-        if (len == 0) {
-            stream->state =
-                tunnel_state::server_transition(stream->state, tunnel_state::ServerClientEof)?;
-            stream->client_eof = true;
-            send_control_empty(core, actor_handle, frame::CloseWrite, stream_id)?;
-            return Ok(should_remove_server_stream(stream));
+    rt::close_stream_silent(client);
+    rt::stream_registry_remove_close(control.streams, stream_id);
+}
+
+async Result<void, Error> server_stream_worker(
+    u32 stream_id,
+    anet::AsyncTcpStream client,
+    ServerControlState control,
+    async::Receiver<meta::Repr<rt::StreamEvent>> receiver,
+    async::Sender<meta::Repr<rt::StreamEvent>> local_events
+) {
+    defer server_stream_cleanup(stream_id, client, control);
+
+    bool @remote_write_closed = false;
+    bool @local_write_closed = false;
+    bool @reader_started = false;
+
+    while (true) {
+        _ next = await async::recv<meta::Repr<rt::StreamEvent>>(receiver);
+        switch (next) {
+            case Ok(event_message):
+                rt::StreamEvent event = rt::stream_event_from_message(event_message);
+                switch (event) {
+                    case rt::StreamLocalFailed(message):
+                        await rt::send_close_stream_text(
+                            control.writer,
+                            stream_id,
+                            3 as u16,
+                            message
+                        )?;
+                        return Ok;
+                    case rt::StreamLocalClosed:
+                        local_write_closed = true;
+                        await rt::send_control_empty(control.writer, frame::CloseWrite, stream_id)?;
+                        if (remote_write_closed) {
+                            return Ok;
+                        }
+                    case rt::StreamFrame(incoming):
+                        if (rt::kind_is(incoming.kind, frame::OpenResult)) {
+                            if (reader_started) {
+                                return Ok;
+                            }
+                            _ payload_result = rt::bytes_to_slice(incoming.payload);
+                            []u8 payload;
+                            switch (payload_result) {
+                                case Ok(value):
+                                    payload = value;
+                                case Err(error):
+                                    io::eprintln(
+                                        "tunnel-server: stream {} open result copy failed: {}",
+                                        [stream_id, error]
+                                    )?;
+                                    return Ok;
+                            }
+                            _ decoded = tunnel_codec::decode_open_result(payload);
+                            tunnel_codec::OpenResultPayload result;
+                            switch (decoded) {
+                                case Ok(value):
+                                    result = value;
+                                case Err(error):
+                                    io::eprintln(
+                                        "tunnel-server: stream {} open result decode failed: {}",
+                                        [stream_id, error]
+                                    )?;
+                                    return Ok;
+                            }
+                            if (!result.ok) {
+                                anet::shutdown_write(client);
+                                return Ok;
+                            }
+                            reader_started = true;
+                            _ reader = rt::spawn_local_reader(
+                                stream_id,
+                                client,
+                                control.writer,
+                                local_events
+                            )?;
+                        } else if (rt::kind_is(incoming.kind, frame::Data)) {
+                            _ wrote = await anet::write_all(client, incoming.payload);
+                            switch (wrote) {
+                                case Ok:
+                                    {}
+                                case Err(_):
+                                    await rt::send_close_stream(
+                                        control.writer,
+                                        stream_id,
+                                        2 as u16,
+                                        "client write failed"
+                                    )?;
+                                    return Ok;
+                            }
+                        } else if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
+                            remote_write_closed = true;
+                            anet::shutdown_write(client);
+                            if (local_write_closed) {
+                                return Ok;
+                            }
+                        } else if (rt::kind_is(incoming.kind, frame::CloseStream)) {
+                            return Ok;
+                        } else {
+                            return Ok;
+                        }
+                }
+            case Err(_):
+                return Ok;
         }
-        send_control_frame_bytes(core, actor_handle, frame::Data, stream_id, bytes)?;
-        return Ok(false);
-    })?;
-    if (remove) {
-        remove_server_stream(core, stream_id)?;
-    } else if (len > 0) {
-        schedule_public_read(core, actor_handle, stream_id)?;
     }
     return Ok;
 }
 
-Result<void, Error> handle_control_accepted(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::AsyncAccept op
+async Result<void, Error> start_server_stream(
+    ServerControlState control,
+    u32 stream_id,
+    anet::AsyncTcpStream client
 ) {
-    core->control_accept_pending = false;
-    anet::AsyncTcpStream stream = anet::finish_accept(op)?;
-    if (core->has_control) {
-        anet::close_stream(stream);
-        schedule_control_accept(core, actor_handle)?;
-        return Ok;
-    }
-    core->control = stream;
-    core->has_control = true;
-    core->authenticated = false;
-    core->control_reader = rt::frame_reader_new()?;
-    io::eprintln_value("tunnel-server: control connection accepted")?;
-    return schedule_control_read(core, actor_handle);
-}
+    _ events = async::channel<meta::Repr<rt::StreamEvent>>(64)?;
+    rt::stream_registry_insert(control.streams, stream_id, events.sender)?;
 
-Result<void, Error> handle_public_accepted(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    anet::AsyncAccept op
-) {
-    anet::AsyncTcpStream client = anet::finish_accept(op)?;
-    schedule_public_accept(core, actor_handle)?;
-    if (!core->has_control || !core->authenticated) {
-        anet::close_stream(client);
-        return Ok;
+    _ opened = await rt::send_control_empty(control.writer, frame::OpenStream, stream_id);
+    switch (opened) {
+        case Ok:
+            {}
+        case Err(_):
+            rt::stream_registry_remove_close(control.streams, stream_id)?;
+            rt::close_stream_silent(client);
+            return Ok;
     }
 
-    u32 stream_id = core->next_stream_id;
-    core->next_stream_id = core->next_stream_id + (1 as u32);
-    if (core->next_stream_id == (0 as u32)) {
-        core->next_stream_id = 1 as u32;
-    }
-    ServerStream stream = new_server_stream(client)?;
-    map::hash_map_insert(&core->streams, stream_id, stream)?;
-    io::eprintln("tunnel-server: accepted public stream {}", [stream_id])?;
-    send_control_empty(core, actor_handle, frame::OpenStream, stream_id)?;
+    _ worker = async::spawn<void>(server_stream_worker(
+        stream_id,
+        client,
+        control,
+        events.receiver,
+        events.sender
+    ))?;
     return Ok;
 }
 
-Result<void, Error> handle_server(
-    *ServerCore core,
-    Actor<meta::Repr<ServerMsg>> actor_handle,
-    meta::Repr<ServerMsg> envelope
-) {
-    ServerMsg msg = meta::from_repr<ServerMsg>(envelope);
-    switch (msg) {
-        case ServerStart(_):
-            schedule_control_accept(core, actor_handle)?;
-            schedule_public_accept(core, actor_handle)?;
-            channel_send(&core->done, 1)?;
+Result<void, Error> close_active_control(*ServerActiveControl active, u32 epoch) {
+    switch (*active) {
+        case ServerNoControl:
             return Ok;
-        case ControlAccepted(op):
-            handle_control_accepted(core, actor_handle, op)?;
-            return Ok;
-        case PublicAccepted(op):
-            handle_public_accepted(core, actor_handle, op)?;
-            return Ok;
-        case ControlReadDone(op):
-            handle_control_read_done(core, actor_handle, op)?;
-            return Ok;
-        case PublicReadDone(stream_id, op):
-            handle_public_read_done(core, actor_handle, stream_id, op)?;
-            return Ok;
-        case ControlWriteDone(op):
-            handle_control_write_done(core, actor_handle, op)?;
-            return Ok;
-        case ClientWriteDone(stream_id, op):
-            handle_client_write_done(core, actor_handle, stream_id, op)?;
+        case ServerHasControl(control):
+            if (control.epoch != epoch) {
+                return Ok;
+            }
+            rt::stream_registry_close_all(control.streams)?;
+            async::close<anet::Bytes>(control.writer)?;
+            *active = ServerNoControl;
+            io::eprintln_value("tunnel-server: closing control connection")?;
             return Ok;
     }
 }
 
-Result<ServerCore, Error> init_server_core(Channel<i64> done) {
-    cli::ServerConfig config = cli::parse_server_args()?;
-    anet::AsyncTcpListener control_listener = anet::listen_async(config.control_addr)?;
-    anet::AsyncTcpListener public_listener = anet::listen_async(config.public_addr)?;
-    return Ok({
-        control_listener: control_listener,
-        public_listener: public_listener,
-        control_accept_pending: false,
-        control: rt::placeholder_stream()?,
-        has_control: false,
-        authenticated: false,
-        control_read_pending: false,
-        control_write_busy: false,
-        close_control_after_writes: false,
-        control_out: rt::bytes_queue_new(),
-        control_reader: rt::frame_reader_new()?,
-        streams: map::hash_map_new<u32, ServerStream>()?,
-        next_stream_id: 1 as u32,
-        route: config.route,
-        psk: config.psk,
-        done: done
-    });
-}
+async Result<void, Error> run_server_async(
+    net::SocketAddr control_addr,
+    net::SocketAddr public_addr,
+    rt::AuthConfig auth_config
+) {
+    anet::AsyncTcpListener control_listener = anet::listen_async(control_addr)?;
+    anet::AsyncTcpListener public_listener = anet::listen_async(public_addr)?;
+    _ event_channel = async::channel<meta::Repr<ServerEvent>>(128)?;
+    _ control_accept =
+        async::spawn<void>(server_control_accept_loop(control_listener, event_channel.sender))?;
+    _ public_accept =
+        async::spawn<void>(server_public_accept_loop(public_listener, event_channel.sender))?;
 
-Result<Actor<meta::Repr<ServerMsg>>, Error> start_server(Channel<i64> done) {
-    Actor<meta::Repr<ServerMsg>> actor_handle =
-        spawn_actor_state<ServerCore, meta::Repr<ServerMsg>>(
-            || init_server_core(done),
-            handle_server
-        )?;
-    send(&actor_handle, server_msg(ServerStart))?;
-    return Ok(actor_handle);
+    ServerActiveControl @active = ServerNoControl;
+    u32 @next_stream_id_value = 1 as u32;
+    u32 @next_epoch = 1 as u32;
+
+    io::eprintln_value("tunnel-server: ready")?;
+    while (true) {
+        meta::Repr<ServerEvent> event_message = await async::recv<meta::Repr<ServerEvent>>(event_channel.receiver)?;
+        ServerEvent event = meta::from_repr<ServerEvent>(event_message);
+        switch (event) {
+            case ServerControlAccepted(stream):
+                switch (active) {
+                    case ServerNoControl:
+                        u32 epoch = next_epoch;
+                        next_epoch = next_server_stream_id(epoch);
+                        Result<ServerControlState, Error> accepted =
+                            await accept_server_control(
+                                stream,
+                                auth_config,
+                                epoch,
+                                event_channel.sender
+                            );
+                        switch (accepted) {
+                            case Ok(control):
+                                active = ServerHasControl(control);
+                                io::eprintln_value(
+                                    "tunnel-server: control connection accepted"
+                                )?;
+                            case Err(_):
+                                rt::close_stream_silent(stream);
+                        }
+                    case ServerHasControl(_):
+                        rt::close_stream_silent(stream);
+                }
+            case ServerPublicAccepted(client):
+                switch (active) {
+                    case ServerNoControl:
+                        rt::close_stream_silent(client);
+                    case ServerHasControl(control):
+                        u32 stream_id = next_stream_id_value;
+                        next_stream_id_value = next_server_stream_id(stream_id);
+                        _ starter = async::spawn<void>(
+                            start_server_stream(control, stream_id, client)
+                        )?;
+                }
+            case ServerControlClosed(epoch):
+                close_active_control(&active, epoch)?;
+        }
+    }
+    return Ok;
 }
 
 export Result<void, Error> run_server() {
-    Channel<i64> done = make_channel<i64>()?;
-    Actor<meta::Repr<ServerMsg>> actor_handle = start_server(done)?;
-    channel_recv(&done)?;
-    io::eprintln_value("tunnel-server: ready")?;
-    channel_recv(&done)?;
-    stop(&actor_handle);
-    join(&actor_handle);
-    return Ok;
+    cli::ServerConfig config = cli::parse_server_args()?;
+    rt::AuthConfig auth_config = rt::auth_config_new(config.route, config.psk)?;
+    return async::block_on(run_server_async(
+        config.control_addr,
+        config.public_addr,
+        auth_config
+    ));
 }

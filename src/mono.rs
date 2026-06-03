@@ -27,7 +27,7 @@ use crate::{
         STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
         aggregate_instance_name, contains_generic, is_clone_message_capability, mangle_ty_fragment,
-        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        map_ty_children, meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
         std_future_ty, std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
@@ -1119,6 +1119,7 @@ struct AggregateCollector<'a> {
     checked_structs: Vec<CheckedStruct>,
     checked_enums: Vec<CheckedEnum>,
     diagnostics: Vec<Diagnostic>,
+    deferred_meta_repr_roots: Vec<Ty>,
 }
 
 impl<'a> AggregateCollector<'a> {
@@ -1219,6 +1220,7 @@ impl<'a> AggregateCollector<'a> {
             checked_structs: Vec::new(),
             checked_enums: Vec::new(),
             diagnostics: Vec::new(),
+            deferred_meta_repr_roots: Vec::new(),
         }
     }
 
@@ -1843,7 +1845,7 @@ impl<'a> AggregateCollector<'a> {
         let fields = fields
             .iter()
             .map(|field| {
-                let ty = self.lower_ast_type_preserving_meta_repr_markers(&field.ty, &subst);
+                let ty = self.lower_ast_type(&field.ty, &subst);
                 self.collect_ty(&ty);
                 (field.name.name.clone(), ty)
             })
@@ -1891,7 +1893,7 @@ impl<'a> AggregateCollector<'a> {
                     .payload
                     .iter()
                     .filter_map(|payload| {
-                        let ty = self.lower_ast_type_preserving_meta_repr_markers(payload, &subst);
+                        let ty = self.lower_ast_type(payload, &subst);
                         if ty.is_erased_value() {
                             None
                         } else {
@@ -1914,41 +1916,21 @@ impl<'a> AggregateCollector<'a> {
         });
     }
 
-    fn lower_ast_type_preserving_meta_repr_markers(
-        &mut self,
-        ty: &Type,
-        subst: &HashMap<String, Ty>,
-    ) -> Ty {
-        self.lower_ast_type_inner(ty, subst, true)
-    }
-
     fn normalize_meta_repr_markers(&mut self, ty: &Ty) -> Ty {
-        self.normalize_meta_repr_markers_inner(ty, false)
+        self.normalize_meta_repr_markers_inner(ty, false, false)
     }
 
     fn normalize_meta_repr_markers_preserving_markers(&mut self, ty: &Ty) -> Ty {
-        self.normalize_meta_repr_markers_inner(ty, true)
+        self.normalize_meta_repr_markers_inner(ty, true, false)
     }
 
-    fn normalize_meta_repr_markers_inner(&mut self, ty: &Ty, preserve_markers: bool) -> Ty {
+    fn normalize_meta_repr_markers_inner(
+        &mut self,
+        ty: &Ty,
+        preserve_markers: bool,
+        in_meta_sop: bool,
+    ) -> Ty {
         match ty {
-            Ty::Pointer {
-                nullable,
-                mutability,
-                inner,
-            } => Ty::Pointer {
-                nullable: *nullable,
-                mutability: *mutability,
-                inner: Box::new(self.normalize_meta_repr_markers_inner(inner, preserve_markers)),
-            },
-            Ty::Array { len, elem } => Ty::Array {
-                len: *len,
-                elem: Box::new(self.normalize_meta_repr_markers_inner(elem, preserve_markers)),
-            },
-            Ty::Slice { mutability, elem } => Ty::Slice {
-                mutability: *mutability,
-                elem: Box::new(self.normalize_meta_repr_markers_inner(elem, preserve_markers)),
-            },
             Ty::Named { name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name) {
                     if preserve_markers {
@@ -1959,9 +1941,15 @@ impl<'a> AggregateCollector<'a> {
                     }
                     let args = args
                         .iter()
-                        .map(|arg| self.normalize_meta_repr_markers_inner(arg, preserve_markers))
+                        .map(|arg| {
+                            self.normalize_meta_repr_markers_inner(
+                                arg,
+                                preserve_markers,
+                                in_meta_sop,
+                            )
+                        })
                         .collect::<Vec<_>>();
-                    if args.len() == 1 && !contains_generic(&args[0]) {
+                    if args.len() == 1 && !self.should_preserve_meta_repr_marker_source(&args[0]) {
                         return self.meta_repr_ty(None, &args[0], borrowed);
                     }
                     return Ty::Named {
@@ -1973,71 +1961,33 @@ impl<'a> AggregateCollector<'a> {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if self.is_owned_meta_policy_leaf(&original, None) {
-                    return original;
+                if !preserve_markers && self.type_matches_meta_policy_marker(&original) {
+                    if in_meta_sop {
+                        return original;
+                    }
+                    return self.meta_repr_policy_leaf_ty(&original, None);
                 }
-                let args = args
-                    .iter()
-                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, preserve_markers))
-                    .collect::<Vec<_>>();
-                Ty::Named {
-                    name: name.clone(),
-                    args,
+                let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                map_ty_children(ty, |arg| {
+                    self.normalize_meta_repr_markers_inner(arg, preserve_markers, in_meta_sop)
+                })
+            }
+            Ty::Closure { constraints, .. } => {
+                let normalized = map_ty_children(ty, |arg| {
+                    self.normalize_meta_repr_markers_inner(arg, preserve_markers, in_meta_sop)
+                });
+                let Ty::Closure { ret, params, .. } = normalized else {
+                    unreachable!();
+                };
+                Ty::Closure {
+                    ret,
+                    params,
+                    constraints: self.normalize_constraint_bounds(constraints),
                 }
             }
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, preserve_markers))
-                    .collect(),
-            },
-            Ty::Function {
-                is_unsafe,
-                abi,
-                ret,
-                params,
-            } => Ty::Function {
-                is_unsafe: *is_unsafe,
-                abi: abi.clone(),
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, preserve_markers)),
-                params: params
-                    .iter()
-                    .map(|param| self.normalize_meta_repr_markers_inner(param, preserve_markers))
-                    .collect(),
-            },
-            Ty::Closure {
-                ret,
-                params,
-                constraints,
-            } => Ty::Closure {
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, preserve_markers)),
-                params: params
-                    .iter()
-                    .map(|param| self.normalize_meta_repr_markers_inner(param, preserve_markers))
-                    .collect(),
-                constraints: self.normalize_constraint_bounds(constraints),
-            },
-            Ty::ClosureInstance {
-                id,
-                ret,
-                params,
-                captures,
-            } => Ty::ClosureInstance {
-                id: *id,
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, preserve_markers)),
-                params: params
-                    .iter()
-                    .map(|param| self.normalize_meta_repr_markers_inner(param, preserve_markers))
-                    .collect(),
-                captures: captures
-                    .iter()
-                    .map(|capture| {
-                        self.normalize_meta_repr_markers_inner(capture, preserve_markers)
-                    })
-                    .collect(),
-            },
-            other => other.clone(),
+            _ => map_ty_children(ty, |arg| {
+                self.normalize_meta_repr_markers_inner(arg, preserve_markers, in_meta_sop)
+            }),
         }
     }
 
@@ -2084,7 +2034,7 @@ impl<'a> AggregateCollector<'a> {
                     args: args.clone(),
                 };
                 if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
-                    return self.meta_repr_policy_leaf_ty(&instance_ty);
+                    return self.meta_repr_policy_leaf_ty(&instance_ty, root);
                 }
                 if !expanding.insert(instance_ty.clone()) {
                     self.diagnostics.push(Diagnostic::new(
@@ -2096,6 +2046,7 @@ impl<'a> AggregateCollector<'a> {
                     return Ty::Unknown;
                 }
                 let instance_name = aggregate_instance_name(name, args);
+                self.deferred_meta_repr_roots.push(instance_ty.clone());
                 self.instantiate_struct(name, args);
                 if let Some(fields) = self
                     .checked_structs
@@ -2114,6 +2065,7 @@ impl<'a> AggregateCollector<'a> {
                         self.meta_repr_field_ty(span, &ty, borrowed, root, expanding)
                     });
                     let ty = meta_product_ty(fields, if borrowed { "FieldRef" } else { "Field" });
+                    self.deferred_meta_repr_roots.pop();
                     expanding.remove(&instance_ty);
                     return ty;
                 }
@@ -2145,9 +2097,11 @@ impl<'a> AggregateCollector<'a> {
                         }),
                         borrowed,
                     );
+                    self.deferred_meta_repr_roots.pop();
                     expanding.remove(&instance_ty);
                     return ty;
                 }
+                self.deferred_meta_repr_roots.pop();
                 expanding.remove(&instance_ty);
                 self.push_meta_unsupported_repr(span, source_ty);
                 Ty::Unknown
@@ -2189,16 +2143,60 @@ impl<'a> AggregateCollector<'a> {
         self.meta_repr_owned_leaf_ty_rec(span, ty, root, expanding)
     }
 
-    fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty) -> Ty {
+    fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty, root: Option<&Ty>) -> Ty {
         match ty {
             Ty::Named { name, args } => Ty::Named {
                 name: name.clone(),
                 args: args
                     .iter()
-                    .map(|arg| self.normalize_meta_repr_markers_preserving_markers(arg))
+                    .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, false))
                     .collect(),
             },
             _ => ty.clone(),
+        }
+    }
+
+    fn meta_repr_policy_leaf_arg_ty(
+        &mut self,
+        ty: &Ty,
+        root: Option<&Ty>,
+        in_meta_sop: bool,
+    ) -> Ty {
+        match ty {
+            Ty::Named { name, args } => {
+                if let Some(borrowed) = meta_repr_marker_name(name) {
+                    if args.len() != 1 {
+                        return Ty::Unknown;
+                    }
+                    if root.is_some_and(|root| &args[0] == root)
+                        || self.should_preserve_meta_repr_marker_source(&args[0])
+                    {
+                        return Ty::Named {
+                            name: name.clone(),
+                            args: args.clone(),
+                        };
+                    }
+                    return self.meta_repr_ty(None, &args[0], borrowed);
+                }
+                let original = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if in_meta_sop && self.type_matches_meta_policy_marker(&original) {
+                    return original;
+                }
+                let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                Ty::Named {
+                    name: name.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop))
+                        .collect(),
+                }
+            }
+            _ => map_ty_children(ty, |arg| {
+                self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop)
+            }),
         }
     }
 
@@ -2210,7 +2208,7 @@ impl<'a> AggregateCollector<'a> {
         expanding: &mut HashSet<Ty>,
     ) -> Ty {
         if self.is_owned_meta_policy_leaf(ty, root) {
-            return self.meta_repr_policy_leaf_ty(ty);
+            return self.meta_repr_policy_leaf_ty(ty, root);
         }
         match ty {
             Ty::Array { len, elem } => {
@@ -2223,39 +2221,52 @@ impl<'a> AggregateCollector<'a> {
         }
     }
 
+    fn type_matches_policy_marker(&self, interface_name: &str, templates: &[Ty], ty: &Ty) -> bool {
+        templates.iter().any(|pattern| {
+            let mut subst = HashMap::new();
+            unify_ty(pattern, ty, &mut subst)
+        }) || self.checked.impls.iter().any(|implementation| {
+            implementation.interface_name == interface_name
+                && implementation
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| receiver == ty)
+                && implementation.interface_args.get(1..) == Some(&[][..])
+        })
+    }
+
+    fn type_matches_meta_policy_marker(&self, ty: &Ty) -> bool {
+        self.type_matches_policy_marker(
+            STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+            &self.share_handle_templates,
+            ty,
+        ) || self.type_matches_policy_marker(
+            STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+            &self.thread_local_templates,
+            ty,
+        )
+    }
+
     fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
         if contains_generic(ty) {
             return false;
         }
-        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
-        let is_thread_local = self.thread_local_templates.iter().any(|pattern| {
-            let mut subst = HashMap::new();
-            unify_ty(pattern, &leaf_ty, &mut subst)
-        }) || self.checked.impls.iter().any(|implementation| {
-            implementation.interface_name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
-                && implementation
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|receiver| receiver == &leaf_ty)
-                && implementation.interface_args.get(1..) == Some(&[][..])
-        });
+        let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);
+        let is_thread_local = self.type_matches_policy_marker(
+            STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+            &self.thread_local_templates,
+            &leaf_ty,
+        );
         if root.is_some_and(|root| ty == root) && !is_thread_local {
             return false;
         }
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
-                || self.share_handle_templates.iter().any(|pattern| {
-                    let mut subst = HashMap::new();
-                    unify_ty(pattern, &leaf_ty, &mut subst)
-                })
-                || self.checked.impls.iter().any(|implementation| {
-                    implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
-                        && implementation
-                            .receiver_ty
-                            .as_ref()
-                            .is_some_and(|receiver| receiver == &leaf_ty)
-                        && implementation.interface_args.get(1..) == Some(&[][..])
-                })
+                || self.type_matches_policy_marker(
+                    STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+                    &self.share_handle_templates,
+                    &leaf_ty,
+                )
                 || self.checked.impls.iter().any(|implementation| {
                     implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
                         && implementation
@@ -2348,11 +2359,7 @@ impl<'a> AggregateCollector<'a> {
                 if args.is_empty()
                     && let Some(replacement) = subst.get(&name)
                 {
-                    return if preserve_meta_repr_markers {
-                        self.normalize_meta_repr_markers_preserving_markers(replacement)
-                    } else {
-                        self.normalize_meta_repr_markers(replacement)
-                    };
+                    return replacement.clone();
                 }
                 let args = args
                     .iter()
@@ -2368,7 +2375,9 @@ impl<'a> AggregateCollector<'a> {
                         ));
                         return Ty::Unknown;
                     }
-                    if preserve_meta_repr_markers || contains_generic(&args[0]) {
+                    if preserve_meta_repr_markers
+                        || self.should_preserve_meta_repr_marker_source(&args[0])
+                    {
                         return std_meta_repr_marker_ty(borrowed, args[0].clone());
                     }
                     return self.meta_repr_ty(type_name.span, &args[0], borrowed);
@@ -2494,6 +2503,23 @@ impl<'a> AggregateCollector<'a> {
                     .unwrap_or_default(),
             },
         }
+    }
+
+    fn is_visiting_aggregate_instance(&self, ty: &Ty) -> bool {
+        let Ty::Named { name, args } = ty else {
+            return false;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        self.visiting_structs.contains(&instance_name)
+            || self.visiting_enums.contains(&instance_name)
+    }
+
+    fn should_preserve_meta_repr_marker_source(&self, source_ty: &Ty) -> bool {
+        self.deferred_meta_repr_roots
+            .iter()
+            .any(|root| root == source_ty)
+            || self.is_visiting_aggregate_instance(source_ty)
+            || contains_generic(source_ty)
     }
 
     fn normalize_constraint_bounds(&mut self, bounds: &ConstraintBounds) -> ConstraintBounds {

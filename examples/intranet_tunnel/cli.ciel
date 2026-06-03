@@ -1,20 +1,21 @@
-import /std/buf as buf;
+import /std/bytes as bytes;
 import /std/env as env;
 import /std/net as net;
 import /std/result;
+import /std/text as text;
 
 export struct ServerConfig {
     net::SocketAddr control_addr;
     net::SocketAddr public_addr;
-    []const char route;
-    []u8 psk;
+    text::Text route;
+    bytes::Bytes psk;
 }
 
 export struct AgentConfig {
     net::SocketAddr server_addr;
     net::SocketAddr target_addr;
-    []const char route;
-    []u8 psk;
+    text::Text route;
+    bytes::Bytes psk;
 }
 
 export []const char server_usage() {
@@ -91,18 +92,6 @@ Result<[]const char, Error> required_flag([]const char flag) {
     return Err(text_error("missing required flag"));
 }
 
-Result<[]u8, Error> chars_to_bytes([]const char text) {
-    buf::ByteBuf @out = buf::byte_buf_new(text.len)?;
-    [1]u8 @one = [0;];
-    usize @i = 0;
-    while (i < text.len) {
-        one[0] = text[i] as u8;
-        buf::byte_buf_push_slice(&out, one[..])?;
-        i = i + 1;
-    }
-    return Ok(buf::byte_buf_mut_slice(&out));
-}
-
 export Result<ServerConfig, Error> parse_server_args() {
     validate_pairs(true)?;
     []const char control = required_flag("--control")?;
@@ -112,8 +101,8 @@ export Result<ServerConfig, Error> parse_server_args() {
     return Ok({
         control_addr: net::parse_addr(control)?,
         public_addr: net::parse_addr(public)?,
-        route: route,
-        psk: chars_to_bytes(psk)?
+        route: text::text_copy(route)?,
+        psk: bytes::bytes_from_text(psk)?
     });
 }
 
@@ -126,7 +115,7 @@ export Result<AgentConfig, Error> parse_agent_args() {
     return Ok({
         server_addr: net::parse_addr(server)?,
         target_addr: net::parse_addr(target)?,
-        route: route,
-        psk: chars_to_bytes(psk)?
+        route: text::text_copy(route)?,
+        psk: bytes::bytes_from_text(psk)?
     });
 }

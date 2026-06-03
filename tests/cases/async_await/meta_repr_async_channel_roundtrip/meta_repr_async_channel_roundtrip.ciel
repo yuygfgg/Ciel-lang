@@ -1,0 +1,34 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 17
+
+import /std/async as async;
+import /std/io;
+import /std/meta as meta;
+import /std/panic;
+import /std/result;
+
+struct Packet {
+    i64 value;
+    bool tag;
+}
+
+async Result<i64, Error> drive() {
+    async::ChannelPair<meta::Repr<Packet>> pair =
+        async::channel<meta::Repr<Packet>>(1)?;
+    Packet packet = { value: 17, tag: true };
+
+    await async::send<meta::Repr<Packet>>(pair.sender, meta::into_repr(&packet))?;
+    meta::Repr<Packet> envelope =
+        await async::recv<meta::Repr<Packet>>(pair.receiver)?;
+    Packet received = meta::from_repr<Packet>(envelope);
+    if (!received.tag) {
+        return Err(text_error("missing tag"));
+    }
+    return Ok(received.value);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

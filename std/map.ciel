@@ -38,6 +38,57 @@ export enum RemoveResult<V> {
     Missing,
 }
 
+export enum GetResult<V> {
+    MapFound(V),
+    MapMissing,
+}
+
+export enum PopResult<K, V> {
+    Popped(K, V),
+    Empty,
+}
+
+unsafe impl<V: Message> clone_message(*const InsertResult<V> value) {
+    switch (*value) {
+        case Inserted:
+            return Ok(Inserted);
+        case Replaced(replaced):
+            V copied = clone_message(&replaced)?;
+            return Ok(Replaced(copied));
+    }
+}
+
+unsafe impl<V: Message> clone_message(*const RemoveResult<V> value) {
+    switch (*value) {
+        case Removed(removed):
+            V copied = clone_message(&removed)?;
+            return Ok(Removed(copied));
+        case Missing:
+            return Ok(Missing);
+    }
+}
+
+unsafe impl<V: Message> clone_message(*const GetResult<V> value) {
+    switch (*value) {
+        case MapFound(found):
+            V copied = clone_message(&found)?;
+            return Ok(MapFound(copied));
+        case MapMissing:
+            return Ok(MapMissing);
+    }
+}
+
+unsafe impl<K: Message, V: Message> clone_message(*const PopResult<K, V> value) {
+    switch (*value) {
+        case Popped(key, item):
+            K copied_key = clone_message(&key)?;
+            V copied_item = clone_message(&item)?;
+            return Ok(Popped(copied_key, copied_item));
+        case Empty:
+            return Ok(Empty);
+    }
+}
+
 u64 mix_u64(u64 value, u64 seed) {
     u64 @x = value ^ seed ^ (0x517cc1b727220a95 as u64);
     x = x ^ (x >> (30 as u8));
@@ -228,6 +279,30 @@ export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
     }
 }
 
+export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
+    *const HashMap<K, V> map,
+    K key
+) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return Ok(MapMissing);
+    }
+
+    u64 hash = hash_key(&key, unsafe { map->seed });
+    ?*Node<K, V> @current = bucket_head<K, V>(map, start_index(hash, capacity));
+    while (true) {
+        if (current == null) {
+            return Ok(MapMissing);
+        }
+        *Node<K, V> node = expect_node<K, V>(current);
+        if (node->hash == hash && key_eq(&node->key, &key)) {
+            V copied = clone_message(&node->value)?;
+            return Ok(MapFound(copied));
+        }
+        current = node->next;
+    }
+}
+
 export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
@@ -295,6 +370,30 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
         previous = current;
         current = node->next;
     }
+}
+
+export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
+    *HashMap<K, V> map
+) {
+    usize capacity = unsafe { map->capacity };
+    if (capacity == 0) {
+        return Ok(Empty);
+    }
+
+    usize @index = 0;
+    while (index < capacity) {
+        ?*Node<K, V> head = bucket_head<K, V>(map, index);
+        if (head != null) {
+            *Node<K, V> node = expect_node<K, V>(head);
+            set_bucket_head<K, V>(map, index, node->next);
+            unsafe {
+                map->len = map->len - 1;
+            };
+            return Ok(Popped(node->key, node->value));
+        }
+        index = index + 1;
+    }
+    return Ok(Empty);
 }
 
 export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(

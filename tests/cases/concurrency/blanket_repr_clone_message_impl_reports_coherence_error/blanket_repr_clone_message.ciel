@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: ambiguous generic impls for marker interface `clone_message`
+
+import /std/lib;
+import /std/meta as meta;
+
+struct Packet {
+    i64 value;
+}
+
+unsafe impl<T> clone_message(*const T value) {
+    meta::Repr<T> repr = meta::into_repr(value);
+    meta::Repr<T> copied = clone_message(&repr)?;
+    return Ok(meta::from_repr<T>(copied));
+}
+
+i32 main() {
+    Channel<Packet> ch = must(make_channel<Packet>());
+    Packet packet = { value: 7 };
+    must(channel_send(&ch, packet));
+    Packet got = must(channel_recv(&ch));
+    must(channel_close(&ch));
+    return got.value as i32;
+}

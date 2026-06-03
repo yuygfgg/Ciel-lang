@@ -15,12 +15,12 @@ use crate::{
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
         aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
         closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
-        generated_future_output_ty, generated_future_ty, mangle_ty_fragment, meta_named,
-        meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
+        generated_future_output_ty, generated_future_ty, mangle_ty_fragment, map_ty_children,
+        meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
         meta_repr_marker_name, meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
         std_meta_repr_marker_ty, std_receiver_ty, std_result_ty, std_send_permit_ty, std_sender_ty,
-        std_task_ty, substitute_ty, ty_from_primitive, unify_ty,
+        std_task_ty, substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -38,6 +38,11 @@ struct FunctionSig {
     params: Vec<Ty>,
     generics: Vec<GenericInfo>,
     exported: bool,
+}
+
+struct SubstitutedTy {
+    ty: Ty,
+    from_replacement: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -148,6 +153,13 @@ struct PendingImplBody {
 struct QueuedImplBody {
     pending: PendingImplBody,
     subst: HashMap<String, Ty>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CapabilityResolutionKey {
+    interface_name: String,
+    args: Vec<Ty>,
+    receiver_ty: Ty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -830,6 +842,8 @@ struct TypeChecker {
     async_function_abortability: HashMap<DefId, bool>,
     generated_functions: Vec<CheckedFunction>,
     pending_impl_bodies: Vec<QueuedImplBody>,
+    capability_resolution_stack: HashSet<CapabilityResolutionKey>,
+    fatal_impl_coherence_error: bool,
     type_subst_stack: Vec<HashMap<String, Ty>>,
     alias_expansion_stack: Vec<DefId>,
     checked_enums: HashMap<String, CheckedEnum>,
@@ -844,6 +858,7 @@ struct TypeChecker {
     current_loop_depth: usize,
     unsafe_depth: usize,
     defer_meta_repr_expansion: bool,
+    deferred_meta_repr_roots: Vec<Ty>,
 }
 
 impl TypeChecker {
@@ -876,6 +891,8 @@ impl TypeChecker {
             async_function_abortability: HashMap::new(),
             generated_functions: Vec::new(),
             pending_impl_bodies: Vec::new(),
+            capability_resolution_stack: HashSet::new(),
+            fatal_impl_coherence_error: false,
             type_subst_stack: Vec::new(),
             alias_expansion_stack: Vec::new(),
             checked_enums: HashMap::new(),
@@ -890,6 +907,7 @@ impl TypeChecker {
             current_loop_depth: 0,
             unsafe_depth: 0,
             defer_meta_repr_expansion: false,
+            deferred_meta_repr_roots: Vec::new(),
         }
     }
 
@@ -903,6 +921,9 @@ impl TypeChecker {
         self.normalize_function_sigs();
         self.validate_c_abi_functions();
         self.check_by_value_layout_cycles();
+        if self.fatal_impl_coherence_error {
+            return Err(self.diagnostics);
+        }
 
         let mut checked_functions = Vec::new();
 
@@ -1344,27 +1365,6 @@ impl TypeChecker {
         }
     }
 
-    fn lower_type_preserving_meta_repr_markers(
-        &mut self,
-        ty: &Type,
-        subst: &HashMap<String, Ty>,
-    ) -> Ty {
-        self.lower_type_with_subst_preserving_meta_repr_markers(ty, subst, false)
-    }
-
-    fn lower_type_with_subst_preserving_meta_repr_markers(
-        &mut self,
-        ty: &Type,
-        subst: &HashMap<String, Ty>,
-        allow_holes: bool,
-    ) -> Ty {
-        let previous_defer_meta_repr_expansion =
-            std::mem::replace(&mut self.defer_meta_repr_expansion, true);
-        let lowered = self.lower_type_with_subst_inner(ty, subst, allow_holes);
-        self.defer_meta_repr_expansion = previous_defer_meta_repr_expansion;
-        lowered
-    }
-
     fn collect_enums(&mut self) {
         let modules = self.hir_modules.clone();
         for module in &modules {
@@ -1481,7 +1481,12 @@ impl TypeChecker {
                     && let TypeNameKind::Generic(generic_name) = &name.kind
                     && let Some(replacement) = subst.get(generic_name)
                 {
-                    replacement.clone()
+                    let replacement = replacement.clone();
+                    if !contains_type_hole(&replacement) {
+                        self.ensure_enum_instance(&replacement);
+                        self.ensure_struct_instance(&replacement);
+                    }
+                    return replacement;
                 } else if let TypeNameKind::Def(def_id) = &name.kind {
                     let def_id = *def_id;
                     let def = self.resolved.def(def_id).clone();
@@ -1557,23 +1562,6 @@ impl TypeChecker {
                         }
                     } else {
                         let nominal_name = nominal_type_name(&self.resolved, def_id);
-                        let preserved_args = args
-                            .iter()
-                            .map(|arg| {
-                                self.lower_type_with_subst_preserving_meta_repr_markers(
-                                    arg,
-                                    subst,
-                                    allow_holes,
-                                )
-                            })
-                            .collect::<Vec<_>>();
-                        let preserved_candidate = Ty::Named {
-                            name: nominal_name.clone(),
-                            args: preserved_args,
-                        };
-                        if self.type_implements_share_handle(&preserved_candidate) {
-                            return preserved_candidate;
-                        }
                         Ty::Named {
                             name: nominal_name,
                             args: args
@@ -1755,9 +1743,7 @@ impl TypeChecker {
     fn unify_type_holes(&mut self, expected: &Ty, actual: &Ty) -> bool {
         let expected = self.resolve_type_holes(expected);
         let actual = self.resolve_type_holes(actual);
-        if self.meta_repr_marker_matches_concrete(&expected, &actual)
-            || self.meta_repr_marker_matches_concrete(&actual, &expected)
-        {
+        if self.meta_repr_storage_equivalent(&expected, &actual) {
             return true;
         }
         match (&expected, &actual) {
@@ -1913,12 +1899,12 @@ impl TypeChecker {
         let pattern = self.substitute_ty_normalized_silent(pattern, subst);
         let pattern = self.resolve_type_holes(&pattern);
         let actual = self.resolve_type_holes(actual);
-        if self.meta_repr_marker_matches_concrete(&pattern, &actual) {
+        if self.meta_repr_storage_equivalent(&pattern, &actual) {
             return true;
         }
         if let Ty::Generic(name) = &pattern
             && let Some(existing) = subst.get(name).cloned()
-            && self.meta_repr_marker_matches_concrete(&existing, &actual)
+            && self.meta_repr_storage_equivalent(&existing, &actual)
         {
             return true;
         }
@@ -2343,13 +2329,30 @@ impl TypeChecker {
             return Some(Ty::Unknown);
         }
         let source_ty = self.lower_type_with_subst_inner(&args[0], subst, allow_holes);
-        if self.defer_meta_repr_expansion
-            || contains_generic(&source_ty)
-            || contains_type_hole(&source_ty)
-        {
+        if self.should_preserve_meta_repr_marker_source(&source_ty) {
             return Some(std_meta_repr_marker_ty(borrowed, source_ty));
         }
         Some(self.meta_repr_ty(span, &source_ty, borrowed))
+    }
+
+    fn should_preserve_meta_repr_marker_source(&self, source_ty: &Ty) -> bool {
+        self.defer_meta_repr_expansion
+            || self
+                .deferred_meta_repr_roots
+                .iter()
+                .any(|root| root == source_ty)
+            || self.is_visiting_aggregate_instance(source_ty)
+            || contains_generic(source_ty)
+            || contains_type_hole(source_ty)
+    }
+
+    fn is_visiting_aggregate_instance(&self, ty: &Ty) -> bool {
+        let Ty::Named { name, args } = ty else {
+            return false;
+        };
+        let instance_name = enum_instance_name(name, args);
+        self.visiting_structs.contains(&instance_name)
+            || self.visiting_enums.contains(&instance_name)
     }
 
     fn normalize_meta_repr_markers(
@@ -2357,45 +2360,30 @@ impl TypeChecker {
         ty: &Ty,
         span: impl Into<Option<crate::span::Span>>,
     ) -> Ty {
-        self.normalize_meta_repr_markers_inner(ty, span.into(), true)
-    }
-
-    fn normalize_meta_repr_markers_silent(&mut self, ty: &Ty) -> Ty {
-        self.normalize_meta_repr_markers_inner(ty, None, false)
-    }
-
-    fn preserve_meta_repr_markers(&mut self, ty: &Ty) -> Ty {
-        let previous_defer_meta_repr_expansion =
-            std::mem::replace(&mut self.defer_meta_repr_expansion, true);
-        let normalized = self.normalize_meta_repr_markers_inner(ty, None, false);
-        self.defer_meta_repr_expansion = previous_defer_meta_repr_expansion;
-        normalized
+        self.normalize_meta_repr_markers_inner(ty, span.into(), true, false)
     }
 
     fn meta_repr_storage_ty(&mut self, ty: &Ty, span: impl Into<Option<crate::span::Span>>) -> Ty {
-        let span = span.into();
+        self.meta_repr_storage_ty_inner(ty, span.into(), false)
+    }
+
+    fn meta_repr_storage_ty_inner(
+        &mut self,
+        ty: &Ty,
+        span: Option<crate::span::Span>,
+        in_meta_sop: bool,
+    ) -> Ty {
         match ty {
-            Ty::Pointer {
-                nullable,
-                mutability,
-                inner,
-            } => Ty::Pointer {
-                nullable: *nullable,
-                mutability: *mutability,
-                inner: Box::new(self.meta_repr_storage_ty(inner, span)),
-            },
-            Ty::Array { len, elem } => Ty::Array {
-                len: *len,
-                elem: Box::new(self.meta_repr_storage_ty(elem, span)),
-            },
-            Ty::Slice { mutability, elem } => Ty::Slice {
-                mutability: *mutability,
-                elem: Box::new(self.meta_repr_storage_ty(elem, span)),
-            },
             Ty::Named { name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
+                    }
+                    if self.should_preserve_meta_repr_marker_source(&args[0]) {
+                        return Ty::Named {
+                            name: name.clone(),
+                            args: args.clone(),
+                        };
                     }
                     return self.meta_repr_ty(span, &args[0], borrowed);
                 }
@@ -2403,89 +2391,21 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if self.type_implements_share_handle(&original)
-                    || self.type_implements_thread_local(&original)
-                {
-                    return self.meta_repr_policy_leaf_ty(&original);
+                if self.type_implements_meta_policy_marker(&original) {
+                    if in_meta_sop {
+                        return original;
+                    }
+                    return self.meta_repr_policy_leaf_ty(&original, None);
                 }
-                Ty::Named {
-                    name: name.clone(),
-                    args: args
-                        .iter()
-                        .map(|arg| self.meta_repr_storage_ty(arg, span))
-                        .collect(),
-                }
+                let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                map_ty_children(ty, |arg| {
+                    self.meta_repr_storage_ty_inner(arg, span, in_meta_sop)
+                })
             }
             Ty::GeneratedFuture { .. } => ty.clone(),
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| self.meta_repr_storage_ty(arg, span))
-                    .collect(),
-            },
-            Ty::Function {
-                is_unsafe,
-                abi,
-                ret,
-                params,
-            } => Ty::Function {
-                is_unsafe: *is_unsafe,
-                abi: abi.clone(),
-                ret: Box::new(self.meta_repr_storage_ty(ret, span)),
-                params: params
-                    .iter()
-                    .map(|param| self.meta_repr_storage_ty(param, span))
-                    .collect(),
-            },
-            Ty::Closure {
-                ret,
-                params,
-                constraints,
-            } => Ty::Closure {
-                ret: Box::new(self.meta_repr_storage_ty(ret, span)),
-                params: params
-                    .iter()
-                    .map(|param| self.meta_repr_storage_ty(param, span))
-                    .collect(),
-                constraints: constraints.clone(),
-            },
-            Ty::ClosureInstance {
-                id,
-                ret,
-                params,
-                captures,
-            } => Ty::ClosureInstance {
-                id: *id,
-                ret: Box::new(self.meta_repr_storage_ty(ret, span)),
-                params: params
-                    .iter()
-                    .map(|param| self.meta_repr_storage_ty(param, span))
-                    .collect(),
-                captures: captures
-                    .iter()
-                    .map(|capture| self.meta_repr_storage_ty(capture, span))
-                    .collect(),
-            },
-            Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Generic(_)
-            | Ty::Unknown => ty.clone(),
+            _ => map_ty_children(ty, |arg| {
+                self.meta_repr_storage_ty_inner(arg, span, in_meta_sop)
+            }),
         }
     }
 
@@ -2494,44 +2414,12 @@ impl TypeChecker {
         ty: &Ty,
         span: Option<crate::span::Span>,
         emit_diagnostics: bool,
+        in_meta_sop: bool,
     ) -> Ty {
         match ty {
-            Ty::Pointer {
-                nullable,
-                mutability,
-                inner,
-            } => Ty::Pointer {
-                nullable: *nullable,
-                mutability: *mutability,
-                inner: Box::new(self.normalize_meta_repr_markers_inner(
-                    inner,
-                    span,
-                    emit_diagnostics,
-                )),
-            },
-            Ty::Array { len, elem } => Ty::Array {
-                len: *len,
-                elem: Box::new(self.normalize_meta_repr_markers_inner(
-                    elem,
-                    span,
-                    emit_diagnostics,
-                )),
-            },
-            Ty::Slice { mutability, elem } => Ty::Slice {
-                mutability: *mutability,
-                elem: Box::new(self.normalize_meta_repr_markers_inner(
-                    elem,
-                    span,
-                    emit_diagnostics,
-                )),
-            },
             Ty::Named { name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name) {
-                    if args.len() == 1
-                        && !self.defer_meta_repr_expansion
-                        && !contains_generic(&args[0])
-                        && !contains_type_hole(&args[0])
-                    {
+                    if args.len() == 1 && !self.should_preserve_meta_repr_marker_source(&args[0]) {
                         if emit_diagnostics {
                             return self.meta_repr_ty(span, &args[0], borrowed);
                         }
@@ -2548,79 +2436,20 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if self.type_implements_share_handle(&original)
-                    || self.type_implements_thread_local(&original)
-                {
-                    return original;
+                if self.type_implements_meta_policy_marker(&original) {
+                    if in_meta_sop {
+                        return original;
+                    }
+                    return self.meta_repr_policy_leaf_ty(&original, None);
                 }
-                let args = args
-                    .iter()
-                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics))
-                    .collect::<Vec<_>>();
-                Ty::Named {
-                    name: name.clone(),
-                    args,
-                }
+                let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                map_ty_children(ty, |arg| {
+                    self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics, in_meta_sop)
+                })
             }
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
-                name: name.clone(),
-                args: args
-                    .iter()
-                    .map(|arg| self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics))
-                    .collect(),
-            },
-            Ty::Function {
-                is_unsafe,
-                abi,
-                ret,
-                params,
-            } => Ty::Function {
-                is_unsafe: *is_unsafe,
-                abi: abi.clone(),
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
-                params: params
-                    .iter()
-                    .map(|param| {
-                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
-                    })
-                    .collect(),
-            },
-            Ty::Closure {
-                ret,
-                params,
-                constraints,
-            } => Ty::Closure {
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
-                params: params
-                    .iter()
-                    .map(|param| {
-                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
-                    })
-                    .collect(),
-                constraints: constraints.clone(),
-            },
-            Ty::ClosureInstance {
-                id,
-                ret,
-                params,
-                captures,
-            } => Ty::ClosureInstance {
-                id: *id,
-                ret: Box::new(self.normalize_meta_repr_markers_inner(ret, span, emit_diagnostics)),
-                params: params
-                    .iter()
-                    .map(|param| {
-                        self.normalize_meta_repr_markers_inner(param, span, emit_diagnostics)
-                    })
-                    .collect(),
-                captures: captures
-                    .iter()
-                    .map(|capture| {
-                        self.normalize_meta_repr_markers_inner(capture, span, emit_diagnostics)
-                    })
-                    .collect(),
-            },
-            other => other.clone(),
+            _ => map_ty_children(ty, |arg| {
+                self.normalize_meta_repr_markers_inner(arg, span, emit_diagnostics, in_meta_sop)
+            }),
         }
     }
 
@@ -2630,13 +2459,317 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         span: impl Into<Option<crate::span::Span>>,
     ) -> Ty {
-        let substituted = substitute_ty(ty, subst);
-        self.normalize_meta_repr_markers(&substituted, span)
+        self.substitute_ty_normalized_inner(ty, subst, span.into(), true, false)
+            .ty
     }
 
     fn substitute_ty_normalized_silent(&mut self, ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
-        let substituted = substitute_ty(ty, subst);
-        self.normalize_meta_repr_markers_silent(&substituted)
+        self.substitute_ty_normalized_inner(ty, subst, None, false, false)
+            .ty
+    }
+
+    fn substitute_ty_normalized_list(
+        &mut self,
+        tys: &[Ty],
+        subst: &HashMap<String, Ty>,
+        span: Option<crate::span::Span>,
+        emit_diagnostics: bool,
+        in_meta_sop: bool,
+    ) -> (Vec<Ty>, bool) {
+        let mut has_replacement = false;
+        let tys = tys
+            .iter()
+            .map(|ty| {
+                let substituted = self.substitute_ty_normalized_inner(
+                    ty,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                has_replacement |= substituted.from_replacement;
+                substituted.ty
+            })
+            .collect::<Vec<_>>();
+        (tys, has_replacement)
+    }
+
+    fn substitute_ty_normalized_inner(
+        &mut self,
+        ty: &Ty,
+        subst: &HashMap<String, Ty>,
+        span: Option<crate::span::Span>,
+        emit_diagnostics: bool,
+        in_meta_sop: bool,
+    ) -> SubstitutedTy {
+        match ty {
+            Ty::Generic(name) => SubstitutedTy {
+                ty: subst
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Generic(name.clone())),
+                from_replacement: subst.contains_key(name),
+            },
+            Ty::Named { name, args } => {
+                if let Some(borrowed) = meta_repr_marker_name(name) {
+                    let args = args
+                        .iter()
+                        .map(|arg| {
+                            self.substitute_ty_normalized_inner(
+                                arg,
+                                subst,
+                                span,
+                                emit_diagnostics,
+                                in_meta_sop,
+                            )
+                            .ty
+                        })
+                        .collect::<Vec<_>>();
+                    if args.len() == 1 && !self.should_preserve_meta_repr_marker_source(&args[0]) {
+                        let ty = if emit_diagnostics {
+                            self.meta_repr_ty(span, &args[0], borrowed)
+                        } else {
+                            self.try_meta_repr_ty(&args[0], borrowed)
+                                .unwrap_or_else(|| Ty::Named {
+                                    name: name.clone(),
+                                    args: args.clone(),
+                                })
+                        };
+                        return SubstitutedTy {
+                            ty,
+                            from_replacement: false,
+                        };
+                    }
+                    return SubstitutedTy {
+                        ty: Ty::Named {
+                            name: name.clone(),
+                            args,
+                        },
+                        from_replacement: false,
+                    };
+                }
+                let child_in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                let (args, has_replacement_arg) = self.substitute_ty_normalized_list(
+                    args,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    child_in_meta_sop,
+                );
+                let original = Ty::Named {
+                    name: name.clone(),
+                    args,
+                };
+                if !has_replacement_arg && self.type_implements_meta_policy_marker(&original) {
+                    let ty = if in_meta_sop {
+                        original
+                    } else {
+                        self.meta_repr_policy_leaf_ty(&original, None)
+                    };
+                    return SubstitutedTy {
+                        ty,
+                        from_replacement: false,
+                    };
+                }
+                SubstitutedTy {
+                    ty: original,
+                    from_replacement: has_replacement_arg,
+                }
+            }
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            } => {
+                let inner = self.substitute_ty_normalized_inner(
+                    inner,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::Pointer {
+                        nullable: *nullable,
+                        mutability: *mutability,
+                        inner: Box::new(inner.ty),
+                    },
+                    from_replacement: inner.from_replacement,
+                }
+            }
+            Ty::Array { len, elem } => {
+                let elem = self.substitute_ty_normalized_inner(
+                    elem,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::Array {
+                        len: *len,
+                        elem: Box::new(elem.ty),
+                    },
+                    from_replacement: elem.from_replacement,
+                }
+            }
+            Ty::Slice { mutability, elem } => {
+                let elem = self.substitute_ty_normalized_inner(
+                    elem,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::Slice {
+                        mutability: *mutability,
+                        elem: Box::new(elem.ty),
+                    },
+                    from_replacement: elem.from_replacement,
+                }
+            }
+            Ty::GeneratedFuture {
+                name,
+                output,
+                cancel_safe,
+                abortable,
+            } => {
+                let output = self.substitute_ty_normalized_inner(
+                    output,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::GeneratedFuture {
+                        name: name.clone(),
+                        output: Box::new(output.ty),
+                        cancel_safe: *cancel_safe,
+                        abortable: *abortable,
+                    },
+                    from_replacement: output.from_replacement,
+                }
+            }
+            Ty::DynamicInterface { name, args } => {
+                let (args, has_replacement_arg) = self.substitute_ty_normalized_list(
+                    args,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::DynamicInterface {
+                        name: name.clone(),
+                        args,
+                    },
+                    from_replacement: has_replacement_arg,
+                }
+            }
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            } => {
+                let ret = self.substitute_ty_normalized_inner(
+                    ret,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                let (params, has_replacement_params) = self.substitute_ty_normalized_list(
+                    params,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::Function {
+                        is_unsafe: *is_unsafe,
+                        abi: abi.clone(),
+                        ret: Box::new(ret.ty),
+                        params,
+                    },
+                    from_replacement: ret.from_replacement || has_replacement_params,
+                }
+            }
+            Ty::Closure {
+                ret,
+                params,
+                constraints,
+            } => {
+                let ret = self.substitute_ty_normalized_inner(
+                    ret,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                let (params, has_replacement_params) = self.substitute_ty_normalized_list(
+                    params,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::Closure {
+                        ret: Box::new(ret.ty),
+                        params,
+                        constraints: substitute_constraint_bounds(constraints, subst),
+                    },
+                    from_replacement: ret.from_replacement || has_replacement_params,
+                }
+            }
+            Ty::ClosureInstance {
+                id,
+                ret,
+                params,
+                captures,
+            } => {
+                let ret = self.substitute_ty_normalized_inner(
+                    ret,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                let (params, has_replacement_params) = self.substitute_ty_normalized_list(
+                    params,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                let (captures, has_replacement_captures) = self.substitute_ty_normalized_list(
+                    captures,
+                    subst,
+                    span,
+                    emit_diagnostics,
+                    in_meta_sop,
+                );
+                SubstitutedTy {
+                    ty: Ty::ClosureInstance {
+                        id: *id,
+                        ret: Box::new(ret.ty),
+                        params,
+                        captures,
+                    },
+                    from_replacement: ret.from_replacement
+                        || has_replacement_params
+                        || has_replacement_captures,
+                }
+            }
+            _ => SubstitutedTy {
+                ty: ty.clone(),
+                from_replacement: false,
+            },
+        }
     }
 
     fn inference_arg_expected(
@@ -2916,7 +3049,7 @@ impl TypeChecker {
                     args: args.clone(),
                 };
                 if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
-                    return Some(self.meta_repr_policy_leaf_ty(&instance_ty));
+                    return Some(self.meta_repr_policy_leaf_ty(&instance_ty, root));
                 }
                 if !expanding.insert(instance_ty.clone()) {
                     if emit_diagnostics {
@@ -2929,20 +3062,27 @@ impl TypeChecker {
                     }
                     return None;
                 }
-                self.ensure_struct_instance(&instance_ty);
                 let instance_name = enum_instance_name(name, args);
+                self.deferred_meta_repr_roots.push(instance_ty.clone());
+                self.ensure_struct_instance(&instance_ty);
                 if let Some(fields) = self.structs.get(&instance_name).cloned() {
                     let mut field_tys = Vec::new();
                     for (_, ty) in fields {
-                        field_tys.push(self.meta_repr_field_ty(
+                        let Some(field_ty) = self.meta_repr_field_ty(
                             span,
                             &ty,
                             borrowed,
                             emit_diagnostics,
                             root,
                             expanding,
-                        )?);
+                        ) else {
+                            self.deferred_meta_repr_roots.pop();
+                            expanding.remove(&instance_ty);
+                            return None;
+                        };
+                        field_tys.push(field_ty);
                     }
+                    self.deferred_meta_repr_roots.pop();
                     expanding.remove(&instance_ty);
                     return Some(meta_product_ty(
                         field_tys,
@@ -2955,20 +3095,27 @@ impl TypeChecker {
                     for variant in enm.variants {
                         let mut payloads = Vec::new();
                         for payload in variant.payload {
-                            payloads.push(self.meta_repr_field_ty(
+                            let Some(payload_ty) = self.meta_repr_field_ty(
                                 span,
                                 &payload,
                                 borrowed,
                                 emit_diagnostics,
                                 root,
                                 expanding,
-                            )?);
+                            ) else {
+                                self.deferred_meta_repr_roots.pop();
+                                expanding.remove(&instance_ty);
+                                return None;
+                            };
+                            payloads.push(payload_ty);
                         }
                         variants.push(payloads);
                     }
+                    self.deferred_meta_repr_roots.pop();
                     expanding.remove(&instance_ty);
                     return Some(meta_sum_ty(variants, borrowed));
                 }
+                self.deferred_meta_repr_roots.pop();
                 expanding.remove(&instance_ty);
                 if emit_diagnostics {
                     self.push_meta_unsupported_repr(span, source_ty);
@@ -3027,16 +3174,60 @@ impl TypeChecker {
         self.meta_repr_owned_leaf_ty_inner(span, ty, emit_diagnostics, root, expanding)
     }
 
-    fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty) -> Ty {
+    fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty, root: Option<&Ty>) -> Ty {
         match ty {
             Ty::Named { name, args } => Ty::Named {
                 name: name.clone(),
                 args: args
                     .iter()
-                    .map(|arg| self.preserve_meta_repr_markers(arg))
+                    .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, false))
                     .collect(),
             },
             _ => ty.clone(),
+        }
+    }
+
+    fn meta_repr_policy_leaf_arg_ty(
+        &mut self,
+        ty: &Ty,
+        root: Option<&Ty>,
+        in_meta_sop: bool,
+    ) -> Ty {
+        match ty {
+            Ty::Named { name, args } => {
+                if let Some(borrowed) = meta_repr_marker_name(name) {
+                    if args.len() != 1 {
+                        return Ty::Unknown;
+                    }
+                    if root.is_some_and(|root| &args[0] == root)
+                        || self.should_preserve_meta_repr_marker_source(&args[0])
+                    {
+                        return Ty::Named {
+                            name: name.clone(),
+                            args: args.clone(),
+                        };
+                    }
+                    return self.meta_repr_ty(None, &args[0], borrowed);
+                }
+                let original = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if in_meta_sop && self.type_implements_meta_policy_marker(&original) {
+                    return original;
+                }
+                let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
+                Ty::Named {
+                    name: name.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop))
+                        .collect(),
+                }
+            }
+            _ => map_ty_children(ty, |arg| {
+                self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop)
+            }),
         }
     }
 
@@ -3049,7 +3240,7 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if self.is_owned_meta_policy_leaf(ty, root) {
-            return Some(self.meta_repr_policy_leaf_ty(ty));
+            return Some(self.meta_repr_policy_leaf_ty(ty, root));
         }
         match ty {
             Ty::Array { len, elem } => {
@@ -3075,14 +3266,18 @@ impl TypeChecker {
         if contains_generic(ty) || contains_type_hole(ty) {
             return false;
         }
-        let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
+        let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);
         let is_thread_local = self.type_implements_thread_local(&leaf_ty);
         if root.is_some_and(|root| ty == root) && !is_thread_local {
             return false;
         }
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
-                || self.type_implements_share_handle(&leaf_ty)
+                || self.type_implements_capability(
+                    STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+                    &[],
+                    &leaf_ty,
+                )
                 || self.type_implements_message(&leaf_ty))
     }
 
@@ -3217,8 +3412,7 @@ impl TypeChecker {
                             .payload
                             .iter()
                             .filter_map(|payload| {
-                                let ty =
-                                    self.lower_type_preserving_meta_repr_markers(payload, &subst);
+                                let ty = self.lower_type_with_subst(payload, &subst);
                                 (!ty.is_erased_value()).then_some(ty)
                             })
                             .collect(),
@@ -3293,7 +3487,7 @@ impl TypeChecker {
                     .fields
                     .iter()
                     .map(|field| {
-                        let ty = self.lower_type_preserving_meta_repr_markers(&field.ty, &subst);
+                        let ty = self.lower_type_with_subst(&field.ty, &subst);
                         self.reject_invalid_plain_value_type(&ty, field.ty.span, "struct field");
                         (field.name.name.clone(), ty)
                     })
@@ -3469,7 +3663,8 @@ impl TypeChecker {
     }
 
     fn collect_impls(&mut self, check_concrete_bodies: bool) {
-        let modules = self.hir_modules.clone();
+        let mut modules = self.hir_modules.clone();
+        modules.sort_by_key(|module| (!is_std_source_path(&module.path), module.id.0));
         let mut pending_bodies = Vec::new();
         for module in &modules {
             for item in &module.items {
@@ -3524,8 +3719,10 @@ impl TypeChecker {
                 else {
                     continue;
                 };
-                if check_concrete_bodies {
-                    self.check_generic_marker_impl_overlap(item.span, &analysis);
+                if check_concrete_bodies
+                    && self.generic_marker_impl_overlaps_existing(item.span, &analysis)
+                {
+                    continue;
                 }
                 if analysis.generics.is_empty() {
                     if !check_concrete_bodies {
@@ -3579,15 +3776,15 @@ impl TypeChecker {
         }
     }
 
-    fn check_generic_marker_impl_overlap(
+    fn generic_marker_impl_overlaps_existing(
         &mut self,
         span: crate::span::Span,
         analysis: &ImplAnalysis,
-    ) {
+    ) -> bool {
         if analysis.generics.is_empty()
             || !self.is_std_message_capability_interface_name(&analysis.interface_name)
         {
-            return;
+            return false;
         }
         let current_domain =
             self.compiler_marker_domain_for_impl(&analysis.generics, analysis.receiver_ty.as_ref());
@@ -3612,14 +3809,15 @@ impl TypeChecker {
                 &analysis.interface_args,
                 analysis.receiver_ty.as_ref(),
             ) {
-                self.diagnostics.push(Diagnostic::new(
+                self.fatal_impl_coherence_error = true;
+                self.push_diagnostic_once(
                     span,
                     format!(
                         "ambiguous generic impls for marker interface `{}`",
                         analysis.interface_name
                     ),
-                ));
-                return;
+                );
+                return true;
             }
         }
         for existing in &self.impls {
@@ -3640,16 +3838,34 @@ impl TypeChecker {
                 &analysis.interface_args,
                 analysis.receiver_ty.as_ref(),
             ) {
-                self.diagnostics.push(Diagnostic::new(
+                self.fatal_impl_coherence_error = true;
+                self.push_diagnostic_once(
                     span,
                     format!(
                         "generic marker impl for `{}` conflicts with an existing concrete impl",
                         analysis.interface_name
                     ),
-                ));
-                return;
+                );
+                return true;
             }
         }
+        false
+    }
+
+    fn push_diagnostic_once(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        message: impl Into<String>,
+    ) {
+        let message = message.into();
+        if self
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message == message)
+        {
+            return;
+        }
+        self.diagnostics.push(Diagnostic::new(span, message));
     }
 
     fn compiler_marker_domain_for_impl(
@@ -4165,12 +4381,10 @@ impl TypeChecker {
         let params = signature
             .params
             .iter()
+            .zip(sig.params.iter())
             .map(|param| {
-                (
-                    param.local_id,
-                    param.name.name.clone(),
-                    self.lower_type(&param.ty),
-                )
+                let (param, ty) = param;
+                (param.local_id, param.name.name.clone(), ty.clone())
             })
             .collect::<Vec<_>>();
         let body_params = signature
@@ -7013,9 +7227,7 @@ impl TypeChecker {
         let current_subst = self.current_type_subst();
         let explicit_args = type_args
             .iter()
-            .map(|arg| {
-                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
-            })
+            .map(|arg| self.lower_type_with_subst(arg, &current_subst))
             .collect::<Vec<_>>();
         if explicit_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
@@ -7025,15 +7237,19 @@ impl TypeChecker {
             return None;
         }
 
-        let explicit_state_ty = explicit_args
-            .first()
-            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+        let explicit_handle_state_ty = explicit_args.first().cloned();
+        let explicit_state_ty = explicit_handle_state_ty
+            .as_ref()
+            .map(|ty| self.meta_repr_storage_ty(ty, span));
         let explicit_handle_message_ty = explicit_args.get(1).cloned();
         let explicit_message_ty = explicit_handle_message_ty
             .as_ref()
-            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+            .map(|ty| self.meta_repr_storage_ty(ty, span));
 
-        let initial_state = self.check_expr(scopes, &args[0], explicit_state_ty.as_ref())?;
+        let expected_initial_state_ty = explicit_handle_state_ty
+            .as_ref()
+            .or(explicit_state_ty.as_ref());
+        let initial_state = self.check_expr(scopes, &args[0], expected_initial_state_ty)?;
         let state_ty = explicit_state_ty.unwrap_or_else(|| initial_state.ty.clone());
         self.require_assignable(&state_ty, &initial_state.ty, initial_state.span);
 
@@ -7056,14 +7272,15 @@ impl TypeChecker {
             return None;
         };
         let message_ty = explicit_message_ty
-            .unwrap_or_else(|| self.normalize_meta_repr_markers(&handle_message_ty, span));
-
-        let handler_state_ty = self.normalize_meta_repr_markers(&state_ty, span);
+            .unwrap_or_else(|| self.meta_repr_storage_ty(&handle_message_ty, span));
+        let handler_state_ty = explicit_handle_state_ty.unwrap_or_else(|| state_ty.clone());
+        let handler_message_ty = handle_message_ty.clone();
+        let storage_state_ty = self.meta_repr_storage_ty(&state_ty, span);
         let handler_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
         let message_view = self.interface_view("Message", &[]);
         let expected_handler_ty = Ty::Closure {
             ret: Box::new(handler_ret.clone()),
-            params: vec![handler_state_ty.clone(), message_ty.clone()],
+            params: vec![handler_state_ty.clone(), handler_message_ty.clone()],
             constraints: ConstraintBounds {
                 positive: message_view.positive,
                 negative: message_view.negative,
@@ -7092,12 +7309,12 @@ impl TypeChecker {
         self.require_actor_handler_callable(
             &handler.ty,
             &handler_state_ty,
-            &message_ty,
+            &handler_message_ty,
             &handler_ret,
             handler.span,
         );
 
-        if !self.type_implements_message(&handler_state_ty) {
+        if !self.type_implements_message(&storage_state_ty) {
             self.diagnostics.push(Diagnostic::new(
                 initial_state.span,
                 format!("actor state type `{state_ty}` does not implement `Message`"),
@@ -7120,7 +7337,7 @@ impl TypeChecker {
                 state_arg: Box::new(initial_state),
                 handler_ty: handler.ty.clone(),
                 handler: Box::new(handler),
-                state_ty: handler_state_ty,
+                state_ty: storage_state_ty,
                 handle_message_ty,
                 message_ty,
             },
@@ -7145,9 +7362,7 @@ impl TypeChecker {
         let current_subst = self.current_type_subst();
         let explicit_args = type_args
             .iter()
-            .map(|arg| {
-                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
-            })
+            .map(|arg| self.lower_type_with_subst(arg, &current_subst))
             .collect::<Vec<_>>();
         if explicit_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
@@ -7157,13 +7372,14 @@ impl TypeChecker {
             return None;
         }
 
-        let explicit_state_ty = explicit_args
-            .first()
-            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+        let explicit_handle_state_ty = explicit_args.first().cloned();
+        let explicit_state_ty = explicit_handle_state_ty
+            .as_ref()
+            .map(|ty| self.meta_repr_storage_ty(ty, span));
         let explicit_handle_message_ty = explicit_args.get(1).cloned();
         let explicit_message_ty = explicit_handle_message_ty
             .as_ref()
-            .map(|ty| self.normalize_meta_repr_markers(ty, span));
+            .map(|ty| self.meta_repr_storage_ty(ty, span));
 
         let mut prechecked_init = None;
         let state_ty = if let Some(state_ty) = explicit_state_ty {
@@ -7202,7 +7418,7 @@ impl TypeChecker {
                 return None;
             }
             prechecked_init = Some(init);
-            self.normalize_meta_repr_markers(&ok_ty, span)
+            self.meta_repr_storage_ty(&ok_ty, span)
         };
 
         let mut prechecked_handler = None;
@@ -7224,15 +7440,17 @@ impl TypeChecker {
             return None;
         };
         let message_ty = explicit_message_ty
-            .unwrap_or_else(|| self.normalize_meta_repr_markers(&handle_message_ty, span));
-        let handler_state_ty = self.normalize_meta_repr_markers(&state_ty, span);
+            .unwrap_or_else(|| self.meta_repr_storage_ty(&handle_message_ty, span));
+        let handler_state_ty = explicit_handle_state_ty.unwrap_or_else(|| state_ty.clone());
+        let handler_message_ty = handle_message_ty.clone();
+        let storage_state_ty = self.meta_repr_storage_ty(&state_ty, span);
         let state_ptr_ty = Ty::Pointer {
             nullable: false,
             mutability: ViewMutability::Writable,
             inner: Box::new(handler_state_ty.clone()),
         };
         let actor_self_ty = std_actor_ty(handle_message_ty.clone());
-        let init_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
+        let init_ret = std_result_ty(storage_state_ty.clone(), std_error_ty());
         let handler_ret = std_result_ty(Ty::Void, std_error_ty());
         let message_view = self.interface_view("Message", &[]);
         let expected_init_ty = Ty::Closure {
@@ -7248,7 +7466,7 @@ impl TypeChecker {
             params: vec![
                 state_ptr_ty.clone(),
                 actor_self_ty.clone(),
-                message_ty.clone(),
+                handler_message_ty.clone(),
             ],
             constraints: ConstraintBounds {
                 positive: message_view.positive,
@@ -7292,7 +7510,7 @@ impl TypeChecker {
         };
         self.require_actor_callable(
             &handler.ty,
-            &[state_ptr_ty, actor_self_ty, message_ty.clone()],
+            &[state_ptr_ty, actor_self_ty, handler_message_ty.clone()],
             &handler_ret,
             "actor state handler",
             handler.span,
@@ -7315,7 +7533,7 @@ impl TypeChecker {
                 state_arg: Box::new(init),
                 handler_ty: handler.ty.clone(),
                 handler: Box::new(handler),
-                state_ty: handler_state_ty,
+                state_ty: storage_state_ty,
                 handle_message_ty,
                 message_ty,
             },
@@ -7339,9 +7557,7 @@ impl TypeChecker {
         let current_subst = self.current_type_subst();
         let explicit_args = type_args
             .iter()
-            .map(|arg| {
-                self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
-            })
+            .map(|arg| self.lower_type_with_subst(arg, &current_subst))
             .collect::<Vec<_>>();
         if explicit_args.len() > 1 {
             self.diagnostics.push(Diagnostic::new(
@@ -7410,9 +7626,9 @@ impl TypeChecker {
             return None;
         }
         let current_subst = self.current_type_subst();
-        let explicit_message_ty = type_args.first().map(|arg| {
-            self.lower_type_with_subst_preserving_meta_repr_markers(arg, &current_subst, false)
-        });
+        let explicit_message_ty = type_args
+            .first()
+            .map(|arg| self.lower_type_with_subst(arg, &current_subst));
         let actor = self.check_expr(scopes, &args[0], None)?;
         let message_ty = explicit_message_ty
             .or_else(|| self.actor_message_ty_from_pointer(&actor.ty, actor.span))
@@ -7672,8 +7888,7 @@ impl TypeChecker {
             return None;
         }
         let subst = self.current_type_subst();
-        let lowered =
-            self.lower_type_with_subst_preserving_meta_repr_markers(&type_args[0], &subst, false);
+        let lowered = self.lower_type_with_subst(&type_args[0], &subst);
         let ty = self.meta_repr_storage_ty(&lowered, type_args[0].span);
         self.ensure_struct_instance(&ty);
         self.ensure_enum_instance(&ty);
@@ -9156,8 +9371,7 @@ impl TypeChecker {
                 ));
                 return None;
             };
-            let concrete =
-                self.lower_type_with_subst_preserving_meta_repr_markers(ty, &current_subst, false);
+            let concrete = self.lower_type_with_subst(ty, &current_subst);
             subst.insert(generic.name.clone(), concrete);
         }
         let expected_hints = if let Some(expected) = expected {
@@ -9253,9 +9467,10 @@ impl TypeChecker {
             .generics
             .iter()
             .filter_map(|generic| {
-                subst
-                    .get(&generic.name)
-                    .map(|ty| self.resolve_type_holes(ty))
+                subst.get(&generic.name).map(|ty| {
+                    let ty = self.resolve_type_holes(ty);
+                    self.normalize_meta_repr_markers(&ty, span)
+                })
             })
             .collect::<Vec<_>>();
         let params = sig
@@ -9263,13 +9478,13 @@ impl TypeChecker {
             .iter()
             .map(|param| {
                 let substituted = substitute_ty(param, &subst);
-                let ty = self.preserve_meta_repr_markers(&substituted);
+                let ty = self.normalize_meta_repr_markers(&substituted, span);
                 self.resolve_type_holes(&ty)
             })
             .collect::<Vec<_>>();
         let ret = {
             let substituted = substitute_ty(&sig.ret, &subst);
-            let ty = self.preserve_meta_repr_markers(&substituted);
+            let ty = self.normalize_meta_repr_markers(&substituted, span);
             self.resolve_type_holes(&ty)
         };
         Some((
@@ -9846,7 +10061,7 @@ impl TypeChecker {
             };
         }
         if self.ty_can_assign_from(&expected, &expr_ty)
-            || self.meta_repr_marker_matches_concrete(&expected, &expr_ty)
+            || self.meta_repr_storage_equivalent(&expected, &expr_ty)
             || contains_generic(&expected)
             || matches!(expr_ty, Ty::Unknown)
         {
@@ -10728,9 +10943,7 @@ impl TypeChecker {
         if matches!(expected, Ty::Unknown) || matches!(actual, Ty::Unknown) {
             return;
         }
-        if self.meta_repr_marker_matches_concrete(&expected, &actual)
-            || self.meta_repr_marker_matches_concrete(&actual, &expected)
-        {
+        if self.meta_repr_storage_equivalent(&expected, &actual) {
             return;
         }
         if let Ty::Closure {
@@ -10934,8 +11147,41 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        if self.type_implements_capability_for_receiver(interface_name, args, receiver_ty) {
+            return true;
+        }
         let storage_receiver_ty = self.meta_repr_storage_ty(receiver_ty, None);
-        let receiver_ty = &storage_receiver_ty;
+        if &storage_receiver_ty == receiver_ty {
+            return false;
+        }
+        self.type_implements_capability_for_receiver(interface_name, args, &storage_receiver_ty)
+    }
+
+    fn type_implements_capability_for_receiver(
+        &mut self,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        let key = CapabilityResolutionKey {
+            interface_name: interface_name.to_string(),
+            args: args.to_vec(),
+            receiver_ty: receiver_ty.clone(),
+        };
+        if !self.capability_resolution_stack.insert(key.clone()) {
+            return false;
+        }
+        let implements = self.type_implements_capability_inner(interface_name, args, receiver_ty);
+        self.capability_resolution_stack.remove(&key);
+        implements
+    }
+
+    fn type_implements_capability_inner(
+        &mut self,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
         if self.is_std_message_capability_interface_name(interface_name)
             && args.is_empty()
             && let Ty::ClosureInstance { captures, .. } = receiver_ty
@@ -11180,6 +11426,184 @@ impl TypeChecker {
             .is_some_and(|repr_ty| repr_ty == *concrete)
     }
 
+    fn meta_repr_storage_equivalent(&mut self, left: &Ty, right: &Ty) -> bool {
+        let left = self.resolve_type_holes(left);
+        let right = self.resolve_type_holes(right);
+        self.meta_repr_storage_equivalent_inner(&left, &right)
+    }
+
+    fn meta_repr_storage_equivalent_inner(&mut self, left: &Ty, right: &Ty) -> bool {
+        if left == right {
+            return true;
+        }
+        if self.meta_repr_marker_matches_concrete(left, right)
+            || self.meta_repr_marker_matches_concrete(right, left)
+        {
+            return true;
+        }
+        match (left, right) {
+            (
+                Ty::Pointer {
+                    nullable: left_nullable,
+                    mutability: left_mutability,
+                    inner: left_inner,
+                },
+                Ty::Pointer {
+                    nullable: right_nullable,
+                    mutability: right_mutability,
+                    inner: right_inner,
+                },
+            ) => {
+                left_nullable == right_nullable
+                    && left_mutability == right_mutability
+                    && self.meta_repr_storage_equivalent_inner(left_inner, right_inner)
+            }
+            (
+                Ty::Array {
+                    len: left_len,
+                    elem: left_elem,
+                },
+                Ty::Array {
+                    len: right_len,
+                    elem: right_elem,
+                },
+            ) => {
+                left_len == right_len
+                    && self.meta_repr_storage_equivalent_inner(left_elem, right_elem)
+            }
+            (
+                Ty::Slice {
+                    mutability: left_mutability,
+                    elem: left_elem,
+                },
+                Ty::Slice {
+                    mutability: right_mutability,
+                    elem: right_elem,
+                },
+            ) => {
+                left_mutability == right_mutability
+                    && self.meta_repr_storage_equivalent_inner(left_elem, right_elem)
+            }
+            (
+                Ty::Named {
+                    name: left_name,
+                    args: left_args,
+                },
+                Ty::Named {
+                    name: right_name,
+                    args: right_args,
+                },
+            )
+            | (
+                Ty::DynamicInterface {
+                    name: left_name,
+                    args: left_args,
+                },
+                Ty::DynamicInterface {
+                    name: right_name,
+                    args: right_args,
+                },
+            ) => {
+                left_name == right_name
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+            }
+            (
+                Ty::GeneratedFuture {
+                    name: left_name,
+                    output: left_output,
+                    cancel_safe: left_cancel_safe,
+                    abortable: left_abortable,
+                },
+                Ty::GeneratedFuture {
+                    name: right_name,
+                    output: right_output,
+                    cancel_safe: right_cancel_safe,
+                    abortable: right_abortable,
+                },
+            ) => {
+                left_name == right_name
+                    && left_cancel_safe == right_cancel_safe
+                    && left_abortable == right_abortable
+                    && self.meta_repr_storage_equivalent_inner(left_output, right_output)
+            }
+            (
+                Ty::Function {
+                    is_unsafe: left_is_unsafe,
+                    abi: left_abi,
+                    ret: left_ret,
+                    params: left_params,
+                },
+                Ty::Function {
+                    is_unsafe: right_is_unsafe,
+                    abi: right_abi,
+                    ret: right_ret,
+                    params: right_params,
+                },
+            ) => {
+                left_is_unsafe == right_is_unsafe
+                    && left_abi == right_abi
+                    && left_params.len() == right_params.len()
+                    && self.meta_repr_storage_equivalent_inner(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+            }
+            (
+                Ty::Closure {
+                    ret: left_ret,
+                    params: left_params,
+                    constraints: left_constraints,
+                },
+                Ty::Closure {
+                    ret: right_ret,
+                    params: right_params,
+                    constraints: right_constraints,
+                },
+            ) => {
+                left_constraints == right_constraints
+                    && left_params.len() == right_params.len()
+                    && self.meta_repr_storage_equivalent_inner(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+            }
+            (
+                Ty::ClosureInstance {
+                    id: left_id,
+                    ret: left_ret,
+                    params: left_params,
+                    captures: left_captures,
+                },
+                Ty::ClosureInstance {
+                    id: right_id,
+                    ret: right_ret,
+                    params: right_params,
+                    captures: right_captures,
+                },
+            ) => {
+                left_id == right_id
+                    && left_params.len() == right_params.len()
+                    && left_captures.len() == right_captures.len()
+                    && self.meta_repr_storage_equivalent_inner(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+                    && left_captures
+                        .iter()
+                        .zip(right_captures.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+            }
+            _ => false,
+        }
+    }
+
     fn type_implements_share_handle(&mut self, ty: &Ty) -> bool {
         if !self.is_std_message_share_handle_marker_name(STD_MESSAGE_SHARE_HANDLE_INTERFACE) {
             return false;
@@ -11191,6 +11615,10 @@ impl TypeChecker {
                 &[],
                 ty,
             )
+    }
+
+    fn type_implements_meta_policy_marker(&mut self, ty: &Ty) -> bool {
+        self.type_implements_share_handle(ty) || self.type_implements_thread_local(ty)
     }
 
     fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
@@ -11266,15 +11694,41 @@ impl TypeChecker {
         receiver_ty: Option<&Ty>,
         span: crate::span::Span,
     ) -> Option<ImplSig> {
-        self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
-            .or_else(|| {
-                self.instantiate_generic_impl(
+        if let Some(implementation) =
+            self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+        {
+            return Some(implementation);
+        }
+        if let Some(implementation) =
+            self.instantiate_generic_impl(interface_name, interface_args, receiver_ty, Some(span))
+        {
+            return Some(implementation);
+        }
+        let storage_interface_args = interface_args
+            .iter()
+            .map(|ty| self.meta_repr_storage_ty(ty, span))
+            .collect::<Vec<_>>();
+        let storage_receiver_ty = receiver_ty.map(|ty| self.meta_repr_storage_ty(ty, span));
+        if (storage_interface_args.as_slice() != interface_args
+            || storage_receiver_ty.as_ref() != receiver_ty)
+            && let Some(implementation) = self
+                .find_impl_by_full_args(
                     interface_name,
-                    interface_args,
-                    receiver_ty,
-                    Some(span),
+                    &storage_interface_args,
+                    storage_receiver_ty.as_ref(),
                 )
-            })
+                .or_else(|| {
+                    self.instantiate_generic_impl(
+                        interface_name,
+                        &storage_interface_args,
+                        storage_receiver_ty.as_ref(),
+                        Some(span),
+                    )
+                })
+        {
+            return Some(implementation);
+        }
+        None
     }
 
     fn instantiate_generic_impl_for_receiver(

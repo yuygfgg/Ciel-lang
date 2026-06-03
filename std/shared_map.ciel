@@ -1,0 +1,139 @@
+export import /std/result;
+import /std/map as map;
+import /std/message;
+import /std/sync;
+import /std/sync as sync;
+
+unsafe struct SharedMapState<K, V> {
+    map::HashMap<K, V> inner;
+}
+
+export struct SharedMap<K, V> {
+    sync::Mutex<SharedMapState<K, V>> state;
+}
+
+export enum SharedMapGet<V> {
+    SharedMapFound(V),
+    SharedMapMissing,
+}
+
+export enum SharedMapPop<K, V> {
+    SharedMapItem(K, V),
+    SharedMapEmpty,
+}
+
+unsafe impl<V: Message> clone_message(*const SharedMapGet<V> value) {
+    switch (*value) {
+        case SharedMapFound(found):
+            V copied = clone_message(&found)?;
+            return Ok(SharedMapFound(copied));
+        case SharedMapMissing:
+            return Ok(SharedMapMissing);
+    }
+}
+
+unsafe impl<K: Message, V: Message> clone_message(*const SharedMapPop<K, V> value) {
+    switch (*value) {
+        case SharedMapItem(key, item):
+            K copied_key = clone_message(&key)?;
+            V copied_item = clone_message(&item)?;
+            return Ok(SharedMapItem(copied_key, copied_item));
+        case SharedMapEmpty:
+            return Ok(SharedMapEmpty);
+    }
+}
+
+unsafe impl<K: Message, V: Message> clone_message(*const SharedMapState<K, V> value) {
+    return Ok(*value);
+}
+
+unsafe impl<K: Message, V: Message> clone_message(*const SharedMap<K, V> value) {
+    sync::Mutex<SharedMapState<K, V>> state = clone_message(&value->state)?;
+    return Ok({ state: state });
+}
+
+unsafe impl<K: Message, V: Message> share_handle_marker(*const SharedMap<K, V> value) {
+    return true;
+}
+
+export interface shared_map_key = map::map_key + Message;
+
+export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Message>() {
+    map::HashMap<K, V> inner = map::hash_map_new<K, V>()?;
+    SharedMapState<K, V> state = unsafe { { inner: inner } };
+    _ mutex = sync::make_mutex<SharedMapState<K, V>>(state)?;
+    return Ok({ state: mutex });
+}
+
+export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key,
+    V value
+) {
+    return sync::mutex_with<SharedMapState<K, V>, map::InsertResult<V>>(
+        &shared.state,
+        |state| map::hash_map_insert<K, V>(unsafe { &state->inner }, key, value)
+    );
+}
+
+export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key
+) {
+    return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
+        &shared.state,
+        |state| {
+            _ item = map::hash_map_get<K, V>(unsafe { &state->inner }, key)?;
+            switch (item) {
+                case map::MapFound(value):
+                    return Ok(SharedMapFound(value));
+                case map::MapMissing:
+                    return Ok(SharedMapMissing);
+            }
+        }
+    );
+}
+
+export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key
+) {
+    return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
+        &shared.state,
+        |state| {
+            _ removed = map::hash_map_remove<K, V>(unsafe { &state->inner }, key)?;
+            switch (removed) {
+                case map::Removed(value):
+                    return Ok(SharedMapFound(value));
+                case map::Missing:
+                    return Ok(SharedMapMissing);
+            }
+        }
+    );
+}
+
+export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared
+) {
+    return sync::mutex_with<SharedMapState<K, V>, SharedMapPop<K, V>>(
+        &shared.state,
+        |state| {
+            _ popped = map::hash_map_pop_any<K, V>(unsafe { &state->inner })?;
+            switch (popped) {
+                case map::Popped(key, value):
+                    return Ok(SharedMapItem(key, value));
+                case map::Empty:
+                    return Ok(SharedMapEmpty);
+            }
+        }
+    );
+}
+
+export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared
+) {
+    return sync::mutex_with<SharedMapState<K, V>, usize>(
+        &shared.state,
+        |state| Ok(map::hash_map_len<K, V>(unsafe { &state->inner }))
+    );
+}

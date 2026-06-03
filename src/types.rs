@@ -1385,6 +1385,100 @@ pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
     }
 }
 
+pub fn map_ty_children<F>(ty: &Ty, mut map_child: F) -> Ty
+where
+    F: FnMut(&Ty) -> Ty,
+{
+    match ty {
+        Ty::Pointer {
+            nullable,
+            mutability,
+            inner,
+        } => Ty::Pointer {
+            nullable: *nullable,
+            mutability: *mutability,
+            inner: Box::new(map_child(inner)),
+        },
+        Ty::Array { len, elem } => Ty::Array {
+            len: *len,
+            elem: Box::new(map_child(elem)),
+        },
+        Ty::Slice { mutability, elem } => Ty::Slice {
+            mutability: *mutability,
+            elem: Box::new(map_child(elem)),
+        },
+        Ty::Named { name, args } => Ty::Named {
+            name: name.clone(),
+            args: args.iter().map(map_child).collect(),
+        },
+        Ty::GeneratedFuture {
+            name,
+            output,
+            cancel_safe,
+            abortable,
+        } => Ty::GeneratedFuture {
+            name: name.clone(),
+            output: Box::new(map_child(output)),
+            cancel_safe: *cancel_safe,
+            abortable: *abortable,
+        },
+        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            name: name.clone(),
+            args: args.iter().map(map_child).collect(),
+        },
+        Ty::Function {
+            is_unsafe,
+            abi,
+            ret,
+            params,
+        } => Ty::Function {
+            is_unsafe: *is_unsafe,
+            abi: abi.clone(),
+            ret: Box::new(map_child(ret)),
+            params: params.iter().map(map_child).collect(),
+        },
+        Ty::Closure {
+            ret,
+            params,
+            constraints,
+        } => Ty::Closure {
+            ret: Box::new(map_child(ret)),
+            params: params.iter().map(map_child).collect(),
+            constraints: constraints.clone(),
+        },
+        Ty::ClosureInstance {
+            id,
+            ret,
+            params,
+            captures,
+        } => Ty::ClosureInstance {
+            id: *id,
+            ret: Box::new(map_child(ret)),
+            params: params.iter().map(&mut map_child).collect(),
+            captures: captures.iter().map(map_child).collect(),
+        },
+        Ty::Hole(_)
+        | Ty::Never
+        | Ty::Void
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Generic(_)
+        | Ty::Unknown => ty.clone(),
+    }
+}
+
 pub fn aggregate_instance_name(name: &str, args: &[Ty]) -> String {
     if args.is_empty() {
         name.to_string()

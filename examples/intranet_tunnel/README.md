@@ -11,8 +11,8 @@ It builds two Ciel programs:
   pre-shared key, and dials one configured private target per logical stream.
 
 The control connection carries framed multiplexed streams. Each public client
-gets a `u32` stream id, and server/agent stream tables are backed by
-`/std/map::HashMap`.
+gets a `u32` stream id, and server/agent stream registries are backed by the
+generic `/std/shared_map::SharedMap` handle.
 
 ## Build
 
@@ -20,15 +20,15 @@ From the repository root:
 
 ```sh
 cargo run --quiet -- \
-  --project-root examples \
-  --std-path . \
-  examples/intranet_tunnel/main_server.ciel \
+  --project-root "$PWD/examples" \
+  --std-path "$PWD" \
+  "$PWD/examples/intranet_tunnel/main_server.ciel" \
   -o /tmp/tunnel-server
 
 cargo run --quiet -- \
-  --project-root examples \
-  --std-path . \
-  examples/intranet_tunnel/main_agent.ciel \
+  --project-root "$PWD/examples" \
+  --std-path "$PWD" \
+  "$PWD/examples/intranet_tunnel/main_agent.ciel" \
   -o /tmp/tunnel-agent
 ```
 

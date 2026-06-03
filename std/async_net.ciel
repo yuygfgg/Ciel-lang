@@ -1,5 +1,6 @@
 export import /std/result;
 export import /std/async/bytes;
+import /std/async as async;
 import /std/async/core as flow;
 import /std/async/core;
 import /std/async/adapter;
@@ -42,6 +43,7 @@ unsafe extern "C" {
     ?*CielBufferedReader ciel_async_tcp_buffered_reader_new(*CielAsyncFd fd, usize capacity);
     ?*CielAsyncFd ciel_async_tcp_buffered_reader_into_read_half(*CielBufferedReader reader);
     ?*CielAsyncOp ciel_async_tcp_read_buffered(*CielBufferedReader reader, usize max_len);
+    ?*CielAsyncOp ciel_async_tcp_read_exact_buffered(*CielBufferedReader reader, usize len);
     c::c_int ciel_async_notify_read(*CielAsyncOp op, *CielActor actor, *void message);
     c::c_int ciel_async_notify_write(*CielAsyncOp op, *CielActor actor, *void message);
     c::c_int ciel_async_finish_read(*CielAsyncOp op, *?*CielBytes out);
@@ -476,6 +478,18 @@ export Result<AsyncBufferedRead, Error> read_buffered_async(
     return Ok({ handle: raw as *void });
 }
 
+export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
+    BufferedStreamReader reader,
+    usize len
+) {
+    ?*CielAsyncOp raw =
+        unsafe { ciel_async_tcp_read_exact_buffered(raw_buffered_reader(reader), len) };
+    if (raw == null) {
+        return Err(runtime_error());
+    }
+    return Ok({ handle: raw as *void });
+}
+
 export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) {
     AsyncAccept op = accept_async(listener)?;
     return await flow::future_from_op<AsyncAccept, AsyncTcpStream>(op);
@@ -484,6 +498,11 @@ export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) {
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr) {
     AsyncConnect op = connect_async(addr)?;
     return await flow::future_from_op<AsyncConnect, AsyncTcpStream>(op);
+}
+
+export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) {
+    Result<AsyncTcpStream, Error> connected = await async::timeout(connect(addr), ms)?;
+    return connected;
 }
 
 export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len) {
@@ -507,17 +526,39 @@ export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data)
 }
 
 export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data) {
-    usize written = await write(stream, data)?;
-    if (written != bytes_len(data)) {
-        return Err(text_error("short tcp write"));
+    usize total = bytes_len(data);
+    usize @offset = 0;
+    while (offset < total) {
+        Bytes chunk;
+        if (offset == 0) {
+            chunk = data;
+        } else {
+            chunk = bytes_slice(data, offset, total - offset)?;
+        }
+        usize written = await write(stream, chunk)?;
+        if (written == 0) {
+            return Err(text_error("tcp write returned zero"));
+        }
+        offset = offset + written;
     }
     return Ok;
 }
 
 export async Result<void, Error> write_all_half(AsyncTcpWriteHalf half, Bytes data) {
-    usize written = await write_half(half, data)?;
-    if (written != bytes_len(data)) {
-        return Err(text_error("short tcp write"));
+    usize total = bytes_len(data);
+    usize @offset = 0;
+    while (offset < total) {
+        Bytes chunk;
+        if (offset == 0) {
+            chunk = data;
+        } else {
+            chunk = bytes_slice(data, offset, total - offset)?;
+        }
+        usize written = await write_half(half, chunk)?;
+        if (written == 0) {
+            return Err(text_error("tcp write returned zero"));
+        }
+        offset = offset + written;
     }
     return Ok;
 }
@@ -527,6 +568,14 @@ export async Result<Bytes, Error> read_buffered(
     usize max_len
 ) {
     AsyncBufferedRead op = read_buffered_async(reader, max_len)?;
+    return await flow::future_from_op<AsyncBufferedRead, Bytes>(op);
+}
+
+export async Result<Bytes, Error> read_exact_buffered(
+    BufferedStreamReader reader,
+    usize len
+) {
+    AsyncBufferedRead op = read_exact_buffered_async(reader, len)?;
     return await flow::future_from_op<AsyncBufferedRead, Bytes>(op);
 }
 

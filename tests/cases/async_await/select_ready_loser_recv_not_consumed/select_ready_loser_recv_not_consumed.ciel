@@ -1,0 +1,55 @@
+// ciel-test: run
+// sanitizer: thread
+// expect-exit: 0
+// expect-stdout: 30
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> drive() {
+    async::ChannelPair<usize> left = async::channel<usize>(1)?;
+    async::ChannelPair<usize> right = async::channel<usize>(1)?;
+    async::try_send<usize>(left.sender, 10)?;
+    async::try_send<usize>(right.sender, 20)?;
+
+    Result<usize, Error> picked = await select {
+        case left_value = async::recv<usize>(left.receiver): left_value;
+        case right_value = async::recv<usize>(right.receiver): right_value;
+    };
+    usize first = picked?;
+    usize @second = 0;
+    if (first == 10) {
+        Result<void, Error> sent = async::try_send<usize>(right.sender, 99);
+        switch (sent) {
+            case Ok:
+                return Err(code_error(91));
+            case Err(_):
+                {}
+        }
+        second = await async::recv<usize>(right.receiver)?;
+    } else if (first == 20) {
+        Result<void, Error> sent = async::try_send<usize>(left.sender, 99);
+        switch (sent) {
+            case Ok:
+                return Err(code_error(92));
+            case Err(_):
+                {}
+        }
+        second = await async::recv<usize>(left.receiver)?;
+    } else {
+        return Err(code_error(90));
+    }
+
+    async::close<usize>(left.sender)?;
+    async::close<usize>(right.sender)?;
+    async::close_receiver<usize>(left.receiver)?;
+    async::close_receiver<usize>(right.receiver)?;
+    return Ok(first + second);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

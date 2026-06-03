@@ -1,0 +1,85 @@
+// ciel-test: run
+// sanitizer: address
+// expect-exit: 0
+// expect-stdout: 6
+
+import /std/async as async;
+import /std/async_net as anet;
+import /std/async_time as async_time;
+import /std/io as io;
+import /std/net as net;
+import /std/panic;
+import /std/result;
+
+bool same_bytes([]u8 got, []const u8 want) {
+    if (got.len != want.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < want.len) {
+        if (got[i] != want[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+Result<usize, Error> sleep_winner(Result<void, Error> value) {
+    value?;
+    return Ok(1);
+}
+
+Result<usize, Error> read_loser(Result<anet::Bytes, Error> value) {
+    value?;
+    return Ok(2);
+}
+
+async Result<void, Error> write_once(anet::AsyncTcpListener listener) {
+    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    [6]u8 data = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
+    await anet::write_all(server, anet::bytes_copy(data[..])?)?;
+    anet::shutdown_write(server)?;
+    anet::close_stream(server)?;
+    return Ok;
+}
+
+async Result<usize, Error> drive() {
+    anet::AsyncTcpListener listener =
+        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    net::SocketAddr bound = anet::listener_addr(listener)?;
+    async::Task<void> server = async::spawn<void>(write_once(listener))?;
+
+    anet::AsyncTcpStream client = await anet::connect(bound)?;
+    anet::AsyncTcpSplit halves = anet::split(client)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 6)?;
+    await async_time::sleep_ms(20)?;
+
+    Result<usize, Error> picked = await biased select {
+        case slept = async_time::sleep_ms(0): sleep_winner(slept);
+        case bytes = anet::read_exact_buffered(reader, 6): read_loser(bytes);
+    };
+    if (picked? != 1) {
+        return Err(code_error(90));
+    }
+
+    anet::Bytes exact = await anet::read_exact_buffered(reader, 6)?;
+    [6]u8 @got = [0;];
+    usize copied = anet::bytes_copy_to(exact, got[..])?;
+    [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
+    if (copied != 6 || !same_bytes(got[..], want[..])) {
+        return Err(code_error(91));
+    }
+
+    anet::AsyncTcpReadHalf half = anet::into_read_half(reader)?;
+    anet::shutdown_read_half(half)?;
+    anet::close_stream(client)?;
+    anet::close_listener(listener)?;
+    await server?;
+    return Ok(copied);
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive()))));
+    return 0;
+}

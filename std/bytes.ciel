@@ -1,1 +1,32 @@
 export import /std/async/bytes;
+import /std/async/bytes as raw;
+import /std/result;
+
+unsafe extern "C" {
+    []u8 ciel_runtime_u8_alloc_slice(usize len);
+}
+
+export Result<raw::Bytes, Error> bytes_empty() {
+    [1]u8 empty = [0;];
+    return raw::bytes_copy(empty[..0]);
+}
+
+export Result<raw::Bytes, Error> bytes_from_text([]const char text) {
+    return raw::bytes_copy_chars(text);
+}
+
+export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) {
+    usize len = raw::bytes_len(bytes);
+    []u8 out = unsafe { ciel_runtime_u8_alloc_slice(len) };
+    usize copied = raw::bytes_copy_to(bytes, out)?;
+    if (copied != len) {
+        return Err(text_error("short bytes copy"));
+    }
+    return Ok(out);
+}
+
+export Result<raw::Bytes, Error> bytes_append(raw::Bytes left, raw::Bytes right) {
+    []u8 left_slice = bytes_to_slice(left)?;
+    []u8 right_slice = bytes_to_slice(right)?;
+    return raw::bytes_concat(left_slice, right_slice);
+}

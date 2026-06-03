@@ -20,6 +20,50 @@ enum TestKind {
     KnownFailAccepts,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sanitizer {
+    Address,
+    Thread,
+}
+
+impl Sanitizer {
+    fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "address" | "asan" => Ok(Self::Address),
+            "thread" | "tsan" => Ok(Self::Thread),
+            other => Err(format!(
+                "unsupported sanitizer `{other}`; expected `address` or `thread`"
+            )),
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Address => "address",
+            Self::Thread => "thread",
+        }
+    }
+
+    fn flags(self) -> Vec<String> {
+        let mut flags = match self {
+            Self::Address => vec![
+                "-fsanitize=address".to_string(),
+                "-fno-omit-frame-pointer".to_string(),
+                "-g".to_string(),
+            ],
+            Self::Thread => vec![
+                "-fsanitize=thread".to_string(),
+                "-fno-omit-frame-pointer".to_string(),
+                "-g".to_string(),
+            ],
+        };
+        if cfg!(target_os = "macos") {
+            flags.push("-Wl,-no_warn_duplicate_libraries".to_string());
+        }
+        flags
+    }
+}
+
 #[derive(Clone, Debug)]
 struct CCount {
     needle: String,
@@ -39,6 +83,7 @@ struct Case {
     expect_c_counts: Vec<CCount>,
     run_args: Vec<String>,
     features: Vec<String>,
+    sanitizers: Vec<Sanitizer>,
     warning_clean: bool,
     host: Option<PathBuf>,
     known_fail_reason: Option<String>,
@@ -279,6 +324,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
     let mut expect_c_counts = Vec::new();
     let mut run_args = Vec::new();
     let mut features = Vec::new();
+    let mut sanitizers = Vec::new();
     let mut warning_clean = false;
     let mut host = None;
     let mut known_fail_reason = None;
@@ -336,6 +382,13 @@ fn parse_case(path: &Path) -> Result<Case, String> {
                 });
             }
             "feature" => features.push(value.to_string()),
+            "sanitizer" => {
+                let sanitizer = Sanitizer::parse(value)?;
+                if sanitizers.contains(&sanitizer) {
+                    return Err(format!("duplicate sanitizer `{}`", sanitizer.label()));
+                }
+                sanitizers.push(sanitizer);
+            }
             "known-fail-reason" => known_fail_reason = Some(value.to_string()),
             "warning-clean" => {
                 warning_clean = match value {
@@ -361,6 +414,7 @@ fn parse_case(path: &Path) -> Result<Case, String> {
         expect_c_counts,
         run_args,
         features,
+        sanitizers,
         warning_clean,
         host,
         known_fail_reason,
@@ -381,9 +435,13 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
                 || !case.features.is_empty()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
-                return Err("dependency/manual fixtures must not declare expectations".to_string());
+                return Err(
+                    "dependency/manual fixtures must not declare expectations or sanitizer metadata"
+                        .to_string(),
+                );
             }
         }
         TestKind::KnownFailCompile => {
@@ -398,10 +456,11 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
                 return Err(
-                    "known-fail-compile fixtures cannot declare C, runtime, host, or warning expectations"
+                    "known-fail-compile fixtures cannot declare C, runtime, host, sanitizer, or warning expectations"
                         .to_string(),
                 );
             }
@@ -418,10 +477,11 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
                 return Err(
-                    "known-fail-cc fixtures cannot declare C, runtime, host, or warning expectations"
+                    "known-fail-cc fixtures cannot declare C, runtime, host, sanitizer, or warning expectations"
                         .to_string(),
                 );
             }
@@ -439,10 +499,11 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
                 return Err(
-                    "known-fail-run fixtures cannot declare C, error, host, or warning expectations"
+                    "known-fail-run fixtures cannot declare C, error, host, sanitizer, or warning expectations"
                         .to_string(),
                 );
             }
@@ -460,10 +521,11 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || !case.expect_c_counts.is_empty()
                 || case.warning_clean
                 || case.host.is_some()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
                 return Err(
-                    "known-fail-accepts fixtures cannot declare C, error, runtime, host, or warning expectations"
+                    "known-fail-accepts fixtures cannot declare C, error, runtime, host, sanitizer, or warning expectations"
                         .to_string(),
                 );
             }
@@ -521,10 +583,11 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
+                || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
                 return Err(
-                    "error fixtures cannot declare C, runtime, host, or warning expectations"
+                    "error fixtures cannot declare C, runtime, host, sanitizer, or warning expectations"
                         .to_string(),
                 );
             }
@@ -538,33 +601,41 @@ fn run_case(case: &Case) -> Result<(), String> {
         TestKind::Compile => {
             let c = compile_case(case)?;
             check_c_expectations(case, &c)?;
-            if case.warning_clean {
-                compile_c(&case.path, &c, "warn.exe", &["-Wall", "-Wextra", "-Werror"])?;
+            compile_warning_clean(case, &c)?;
+            for (suffix, flags) in sanitizer_c_flag_variants(case, "compile.exe") {
+                let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
+                compile_c(&case.path, &c, &suffix, &flag_refs)?;
             }
             Ok(())
         }
         TestKind::Run => {
             let c = compile_case(case)?;
             check_c_expectations(case, &c)?;
-            if case.warning_clean {
-                compile_c(&case.path, &c, "warn.exe", &["-Wall", "-Wextra", "-Werror"])?;
-            }
-            let exe = compile_c(&case.path, &c, "run.exe", &[])?;
             let run_args = resolve_run_args(case)?;
-            let output = Command::new(&exe)
-                .args(&run_args)
-                .output()
-                .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
-            check_output(case, &output)
+            compile_warning_clean(case, &c)?;
+            for (suffix, flags) in c_flag_variants(case, "run.exe") {
+                let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
+                let exe = compile_c(&case.path, &c, &suffix, &flag_refs)?;
+                let output = Command::new(&exe)
+                    .args(&run_args)
+                    .output()
+                    .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
+                check_output(case, &output)?;
+            }
+            Ok(())
         }
         TestKind::Host => {
             let c = compile_case(case)?;
             check_c_expectations(case, &c)?;
-            let exe = compile_host_c(case, &c)?;
-            let output = Command::new(&exe)
-                .output()
-                .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
-            check_output(case, &output)
+            for (suffix, flags) in c_flag_variants(case, "host.exe") {
+                let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
+                let exe = compile_host_c(case, &c, &suffix, &flag_refs)?;
+                let output = Command::new(&exe)
+                    .output()
+                    .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
+                check_output(case, &output)?;
+            }
+            Ok(())
         }
         TestKind::Error => match compile_case(case) {
             Ok(_) => Err("expected compilation to fail, but it succeeded".to_string()),
@@ -675,6 +746,36 @@ fn compile_case(case: &Case) -> Result<String, String> {
     })
 }
 
+fn compile_warning_clean(case: &Case, c: &str) -> Result<(), String> {
+    if case.warning_clean {
+        compile_c(&case.path, c, "warn.exe", &["-Wall", "-Wextra", "-Werror"])?;
+    }
+    Ok(())
+}
+
+fn c_flag_variants(case: &Case, plain_suffix: &str) -> Vec<(String, Vec<String>)> {
+    let mut variants = vec![(plain_suffix.to_string(), Vec::new())];
+    variants.extend(sanitizer_c_flag_variants(case, plain_suffix));
+    variants
+}
+
+fn sanitizer_c_flag_variants(case: &Case, plain_suffix: &str) -> Vec<(String, Vec<String>)> {
+    case.sanitizers
+        .iter()
+        .copied()
+        .map(|sanitizer| (sanitizer_suffix(plain_suffix, sanitizer), sanitizer.flags()))
+        .collect()
+}
+
+fn sanitizer_suffix(plain_suffix: &str, sanitizer: Sanitizer) -> String {
+    let label = sanitizer.label();
+    if let Some(stem) = plain_suffix.strip_suffix(".exe") {
+        format!("{stem}.{label}.exe")
+    } else {
+        format!("{plain_suffix}.{label}")
+    }
+}
+
 fn check_c_expectations(case: &Case, c: &str) -> Result<(), String> {
     for needle in &case.expect_c_contains {
         if !c.contains(needle) {
@@ -745,10 +846,15 @@ fn compile_c(
     Ok(exe_path)
 }
 
-fn compile_host_c(case: &Case, c: &str) -> Result<PathBuf, String> {
+fn compile_host_c(
+    case: &Case,
+    c: &str,
+    suffix: &str,
+    extra_flags: &[&str],
+) -> Result<PathBuf, String> {
     let generated_c = temp_artifact(&case.path, "generated.c");
     let host_c = temp_artifact(&case.path, "host.c");
-    let exe = temp_artifact(&case.path, "host.exe");
+    let exe = temp_artifact(&case.path, suffix);
     fs::write(&generated_c, c)
         .map_err(|error| format!("failed to write `{}`: {error}", generated_c.display()))?;
     let host_source = fs::read_to_string(case.host.as_ref().unwrap())
@@ -759,7 +865,7 @@ fn compile_host_c(case: &Case, c: &str) -> Result<PathBuf, String> {
         format!("#include \"{generated_name}\"\n{host_source}"),
     )
     .map_err(|error| format!("failed to write `{}`: {error}", host_c.display()))?;
-    run_cc(&host_c, &exe, &[])?;
+    run_cc(&host_c, &exe, extra_flags)?;
     Ok(exe)
 }
 

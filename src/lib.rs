@@ -1,4 +1,5 @@
 pub mod ast;
+pub mod build;
 pub mod capture;
 pub mod codegen;
 pub mod diagnostic;
@@ -19,5 +20,6 @@ pub mod thir;
 pub mod typeck;
 pub mod types;
 
+pub use build::{BuildPlan, BuildProfile};
 pub use diagnostic::{DiagResult, Diagnostic};
-pub use driver::{CompileOptions, compile_to_c};
+pub use driver::{CompileOptions, compile_to_build_plan, compile_to_c};

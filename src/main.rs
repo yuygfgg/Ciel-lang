@@ -4,7 +4,12 @@ use std::{
     process::{self, Command},
 };
 
-use cielc::{CompileOptions, diagnostic::render_diagnostics, driver::compile_to_c_with_sources};
+use cielc::{
+    BuildPlan, BuildProfile, CompileOptions,
+    build::native::{build_cmake_targets, cmake_include_flags, resolve_native_flags},
+    diagnostic::render_diagnostics,
+    driver::compile_to_build_plan_with_sources,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EmitMode {
@@ -12,12 +17,6 @@ enum EmitMode {
     Executable,
     Object,
     SharedLibrary,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum BuildProfile {
-    Debug,
-    Release,
 }
 
 fn main() {
@@ -50,18 +49,19 @@ fn main() {
     if let Some(target_arch) = &cli.target_arch {
         options = options.with_target_arch(target_arch.clone());
     }
+    options = options.with_build_profile(cli.profile);
     for feature in &cli.features {
         options = options.with_feature(feature.clone());
     }
 
     let target_os = options.target_os.clone();
-    match compile_to_c_with_sources(options) {
-        Ok((c, _source_map)) => {
+    match compile_to_build_plan_with_sources(options) {
+        Ok((plan, _source_map)) => {
             if cli.emit == EmitMode::C {
-                emit_c_output(&c, cli.output.as_deref());
+                emit_c_output(&plan.generated_c, cli.output.as_deref());
                 return;
             }
-            compile_generated_c(&input, &c, &target_os, &cli);
+            compile_generated_c(&input, &plan, &target_os, &cli);
         }
         Err((diagnostics, source_map)) => {
             eprint!("{}", render_diagnostics(&source_map, &diagnostics));
@@ -169,12 +169,12 @@ fn emit_c_output(c: &str, output: Option<&Path>) {
     }
 }
 
-fn compile_generated_c(input: &Path, c: &str, target_os: &str, cli: &CliOptions) {
+fn compile_generated_c(input: &Path, plan: &BuildPlan, target_os: &str, cli: &CliOptions) {
     let c_path = cli
         .save_c
         .clone()
         .unwrap_or_else(|| temp_c_path(input, cli.emit));
-    if let Err(error) = fs::write(&c_path, c) {
+    if let Err(error) = fs::write(&c_path, &plan.generated_c) {
         eprintln!("failed to write `{}`: {error}", c_path.display());
         process::exit(1);
     }
@@ -183,7 +183,7 @@ fn compile_generated_c(input: &Path, c: &str, target_os: &str, cli: &CliOptions)
         .output
         .clone()
         .unwrap_or_else(|| default_output_path(input, cli.emit, target_os));
-    let result = invoke_c_compiler(&c_path, &output, target_os, cli);
+    let result = invoke_c_compiler(&c_path, &output, target_os, cli, plan);
     if cli.save_c.is_none() {
         let _ = fs::remove_file(&c_path);
     }
@@ -198,11 +198,16 @@ fn invoke_c_compiler(
     output: &Path,
     target_os: &str,
     cli: &CliOptions,
+    plan: &BuildPlan,
 ) -> Result<(), String> {
-    let (pkg_compile_flags, pkg_link_flags) = bdwgc_cc_args();
+    if matches!(cli.emit, EmitMode::Executable | EmitMode::SharedLibrary) {
+        build_cmake_targets(&plan.cmake_targets, plan.profile)?;
+    }
+    let native_flags = resolve_native_flags(&plan.link_requirements, target_os)?;
     let mut args = Vec::<String>::new();
-    args.extend(profile_c_flags(cli.profile, target_os));
-    args.extend(pkg_compile_flags);
+    args.extend(profile_c_flags(plan.profile, target_os));
+    args.extend(cmake_include_flags(&plan.cmake_targets));
+    args.extend(native_flags.compile_flags.clone());
     args.extend(cli.c_flags.clone());
 
     match cli.emit {
@@ -218,16 +223,26 @@ fn invoke_c_compiler(
             args.push(shared_library_flag(target_os).to_string());
             args.push("-o".to_string());
             args.push(output.display().to_string());
-            args.extend(profile_link_flags(cli.profile, target_os));
-            args.extend(pkg_link_flags);
+            args.extend(profile_link_flags(plan.profile, target_os));
+            args.extend(
+                plan.cmake_targets
+                    .iter()
+                    .map(|target| target.artifact.display().to_string()),
+            );
+            args.extend(native_flags.link_flags.clone());
             args.extend(cli.link_flags.clone());
         }
         EmitMode::Executable => {
             args.push(c_path.display().to_string());
             args.push("-o".to_string());
             args.push(output.display().to_string());
-            args.extend(profile_link_flags(cli.profile, target_os));
-            args.extend(pkg_link_flags);
+            args.extend(profile_link_flags(plan.profile, target_os));
+            args.extend(
+                plan.cmake_targets
+                    .iter()
+                    .map(|target| target.artifact.display().to_string()),
+            );
+            args.extend(native_flags.link_flags.clone());
             args.extend(cli.link_flags.clone());
         }
         EmitMode::C => unreachable!("C output is handled without invoking cc"),
@@ -281,64 +296,6 @@ fn profile_link_flags(profile: BuildProfile, target_os: &str) -> Vec<String> {
         }
         BuildProfile::Release => Vec::new(),
     }
-}
-
-fn bdwgc_cc_args() -> (Vec<String>, Vec<String>) {
-    let mut args = Vec::new();
-    args.extend(pkg_config_args("bdw-gc", &["-lgc"]));
-    args.extend(pkg_config_args("botan-3", &["-lbotan-3"]));
-    if !cfg!(windows) && !args.iter().any(|arg| arg == "-pthread") {
-        args.push("-pthread".to_string());
-    }
-    if !cfg!(windows) {
-        args.push("-fblocks".to_string());
-        if !cfg!(target_os = "macos") {
-            args.push("-ldispatch".to_string());
-            args.push("-lBlocksRuntime".to_string());
-        }
-    }
-    split_c_and_link_args(args)
-}
-
-fn pkg_config_args(package: &str, fallback: &[&str]) -> Vec<String> {
-    let output = Command::new("pkg-config")
-        .arg("--cflags")
-        .arg("--libs")
-        .arg(package)
-        .output();
-    match output {
-        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter(|arg| !arg.starts_with("-stdlib="))
-            .map(str::to_string)
-            .collect::<Vec<_>>(),
-        _ => fallback.iter().map(|arg| (*arg).to_string()).collect(),
-    }
-}
-
-fn split_c_and_link_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
-    let mut compile = Vec::new();
-    let mut link = Vec::new();
-    for arg in args {
-        if arg == "-pthread" || arg.starts_with("-stdlib=") {
-            compile.push(arg.clone());
-            link.push(arg);
-        } else if is_link_arg(&arg) {
-            link.push(arg);
-        } else {
-            compile.push(arg);
-        }
-    }
-    (compile, link)
-}
-
-fn is_link_arg(arg: &str) -> bool {
-    arg.starts_with("-l")
-        || arg.starts_with("-L")
-        || arg.starts_with("-Wl,")
-        || arg == "-framework"
-        || arg == "Dispatch"
 }
 
 fn shared_library_flag(target_os: &str) -> &'static str {

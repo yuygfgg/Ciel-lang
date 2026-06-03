@@ -1,10 +1,8 @@
 // ciel-test: compile
-// expect-c-contains: CIEL_DEFINE_SIGNED_DIV_REM(i64, int64_t, INT64_MIN)
-// expect-c-contains: CIEL_DEFINE_UNSIGNED_DIV_REM(usize, size_t)
+// expect-c-contains: #include "ciel_runtime.h"
 // expect-c-contains: = ciel_div_i64(value, 2,
 // expect-c-contains: = ciel_rem_usize(value, 3,
 // expect-c-contains: return ciel_return_
-// expect-c-contains: division by zero
 
 i64 half(i64 value) {
     return value / 2;

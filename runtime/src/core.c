@@ -1,0 +1,147 @@
+#include "internal.h"
+
+static int ciel_runtime_initialized = 0;
+static int ciel_runtime_argc = 0;
+static char **ciel_runtime_argv = NULL;
+
+void ciel_runtime_init(void) {
+    if (ciel_runtime_initialized)
+        return;
+    ciel_runtime_initialized = 1;
+    GC_INIT();
+#if defined(GC_THREADS)
+    GC_allow_register_threads();
+#endif
+}
+
+void ciel_runtime_set_args(int argc, char **argv) {
+    ciel_runtime_argc = argc < 0 ? 0 : argc;
+    ciel_runtime_argv = argv;
+}
+
+int ciel_env_args_len(size_t *out) {
+    if (out == NULL)
+        return EINVAL;
+    if (ciel_runtime_argc < 0)
+        return EIO;
+    *out = (size_t)ciel_runtime_argc;
+    return 0;
+}
+
+CielConstSlice_char ciel_env_arg_unchecked(size_t index) {
+    static const char empty[] = "";
+    CielConstSlice_char out;
+    if (ciel_runtime_argc < 0 || ciel_runtime_argv == NULL ||
+        index >= (size_t)ciel_runtime_argc ||
+        ciel_runtime_argv[index] == NULL) {
+        out.ptr = empty;
+        out.len = 0;
+        return out;
+    }
+    out.ptr = ciel_runtime_argv[index];
+    out.len = strlen(ciel_runtime_argv[index]);
+    return out;
+}
+
+CIEL_COLD CIEL_NORETURN void ciel_panic_at(const char *message, size_t len,
+                                           const char *file, size_t line) {
+    fputs("panic", stderr);
+    if (file != NULL && file[0] != '\0')
+        fprintf(stderr, " at %s:%zu", file, line);
+    fputs(": ", stderr);
+    if (message != NULL && len > 0)
+        fwrite(message, 1, len, stderr);
+    if (message == NULL || len == 0 || message[len - 1] != '\n')
+        fputc('\n', stderr);
+    exit(CIEL_PANIC_EXIT_CODE);
+}
+
+CIEL_COLD CIEL_NORETURN void ciel_panic(const char *message, size_t len) {
+    ciel_panic_at(message, len, "<runtime>", 0);
+}
+
+int ciel_errno(void) { return errno; }
+
+int ciel_async_timeout_errno(void) { return ETIMEDOUT; }
+
+int ciel_async_channel_closed_errno(void) { return EPIPE; }
+
+CIEL_MALLOC_LIKE CIEL_RETURNS_NONNULL char *
+ciel_cstr_from_slice(const char *ptr, size_t len) {
+    char *out = (char *)ciel_alloc_atomic_array(sizeof(char), len + 1);
+    for (size_t i = 0; i < len; i++)
+        out[i] = ptr[i];
+    out[len] = '\0';
+    return out;
+}
+
+static CIEL_MAYBE_UNUSED size_t ciel_format_float(char *out, size_t cap,
+                                                  const char *fmt,
+                                                  double value) {
+    int written = snprintf(out, cap, fmt, value);
+    if (written < 0) {
+        if (cap > 0)
+            out[0] = '\0';
+        return 0;
+    }
+    if ((size_t)written >= cap) {
+        return cap > 0 ? cap - 1 : 0;
+    }
+    return (size_t)written;
+}
+
+size_t ciel_f32_to_string(float value, char *out, size_t cap) {
+    return ciel_format_float(out, cap, "%.9g", (double)value);
+}
+
+size_t ciel_f64_to_string(double value, char *out, size_t cap) {
+    return ciel_format_float(out, cap, "%.17g", value);
+}
+
+int ciel_io_open_read(const char *path) { return open(path, O_RDONLY); }
+
+int ciel_io_open_write(const char *path) {
+    return open(path, O_WRONLY | O_CREAT | O_TRUNC, 0666);
+}
+
+int ciel_io_open_append(const char *path) {
+    return open(path, O_WRONLY | O_CREAT | O_APPEND, 0666);
+}
+
+int32_t ciel_time_monotonic_ms(uint64_t *out) {
+    if (out == NULL)
+        return EINVAL;
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return errno == 0 ? EIO : errno;
+    if (now.tv_sec < 0)
+        return EIO;
+    uint64_t sec = (uint64_t)now.tv_sec;
+    uint64_t msec = (uint64_t)(now.tv_nsec / 1000000L);
+    if (sec > (UINT64_MAX - msec) / 1000ULL)
+        return EOVERFLOW;
+    *out = sec * 1000ULL + msec;
+    return 0;
+}
+
+int32_t ciel_time_sleep_ms(uint64_t ms) {
+    uint64_t seconds = ms / 1000ULL;
+    if (seconds > (uint64_t)LONG_MAX)
+        return EOVERFLOW;
+    struct timespec remaining;
+    remaining.tv_sec = (time_t)seconds;
+    remaining.tv_nsec = (long)((ms % 1000ULL) * 1000000ULL);
+
+    while (nanosleep(&remaining, &remaining) != 0) {
+        if (errno != EINTR)
+            return errno == 0 ? EIO : errno;
+    }
+    return 0;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+__attribute__((constructor))
+#endif
+static CIEL_MAYBE_UNUSED void ciel_internal_constructor(void) {
+    ciel_runtime_init();
+}

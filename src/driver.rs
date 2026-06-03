@@ -5,6 +5,7 @@ use std::{
 };
 
 use crate::{
+    build::{BuildPlan, BuildProfile, planner::build_plan_for_generated_c},
     codegen::generate_c,
     diagnostic::{DiagResult, Diagnostic},
     escape::analyze_escapes,
@@ -24,6 +25,7 @@ pub struct CompileOptions {
     pub std_paths: Vec<PathBuf>,
     pub target_os: String,
     pub target_arch: String,
+    pub build_profile: BuildProfile,
     pub features: HashSet<String>,
 }
 
@@ -37,6 +39,7 @@ impl CompileOptions {
             std_paths: vec![project_root],
             target_os: std::env::consts::OS.to_string(),
             target_arch: std::env::consts::ARCH.to_string(),
+            build_profile: BuildProfile::Debug,
             features: HashSet::new(),
         }
     }
@@ -63,6 +66,11 @@ impl CompileOptions {
 
     pub fn with_target_arch(mut self, target_arch: impl Into<String>) -> Self {
         self.target_arch = target_arch.into();
+        self
+    }
+
+    pub fn with_build_profile(mut self, build_profile: BuildProfile) -> Self {
+        self.build_profile = build_profile;
         self
     }
 
@@ -118,6 +126,30 @@ pub fn compile_to_c_with_sources(
         }
         Err(diags) => Err((diags, loader.source_map)),
     }
+}
+
+pub fn compile_to_build_plan(options: CompileOptions) -> DiagResult<BuildPlan> {
+    compile_to_build_plan_with_sources(options)
+        .map(|(plan, _source_map)| plan)
+        .map_err(|(diagnostics, _source_map)| diagnostics)
+}
+
+pub fn compile_to_build_plan_with_sources(
+    options: CompileOptions,
+) -> Result<(BuildPlan, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    let profile = options.build_profile;
+    let target_os = options.target_os.clone();
+    compile_to_c_with_sources(options).map(|(generated_c, source_map)| {
+        let package_inputs = source_map
+            .files()
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        (
+            build_plan_for_generated_c(generated_c, profile, &target_os, package_inputs),
+            source_map,
+        )
+    })
 }
 
 struct ModuleLoader {

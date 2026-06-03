@@ -25,6 +25,10 @@ impl SourceMap {
         &self.files[id.0]
     }
 
+    pub fn files(&self) -> &[SourceFile] {
+        &self.files
+    }
+
     pub fn file_path(&self, id: FileId) -> &Path {
         &self.get(id).path
     }

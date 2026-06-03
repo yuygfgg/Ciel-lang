@@ -4,7 +4,11 @@ use std::{
     process::{Command, Output},
 };
 
-use cielc::{CompileOptions, compile_to_c};
+use cielc::{
+    BuildPlan, BuildProfile, CompileOptions,
+    build::native::{build_cmake_targets, cmake_include_flags, resolve_native_flags},
+    compile_to_build_plan, compile_to_c,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum TestKind {
@@ -269,6 +273,67 @@ fn cli_output_modes_project_root_std_path_and_preserved_c_work() {
         .unwrap();
     assert_cli_success(&dylib);
     assert!(shared.exists());
+}
+
+#[test]
+fn build_plan_wraps_generated_c_profile_inputs_and_runtime_requirements() {
+    let path = cases_root().join("backend/compiles_basic_main_to_c/main.ciel");
+    let options = CompileOptions::new(&path)
+        .with_project_root(repo_root())
+        .with_target_os("linux")
+        .with_build_profile(BuildProfile::Release);
+    let c = compile_to_c(options.clone()).unwrap();
+    let plan = compile_to_build_plan(options).unwrap();
+
+    assert_eq!(plan.generated_c, c);
+    assert!(plan.generated_c.contains("#include \"ciel_runtime.h\""));
+    assert!(!plan.generated_c.contains("#include <gc/gc.h>"));
+    assert_eq!(plan.profile, BuildProfile::Release);
+    assert!(plan.package_inputs.contains(&path));
+    assert_eq!(plan.cmake_targets.len(), 1);
+    assert_eq!(plan.cmake_targets[0].target, "ciel_runtime");
+    assert!(
+        plan.cmake_targets[0]
+            .cmake_file
+            .ends_with("runtime/CMakeLists.txt")
+    );
+    assert!(
+        plan.cmake_targets[0]
+            .artifact
+            .ends_with("target/ciel-runtime/linux/release/libciel_runtime.a")
+    );
+    assert!(
+        plan.link_requirements
+            .contains(&cielc::build::LinkRequirement::PkgConfig {
+                name: "bdw-gc".to_string(),
+                required: false,
+            })
+    );
+    assert!(
+        plan.link_requirements
+            .contains(&cielc::build::LinkRequirement::PkgConfig {
+                name: "botan-3".to_string(),
+                required: false,
+            })
+    );
+    assert!(
+        plan.link_requirements
+            .contains(&cielc::build::LinkRequirement::SystemLib {
+                name: "pthread".to_string(),
+            })
+    );
+    assert!(
+        plan.link_requirements
+            .contains(&cielc::build::LinkRequirement::SystemLib {
+                name: "dispatch".to_string(),
+            })
+    );
+    assert!(
+        plan.link_requirements
+            .contains(&cielc::build::LinkRequirement::SystemLib {
+                name: "BlocksRuntime".to_string(),
+            })
+    );
 }
 
 fn load_cases() -> Result<Vec<Case>, Vec<String>> {
@@ -599,23 +664,23 @@ fn validate_case(case: &Case) -> Result<(), String> {
 fn run_case(case: &Case) -> Result<(), String> {
     match case.kind {
         TestKind::Compile => {
-            let c = compile_case(case)?;
-            check_c_expectations(case, &c)?;
-            compile_warning_clean(case, &c)?;
+            let plan = compile_case(case)?;
+            check_c_expectations(case, &plan.generated_c)?;
+            compile_warning_clean(case, &plan)?;
             for (suffix, flags) in sanitizer_c_flag_variants(case, "compile.exe") {
                 let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
-                compile_c(&case.path, &c, &suffix, &flag_refs)?;
+                compile_c(&case.path, &plan, &suffix, &flag_refs)?;
             }
             Ok(())
         }
         TestKind::Run => {
-            let c = compile_case(case)?;
-            check_c_expectations(case, &c)?;
+            let plan = compile_case(case)?;
+            check_c_expectations(case, &plan.generated_c)?;
             let run_args = resolve_run_args(case)?;
-            compile_warning_clean(case, &c)?;
+            compile_warning_clean(case, &plan)?;
             for (suffix, flags) in c_flag_variants(case, "run.exe") {
                 let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
-                let exe = compile_c(&case.path, &c, &suffix, &flag_refs)?;
+                let exe = compile_c(&case.path, &plan, &suffix, &flag_refs)?;
                 let output = Command::new(&exe)
                     .args(&run_args)
                     .output()
@@ -625,11 +690,11 @@ fn run_case(case: &Case) -> Result<(), String> {
             Ok(())
         }
         TestKind::Host => {
-            let c = compile_case(case)?;
-            check_c_expectations(case, &c)?;
+            let plan = compile_case(case)?;
+            check_c_expectations(case, &plan.generated_c)?;
             for (suffix, flags) in c_flag_variants(case, "host.exe") {
                 let flag_refs = flags.iter().map(String::as_str).collect::<Vec<_>>();
-                let exe = compile_host_c(case, &c, &suffix, &flag_refs)?;
+                let exe = compile_host_c(case, &plan, &suffix, &flag_refs)?;
                 let output = Command::new(&exe)
                     .output()
                     .map_err(|error| format!("failed to run `{}`: {error}", exe.display()))?;
@@ -667,8 +732,8 @@ fn run_case(case: &Case) -> Result<(), String> {
             }
         },
         TestKind::KnownFailCc => {
-            let c = compile_case(case)?;
-            match compile_c(&case.path, &c, "known_fail.exe", &[]) {
+            let plan = compile_case(case)?;
+            match compile_c(&case.path, &plan, "known_fail.exe", &[]) {
                 Ok(_) => Err(format!(
                     "known-fail-cc now passes C compilation; promote this fixture. recorded reason: {}",
                     case.known_fail_reason.as_deref().unwrap()
@@ -686,8 +751,8 @@ fn run_case(case: &Case) -> Result<(), String> {
             }
         }
         TestKind::KnownFailRun => {
-            let c = compile_case(case)?;
-            let exe = compile_c(&case.path, &c, "known_fail_run.exe", &[])?;
+            let plan = compile_case(case)?;
+            let exe = compile_c(&case.path, &plan, "known_fail_run.exe", &[])?;
             let run_args = resolve_run_args(case)?;
             let output = Command::new(&exe)
                 .args(&run_args)
@@ -732,12 +797,12 @@ fn resolve_run_args(case: &Case) -> Result<Vec<String>, String> {
     Ok(resolved)
 }
 
-fn compile_case(case: &Case) -> Result<String, String> {
+fn compile_case(case: &Case) -> Result<BuildPlan, String> {
     let mut options = CompileOptions::new(&case.path).with_project_root(repo_root());
     for feature in &case.features {
         options = options.with_feature(feature.clone());
     }
-    compile_to_c(options).map_err(|diagnostics| {
+    compile_to_build_plan(options).map_err(|diagnostics| {
         diagnostics
             .iter()
             .map(|diagnostic| diagnostic.message.clone())
@@ -746,9 +811,14 @@ fn compile_case(case: &Case) -> Result<String, String> {
     })
 }
 
-fn compile_warning_clean(case: &Case, c: &str) -> Result<(), String> {
+fn compile_warning_clean(case: &Case, plan: &BuildPlan) -> Result<(), String> {
     if case.warning_clean {
-        compile_c(&case.path, c, "warn.exe", &["-Wall", "-Wextra", "-Werror"])?;
+        compile_c(
+            &case.path,
+            plan,
+            "warn.exe",
+            &["-Wall", "-Wextra", "-Werror"],
+        )?;
     }
     Ok(())
 }
@@ -834,28 +904,28 @@ fn check_output(case: &Case, output: &Output) -> Result<(), String> {
 
 fn compile_c(
     source_path: &Path,
-    c: &str,
+    plan: &BuildPlan,
     suffix: &str,
     extra_flags: &[&str],
 ) -> Result<PathBuf, String> {
     let c_path = temp_artifact(source_path, "c");
     let exe_path = temp_artifact(source_path, suffix);
-    fs::write(&c_path, c)
+    fs::write(&c_path, &plan.generated_c)
         .map_err(|error| format!("failed to write `{}`: {error}", c_path.display()))?;
-    run_cc(&c_path, &exe_path, extra_flags)?;
+    run_cc(&c_path, &exe_path, plan, extra_flags)?;
     Ok(exe_path)
 }
 
 fn compile_host_c(
     case: &Case,
-    c: &str,
+    plan: &BuildPlan,
     suffix: &str,
     extra_flags: &[&str],
 ) -> Result<PathBuf, String> {
     let generated_c = temp_artifact(&case.path, "generated.c");
     let host_c = temp_artifact(&case.path, "host.c");
     let exe = temp_artifact(&case.path, suffix);
-    fs::write(&generated_c, c)
+    fs::write(&generated_c, &plan.generated_c)
         .map_err(|error| format!("failed to write `{}`: {error}", generated_c.display()))?;
     let host_source = fs::read_to_string(case.host.as_ref().unwrap())
         .map_err(|error| format!("failed to read host fixture: {error}"))?;
@@ -865,20 +935,31 @@ fn compile_host_c(
         format!("#include \"{generated_name}\"\n{host_source}"),
     )
     .map_err(|error| format!("failed to write `{}`: {error}", host_c.display()))?;
-    run_cc(&host_c, &exe, extra_flags)?;
+    run_cc(&host_c, &exe, plan, extra_flags)?;
     Ok(exe)
 }
 
-fn run_cc(c_path: &Path, output: &Path, extra_flags: &[&str]) -> Result<(), String> {
-    let bdwgc_args = bdwgc_cc_args();
-    let (compile_args, link_args) = split_c_and_link_args(bdwgc_args);
+fn run_cc(
+    c_path: &Path,
+    output: &Path,
+    plan: &BuildPlan,
+    extra_flags: &[&str],
+) -> Result<(), String> {
+    build_cmake_targets(&plan.cmake_targets, plan.profile)?;
+    let native_flags = resolve_native_flags(&plan.link_requirements, std::env::consts::OS)?;
     let mut args = Vec::<String>::new();
     args.extend(extra_flags.iter().map(|flag| (*flag).to_string()));
-    args.extend(compile_args);
+    args.extend(cmake_include_flags(&plan.cmake_targets));
+    args.extend(native_flags.compile_flags);
     args.push(c_path.display().to_string());
     args.push("-o".to_string());
     args.push(output.display().to_string());
-    args.extend(link_args);
+    args.extend(
+        plan.cmake_targets
+            .iter()
+            .map(|target| target.artifact.display().to_string()),
+    );
+    args.extend(native_flags.link_flags);
 
     let cc = Command::new("cc")
         .args(&args)
@@ -893,64 +974,6 @@ fn run_cc(c_path: &Path, output: &Path, extra_flags: &[&str]) -> Result<(), Stri
         String::from_utf8_lossy(&cc.stdout),
         String::from_utf8_lossy(&cc.stderr)
     ))
-}
-
-fn bdwgc_cc_args() -> Vec<String> {
-    let mut args = Vec::new();
-    args.extend(pkg_config_args("bdw-gc", &["-lgc"]));
-    args.extend(pkg_config_args("botan-3", &["-lbotan-3"]));
-    if !cfg!(windows) && !args.iter().any(|arg| arg == "-pthread") {
-        args.push("-pthread".to_string());
-    }
-    if !cfg!(windows) {
-        args.push("-fblocks".to_string());
-        if !cfg!(target_os = "macos") {
-            args.push("-ldispatch".to_string());
-            args.push("-lBlocksRuntime".to_string());
-        }
-    }
-    args
-}
-
-fn pkg_config_args(package: &str, fallback: &[&str]) -> Vec<String> {
-    let output = Command::new("pkg-config")
-        .arg("--cflags")
-        .arg("--libs")
-        .arg(package)
-        .output();
-    match output {
-        Ok(output) if output.status.success() => String::from_utf8(output.stdout)
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter(|arg| !arg.starts_with("-stdlib="))
-            .map(str::to_string)
-            .collect(),
-        _ => fallback.iter().map(|arg| (*arg).to_string()).collect(),
-    }
-}
-
-fn split_c_and_link_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
-    let mut compile = Vec::new();
-    let mut link = Vec::new();
-    for arg in args {
-        if arg == "-pthread" || arg.starts_with("-stdlib=") {
-            compile.push(arg.clone());
-            link.push(arg);
-        } else if is_link_arg(&arg) {
-            link.push(arg);
-        } else {
-            compile.push(arg);
-        }
-    }
-    (compile, link)
-}
-
-fn is_link_arg(arg: &str) -> bool {
-    arg.starts_with("-l")
-        || arg.starts_with("-L")
-        || arg.starts_with("-Wl,")
-        || arg == "-framework"
-        || arg == "Dispatch"
 }
 
 fn cielc_bin() -> PathBuf {

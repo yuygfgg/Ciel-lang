@@ -36,8 +36,6 @@ use crate::{
     },
 };
 
-const C_RUNTIME_PRELUDE: &str = include_str!("runtime_prelude.c");
-
 pub fn generate_c(
     program: &MonoProgram,
     escapes: &EscapeProgram,
@@ -705,10 +703,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_runtime(&mut self) {
-        self.out.push_str(C_RUNTIME_PRELUDE);
-        if !C_RUNTIME_PRELUDE.ends_with('\n') {
-            self.out.push('\n');
-        }
+        self.line("#include \"ciel_runtime.h\"");
     }
 
     fn emit_source_location_table(&mut self) {

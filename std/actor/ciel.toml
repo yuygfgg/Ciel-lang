@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.actor"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/actor" = "actor.ciel"

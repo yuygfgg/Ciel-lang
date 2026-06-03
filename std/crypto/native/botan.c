@@ -1,5 +1,10 @@
-#include "internal.h"
+#include "ciel_core.h"
+#include "ciel_crypto.h"
+#include "ciel_gc.h"
+
 #include <botan/ffi.h>
+#include <errno.h>
+#include <string.h>
 
 #define CIEL_CRYPTO_MAX_ALGORITHM_LEN 128
 #define CIEL_CRYPTO_MIN_MAC_KEY_LEN 16
@@ -105,13 +110,13 @@ int32_t ciel_crypto_system_rng(CielCryptoRng **out) {
     if (rc != 0)
         return rc;
 
-    CielCryptoRng *ctx = (CielCryptoRng *)GC_MALLOC(sizeof(CielCryptoRng));
+    CielCryptoRng *ctx = (CielCryptoRng *)ciel_alloc(sizeof(CielCryptoRng));
     if (ctx == NULL) {
         botan_rng_destroy(rng);
         return ENOMEM;
     }
     ctx->rng = rng;
-    GC_register_finalizer(ctx, ciel_crypto_rng_finalizer, NULL, NULL, NULL);
+    ciel_register_finalizer(ctx, ciel_crypto_rng_finalizer, NULL);
     *out = ctx;
     return 0;
 }
@@ -194,13 +199,13 @@ int32_t ciel_crypto_hash_new(const char *algorithm, size_t algorithm_len,
     if (rc != 0)
         return rc;
 
-    CielCryptoHash *ctx = (CielCryptoHash *)GC_MALLOC(sizeof(CielCryptoHash));
+    CielCryptoHash *ctx = (CielCryptoHash *)ciel_alloc(sizeof(CielCryptoHash));
     if (ctx == NULL) {
         botan_hash_destroy(hash);
         return ENOMEM;
     }
     ctx->hash = hash;
-    GC_register_finalizer(ctx, ciel_crypto_hash_finalizer, NULL, NULL, NULL);
+    ciel_register_finalizer(ctx, ciel_crypto_hash_finalizer, NULL);
     *out = ctx;
     return 0;
 }
@@ -340,13 +345,13 @@ int32_t ciel_crypto_mac_new(const char *algorithm, size_t algorithm_len,
         return rc;
     }
 
-    CielCryptoMac *ctx = (CielCryptoMac *)GC_MALLOC(sizeof(CielCryptoMac));
+    CielCryptoMac *ctx = (CielCryptoMac *)ciel_alloc(sizeof(CielCryptoMac));
     if (ctx == NULL) {
         botan_mac_destroy(mac);
         return ENOMEM;
     }
     ctx->mac = mac;
-    GC_register_finalizer(ctx, ciel_crypto_mac_finalizer, NULL, NULL, NULL);
+    ciel_register_finalizer(ctx, ciel_crypto_mac_finalizer, NULL);
     *out = ctx;
     return 0;
 }

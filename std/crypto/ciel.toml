@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+name = "std.crypto"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/crypto" = "crypto.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_std_crypto"
+when = { os = ["linux", "macos"] }

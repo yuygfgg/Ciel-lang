@@ -1,26 +1,36 @@
-use std::{collections::HashMap, path::Path};
+use std::collections::HashMap;
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
 use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
 
-const STD_RESULT_PATH: &str = "std/result.ciel";
-const STD_RESULT_CORE_PATH: &str = "std/result/core.ciel";
-const STD_ERROR_PATH: &str = "std/error.ciel";
-const STD_ERROR_CORE_PATH: &str = "std/error/core.ciel";
-const STD_MESSAGE_PATH: &str = "std/message.ciel";
-const STD_ACTOR_PATH: &str = "std/actor.ciel";
-const STD_META_PATH: &str = "std/meta.ciel";
-const STD_ASYNC_PATH: &str = "std/async.ciel";
-const STD_ASYNC_CORE_PATH: &str = "std/async/core.ciel";
-const STD_ASYNC_TIME_PATH: &str = "std/async_time.ciel";
+const STD_RESULT_EXPORT: &str = "/std/result";
+const STD_RESULT_CORE_EXPORT: &str = "/std/result/core";
+const STD_ERROR_EXPORT: &str = "/std/error";
+const STD_ERROR_CORE_EXPORT: &str = "/std/error/core";
+const STD_MESSAGE_EXPORT: &str = "/std/message";
+const STD_ACTOR_EXPORT: &str = "/std/actor";
+const STD_META_EXPORT: &str = "/std/meta";
+const STD_ASYNC_EXPORT: &str = "/std/async";
+const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
+const STD_ASYNC_TIME_EXPORT: &str = "/std/async_time";
 
-fn module_path_matches(resolved: &ResolvedProgram, module: ModuleId, suffix: &str) -> bool {
-    resolved.modules[module.0].path.ends_with(Path::new(suffix))
+fn module_export_matches(resolved: &ResolvedProgram, module: ModuleId, export: &str) -> bool {
+    resolved.modules[module.0].std_export.as_deref() == Some(export)
 }
 
-fn module_path_matches_std_async(resolved: &ResolvedProgram, module: ModuleId) -> bool {
-    module_path_matches(resolved, module, STD_ASYNC_PATH)
-        || module_path_matches(resolved, module, STD_ASYNC_CORE_PATH)
+fn module_export_matches_any(
+    resolved: &ResolvedProgram,
+    module: ModuleId,
+    exports: &[&str],
+) -> bool {
+    resolved.modules[module.0]
+        .std_export
+        .as_deref()
+        .is_some_and(|actual| exports.contains(&actual))
+}
+
+fn module_export_matches_std_async(resolved: &ResolvedProgram, module: ModuleId) -> bool {
+    module_export_matches_any(resolved, module, &[STD_ASYNC_EXPORT, STD_ASYNC_CORE_EXPORT])
 }
 
 fn def_matches(
@@ -28,25 +38,25 @@ fn def_matches(
     def_id: DefId,
     kind: DefKind,
     name: &str,
-    suffix: &str,
+    export: &str,
 ) -> bool {
     let def = resolved.def(def_id);
-    def.name == name && def.kind == kind && module_path_matches(resolved, def.module, suffix)
+    def.name == name && def.kind == kind && module_export_matches(resolved, def.module, export)
 }
 
 pub fn is_std_result_enum(resolved: &ResolvedProgram, def_id: DefId) -> bool {
-    def_matches(resolved, def_id, DefKind::Enum, "Result", STD_RESULT_PATH)
+    def_matches(resolved, def_id, DefKind::Enum, "Result", STD_RESULT_EXPORT)
         || def_matches(
             resolved,
             def_id,
             DefKind::Enum,
             "Result",
-            STD_RESULT_CORE_PATH,
+            STD_RESULT_CORE_EXPORT,
         )
 }
 
 pub fn module_can_see_std_result(resolved: &ResolvedProgram, module: ModuleId) -> bool {
-    if module_path_matches(resolved, module, STD_RESULT_PATH) {
+    if module_export_matches(resolved, module, STD_RESULT_EXPORT) {
         return true;
     }
     matches!(
@@ -56,20 +66,18 @@ pub fn module_can_see_std_result(resolved: &ResolvedProgram, module: ModuleId) -
 }
 
 pub fn is_std_error_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
-    def_matches(resolved, def_id, DefKind::Struct, "Error", STD_ERROR_PATH)
+    def_matches(resolved, def_id, DefKind::Struct, "Error", STD_ERROR_EXPORT)
         || def_matches(
             resolved,
             def_id,
             DefKind::Struct,
             "Error",
-            STD_ERROR_CORE_PATH,
+            STD_ERROR_CORE_EXPORT,
         )
 }
 
 pub fn module_can_see_std_error(resolved: &ResolvedProgram, module: ModuleId) -> bool {
-    if module_path_matches(resolved, module, STD_ERROR_PATH)
-        || module_path_matches(resolved, module, STD_ERROR_CORE_PATH)
-    {
+    if module_export_matches_any(resolved, module, &[STD_ERROR_EXPORT, STD_ERROR_CORE_EXPORT]) {
         return true;
     }
     matches!(
@@ -88,13 +96,13 @@ pub fn is_std_error_interface(
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_ERROR_PATH,
+        STD_ERROR_EXPORT,
     ) || def_matches(
         resolved,
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_ERROR_CORE_PATH,
+        STD_ERROR_CORE_EXPORT,
     )
 }
 
@@ -108,7 +116,7 @@ pub fn is_std_message_interface(
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_MESSAGE_PATH,
+        STD_MESSAGE_EXPORT,
     )
 }
 
@@ -122,7 +130,7 @@ pub fn is_std_actor_function(
     name: &str,
     expected_name: &str,
 ) -> bool {
-    name == expected_name && module_path_matches(resolved, module, STD_ACTOR_PATH)
+    name == expected_name && module_export_matches(resolved, module, STD_ACTOR_EXPORT)
 }
 
 pub fn is_std_meta_function(
@@ -131,7 +139,7 @@ pub fn is_std_meta_function(
     name: &str,
     expected_name: &str,
 ) -> bool {
-    name == expected_name && module_path_matches(resolved, module, STD_META_PATH)
+    name == expected_name && module_export_matches(resolved, module, STD_META_EXPORT)
 }
 
 pub fn is_std_async_function(
@@ -140,7 +148,7 @@ pub fn is_std_async_function(
     name: &str,
     expected_name: &str,
 ) -> bool {
-    name == expected_name && module_path_matches_std_async(resolved, module)
+    name == expected_name && module_export_matches_std_async(resolved, module)
 }
 
 pub fn is_std_async_interface(
@@ -153,13 +161,13 @@ pub fn is_std_async_interface(
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_ASYNC_PATH,
+        STD_ASYNC_EXPORT,
     ) || def_matches(
         resolved,
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_ASYNC_CORE_PATH,
+        STD_ASYNC_CORE_EXPORT,
     )
 }
 
@@ -176,7 +184,7 @@ pub fn is_std_async_time_function(
     name: &str,
     expected_name: &str,
 ) -> bool {
-    name == expected_name && module_path_matches(resolved, module, STD_ASYNC_TIME_PATH)
+    name == expected_name && module_export_matches(resolved, module, STD_ASYNC_TIME_EXPORT)
 }
 
 fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
@@ -229,7 +237,7 @@ pub fn is_std_async_type(
     let has_std_def = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && def.kind == DefKind::Struct
-            && module_path_matches_std_async(resolved, def.module)
+            && module_export_matches_std_async(resolved, def.module)
     });
     if has_std_def && ty_name == expected_name {
         return true;
@@ -237,7 +245,7 @@ pub fn is_std_async_type(
     let std_match = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && def.kind == DefKind::Struct
-            && module_path_matches_std_async(resolved, def.module)
+            && module_export_matches_std_async(resolved, def.module)
             && nominal_type_name(resolved, def.id) == ty_name
     });
     if std_match {
@@ -246,7 +254,7 @@ pub fn is_std_async_type(
     let has_user_nominal = resolved.defs.iter().any(|def| {
         def.name == expected_name
             && is_nominal_type_def_kind(&def.kind)
-            && !module_path_matches_std_async(resolved, def.module)
+            && !module_export_matches_std_async(resolved, def.module)
     });
     ty_name == expected_name && !has_user_nominal
 }
@@ -408,13 +416,13 @@ pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name
         def_id,
         DefKind::Struct,
         expected_name,
-        STD_META_PATH,
+        STD_META_EXPORT,
     ) || def_matches(
         resolved,
         def_id,
         DefKind::TypeAlias,
         expected_name,
-        STD_META_PATH,
+        STD_META_EXPORT,
     )
 }
 
@@ -449,6 +457,77 @@ pub fn is_std_meta_interface(
         def_id,
         DefKind::Interface,
         expected_name,
-        STD_META_PATH,
+        STD_META_EXPORT,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+    use crate::{
+        ast::AstFile,
+        resolve::{Def, ResolvedImport, ResolvedModule},
+        span::{FileId, Span},
+    };
+
+    fn empty_module(
+        id: ModuleId,
+        path: &str,
+        std_export: Option<&str>,
+        defs: Vec<DefId>,
+    ) -> ResolvedModule {
+        ResolvedModule {
+            id,
+            path: PathBuf::from(path),
+            std_export: std_export.map(str::to_string),
+            ast: AstFile { items: Vec::new() },
+            defs,
+            imports: Vec::<ResolvedImport>::new(),
+        }
+    }
+
+    fn test_def(id: DefId, module: ModuleId, name: &str, kind: DefKind) -> Def {
+        Def {
+            id,
+            module,
+            name: name.to_string(),
+            kind,
+            exported: true,
+            span: Span::new(FileId(0), 0, 0),
+        }
+    }
+
+    #[test]
+    fn std_identity_uses_manifest_export_not_source_path() {
+        let export_module = ModuleId(0);
+        let path_only_module = ModuleId(1);
+        let export_def = DefId(0);
+        let path_only_def = DefId(1);
+        let resolved = ResolvedProgram {
+            modules: vec![
+                empty_module(
+                    export_module,
+                    "/repo/packages/result/result.ciel",
+                    Some(STD_RESULT_EXPORT),
+                    vec![export_def],
+                ),
+                empty_module(
+                    path_only_module,
+                    "/repo/std/result/result.ciel",
+                    None,
+                    vec![path_only_def],
+                ),
+            ],
+            defs: vec![
+                test_def(export_def, export_module, "Result", DefKind::Enum),
+                test_def(path_only_def, path_only_module, "Result", DefKind::Enum),
+            ],
+            impls: Vec::new(),
+        };
+
+        assert!(is_std_result_enum(&resolved, export_def));
+        assert!(!is_std_result_enum(&resolved, path_only_def));
+    }
 }

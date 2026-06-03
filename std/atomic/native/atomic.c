@@ -1,4 +1,10 @@
-#include "internal.h"
+#include "ciel_atomic.h"
+#include "ciel_core.h"
+#include "ciel_gc.h"
+
+#include <errno.h>
+#include <stdatomic.h>
+#include <string.h>
 
 struct CielAtomic {
     size_t value_size;

@@ -1,0 +1,12 @@
+manifest_version = 1
+
+[package]
+name = "std.error"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/error" = "error.ciel"
+"/std/error/core" = "core.ciel"
+"/std/error/basic" = "basic.ciel"
+"/std/error/context" = "context.ciel"

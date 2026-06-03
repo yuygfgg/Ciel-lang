@@ -8,6 +8,7 @@ export import /std/message;
 export import /std/result;
 import /std/c as c;
 import /std/meta;
+import /std/sync as sync;
 
 unsafe extern "C" {
     opaque struct CielChannel;

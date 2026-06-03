@@ -1,59 +1,66 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet, hash_map::DefaultHasher},
     fs,
-    path::Path,
+    hash::{Hash, Hasher},
+    path::{Path, PathBuf},
     process::Command,
     sync::{Mutex, OnceLock},
 };
 
-use super::requirements::{BuildProfile, CmakeTarget, LinkRequirement};
+use super::requirements::{BuildPlan, BuildProfile, CmakeTarget};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct NativeBuildFlags {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CmakeOutputKind {
+    Executable,
+    SharedLibrary,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CmakeOutput<'a> {
+    pub source_path: &'a Path,
+    pub output_path: &'a Path,
+    pub kind: CmakeOutputKind,
+    pub c_compiler: &'a str,
     pub compile_flags: Vec<String>,
     pub link_flags: Vec<String>,
+    pub target_os: &'a str,
 }
 
-pub fn resolve_native_flags(
-    requirements: &[LinkRequirement],
-    target_os: &str,
-) -> Result<NativeBuildFlags, String> {
-    let mut flags = NativeBuildFlags::default();
-    for requirement in requirements {
-        match requirement {
-            LinkRequirement::PkgConfig { name, required } => {
-                let args = pkg_config_args(name, *required)?;
-                let (compile, link) = split_c_and_link_args(args);
-                flags.compile_flags.extend(compile);
-                flags.link_flags.extend(link);
-            }
-            LinkRequirement::SystemLib { name } => {
-                add_system_lib(&mut flags, name, target_os);
-            }
-            LinkRequirement::Framework { name } => {
-                flags.link_flags.push("-framework".to_string());
-                flags.link_flags.push(name.clone());
-            }
-        }
-    }
-    dedupe_non_framework_flags(&mut flags.compile_flags);
-    dedupe_non_framework_flags(&mut flags.link_flags);
-    Ok(flags)
-}
-
-pub fn build_cmake_targets(targets: &[CmakeTarget], profile: BuildProfile) -> Result<(), String> {
-    if targets.is_empty() {
-        return Ok(());
-    }
-    let lock = CMAKE_BUILD_LOCK.get_or_init(|| Mutex::new(()));
+pub fn build_cmake_output(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<(), String> {
+    let lock = CMAKE_OUTPUT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock
         .lock()
-        .map_err(|_| "runtime CMake build lock was poisoned".to_string())?;
-    for target in targets {
-        build_cmake_target(target, profile)?;
+        .map_err(|_| "CMake output build lock was poisoned".to_string())?;
+    let build_root = cmake_output_build_root(plan, output);
+    let source_dir = build_root.join("source");
+    let binary_dir = build_root.join("build");
+    fs::create_dir_all(&source_dir)
+        .map_err(|error| format!("failed to create `{}`: {error}", source_dir.display()))?;
+    if let Some(parent) = output.output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create `{}`: {error}", parent.display()))?;
+    }
+
+    let cmake_lists = render_output_cmake(plan, output)?;
+    fs::write(source_dir.join("CMakeLists.txt"), cmake_lists).map_err(|error| {
+        format!(
+            "failed to write `{}`: {error}",
+            source_dir.join("CMakeLists.txt").display()
+        )
+    })?;
+
+    run_cmake_configure(&source_dir, &binary_dir, plan.profile, output.c_compiler)?;
+    run_cmake_build(&binary_dir, "ciel_output", plan.profile)?;
+    if !output.output_path.exists() {
+        return Err(format!(
+            "CMake target `ciel_output` finished but output `{}` was not produced",
+            output.output_path.display()
+        ));
     }
     Ok(())
 }
+
+static CMAKE_OUTPUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
 pub fn cmake_include_flags(targets: &[CmakeTarget]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -67,49 +74,29 @@ pub fn cmake_include_flags(targets: &[CmakeTarget]) -> Vec<String> {
     flags
 }
 
-static CMAKE_BUILD_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-
-fn build_cmake_target(target: &CmakeTarget, profile: BuildProfile) -> Result<(), String> {
-    let build_dir = target.artifact.parent().ok_or_else(|| {
-        format!(
-            "CMake target `{}` artifact `{}` has no parent directory",
-            target.target,
-            target.artifact.display()
-        )
-    })?;
-    fs::create_dir_all(build_dir)
-        .map_err(|error| format!("failed to create `{}`: {error}", build_dir.display()))?;
-    let source_dir = target.cmake_file.parent().ok_or_else(|| {
-        format!(
-            "CMake target `{}` file `{}` has no parent directory",
-            target.target,
-            target.cmake_file.display()
-        )
-    })?;
-    run_cmake_configure(source_dir, build_dir, profile)?;
-    run_cmake_build(build_dir, &target.target, profile)?;
-    if !target.artifact.exists() {
-        return Err(format!(
-            "CMake target `{}` finished but artifact `{}` was not produced",
-            target.target,
-            target.artifact.display()
-        ));
-    }
-    Ok(())
-}
-
 fn run_cmake_configure(
     source_dir: &Path,
     build_dir: &Path,
     profile: BuildProfile,
+    c_compiler: &str,
 ) -> Result<(), String> {
     let build_type = cmake_build_type(profile);
-    let output = Command::new("cmake")
+    let runtime_include_dir = ciel_runtime_include_dir();
+    let mut command = Command::new("cmake");
+    if let Some(generator) = preferred_cmake_generator() {
+        command.arg("-G").arg(generator);
+    }
+    let output = command
         .arg("-S")
         .arg(source_dir)
         .arg("-B")
         .arg(build_dir)
         .arg(format!("-DCMAKE_BUILD_TYPE={build_type}"))
+        .arg(format!("-DCMAKE_C_COMPILER={c_compiler}"))
+        .arg(format!(
+            "-DCIEL_RUNTIME_INCLUDE_DIR={}",
+            runtime_include_dir.display()
+        ))
         .output()
         .map_err(|error| format!("failed to invoke cmake configure: {error}"))?;
     if output.status.success() {
@@ -135,11 +122,238 @@ fn run_cmake_build(build_dir: &Path, target: &str, profile: BuildProfile) -> Res
     Err(format_command_error("cmake build", &output))
 }
 
+fn render_output_cmake(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<String, String> {
+    let mut out = String::new();
+    out.push_str("cmake_minimum_required(VERSION 3.16)\n");
+    out.push_str("project(ciel_generated_output C)\n\n");
+    out.push_str("set(CMAKE_C_STANDARD 11)\n");
+    out.push_str("set(CMAKE_C_STANDARD_REQUIRED ON)\n");
+    out.push_str("set(CMAKE_C_EXTENSIONS ON)\n");
+    out.push_str(&format!(
+        "set(CIEL_RUNTIME_INCLUDE_DIR {} CACHE PATH \"Ciel runtime include directory\" FORCE)\n\n",
+        cmake_quote(&ciel_runtime_include_dir())
+    ));
+
+    let mut source_dirs = HashMap::<PathBuf, PathBuf>::new();
+    for target in &plan.cmake_targets {
+        let source_dir = target.cmake_file.parent().ok_or_else(|| {
+            format!(
+                "CMake target `{}` file `{}` has no parent directory",
+                target.target,
+                target.cmake_file.display()
+            )
+        })?;
+        let source_dir = normalize_path(source_dir);
+        source_dirs
+            .entry(source_dir.clone())
+            .or_insert_with(|| shared_native_binary_dir(&source_dir, plan.profile, output));
+    }
+    for (source_dir, target_binary_dir) in &source_dirs {
+        out.push_str(&format!(
+            "add_subdirectory({} {})\n",
+            cmake_quote(source_dir),
+            cmake_quote(target_binary_dir)
+        ));
+    }
+    if !source_dirs.is_empty() {
+        out.push('\n');
+    }
+
+    match output.kind {
+        CmakeOutputKind::Executable => {
+            out.push_str(&format!(
+                "add_executable(ciel_output {})\n",
+                cmake_quote(output.source_path)
+            ));
+        }
+        CmakeOutputKind::SharedLibrary => {
+            out.push_str(&format!(
+                "add_library(ciel_output SHARED {})\n",
+                cmake_quote(output.source_path)
+            ));
+        }
+    }
+
+    if !plan.cmake_targets.is_empty() {
+        out.push_str("target_link_libraries(ciel_output PRIVATE\n");
+        for target in &plan.cmake_targets {
+            out.push_str(&format!("    {}\n", target.target));
+        }
+        out.push_str(")\n");
+    }
+
+    render_profile_options(&mut out, plan.profile, output.target_os);
+    render_extra_options(&mut out, "target_compile_options", &output.compile_flags);
+    render_extra_options(&mut out, "target_link_options", &output.link_flags);
+    render_output_properties(&mut out, output)?;
+    Ok(out)
+}
+
+fn shared_native_binary_dir(
+    source_dir: &Path,
+    profile: BuildProfile,
+    output: &CmakeOutput<'_>,
+) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    source_dir.hash(&mut hasher);
+    profile.hash(&mut hasher);
+    output.target_os.hash(&mut hasher);
+    output.c_compiler.hash(&mut hasher);
+    preferred_cmake_generator().hash(&mut hasher);
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ciel-native")
+        .join(std::process::id().to_string())
+        .join(output.target_os)
+        .join(cmake_build_type(profile).to_ascii_lowercase())
+        .join(format!("{:x}", hasher.finish()))
+}
+
+fn render_profile_options(out: &mut String, profile: BuildProfile, target_os: &str) {
+    match profile {
+        BuildProfile::Debug => {
+            out.push_str("target_compile_definitions(ciel_output PRIVATE CIEL_DEBUG=1)\n");
+            out.push_str("target_compile_options(ciel_output PRIVATE -O0)\n");
+        }
+        BuildProfile::Release => {
+            out.push_str("target_compile_definitions(ciel_output PRIVATE CIEL_RELEASE=1)\n");
+            if is_linux_target(target_os) {
+                out.push_str(
+                    "target_compile_options(ciel_output PRIVATE -ffunction-sections -fdata-sections)\n",
+                );
+                out.push_str("target_link_options(ciel_output PRIVATE -Wl,--gc-sections)\n");
+            } else if is_macos_target(target_os) {
+                out.push_str("target_link_options(ciel_output PRIVATE -Wl,-dead_strip)\n");
+            }
+        }
+    }
+}
+
+fn render_extra_options(out: &mut String, command: &str, flags: &[String]) {
+    if flags.is_empty() {
+        return;
+    }
+    out.push_str(&format!("{command}(ciel_output PRIVATE\n"));
+    for flag in flags {
+        out.push_str(&format!("    {}\n", cmake_quote_raw(flag)));
+    }
+    out.push_str(")\n");
+}
+
+fn render_output_properties(out: &mut String, output: &CmakeOutput<'_>) -> Result<(), String> {
+    let output_dir = output
+        .output_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."));
+    let file_name = output
+        .output_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "output path `{}` must end with a valid UTF-8 file name",
+                output.output_path.display()
+            )
+        })?;
+    out.push_str("set_target_properties(ciel_output PROPERTIES\n");
+    out.push_str(&format!(
+        "    RUNTIME_OUTPUT_DIRECTORY {}\n",
+        cmake_quote(output_dir)
+    ));
+    out.push_str(&format!(
+        "    LIBRARY_OUTPUT_DIRECTORY {}\n",
+        cmake_quote(output_dir)
+    ));
+    out.push_str(&format!(
+        "    ARCHIVE_OUTPUT_DIRECTORY {}\n",
+        cmake_quote(output_dir)
+    ));
+    match output.kind {
+        CmakeOutputKind::Executable => {
+            out.push_str(&format!("    OUTPUT_NAME {}\n", cmake_quote_raw(file_name)));
+        }
+        CmakeOutputKind::SharedLibrary => {
+            let stem = output
+                .output_path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .ok_or_else(|| {
+                    format!(
+                        "shared-library output path `{}` must have a valid UTF-8 stem",
+                        output.output_path.display()
+                    )
+                })?;
+            let suffix = output
+                .output_path
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| format!(".{ext}"))
+                .unwrap_or_default();
+            out.push_str(&format!("    PREFIX \"\"\n"));
+            out.push_str(&format!("    OUTPUT_NAME {}\n", cmake_quote_raw(stem)));
+            out.push_str(&format!("    SUFFIX {}\n", cmake_quote_raw(&suffix)));
+        }
+    }
+    out.push_str(")\n");
+    Ok(())
+}
+
+fn cmake_output_build_root(plan: &BuildPlan, output: &CmakeOutput<'_>) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    output.source_path.hash(&mut hasher);
+    output.output_path.hash(&mut hasher);
+    output.kind.hash(&mut hasher);
+    output.c_compiler.hash(&mut hasher);
+    output.compile_flags.hash(&mut hasher);
+    output.link_flags.hash(&mut hasher);
+    output.target_os.hash(&mut hasher);
+    plan.profile.hash(&mut hasher);
+    plan.cmake_targets.hash(&mut hasher);
+    preferred_cmake_generator().hash(&mut hasher);
+    let hash = hasher.finish();
+    let stem = output
+        .output_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("output")
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    output
+        .output_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(format!(".{stem}.ciel-cmake-{hash:x}"))
+}
+
 fn cmake_build_type(profile: BuildProfile) -> &'static str {
     match profile {
         BuildProfile::Debug => "Debug",
         BuildProfile::Release => "Release",
     }
+}
+
+fn preferred_cmake_generator() -> Option<&'static str> {
+    if *NINJA_AVAILABLE.get_or_init(ninja_available) {
+        Some("Ninja")
+    } else {
+        None
+    }
+}
+
+static NINJA_AVAILABLE: OnceLock<bool> = OnceLock::new();
+
+fn ninja_available() -> bool {
+    Command::new("ninja")
+        .arg("--version")
+        .output()
+        .is_ok_and(|output| output.status.success())
+}
+
+fn ciel_runtime_include_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("runtime")
+        .join("include")
 }
 
 fn format_command_error(label: &str, output: &std::process::Output) -> String {
@@ -151,147 +365,47 @@ fn format_command_error(label: &str, output: &std::process::Output) -> String {
     )
 }
 
-fn add_system_lib(flags: &mut NativeBuildFlags, name: &str, target_os: &str) {
-    match name {
-        "pthread" => {
-            if !is_windows_target(target_os) {
-                flags.compile_flags.push("-pthread".to_string());
-                flags.link_flags.push("-pthread".to_string());
+fn cmake_quote(path: &Path) -> String {
+    cmake_quote_raw(&path.display().to_string())
+}
+
+fn cmake_quote_raw(raw: &str) -> String {
+    let escaped = raw
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('$', "\\$");
+    format!("\"{escaped}\"")
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::Normal(part) => out.push(part),
+            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
+                out.push(component.as_os_str())
             }
         }
-        "dispatch" => {
-            if !is_windows_target(target_os) {
-                flags.compile_flags.push("-fblocks".to_string());
-                if !is_macos_target(target_os) {
-                    flags.link_flags.push("-ldispatch".to_string());
-                }
-            }
-        }
-        other => flags.link_flags.push(format!("-l{other}")),
     }
-}
-
-fn pkg_config_args(package: &str, required: bool) -> Result<Vec<String>, String> {
-    let output = Command::new("pkg-config")
-        .arg("--cflags")
-        .arg("--libs")
-        .arg(package)
-        .output();
-    match output {
-        Ok(output) if output.status.success() => Ok(String::from_utf8(output.stdout)
-            .unwrap_or_default()
-            .split_whitespace()
-            .filter(|arg| !arg.starts_with("-stdlib="))
-            .map(str::to_string)
-            .collect()),
-        Ok(output) if required => Err(format!(
-            "pkg-config package `{package}` was required but not found\nstatus: {}\nstderr:\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        )),
-        Err(error) if required => Err(format!(
-            "failed to invoke pkg-config for required package `{package}`: {error}"
-        )),
-        _ => Ok(pkg_config_fallback_args(package)),
-    }
-}
-
-fn pkg_config_fallback_args(package: &str) -> Vec<String> {
-    match package {
-        "bdw-gc" => vec!["-lgc".to_string()],
-        "botan-3" => vec!["-lbotan-3".to_string()],
-        _ => Vec::new(),
-    }
-}
-
-fn split_c_and_link_args(args: Vec<String>) -> (Vec<String>, Vec<String>) {
-    let mut compile = Vec::new();
-    let mut link = Vec::new();
-    for arg in args {
-        if arg == "-pthread" || arg.starts_with("-stdlib=") {
-            compile.push(arg.clone());
-            link.push(arg);
-        } else if is_link_arg(&arg) {
-            link.push(arg);
-        } else {
-            compile.push(arg);
-        }
-    }
-    (compile, link)
-}
-
-fn is_link_arg(arg: &str) -> bool {
-    arg.starts_with("-l")
-        || arg.starts_with("-L")
-        || arg.starts_with("-Wl,")
-        || arg == "-framework"
-        || arg == "Dispatch"
-}
-
-fn dedupe_non_framework_flags(flags: &mut Vec<String>) {
-    let mut out = Vec::with_capacity(flags.len());
-    let mut idx = 0;
-    while idx < flags.len() {
-        if flags[idx] == "-framework" && idx + 1 < flags.len() {
-            out.push(flags[idx].clone());
-            out.push(flags[idx + 1].clone());
-            idx += 2;
-            continue;
-        }
-        if !out.contains(&flags[idx]) {
-            out.push(flags[idx].clone());
-        }
-        idx += 1;
-    }
-    *flags = out;
+    out
 }
 
 fn is_macos_target(target_os: &str) -> bool {
     target_os == "macos" || target_os == "darwin"
 }
 
-fn is_windows_target(target_os: &str) -> bool {
-    target_os == "windows"
+fn is_linux_target(target_os: &str) -> bool {
+    target_os == "linux"
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
-
-    #[test]
-    fn synthetic_dispatch_flags_preserve_current_platform_behavior() {
-        let linux = resolve_native_flags(
-            &[
-                LinkRequirement::SystemLib {
-                    name: "pthread".to_string(),
-                },
-                LinkRequirement::SystemLib {
-                    name: "dispatch".to_string(),
-                },
-                LinkRequirement::SystemLib {
-                    name: "BlocksRuntime".to_string(),
-                },
-            ],
-            "linux",
-        )
-        .unwrap();
-        assert!(linux.compile_flags.contains(&"-pthread".to_string()));
-        assert!(linux.compile_flags.contains(&"-fblocks".to_string()));
-        assert!(linux.link_flags.contains(&"-pthread".to_string()));
-        assert!(linux.link_flags.contains(&"-ldispatch".to_string()));
-        assert!(linux.link_flags.contains(&"-lBlocksRuntime".to_string()));
-
-        let macos = resolve_native_flags(
-            &[LinkRequirement::SystemLib {
-                name: "dispatch".to_string(),
-            }],
-            "macos",
-        )
-        .unwrap();
-        assert_eq!(macos.compile_flags, vec!["-fblocks"]);
-        assert!(macos.link_flags.is_empty());
-    }
 
     #[test]
     fn cmake_include_flags_use_package_include_dirs_once() {
@@ -301,13 +415,11 @@ mod tests {
                 package_root: root.clone(),
                 cmake_file: root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
-                artifact: root.join("build/libciel_runtime.a"),
             },
             CmakeTarget {
                 package_root: root.clone(),
                 cmake_file: root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
-                artifact: root.join("build/libciel_runtime.a"),
             },
         ];
 
@@ -318,11 +430,34 @@ mod tests {
     }
 
     #[test]
+    fn std_native_cmake_uses_driver_supplied_runtime_include_dir() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let cmake_files = [
+            repo.join("std/atomic/CMakeLists.txt"),
+            repo.join("std/sync/CMakeLists.txt"),
+            repo.join("std/crypto/CMakeLists.txt"),
+        ];
+        for path in cmake_files {
+            let contents = fs::read_to_string(&path).unwrap();
+            assert!(
+                contents.contains("CIEL_RUNTIME_INCLUDE_DIR"),
+                "{} must consume driver-supplied CIEL_RUNTIME_INCLUDE_DIR",
+                path.display()
+            );
+            assert!(
+                !contents.contains("../../runtime/include"),
+                "{} must not derive runtime include path from package-relative layout",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
     fn runtime_subheaders_do_not_forward_to_umbrella_header() {
         let include_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("runtime")
             .join("include");
-        let subheaders = [
+        let runtime_headers = [
             "ciel_base.h",
             "ciel_core.h",
             "ciel_checks.h",
@@ -330,12 +465,14 @@ mod tests {
             "ciel_async.h",
             "ciel_actor.h",
             "ciel_net.h",
-            "ciel_crypto.h",
-            "ciel_atomic.h",
-            "ciel_sync.h",
             "ciel_io.h",
         ];
-        for header in subheaders {
+        let std_native_headers = ["ciel_crypto.h", "ciel_atomic.h", "ciel_sync.h"];
+        for header in runtime_headers
+            .iter()
+            .copied()
+            .chain(std_native_headers.iter().copied())
+        {
             let contents = fs::read_to_string(include_dir.join(header)).unwrap();
             assert!(
                 !contents.contains("#include \"ciel_runtime.h\""),
@@ -344,10 +481,16 @@ mod tests {
         }
 
         let umbrella = fs::read_to_string(include_dir.join("ciel_runtime.h")).unwrap();
-        for header in subheaders {
+        for header in runtime_headers {
             assert!(
                 umbrella.contains(&format!("#include \"{header}\"")),
                 "umbrella header must include {header}"
+            );
+        }
+        for header in std_native_headers {
+            assert!(
+                !umbrella.contains(&format!("#include \"{header}\"")),
+                "umbrella header must not include std native header {header}"
             );
         }
     }

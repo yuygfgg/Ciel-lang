@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.codec"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/codec" = "codec.ciel"

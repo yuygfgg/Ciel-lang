@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+name = "std.atomic"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/atomic" = "atomic.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_std_atomic"
+when = { os = ["linux", "macos"] }

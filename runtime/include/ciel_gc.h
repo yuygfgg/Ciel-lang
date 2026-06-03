@@ -19,6 +19,13 @@ CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE2 CIEL_RETURNS_NONNULL void*
 ciel_alloc_atomic_array(size_t elem_size, size_t len);
 CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void* ciel_realloc(void* old,
                                                              size_t size);
+CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void*
+ciel_alloc_uncollectable(size_t size);
+void ciel_free(void* ptr);
+
+typedef void (*CielFinalizerFn)(void* obj, void* client_data);
+void ciel_register_finalizer(void* obj, CielFinalizerFn finalizer,
+                             void* client_data);
 
 CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len);
 CielSlice_char ciel_runtime_char_alloc_slice(size_t len);

@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.io_posix"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/io_posix" = "io_posix.ciel"

@@ -1,6 +1,6 @@
 // ciel-test: compile
-// expect-c-contains: typedef struct Result_i64_Error Result_i64_Error;
-// expect-c-contains: .as.Ok
+// expect-c-contains: typedef struct Result__def
+// expect-c-contains: .as.Ok = { ._0 = 7 }
 
 enum Error {
     Failed,

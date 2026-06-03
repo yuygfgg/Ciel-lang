@@ -1,0 +1,10 @@
+manifest_version = 1
+
+[package]
+name = "std.result"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/result" = "result.ciel"
+"/std/result/core" = "core.ciel"

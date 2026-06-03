@@ -107,6 +107,18 @@ ciel_alloc_uncollectable(size_t size) {
     return ptr;
 }
 
+void ciel_free(void *ptr) {
+    if (ptr != NULL)
+        GC_FREE(ptr);
+}
+
+void ciel_register_finalizer(void *obj, CielFinalizerFn finalizer,
+                             void *client_data) {
+    if (obj == NULL || finalizer == NULL)
+        return;
+    GC_register_finalizer(obj, finalizer, client_data, NULL, NULL);
+}
+
 CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void *
 ciel_box_value(const void *value, size_t size) {
     void *out = ciel_alloc(size == 0 ? 1 : size);

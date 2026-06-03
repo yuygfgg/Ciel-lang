@@ -1,11 +1,12 @@
 use std::{
+    collections::{BTreeMap, HashSet},
     fmt, fs,
     path::{Component, Path, PathBuf},
 };
 
 use serde::Deserialize;
 
-use super::requirements::{CmakeTarget, LinkRequirement};
+use super::requirements::CmakeTarget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PackageManifest {
@@ -33,43 +34,18 @@ pub enum PackageKind {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CielSection {
-    pub sources: Vec<PathBuf>,
-    pub exports: Vec<String>,
+    pub exports: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct NativeSection {
     pub cmake: Vec<NativeCmake>,
-    pub links: Vec<NativeLink>,
-    pub pkg_config: Vec<NativePkgConfig>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NativeCmake {
     pub cmake_file: PathBuf,
     pub target: String,
-    pub artifact: PathBuf,
-    pub when: TargetFilter,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativeLink {
-    pub kind: NativeLinkKind,
-    pub name: String,
-    pub when: TargetFilter,
-}
-
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum NativeLinkKind {
-    System,
-    Framework,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NativePkgConfig {
-    pub name: String,
-    pub required: bool,
     pub when: TargetFilter,
 }
 
@@ -120,38 +96,8 @@ impl PackageManifest {
                 package_root: self.package.root.clone(),
                 cmake_file: target.cmake_file.clone(),
                 target: target.target.clone(),
-                artifact: target.artifact.clone(),
             })
             .collect()
-    }
-
-    pub fn link_requirements(&self, target_os: &str) -> Vec<LinkRequirement> {
-        let mut requirements = Vec::new();
-        requirements.extend(
-            self.native
-                .links
-                .iter()
-                .filter(|link| link.when.matches_target(target_os))
-                .map(|link| match link.kind {
-                    NativeLinkKind::System => LinkRequirement::SystemLib {
-                        name: link.name.clone(),
-                    },
-                    NativeLinkKind::Framework => LinkRequirement::Framework {
-                        name: link.name.clone(),
-                    },
-                }),
-        );
-        requirements.extend(
-            self.native
-                .pkg_config
-                .iter()
-                .filter(|package| package.when.matches_target(target_os))
-                .map(|package| LinkRequirement::PkgConfig {
-                    name: package.name.clone(),
-                    required: package.required,
-                }),
-        );
-        requirements
     }
 }
 
@@ -195,8 +141,7 @@ struct RawPackage {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawCiel {
-    sources: Vec<String>,
-    exports: Vec<String>,
+    exports: BTreeMap<String, String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -204,10 +149,6 @@ struct RawCiel {
 struct RawNative {
     #[serde(default)]
     cmake: Vec<RawNativeCmake>,
-    #[serde(default)]
-    links: Vec<RawNativeLink>,
-    #[serde(default)]
-    pkg_config: Vec<RawNativePkgConfig>,
 }
 
 #[derive(Deserialize)]
@@ -215,25 +156,6 @@ struct RawNative {
 struct RawNativeCmake {
     path: String,
     target: String,
-    artifact: String,
-    #[serde(default)]
-    when: TargetFilter,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawNativeLink {
-    kind: NativeLinkKind,
-    name: String,
-    #[serde(default)]
-    when: TargetFilter,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct RawNativePkgConfig {
-    name: String,
-    required: bool,
     #[serde(default)]
     when: TargetFilter,
 }
@@ -260,34 +182,39 @@ impl RawManifest {
         let ciel = self
             .ciel
             .map(|section| {
-                let sources = section
-                    .sources
-                    .into_iter()
-                    .map(|path| {
-                        let rel = clean_relative_path(&path, "ciel.sources")?;
-                        if rel.extension().and_then(|ext| ext.to_str()) != Some("ciel") {
-                            return Err(ManifestError {
-                                line: None,
-                                message: format!(
-                                    "ciel source `{path}` must use the .ciel extension"
-                                ),
-                            });
-                        }
-                        Ok(normalize_joined_path(&package_root.join(rel)))
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                for export in &section.exports {
-                    if !export.starts_with('/') {
+                if section.exports.is_empty() {
+                    return Err(ManifestError {
+                        line: None,
+                        message: "`ciel.exports` must not be empty".to_string(),
+                    });
+                }
+                let mut exports = BTreeMap::new();
+                let mut exported_sources = HashSet::new();
+                for (export, path) in section.exports {
+                    validate_export_path(&export)?;
+                    let field = format!("ciel.exports.{export}");
+                    let rel = clean_relative_path(&path, &field)?;
+                    if rel.extension().and_then(|ext| ext.to_str()) != Some("ciel") {
                         return Err(ManifestError {
                             line: None,
-                            message: format!("ciel export `{export}` must start with /"),
+                            message: format!(
+                                "ciel export source `{path}` for `{export}` must use the .ciel extension"
+                            ),
                         });
                     }
+                    let source = normalize_joined_path(&package_root.join(rel));
+                    if !exported_sources.insert(source.clone()) {
+                        return Err(ManifestError {
+                            line: None,
+                            message: format!(
+                                "ciel source `{}` must not be exported more than once",
+                                source.display()
+                            ),
+                        });
+                    }
+                    exports.insert(export, source);
                 }
-                Ok(CielSection {
-                    sources,
-                    exports: section.exports,
-                })
+                Ok(CielSection { exports })
             })
             .transpose()?;
 
@@ -304,37 +231,7 @@ impl RawManifest {
                                 .join(clean_relative_path(&target.path, "native.cmake.path")?),
                         ),
                         target: target.target,
-                        artifact: normalize_joined_path(&package_root.join(clean_relative_path(
-                            &target.artifact,
-                            "native.cmake.artifact",
-                        )?)),
                         when: target.when,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            links: self
-                .native
-                .links
-                .into_iter()
-                .map(|link| {
-                    validate_non_empty(&link.name, "native.links.name")?;
-                    Ok(NativeLink {
-                        kind: link.kind,
-                        name: link.name,
-                        when: link.when,
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-            pkg_config: self
-                .native
-                .pkg_config
-                .into_iter()
-                .map(|package| {
-                    validate_non_empty(&package.name, "native.pkg_config.name")?;
-                    Ok(NativePkgConfig {
-                        name: package.name,
-                        required: package.required,
-                        when: package.when,
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?,
@@ -385,6 +282,30 @@ fn validate_non_empty(value: &str, field: &str) -> Result<(), ManifestError> {
     } else {
         Ok(())
     }
+}
+
+fn validate_export_path(export: &str) -> Result<(), ManifestError> {
+    if !export.starts_with('/') {
+        return Err(ManifestError {
+            line: None,
+            message: format!("ciel export `{export}` must start with /"),
+        });
+    }
+    if export == "/" {
+        return Err(ManifestError {
+            line: None,
+            message: "ciel export `/` must name a module path".to_string(),
+        });
+    }
+    for segment in export.split('/').skip(1) {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err(ManifestError {
+                line: None,
+                message: format!("ciel export `{export}` contains an invalid path segment"),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn clean_relative_path(raw: &str, field: &str) -> Result<PathBuf, ManifestError> {
@@ -477,7 +398,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parses_manifest_and_filters_native_requirements() {
+    fn parses_manifest_and_filters_cmake_targets() {
         let manifest = PackageManifest::parse_str(
             r#"
 manifest_version = 1
@@ -487,30 +408,13 @@ name = "std.async_net"
 kind = "stdlib"
 root = "."
 
-[ciel]
-sources = ["async_net.ciel"]
-exports = ["/std/async_net"]
+[ciel.exports]
+"/std/async_net" = "async_net.ciel"
 
 [[native.cmake]]
 path = "native/CMakeLists.txt"
 target = "ciel_std_async_net"
-artifact = "build/libciel_std_async_net.a"
 when = { os = ["linux", "macos"] }
-
-[[native.links]]
-kind = "system"
-name = "pthread"
-when = { os = ["linux", "macos"] }
-
-[[native.links]]
-kind = "framework"
-name = "Dispatch"
-when = { os = ["macos"] }
-
-[[native.pkg_config]]
-name = "libdispatch"
-required = true
-when = { os = ["linux"] }
 "#,
             "/repo/std/async_net",
         )
@@ -519,40 +423,22 @@ when = { os = ["linux"] }
         assert_eq!(manifest.package.name, "std.async_net");
         assert_eq!(manifest.package.kind, PackageKind::Stdlib);
         assert_eq!(
-            manifest.ciel.as_ref().unwrap().sources,
-            vec![PathBuf::from("/repo/std/async_net/async_net.ciel")]
+            manifest
+                .ciel
+                .as_ref()
+                .unwrap()
+                .exports
+                .get("/std/async_net"),
+            Some(&PathBuf::from("/repo/std/async_net/async_net.ciel"))
         );
 
         let cmake = manifest.cmake_targets("darwin");
         assert_eq!(cmake.len(), 1);
         assert_eq!(
-            cmake[0].artifact,
-            PathBuf::from("/repo/std/async_net/build/libciel_std_async_net.a")
+            cmake[0].cmake_file,
+            PathBuf::from("/repo/std/async_net/native/CMakeLists.txt")
         );
-
-        assert_eq!(
-            manifest.link_requirements("macos"),
-            vec![
-                LinkRequirement::SystemLib {
-                    name: "pthread".to_string()
-                },
-                LinkRequirement::Framework {
-                    name: "Dispatch".to_string()
-                }
-            ]
-        );
-        assert_eq!(
-            manifest.link_requirements("linux"),
-            vec![
-                LinkRequirement::SystemLib {
-                    name: "pthread".to_string()
-                },
-                LinkRequirement::PkgConfig {
-                    name: "libdispatch".to_string(),
-                    required: true,
-                }
-            ]
-        );
+        assert!(manifest.cmake_targets("windows").is_empty());
     }
 
     #[test]
@@ -565,9 +451,8 @@ manifest_version = 1
 name = "bad.path"
 kind = "library"
 
-[ciel]
-sources = ["../escape.ciel"]
-exports = ["/bad/path"]
+[ciel.exports]
+"/bad/path" = "../escape.ciel"
 "#,
             "/repo/pkg",
         )
@@ -575,6 +460,58 @@ exports = ["/bad/path"]
 
         assert!(
             error.message.contains("must not escape the package root"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_multiple_exports_for_the_same_source() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "bad.alias"
+kind = "library"
+
+[ciel.exports]
+"/bad/one" = "same.ciel"
+"/bad/two" = "same.ciel"
+"#,
+            "/repo/pkg",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("must not be exported more than once"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn package_root_must_not_escape_manifest_directory() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "std.crypto"
+kind = "stdlib"
+root = ".."
+
+[ciel.exports]
+"/std/crypto" = "crypto.ciel"
+"#,
+            "/repo/std/crypto",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("`package.root` must not escape the package root"),
             "{error}"
         );
     }

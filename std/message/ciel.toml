@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.message"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/message" = "message.ciel"

@@ -5,7 +5,12 @@ use std::{
 };
 
 use crate::{
-    build::{BuildPlan, BuildProfile, planner::build_plan_for_generated_c},
+    build::{
+        BuildPlan, BuildProfile,
+        manifest::PackageManifest,
+        package::{PackageIndex, PackageLoadError},
+        planner::build_plan_for_generated_c_with_packages,
+    },
     codegen::generate_c,
     diagnostic::{DiagResult, Diagnostic},
     escape::analyze_escapes,
@@ -17,6 +22,9 @@ use crate::{
     source::SourceMap,
     typeck::type_check,
 };
+
+const COMPILER_PRELUDE_IMPORTS: &[&str] =
+    &["/std/result", "/std/error", "/std/panic", "/std/async"];
 
 #[derive(Clone, Debug)]
 pub struct CompileOptions {
@@ -82,7 +90,7 @@ impl CompileOptions {
 
 pub fn compile_to_c(options: CompileOptions) -> DiagResult<String> {
     let config = ConfigEnv::from_options(&options);
-    let mut loader = ModuleLoader::new(options.project_root, options.std_paths, config);
+    let mut loader = ModuleLoader::new(options.project_root, options.std_paths, config)?;
     let modules = loader.load_entry(&options.entry)?;
     let resolved = resolve_modules(modules)?;
     let hir = lower_to_hir(resolved)?;
@@ -95,8 +103,23 @@ pub fn compile_to_c(options: CompileOptions) -> DiagResult<String> {
 pub fn compile_to_c_with_sources(
     options: CompileOptions,
 ) -> Result<(String, SourceMap), (Vec<Diagnostic>, SourceMap)> {
+    compile_to_c_context(options).map(|output| (output.generated_c, output.source_map))
+}
+
+struct CompileOutput {
+    generated_c: String,
+    source_map: SourceMap,
+    package_manifests: Vec<PackageManifest>,
+}
+
+fn compile_to_c_context(
+    options: CompileOptions,
+) -> Result<CompileOutput, (Vec<Diagnostic>, SourceMap)> {
     let config = ConfigEnv::from_options(&options);
-    let mut loader = ModuleLoader::new(options.project_root, options.std_paths, config);
+    let mut loader = match ModuleLoader::new(options.project_root, options.std_paths, config) {
+        Ok(loader) => loader,
+        Err(diagnostics) => return Err((diagnostics, SourceMap::default())),
+    };
     match loader.load_entry(&options.entry) {
         Ok(modules) => {
             let resolved = match resolve_modules(modules) {
@@ -120,7 +143,11 @@ pub fn compile_to_c_with_sources(
                 generate_c(&mono, &escapes, &loader.source_map)
             };
             match result {
-                Ok(c) => Ok((c, loader.source_map)),
+                Ok(generated_c) => Ok(CompileOutput {
+                    generated_c,
+                    source_map: loader.source_map,
+                    package_manifests: loader.loaded_package_manifests,
+                }),
                 Err(diags) => Err((diags, loader.source_map)),
             }
         }
@@ -139,14 +166,22 @@ pub fn compile_to_build_plan_with_sources(
 ) -> Result<(BuildPlan, SourceMap), (Vec<Diagnostic>, SourceMap)> {
     let profile = options.build_profile;
     let target_os = options.target_os.clone();
-    compile_to_c_with_sources(options).map(|(generated_c, source_map)| {
-        let package_inputs = source_map
+    compile_to_c_context(options).map(|output| {
+        let package_inputs = output
+            .source_map
             .files()
             .iter()
             .map(|file| file.path.clone())
             .collect::<Vec<_>>();
+        let source_map = output.source_map;
         (
-            build_plan_for_generated_c(generated_c, profile, &target_os, package_inputs),
+            build_plan_for_generated_c_with_packages(
+                output.generated_c,
+                profile,
+                &target_os,
+                package_inputs,
+                &output.package_manifests,
+            ),
             source_map,
         )
     })
@@ -156,26 +191,42 @@ struct ModuleLoader {
     project_root: PathBuf,
     std_paths: Vec<PathBuf>,
     config: ConfigEnv,
+    std_package_index: PackageIndex,
     source_map: SourceMap,
     loaded: HashMap<PathBuf, ModuleId>,
     loading: HashSet<PathBuf>,
     modules: Vec<ParsedModule>,
+    loaded_package_keys: HashSet<PathBuf>,
+    loaded_package_manifests: Vec<PackageManifest>,
 }
 
 impl ModuleLoader {
-    fn new(project_root: PathBuf, std_paths: Vec<PathBuf>, config: ConfigEnv) -> Self {
-        Self {
+    fn new(
+        project_root: PathBuf,
+        std_paths: Vec<PathBuf>,
+        config: ConfigEnv,
+    ) -> Result<Self, Vec<Diagnostic>> {
+        let std_package_index =
+            PackageIndex::load_std(&std_paths).map_err(package_load_errors_to_diagnostics)?;
+        Ok(Self {
             project_root,
             std_paths,
             config,
+            std_package_index,
             source_map: SourceMap::default(),
             loaded: HashMap::new(),
             loading: HashSet::new(),
             modules: Vec::new(),
-        }
+            loaded_package_keys: HashSet::new(),
+            loaded_package_manifests: Vec::new(),
+        })
     }
 
     fn load_entry(&mut self, entry: &Path) -> DiagResult<Vec<ParsedModule>> {
+        for import in COMPILER_PRELUDE_IMPORTS {
+            let import_path = self.resolve_import_path(&self.project_root, import);
+            self.load_file(&import_path)?;
+        }
         let path = self.normalize_path(entry);
         self.load_file(&path)?;
         Ok(std::mem::take(&mut self.modules))
@@ -204,26 +255,34 @@ impl ModuleLoader {
         let ast = parse_file(tokens)?;
         let id = ModuleId(self.modules.len());
         self.loaded.insert(path.clone(), id);
-        self.modules.push(ParsedModule {
-            id,
-            path: path.clone(),
-            ast: ast.clone(),
-        });
-
+        self.record_package_for_source(&path);
+        let std_export = self
+            .std_package_index
+            .export_for_source(&path)
+            .map(str::to_string);
         let parent = path
             .parent()
             .unwrap_or_else(|| Path::new("."))
             .to_path_buf();
-        if ast.uses_std_async {
-            let import_path = self.resolve_import_path(&parent, "/std/async");
-            self.load_file(&import_path)?;
-        }
-
+        let mut import_paths = Vec::new();
         for item in &ast.items {
             if let crate::ast::ItemKind::Import(import) = &item.kind {
-                let import_path = self.resolve_import_path(&parent, &import.path.raw);
-                self.load_file(&import_path)?;
+                import_paths.push(
+                    self.normalize_path(&self.resolve_import_path(&parent, &import.path.raw)),
+                );
             }
+        }
+
+        self.modules.push(ParsedModule {
+            id,
+            path: path.clone(),
+            std_export,
+            import_paths: import_paths.clone(),
+            ast: ast.clone(),
+        });
+
+        for import_path in import_paths {
+            self.load_file(&import_path)?;
         }
 
         self.loading.remove(&self.normalize_path(&path));
@@ -232,6 +291,9 @@ impl ModuleLoader {
 
     fn resolve_import_path(&self, parent: &Path, raw: &str) -> PathBuf {
         let mut path = if let Some(rest) = raw.strip_prefix('/') {
+            if let Some(source) = self.std_package_index.resolve_export(raw) {
+                return source.to_path_buf();
+            }
             let mut candidates = self.std_paths.iter().map(|root| root.join(rest));
             let first = candidates
                 .next()
@@ -248,6 +310,19 @@ impl ModuleLoader {
         path
     }
 
+    fn record_package_for_source(&mut self, path: &Path) {
+        let Some(manifest) = self.std_package_index.manifest_for_source(path).cloned() else {
+            return;
+        };
+        let key = manifest
+            .manifest_path
+            .clone()
+            .unwrap_or_else(|| manifest.package.root.join(&manifest.package.name));
+        if self.loaded_package_keys.insert(key) {
+            self.loaded_package_manifests.push(manifest);
+        }
+    }
+
     fn normalize_path(&self, path: &Path) -> PathBuf {
         let path = if path.is_absolute() {
             path.to_path_buf()
@@ -256,6 +331,22 @@ impl ModuleLoader {
         };
         path.components().collect()
     }
+}
+
+fn package_load_errors_to_diagnostics(errors: Vec<PackageLoadError>) -> Vec<Diagnostic> {
+    errors
+        .into_iter()
+        .map(|error| {
+            Diagnostic::new(
+                None,
+                format!(
+                    "failed to load package manifest `{}`: {}",
+                    error.path.display(),
+                    error.message
+                ),
+            )
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug)]

@@ -22,8 +22,8 @@ Reference implementation to study:
 
 The useful tin lesson is not that all build metadata should live in comments.
 The useful lesson is that a library should own its native implementation and
-link requirements, while the compiler driver should collect those requirements
-and execute a generic build plan.
+native dependencies, while the compiler driver should collect the selected
+CMake targets and execute a generic build plan.
 
 ## Problem
 
@@ -37,7 +37,7 @@ to append to, but it has become a global dumping ground. Adding UDP, richer
 serialization support, TLS, filesystem helpers, or more crypto backends would
 make this file larger and harder to reason about.
 
-Second, native link requirements are hard-coded in the compiler pipeline.
+Second, native dependencies are hard-coded in the compiler pipeline.
 `bdw-gc`, Botan, pthreads, libdispatch, BlocksRuntime, and profile-specific
 linker flags are selected in the CLI driver rather than being owned by the
 runtime or standard-library module that needs them. This makes optional
@@ -64,8 +64,7 @@ Current implementation anchors:
 1. Add declarative package metadata for Ciel projects, standard-library
    packages, runtime packages, and third-party packages.
 2. Let a manifest declare the project/package root, Ciel source files, CMake
-   native targets, generated or external native artifacts, and link
-   requirements.
+   native targets, and their target filters.
 3. Avoid arbitrary shell execution in package metadata.
 4. Split `runtime_prelude.c` into runtime and package-owned native units.
 5. Move standard-library native helper code out of the compiler prelude and
@@ -139,15 +138,14 @@ package metadata that can grow into shell scripting.
 
 A Ciel package root may contain a `ciel.toml` manifest. Single-file programs
 without a manifest continue to work. The compiler treats a manifest as the
-authoritative description of package-owned source files and native build
+authoritative description of public package exports and native build
 requirements.
 
 The manifest declares four boundaries explicitly:
 
 1. the project or package root;
-2. the Ciel source files owned by the package;
-3. CMake native targets and native artifacts owned by the package;
-4. link and package-manager requirements needed by those native units.
+2. the public Ciel import paths exposed by the package and their source files;
+3. CMake native targets owned by the package.
 
 The first manifest version should use this concrete shape:
 
@@ -159,30 +157,13 @@ name = "std.async_net"
 kind = "stdlib"
 root = "."
 
-[ciel]
-sources = ["async_net.ciel"]
-exports = ["/std/async_net"]
+[ciel.exports]
+"/std/async_net" = "async_net.ciel"
 
 [[native.cmake]]
 path = "native/CMakeLists.txt"
 target = "ciel_std_async_net"
-artifact = "build/libciel_std_async_net.a"
 when = { os = ["linux", "macos"] }
-
-[[native.links]]
-kind = "system"
-name = "pthread"
-when = { os = ["linux", "macos"] }
-
-[[native.links]]
-kind = "framework"
-name = "Dispatch"
-when = { os = ["macos"] }
-
-[[native.pkg_config]]
-name = "libdispatch"
-required = true
-when = { os = ["linux"] }
 ```
 
 Top-level fields:
@@ -190,9 +171,8 @@ Top-level fields:
 1. `manifest_version`: required integer. Version `1` is the schema described
    here.
 2. `[package]`: required package identity.
-3. `[ciel]`: required for packages that expose Ciel modules.
-4. `[[native.cmake]]`, `[[native.links]]`, and `[[native.pkg_config]]`:
-   optional native requirements.
+3. `[ciel.exports]`: required for packages that expose Ciel modules.
+4. `[[native.cmake]]`: optional native CMake targets.
 
 `[package]` fields:
 
@@ -201,54 +181,40 @@ Top-level fields:
 2. `kind`: one of `project`, `stdlib`, `runtime`, or `library`.
 3. `root`: package root relative to the manifest file. It defaults to `"."`.
 
-`[ciel]` fields:
+`[ciel.exports]` fields:
 
-1. `sources`: explicit list of `.ciel` files relative to `package.root`.
-   Globs are not part of version 1.
-2. `exports`: import paths exposed by this package. The import path syntax
-   remains compatible with current `/std/...` imports.
+1. Each key is a public absolute import path exposed by this package. The
+   import path syntax remains compatible with current `/std/...` imports.
+2. Each value is the `.ciel` source file for that import path, relative to
+   `package.root`. Globs are not part of version 1.
 
 Version 1 uses one manifest per package directory. A package may contain
 multiple Ciel source files and may expose multiple import paths through
-`exports`. Import path mapping is explicit; the compiler should not infer import
-paths from `package.name`.
+`[ciel.exports]`. Import path mapping is explicit; the compiler must not infer
+import paths or source files from `package.name`. Non-public helper files are
+loaded through normal relative imports from exported source files and do not
+need to be listed in the manifest.
 
-Package metadata may describe three native requirement kinds:
+Package metadata may describe CMake native targets:
 
-1. `native.cmake`: a CMake target that produces a declared artifact. All
-   package-owned native source code goes through this path in version 1.
-2. `native.links`: direct link requirements such as system libraries,
-   frameworks, or platform libraries.
-3. `native.pkg_config`: `pkg-config` packages whose cflags/libs are collected
-   by the driver.
+1. `native.cmake`: a CMake target. All package-owned native source code and
+   native dependency discovery go through this path in version 1.
 
 `native.cmake` fields:
 
 1. `path`: required `CMakeLists.txt` path.
 2. `target`: required CMake target name.
-3. `artifact`: required output file consumed by the final link step.
-4. `when`: optional target filter.
+3. `when`: optional target filter.
 
 Version 1 should not compile package-owned native sources directly and should
 not infer source language from extensions. CMake owns the native language
-selection, compiler flags, include directories, generated headers, and source
-graph. The Ciel manifest points at the CMake target and records the artifact
-that the Ciel driver should link.
+selection, compiler flags, include directories, generated headers, source
+graph, dependency discovery, and target link interface. The Ciel manifest only
+points at the CMake target.
 
-Version 1 should avoid raw `cflags` in package metadata. Add typed fields
-instead when a real standard-library package needs them.
-
-`native.links` fields:
-
-1. `kind`: one of `system` or `framework`.
-2. `name`: required library or framework name.
-3. `when`: optional target filter.
-
-`native.pkg_config` fields:
-
-1. `name`: required `pkg-config` package name.
-2. `required`: whether missing `pkg-config` metadata is a hard error.
-3. `when`: optional target filter.
+Version 1 should avoid raw `cflags` and link flags in package metadata. Add
+new CMake targets or CMake target properties instead when a real
+standard-library package needs native flags.
 
 The proposal chooses CMake as the only external build descriptor for version 1.
 Make is deliberately excluded because Make recipes are shell commands. CMake is
@@ -261,13 +227,16 @@ too, even when the native code is only one `.c` file.
 
 The descriptor is intentionally a file reference plus structured fields. A
 package can provide `CMakeLists.txt`, static archives, generated headers, or
-object files through a CMake target artifact, but the manifest cannot say `run
-this command`.
+object files through a CMake target, but the manifest cannot say `run this
+command`.
 
-The Ciel driver still owns the final executable/object/shared-library link
-step. `native.links` and `native.pkg_config` describe requirements that must be
-visible to that final link step. CMake may also use those dependencies
-internally, but the final link requirements remain explicit in `ciel.toml`.
+The Ciel driver still owns build orchestration, but executable and
+shared-library final links are performed by a generated top-level CMake project.
+That project adds the runtime and selected package CMake projects with
+`add_subdirectory`, then links the generated C target against the selected
+CMake targets. Native dependencies such as `Threads::Threads`, Botan,
+libdispatch, frameworks, and package-manager discoveries live in package
+`CMakeLists.txt` files, not in `ciel.toml`.
 
 ## CMake Profile Propagation
 
@@ -317,11 +286,10 @@ creates a trust boundary, cache invalidation problem, host/target distinction,
 and filesystem/network policy problem before the package model itself is
 stable.
 
-The first version should stay declarative: manifests describe CMake targets,
-native artifacts, final link requirements, and package exports. If Ciel later
-needs build scripts, they should be a separate proposal with a restricted API
-that emits `BuildPlan` fragments, declares inputs and outputs, and requires
-explicit user opt-in for side effects.
+The first version should stay declarative: manifests describe CMake targets and
+package exports. If Ciel later needs build scripts, they should be a separate
+proposal with a restricted API that emits `BuildPlan` fragments, declares
+inputs and outputs, and requires explicit user opt-in for side effects.
 
 ## Package Discovery
 
@@ -431,11 +399,6 @@ root = "."
 [[native.cmake]]
 path = "CMakeLists.txt"
 target = "ciel_runtime_crypto_botan"
-artifact = "build/libciel_runtime_crypto_botan.a"
-
-[[native.pkg_config]]
-name = "botan-3"
-required = true
 ```
 
 The compiler owns a small runtime package registry. In version 1 the driver
@@ -488,7 +451,7 @@ know about every standard-library wrapper.
 
 This mirrors tin's structure, where `stdlib/net/udp` owns `udp.c`, `stdlib/sync`
 owns channel and mutex helpers, and optional packages such as `libs/raylib`
-declare their own link flags.
+declare their own native dependencies.
 
 ## Build Plan
 
@@ -500,7 +463,6 @@ struct BuildPlan {
     generated_c: String,
     profile: BuildProfile,
     cmake_targets: Vec<CmakeTarget>,
-    link_requirements: Vec<LinkRequirement>,
     package_inputs: Vec<PathBuf>,
 }
 ```
@@ -510,7 +472,6 @@ struct CmakeTarget {
     package_root: PathBuf,
     cmake_file: PathBuf,
     target: String,
-    artifact: PathBuf,
 }
 ```
 
@@ -526,22 +487,13 @@ The build plan is assembled from:
 5. standard-library package metadata;
 6. explicit CLI flags such as `--cflag` and `--ldflag`.
 
-The driver deduplicates CMake targets and link requirements by canonical path
-and requirement key. It should include the build metadata and selected profile
-in any future build cache key.
-
-The link model should be typed rather than stringly-typed:
-
-```rust
-enum LinkRequirement {
-    SystemLib { name: String },
-    Framework { name: String },
-    PkgConfig { name: String, required: bool },
-}
-```
+The driver deduplicates CMake targets by canonical path and target name. It
+should include the build metadata and selected profile in any future build cache
+key.
 
 The driver can still expose `--cflag` and `--ldflag` escape hatches for local
-experimentation, but package manifests should prefer typed requirements.
+experimentation. Package manifests should not expose native cflags or link
+flags in version 1; package CMake targets own them.
 
 ## Compiler Refactor Without MIR
 
@@ -611,9 +563,8 @@ The split should make MIR easier to add, but not block on it.
 ### Phase 1: Build Metadata Skeleton
 
 1. Add the `manifest_version = 1` `ciel.toml` parser and validator.
-2. Add `BuildPlan`, `CmakeTarget`, and `LinkRequirement`.
-3. Keep current CLI behavior, but route hard-coded GC/Botan/dispatch flags
-   through synthetic runtime package metadata.
+2. Add `BuildPlan` and `CmakeTarget`.
+3. Keep current CLI behavior while the metadata skeleton lands.
 4. Keep `compile_to_c` unchanged for tests.
 5. Do not add `build.ciel`.
 6. Thread the CLI build profile through `BuildPlan`.
@@ -625,8 +576,8 @@ The split should make MIR easier to add, but not block on it.
 3. Teach codegen to emit declarations/includes for runtime headers instead of
    pasting the whole runtime body.
 4. Add CMake targets for runtime units.
-5. Teach the driver to build runtime CMake targets and link their artifacts
-   with generated C.
+5. Teach the driver to link generated C through a top-level CMake project that
+   consumes runtime CMake targets.
 6. Include all runtime targets in version 1.
 
 ### Phase 3: Standard-Library Package Split
@@ -690,8 +641,8 @@ The split should make MIR easier to add, but not block on it.
 12. Runtime packages are build-planning inputs, not user-importable modules.
 13. Keep `compile_to_c` for tests and `--emit-c`; executable/object/shared
    builds use `BuildPlan`.
-14. Let packages own their native code and link requirements.
-15. Let the compiler collect package requirements into a build plan.
+14. Let packages own their native code and CMake target dependencies.
+15. Let the compiler collect package CMake targets into a build plan.
 16. Use only unconditional hard-coded compiler prelude imports in version 1; do
    not add source-based or type-triggered prelude rules.
 17. Keep the compiler prelude as an implementation constant, not TOML metadata

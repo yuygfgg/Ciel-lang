@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+name = "std.sync"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/sync" = "sync.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_std_sync"
+when = { os = ["linux", "macos"] }

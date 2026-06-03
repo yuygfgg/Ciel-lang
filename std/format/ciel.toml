@@ -1,0 +1,10 @@
+manifest_version = 1
+
+[package]
+name = "std.format"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/format" = "format.ciel"
+"/std/format/number" = "number.ciel"

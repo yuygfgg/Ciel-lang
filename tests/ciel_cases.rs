@@ -6,7 +6,7 @@ use std::{
 
 use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
-    build::native::{build_cmake_targets, cmake_include_flags, resolve_native_flags},
+    build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output},
     compile_to_build_plan, compile_to_c,
 };
 
@@ -290,6 +290,11 @@ fn build_plan_wraps_generated_c_profile_inputs_and_runtime_requirements() {
     assert!(!plan.generated_c.contains("#include <gc/gc.h>"));
     assert_eq!(plan.profile, BuildProfile::Release);
     assert!(plan.package_inputs.contains(&path));
+    assert!(
+        plan.package_inputs
+            .iter()
+            .any(|path| path.ends_with("std/async/async.ciel"))
+    );
     assert_eq!(plan.cmake_targets.len(), 1);
     assert_eq!(plan.cmake_targets[0].target, "ciel_runtime");
     assert!(
@@ -297,42 +302,25 @@ fn build_plan_wraps_generated_c_profile_inputs_and_runtime_requirements() {
             .cmake_file
             .ends_with("runtime/CMakeLists.txt")
     );
+}
+
+#[test]
+fn build_plan_adds_native_requirements_from_imported_std_packages() {
+    let path = cases_root().join("std_crypto/rng_hash_mac_and_constant_time/crypto_basic.ciel");
+    let options = CompileOptions::new(&path)
+        .with_project_root(repo_root())
+        .with_target_os("linux");
+    let plan = compile_to_build_plan(options).unwrap();
+
     assert!(
-        plan.cmake_targets[0]
-            .artifact
-            .ends_with("target/ciel-runtime/linux/release/libciel_runtime.a")
+        plan.cmake_targets
+            .iter()
+            .any(|target| target.target == "ciel_std_crypto")
     );
     assert!(
-        plan.link_requirements
-            .contains(&cielc::build::LinkRequirement::PkgConfig {
-                name: "bdw-gc".to_string(),
-                required: false,
-            })
-    );
-    assert!(
-        plan.link_requirements
-            .contains(&cielc::build::LinkRequirement::PkgConfig {
-                name: "botan-3".to_string(),
-                required: false,
-            })
-    );
-    assert!(
-        plan.link_requirements
-            .contains(&cielc::build::LinkRequirement::SystemLib {
-                name: "pthread".to_string(),
-            })
-    );
-    assert!(
-        plan.link_requirements
-            .contains(&cielc::build::LinkRequirement::SystemLib {
-                name: "dispatch".to_string(),
-            })
-    );
-    assert!(
-        plan.link_requirements
-            .contains(&cielc::build::LinkRequirement::SystemLib {
-                name: "BlocksRuntime".to_string(),
-            })
+        plan.package_inputs
+            .iter()
+            .any(|path| path.ends_with("std/crypto/ciel.toml"))
     );
 }
 
@@ -945,35 +933,22 @@ fn run_cc(
     plan: &BuildPlan,
     extra_flags: &[&str],
 ) -> Result<(), String> {
-    build_cmake_targets(&plan.cmake_targets, plan.profile)?;
-    let native_flags = resolve_native_flags(&plan.link_requirements, std::env::consts::OS)?;
-    let mut args = Vec::<String>::new();
-    args.extend(extra_flags.iter().map(|flag| (*flag).to_string()));
-    args.extend(cmake_include_flags(&plan.cmake_targets));
-    args.extend(native_flags.compile_flags);
-    args.push(c_path.display().to_string());
-    args.push("-o".to_string());
-    args.push(output.display().to_string());
-    args.extend(
-        plan.cmake_targets
-            .iter()
-            .map(|target| target.artifact.display().to_string()),
-    );
-    args.extend(native_flags.link_flags);
-
-    let cc = Command::new("cc")
-        .args(&args)
-        .output()
-        .map_err(|error| format!("failed to invoke cc: {error}"))?;
-    if cc.status.success() {
-        return Ok(());
-    }
-    Err(format!(
-        "cc failed\ncommand args: {:?}\nstdout:\n{}\nstderr:\n{}",
-        args,
-        String::from_utf8_lossy(&cc.stdout),
-        String::from_utf8_lossy(&cc.stderr)
-    ))
+    let flags = extra_flags
+        .iter()
+        .map(|flag| (*flag).to_string())
+        .collect::<Vec<_>>();
+    build_cmake_output(
+        plan,
+        &CmakeOutput {
+            source_path: c_path,
+            output_path: output,
+            kind: CmakeOutputKind::Executable,
+            c_compiler: "cc",
+            compile_flags: flags.clone(),
+            link_flags: flags,
+            target_os: std::env::consts::OS,
+        },
+    )
 }
 
 fn cielc_bin() -> PathBuf {

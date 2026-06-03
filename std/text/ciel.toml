@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.text"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/text" = "text.ciel"

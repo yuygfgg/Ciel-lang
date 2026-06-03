@@ -6,7 +6,7 @@ use std::{
 
 use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
-    build::native::{build_cmake_targets, cmake_include_flags, resolve_native_flags},
+    build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output, cmake_include_flags},
     diagnostic::render_diagnostics,
     driver::compile_to_build_plan_with_sources,
 };
@@ -201,13 +201,28 @@ fn invoke_c_compiler(
     plan: &BuildPlan,
 ) -> Result<(), String> {
     if matches!(cli.emit, EmitMode::Executable | EmitMode::SharedLibrary) {
-        build_cmake_targets(&plan.cmake_targets, plan.profile)?;
+        let kind = match cli.emit {
+            EmitMode::Executable => CmakeOutputKind::Executable,
+            EmitMode::SharedLibrary => CmakeOutputKind::SharedLibrary,
+            EmitMode::C | EmitMode::Object => unreachable!("handled outside CMake"),
+        };
+        return build_cmake_output(
+            plan,
+            &CmakeOutput {
+                source_path: c_path,
+                output_path: output,
+                kind,
+                c_compiler: &cli.c_compiler,
+                compile_flags: cli.c_flags.clone(),
+                link_flags: cli.link_flags.clone(),
+                target_os,
+            },
+        );
     }
-    let native_flags = resolve_native_flags(&plan.link_requirements, target_os)?;
+
     let mut args = Vec::<String>::new();
     args.extend(profile_c_flags(plan.profile, target_os));
     args.extend(cmake_include_flags(&plan.cmake_targets));
-    args.extend(native_flags.compile_flags.clone());
     args.extend(cli.c_flags.clone());
 
     match cli.emit {
@@ -217,34 +232,7 @@ fn invoke_c_compiler(
             args.push("-o".to_string());
             args.push(output.display().to_string());
         }
-        EmitMode::SharedLibrary => {
-            args.push("-fPIC".to_string());
-            args.push(c_path.display().to_string());
-            args.push(shared_library_flag(target_os).to_string());
-            args.push("-o".to_string());
-            args.push(output.display().to_string());
-            args.extend(profile_link_flags(plan.profile, target_os));
-            args.extend(
-                plan.cmake_targets
-                    .iter()
-                    .map(|target| target.artifact.display().to_string()),
-            );
-            args.extend(native_flags.link_flags.clone());
-            args.extend(cli.link_flags.clone());
-        }
-        EmitMode::Executable => {
-            args.push(c_path.display().to_string());
-            args.push("-o".to_string());
-            args.push(output.display().to_string());
-            args.extend(profile_link_flags(plan.profile, target_os));
-            args.extend(
-                plan.cmake_targets
-                    .iter()
-                    .map(|target| target.artifact.display().to_string()),
-            );
-            args.extend(native_flags.link_flags.clone());
-            args.extend(cli.link_flags.clone());
-        }
+        EmitMode::Executable | EmitMode::SharedLibrary => unreachable!("handled by CMake"),
         EmitMode::C => unreachable!("C output is handled without invoking cc"),
     }
 
@@ -285,29 +273,6 @@ fn profile_c_flags(profile: BuildProfile, target_os: &str) -> Vec<String> {
             flags
         }
     }
-}
-
-fn profile_link_flags(profile: BuildProfile, target_os: &str) -> Vec<String> {
-    match profile {
-        BuildProfile::Debug => Vec::new(),
-        BuildProfile::Release if is_macos_target(target_os) => vec!["-Wl,-dead_strip".to_string()],
-        BuildProfile::Release if is_linux_target(target_os) => {
-            vec!["-Wl,--gc-sections".to_string()]
-        }
-        BuildProfile::Release => Vec::new(),
-    }
-}
-
-fn shared_library_flag(target_os: &str) -> &'static str {
-    if is_macos_target(target_os) {
-        "-dynamiclib"
-    } else {
-        "-shared"
-    }
-}
-
-fn is_macos_target(target_os: &str) -> bool {
-    target_os == "macos" || target_os == "darwin"
 }
 
 fn is_linux_target(target_os: &str) -> bool {

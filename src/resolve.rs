@@ -19,6 +19,8 @@ pub struct DefId(pub usize);
 pub struct ParsedModule {
     pub id: ModuleId,
     pub path: PathBuf,
+    pub std_export: Option<String>,
+    pub import_paths: Vec<PathBuf>,
     pub ast: AstFile,
 }
 
@@ -33,6 +35,7 @@ pub struct ResolvedProgram {
 pub struct ResolvedModule {
     pub id: ModuleId,
     pub path: PathBuf,
+    pub std_export: Option<String>,
     pub ast: AstFile,
     pub defs: Vec<DefId>,
     pub imports: Vec<ResolvedImport>,
@@ -41,6 +44,7 @@ pub struct ResolvedModule {
 #[derive(Clone, Debug)]
 pub struct ResolvedImport {
     pub path: String,
+    pub resolved_path: PathBuf,
     pub alias: Option<String>,
     pub exported: bool,
     pub target: Option<ModuleId>,
@@ -376,14 +380,19 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
         let mut imports = Vec::new();
         let mut local_names = HashSet::<String>::new();
 
+        let mut import_paths = module.import_paths.into_iter();
         for item in &module.ast.items {
             match &item.kind {
-                ItemKind::Import(import) => imports.push(ResolvedImport {
-                    path: import.path.raw.clone(),
-                    alias: import.alias.as_ref().map(|alias| alias.name.clone()),
-                    exported: item.export,
-                    target: None,
-                }),
+                ItemKind::Import(import) => {
+                    let resolved_path = import_paths.next().unwrap_or_default();
+                    imports.push(ResolvedImport {
+                        path: import.path.raw.clone(),
+                        resolved_path,
+                        alias: import.alias.as_ref().map(|alias| alias.name.clone()),
+                        exported: item.export,
+                        target: None,
+                    });
+                }
                 ItemKind::TypeAlias(decl) => {
                     add_def(
                         &mut diagnostics,
@@ -535,6 +544,7 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
         resolved_modules.push(ResolvedModule {
             id: module.id,
             path: module.path,
+            std_export: module.std_export,
             ast: module.ast,
             defs: module_defs,
             imports,
@@ -559,32 +569,9 @@ fn resolve_import_targets(diagnostics: &mut Vec<Diagnostic>, modules: &mut [Reso
         .iter()
         .map(|module| (module.path.clone(), module.id))
         .collect::<HashMap<_, _>>();
-    let module_paths = modules
-        .iter()
-        .map(|module| (module.path.clone(), module.id))
-        .collect::<Vec<_>>();
     for idx in 0..modules.len() {
-        let parent = modules[idx]
-            .path
-            .parent()
-            .map(|path| path.to_path_buf())
-            .unwrap_or_default();
         for import in &mut modules[idx].imports {
-            let mut target_path = if let Some(rest) = import.path.strip_prefix('/') {
-                PathBuf::from(rest)
-            } else if let Some(rest) = import.path.strip_prefix("./") {
-                parent.join(rest)
-            } else {
-                parent.join(&import.path)
-            };
-            target_path.set_extension("ciel");
-            import.target = path_to_id.get(&target_path).copied();
-            if import.target.is_none() && import.path.starts_with('/') {
-                import.target = module_paths
-                    .iter()
-                    .find(|(path, _)| path.ends_with(&target_path))
-                    .map(|(_, id)| *id);
-            }
+            import.target = path_to_id.get(&import.resolved_path).copied();
             if import.target.is_none() {
                 diagnostics.push(Diagnostic::new(
                     None,

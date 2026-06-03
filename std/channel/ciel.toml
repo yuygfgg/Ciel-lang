@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.channel"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/channel" = "channel.ciel"

@@ -1,4 +1,10 @@
-#include "internal.h"
+#include "ciel_core.h"
+#include "ciel_gc.h"
+#include "ciel_sync.h"
+
+#include <errno.h>
+#include <pthread.h>
+#include <string.h>
 
 typedef struct CielQueueNode {
     void *value;

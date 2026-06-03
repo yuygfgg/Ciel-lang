@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.panic"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/panic" = "panic.ciel"

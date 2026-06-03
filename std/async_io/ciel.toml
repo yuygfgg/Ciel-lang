@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.async_io"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/async_io" = "async_io.ciel"

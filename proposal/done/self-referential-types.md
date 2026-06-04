@@ -29,7 +29,7 @@ by-value storage edges, the type is rejected.
 
 Examples:
 
-```rust
+```ciel
 struct Node {
     i64 data;
     ?*Node next;
@@ -38,7 +38,7 @@ struct Node {
 
 This is valid because the cycle is cut by a pointer edge.
 
-```rust
+```ciel
 struct Node {
     i64 data;
     Node next;
@@ -47,7 +47,7 @@ struct Node {
 
 This is invalid because the cycle is by value.
 
-```rust
+```ciel
 enum List {
     Cons(i64, List),
     Nil,
@@ -61,7 +61,7 @@ This is invalid for the same reason.
 A generic aggregate may be recursive only through the storage types that remain
 after substitution.
 
-```rust
+```ciel
 struct Wrapper<T> {
     i64 tag;
 }
@@ -74,7 +74,7 @@ struct Outer {
 This is valid because `Wrapper<T>` stores only `i64`; the type parameter does
 not participate in layout.
 
-```rust
+```ciel
 struct Wrapper<T> {
     T value;
 }
@@ -108,7 +108,7 @@ recursive by-value type is not supported: `Wrapper<Outer>`
 
 A layout-valid recursive type does not automatically implement `Message`.
 
-```rust
+```ciel
 struct Node {
     i64 data;
     ?*Node next;

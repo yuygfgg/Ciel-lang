@@ -50,7 +50,7 @@ PatternBind  ::= BindingName
 
 Examples:
 
-```rust
+```ciel
 i64 value = 1;      // immutable binding
 i64 @count = 0;     // mutable binding
 
@@ -92,14 +92,14 @@ ArrayType       ::= "[" IntegerLiteral "]" Type
 
 The analogous slice forms are also sibling constructors:
 
-```rust
+```ciel
 []i64        // writable slice view over i64 elements
 []const i64  // read-only slice view over i64 elements
 ```
 
 Read-only view types:
 
-```rust
+```ciel
 *const i64       // non-null read-only pointer to i64
 ?*const i64      // nullable read-only pointer to i64
 []const u8       // read-only slice of u8 elements
@@ -108,7 +108,7 @@ Read-only view types:
 
 Invalid standalone const forms:
 
-```rust
+```ciel
 const i64 value = 1;       // error
 const bool flag = true;    // error
 const Point p = make();    // error
@@ -127,7 +127,7 @@ conversion rules.
 A binding without `@` is immutable after it is initialized. A binding with `@`
 may be assigned repeatedly.
 
-```rust
+```ciel
 i64 x = 1;
 x = 2; // error
 
@@ -137,7 +137,7 @@ y = 2; // ok
 
 Owned aggregate mutation follows the binding:
 
-```rust
+```ciel
 Point p = { x: 1, y: 2 };
 p.x = 3; // error
 
@@ -155,7 +155,7 @@ Function parameters, closure parameters, `for` initializer bindings, and
 pattern bindings use the same binding rule. A parameter behaves like an
 already-initialized local declared with the same `BindingName`:
 
-```rust
+```ciel
 void f(i64 value) {
     value = 1; // error
 }
@@ -175,7 +175,7 @@ only in how the initial value is supplied.
 `@` does not mean "non-const". It only controls the source binding. A mutable
 binding may hold a read-only pointer or slice:
 
-```rust
+```ciel
 *const i64 @cursor = start;
 cursor = next; // ok: the pointer binding is mutable
 *cursor = 1;   // error: the view is read-only
@@ -187,7 +187,7 @@ Immutable locals may be declared before their initializer, but they may be
 initialized only once on every control-flow path. The assignment must target
 the whole binding.
 
-```rust
+```ciel
 i64 x;
 if (cond) {
     x = 1; // ok: initializes x on this path
@@ -199,7 +199,7 @@ return x;
 
 Repeating initialization is an error:
 
-```rust
+```ciel
 i64 x;
 x = 1;
 x = 2; // error: x is already initialized
@@ -207,7 +207,7 @@ x = 2; // error: x is already initialized
 
 Partial writes cannot initialize an immutable aggregate:
 
-```rust
+```ciel
 Point p;
 p.x = 1; // error: immutable delayed initialization must assign the whole value
 ```
@@ -235,7 +235,7 @@ behavior.
 
 Type holes still require initializers:
 
-```rust
+```ciel
 _ value = make_value();  // ok
 _ value;                 // error
 _ @value;                // error
@@ -245,7 +245,7 @@ _ @value;                // error
 
 Pointer and slice views are either writable or read-only.
 
-```rust
+```ciel
 *T         // writable non-null pointer to T
 *const T   // read-only non-null pointer to T
 ?*T        // writable nullable pointer to T
@@ -256,7 +256,7 @@ Pointer and slice views are either writable or read-only.
 
 The write permission belongs to the view edge. It is not deep immutability.
 
-```rust
+```ciel
 *const *i64 p = source;
 *p = other; // error: cannot overwrite the pointer value stored at source
 **p = 1;    // ok if the loaded *i64 points to writable storage
@@ -267,7 +267,7 @@ The write permission belongs to the view edge. It is not deep immutability.
 
 Reading through a read-only view produces an ordinary value type:
 
-```rust
+```ciel
 *const i64 p = get_value();
 i64 value = *p; // ok: *p reads an i64
 
@@ -283,7 +283,7 @@ not exist.
 
 Assignments through views require a writable view:
 
-```rust
+```ciel
 *i64 p = get_mut_ptr();
 *p = 1; // ok
 
@@ -299,7 +299,7 @@ text[0] = 1; // error
 
 Assigning to a slice descriptor still follows binding mutability:
 
-```rust
+```ciel
 []u8 s = get_mut_bytes();
 s[0] = 1;        // ok: element write through a writable view
 s = other_bytes; // error: s is an immutable binding
@@ -321,7 +321,7 @@ This is the central implementation rule that prevents standalone const types.
 
 Examples:
 
-```rust
+```ciel
 i64 x = 1;
 x          // read-only lvalue of type i64
 
@@ -344,7 +344,7 @@ Projection uses the edge that actually reaches the storage being written:
 - assigning a new pointer or slice descriptor still follows the descriptor
   binding or containing-field access mode.
 
-```rust
+```ciel
 Point p = make_point();
 p.x = 1; // error: field of an immutable owned binding
 
@@ -368,7 +368,7 @@ Read-only lvalues are not const-qualified rvalues. Reading a field, pointer, or
 slice descriptor from a read-only aggregate produces the ordinary stored value,
 including whatever view mutability that stored value carries:
 
-```rust
+```ciel
 struct Holder {
     *i64 ptr;
 }
@@ -391,7 +391,7 @@ vh->bytes[0] = 1;  // ok: the stored slice value is []u8
 `&expr` requires an lvalue and produces a non-null pointer. The pointer
 mutability follows the lvalue access mode:
 
-```rust
+```ciel
 i64 x = 1;
 i64 @y = 2;
 
@@ -401,14 +401,14 @@ i64 @y = 2;
 
 Taking a mutable pointer from a read-only lvalue is rejected:
 
-```rust
+```ciel
 i64 x = 1;
 *i64 p = &x; // error
 ```
 
 Taking a read-only pointer from a writable lvalue is allowed by view weakening:
 
-```rust
+```ciel
 i64 @x = 1;
 *const i64 p = &x; // ok
 ```
@@ -416,7 +416,7 @@ i64 @x = 1;
 Parameters follow the same address-of rule as initialized locals. `T value`
 is a read-only lvalue and `T @value` is a writable lvalue:
 
-```rust
+```ciel
 Result<T, Error> clone<T: Message>(T value) {
     return clone_message(&value); // &value has type *const T
 }
@@ -435,7 +435,7 @@ handle before constructing the closure.
 The pointer and slice view constructors have only the following implicit
 conversions:
 
-```rust
+```ciel
 *T         -> *const T
 *T         -> ?*T
 *T         -> ?*const T
@@ -451,7 +451,7 @@ view that a writable pointer may weaken into.
 Array-to-slice conversion uses the source access path. A writable array lvalue
 can become `[]T`; a read-only array lvalue can become only `[]const T`.
 
-```rust
+```ciel
 [4]i64 values = [1, 2, 3, 4];
 []const i64 view = values; // ok
 []i64 mut_view = values;  // error
@@ -463,14 +463,14 @@ can become `[]T`; a read-only array lvalue can become only `[]const T`.
 Array literals and repeat literals may still create fresh backing storage in an
 expected slice context:
 
-```rust
+```ciel
 []i64 writable = [1, 2, 3];
 []const i64 readonly = [1, 2, 3];
 ```
 
 The reverse direction is rejected, including under `as`:
 
-```rust
+```ciel
 *const T ro = get_ro();
 *T rw = ro;        // error
 *T rw2 = ro as *T; // error
@@ -482,7 +482,7 @@ The reverse direction is rejected, including under `as`:
 Pointer casts involving `void` preserve nullability and never remove read-only
 view mutability:
 
-```rust
+```ciel
 *T p;
 *void raw = p as *void;             // ok
 *const void ro_raw = p as *const void; // ok
@@ -506,7 +506,7 @@ ordinary `as` operator.
 The source language does not model C's general `const` qualifier. Ciel source
 models only caller-visible pointer and slice view mutability.
 
-```rust
+```ciel
 extern "C" {
     i32 puts(*const char s);
     c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
@@ -553,7 +553,7 @@ through a read-only Ciel view.
 
 Calls obey the Ciel declaration exactly:
 
-```rust
+```ciel
 extern "C" {
     void read_only(*const char s);
     void may_write(*char s);
@@ -571,7 +571,7 @@ ordinary Ciel call path must not insert a `*const T` to `*T` cast.
 For rare C declarations where exact spelling matters but no Ciel semantics are
 needed, users should keep using C spelling aliases:
 
-```rust
+```ciel
 extern "C" type CHandle = "const struct CHandle";
 ```
 
@@ -584,7 +584,7 @@ to `*T` or from `[]const T` to `[]T`.
 
 For exported Ciel functions, generated prototypes preserve pointee const:
 
-```rust
+```ciel
 export extern "C" void inspect(*const Packet packet) { ... }
 export extern "C" void mutate(*Packet packet) { ... }
 ```
@@ -605,7 +605,7 @@ Actor safety remains based on `Message`, not on read-only views. A read-only
 pointer or slice is still a borrowed view and does not prove that the referenced
 storage can cross an actor boundary.
 
-```rust
+```ciel
 *const Buffer ptr; // not Message by default
 []const u8 view;   // not Message by default
 ```
@@ -615,7 +615,7 @@ value through `clone_message`.
 
 The `clone_message` source parameter should be read-only:
 
-```rust
+```ciel
 interface<T> Result<T, Error> clone_message(*const T value);
 interface Message = clone_message;
 ```
@@ -624,7 +624,7 @@ This matches the operation: cloning reads the source and constructs an
 independent destination. It also lets immutable parameters and locals be cloned
 without first making their binding mutable:
 
-```rust
+```ciel
 Result<void, Error> send<M: Message>(*Actor<M> actor, M value) {
     M copy = clone_message(&value)?;
     enqueue(actor, copy);
@@ -640,7 +640,7 @@ implementation. Read-only view mutability alone is not a transfer policy.
 
 Borrowed structural representation should use read-only source pointers:
 
-```rust
+```ciel
 meta::RefRepr<T> as_ref_repr<T>(*const T value);
 meta::Repr<T> into_repr<T>(*const T value);
 T from_repr<T>(meta::Repr<T> value);
@@ -648,7 +648,7 @@ T from_repr<T>(meta::Repr<T> value);
 
 Field and payload references use read-only pointers:
 
-```rust
+```ciel
 struct FieldRef<T> {
     []const char name;
     *const T value;
@@ -666,7 +666,7 @@ because its fields are read-only. `Repr<T>` remains the owned copy boundary.
 There is no `Repr<const T>` normalization rule because `const T` no longer
 exists. Nested read-only view leaves remain part of the represented type:
 
-```rust
+```ciel
 meta::Repr<*const i64>  // raw read-only pointer leaf
 meta::Repr<[]const u8>  // raw read-only slice leaf
 ```
@@ -677,7 +677,7 @@ Closure parameters use `BindingName`. Captured bindings keep the existing
 snapshot rule: the closure body cannot reassign a captured outer binding or
 mutate owned fields or indices rooted in that captured binding.
 
-```rust
+```ciel
 i64 @total = 0;
 void |(i64)| add = |i64 delta| {
     total = total + delta; // error: captured binding snapshot
@@ -687,7 +687,7 @@ void |(i64)| add = |i64 delta| {
 Shared mutation is expressed by capturing an explicit writable view or a
 synchronized handle:
 
-```rust
+```ciel
 i64 @total = 0;
 *i64 total_ptr = &total;
 
@@ -698,7 +698,7 @@ void |(i64)| add = |i64 delta| {
 
 Capturing a read-only view preserves read-only access:
 
-```rust
+```ciel
 *const i64 total_view = &total;
 void |()| bad = || {
     *total_view = 1; // error

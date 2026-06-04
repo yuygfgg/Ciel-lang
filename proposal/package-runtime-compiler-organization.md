@@ -319,7 +319,7 @@ the first version should not make prelude imports depend on source inspection.
 
 The first version should use a hard-coded compiler-owned prelude list:
 
-```rust
+```ciel
 const COMPILER_PRELUDE_IMPORTS: &[&str] = &[
     "/std/result",
     "/std/error",
@@ -458,7 +458,7 @@ declare their own native dependencies.
 The compiler driver should stop treating `compile_to_c` as the complete build
 result. It should produce a build plan:
 
-```rust
+```ciel
 struct BuildPlan {
     generated_c: String,
     profile: BuildProfile,
@@ -467,7 +467,7 @@ struct BuildPlan {
 }
 ```
 
-```rust
+```ciel
 struct CmakeTarget {
     package_root: PathBuf,
     cmake_file: PathBuf,

@@ -14,7 +14,7 @@ type `void` were invalid.
 
 That means generic functions cannot naturally handle `T = void`:
 
-```rust
+```ciel
 export T expect<T, E>(Result<T, E> value, []char message) {
     switch (value) {
         case Ok(result):
@@ -33,7 +33,7 @@ separate non-generic helper APIs.
 
 `void` is a normal inhabited type with exactly one value.
 
-```rust
+```ciel
 void done;
 ```
 
@@ -43,7 +43,7 @@ positions.
 
 The C backend erases `void` values:
 
-```rust
+```ciel
 void f() {
     return;
 }
@@ -67,20 +67,20 @@ not reused as a unit literal.
 
 Concrete `void` locals are implicitly initialized:
 
-```rust
+```ciel
 void value;
 ```
 
 Concrete code does not explicitly initialize or assign `void` values:
 
-```rust
+```ciel
 void value = make_done(); // error
 value = make_done();      // error
 ```
 
 Use the expression statement form when evaluation is needed:
 
-```rust
+```ciel
 make_done();
 ```
 
@@ -94,7 +94,7 @@ variant instantiated with a `void` payload.
 
 With `void` as a real value type, `/std/result` can use one set of helpers:
 
-```rust
+```ciel
 export T expect<T, E>(Result<T, E> value, []char message) {
     switch (value) {
         case Ok(result):
@@ -111,7 +111,7 @@ export T must<T, E>(Result<T, E> value) {
 
 Both of these work:
 
-```rust
+```ciel
 i64 value = must(read_number());
 must(close(fd));
 ```
@@ -122,7 +122,7 @@ where `close(fd)` returns `Result<void, Error>`.
 
 `void` values are allowed in ordinary value positions:
 
-```rust
+```ciel
 void ignore(void value) {
     return value;
 }
@@ -148,7 +148,7 @@ does not have a by-value `void` parameter.
 
 Enum variants may contain `void` payloads at the type level:
 
-```rust
+```ciel
 enum Result<T, E> {
     Ok(T),
     Err(E),
@@ -160,7 +160,7 @@ runtime payload.
 
 Both concrete and generic code may bind a `void` payload:
 
-```rust
+```ciel
 void expect_done<E>(Result<void, E> result) {
     switch (result) {
         case Ok(value):
@@ -174,7 +174,7 @@ void expect_done<E>(Result<void, E> result) {
 The binding has type `void` and no storage. A concrete `Result<void, E>` switch
 may also use the payloadless spelling:
 
-```rust
+```ciel
 void expect_done<E>(Result<void, E> result) {
     switch (result) {
         case Ok:
@@ -193,7 +193,7 @@ more readable in concrete `void` code.
 Concrete `void` locals and fields are implicit. They cannot be explicitly
 initialized or assigned:
 
-```rust
+```ciel
 void a;
 void b = a; // error
 a = b;      // error
@@ -201,7 +201,7 @@ a = b;      // error
 
 Argument passing and returns can still use existing `void` expressions:
 
-```rust
+```ciel
 void a;
 take_void(a);
 ```
@@ -209,7 +209,7 @@ take_void(a);
 The generated code performs no data movement. Evaluation order is preserved for
 generic expressions that instantiate to `void`.
 
-```rust
+```ciel
 side_effecting_void_call();
 next();
 ```
@@ -220,7 +220,7 @@ The call to `side_effecting_void_call` must still execute before `next`.
 
 `void` fields have no runtime size and no addressable storage:
 
-```rust
+```ciel
 struct Pair<T> {
     T left;
     void marker;
@@ -230,13 +230,13 @@ struct Pair<T> {
 
 The `marker` field type checks and can be selected:
 
-```rust
+```ciel
 pair.marker;
 ```
 
 but taking its address is invalid:
 
-```rust
+```ciel
 *void ptr = &pair.marker; // error
 ```
 
@@ -247,7 +247,7 @@ addressable sentinel, it should use a normal zero-field struct instead.
 
 Arrays of `void` are allowed at the type level:
 
-```rust
+```ciel
 [4]void markers;
 ```
 
@@ -263,7 +263,7 @@ This proposal does not make `void` values addressable.
 
 Rules:
 
-```rust
+```ciel
 *void opaque;     // opaque pointer
 void value;       // implicit void value
 &value;           // error: void values have no addressable storage
@@ -284,7 +284,7 @@ It should still reject:
 
 `void` unifies like any other concrete type in generics.
 
-```rust
+```ciel
 T id<T>(T value) {
     return value;
 }
@@ -302,7 +302,7 @@ effects.
 
 Examples:
 
-```rust
+```ciel
 T forward<T>(T value) {
     return value;
 }
@@ -331,7 +331,7 @@ of type `void`.
 
 With this proposal, that expression can flow through generic helpers:
 
-```rust
+```ciel
 Result<void, Error> cleanup() {
     close(fd)?;
     return Ok;
@@ -342,7 +342,7 @@ must(cleanup());
 
 Call sites write the statement form:
 
-```rust
+```ciel
 must(cleanup());
 ```
 

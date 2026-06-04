@@ -1,3 +1,10 @@
 /target/
 std/**/build/
 .DS_Store
+editors/vscode-ciel/node_modules/
+editors/vscode-ciel/*.vsix
+editors/vscode-ciel/parsers/
+editors/vscode-ciel/tree-sitter-ciel/src/grammar.json
+editors/vscode-ciel/tree-sitter-ciel/src/node-types.json
+editors/vscode-ciel/tree-sitter-ciel/src/parser.c
+editors/vscode-ciel/tree-sitter-ciel/src/tree_sitter/

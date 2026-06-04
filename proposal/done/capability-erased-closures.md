@@ -34,7 +34,7 @@ this proposal consumes.
 Every closure literal has a unique concrete closure type. That is useful for
 checking captured fields:
 
-```rust
+```ciel
 T clone_value<T: Message>(T value);
 
 i64 base = 5;
@@ -46,7 +46,7 @@ its captures, and then the assignment can erase it to `i64 |(i64)|`.
 
 That does not work once the closure is stored in an erased closure collection:
 
-```rust
+```ciel
 [2]i64 |(i64)| handlers = [
     |i64 value| value + a,
     |i64 value| value + b,
@@ -63,7 +63,7 @@ are no longer visible.
 
 Allow a constraint expression after a closure parameter list:
 
-```rust
+```ciel
 type Handler = []char |(i64): Message + printable|;
 ```
 
@@ -79,7 +79,7 @@ The expression after `:` uses the same interface algebra surface as generic
 constraints and interface aliases. It supports direct combinations without
 requiring an alias first:
 
-```rust
+```ciel
 type Handler = []char |(i64): Message + printable|;
 type LocalHandler = i64 |(i64): Message + !ThreadLocal|;
 type ReadOnlyCallback = void |([]u8): readable_seekable - seek|;
@@ -87,7 +87,7 @@ type ReadOnlyCallback = void |([]u8): readable_seekable - seek|;
 
 Aliases remain useful for repeated views:
 
-```rust
+```ciel
 interface message_printable = Message + printable;
 type Handler = []char |(i64): message_printable|;
 ```
@@ -113,7 +113,7 @@ At a concrete-to-erased conversion:
 
 Example:
 
-```rust
+```ciel
 type Handler = i64 |(i64): Message|;
 
 i64 a = 1;
@@ -131,7 +131,7 @@ The indexed value still has type `Handler`, so it can satisfy `T: Message`.
 
 If a closure does not meet the retained capability expression, conversion fails:
 
-```rust
+```ciel
 type Handler = i64 |(i64): Message|;
 
 i64 local = 1;
@@ -150,14 +150,14 @@ metaprogramming system.
 
 Plain erased closure values cannot later be upgraded:
 
-```rust
+```ciel
 i64 |(i64)| plain = |i64 value| value + 1;
 Handler handler = plain; // error: Message witness was not retained
 ```
 
 The reverse direction can drop retained capabilities:
 
-```rust
+```ciel
 Handler handler = |i64 value| value + 1;
 i64 |(i64)| plain = handler; // ok
 ```
@@ -180,7 +180,7 @@ shape as dynamic interface values. The receiver is the erased closure value.
 
 Capability-erased closure types are normal value types:
 
-```rust
+```ciel
 struct Router {
     []char |(i64): Message + printable| render;
 }
@@ -242,7 +242,7 @@ and environment shape.
 
 The implementation is not limited to `Message`:
 
-```rust
+```ciel
 type Handler = i64 |(i64): Message|;
 type Scored = i64 |(i64): score|;
 ```

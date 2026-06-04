@@ -1,0 +1,59 @@
+{
+  "name": "vscode-ciel",
+  "displayName": "Ciel Language Support",
+  "description": "VSCode language support for Ciel using Tree-sitter semantic highlighting.",
+  "version": "0.1.0",
+  "publisher": "ciel-lang",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.92.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "activationEvents": [
+    "onLanguage:ciel",
+    "onCommand:ciel.showSyntaxTree"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "ciel",
+        "aliases": [
+          "Ciel",
+          "ciel"
+        ],
+        "extensions": [
+          ".ciel"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "configurationDefaults": {
+      "[ciel]": {
+        "editor.semanticHighlighting.enabled": true
+      }
+    },
+    "commands": [
+      {
+        "command": "ciel.showSyntaxTree",
+        "title": "Ciel: Show Tree-sitter Syntax Tree"
+      }
+    ]
+  },
+  "scripts": {
+    "generate:parser": "cd tree-sitter-ciel && tree-sitter generate grammar.js",
+    "build:parser": "cd tree-sitter-ciel && tree-sitter generate grammar.js && tree-sitter build --wasm --output ../parsers/tree-sitter-ciel.wasm .",
+    "build": "npm run build:parser",
+    "test:cases": "node ./scripts/parse-ciel-cases.js",
+    "test:highlighting": "node ./scripts/test-highlighting.js",
+    "test": "npm run build && npm run test:cases && npm run test:highlighting"
+  },
+  "dependencies": {
+    "web-tree-sitter": "^0.25.0"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.25.0"
+  }
+}

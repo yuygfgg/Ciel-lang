@@ -1,0 +1,24 @@
+{
+    "grammars": [
+        {
+            "name": "ciel",
+            "camelcase": "Ciel",
+            "scope": "source.ciel",
+            "path": ".",
+            "file-types": [
+                "ciel"
+            ],
+            "highlights": "queries/highlights.scm"
+        }
+    ],
+    "metadata": {
+        "version": "0.1.0",
+        "license": "MIT",
+        "description": "Tree-sitter grammar for Ciel",
+        "authors": [
+            {
+                "name": "Ciel contributors"
+            }
+        ]
+    }
+}

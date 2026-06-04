@@ -43,7 +43,7 @@ formatting policies, but those policies are standard-library work.
 
 Ciel already has interface algebra:
 
-```rust
+```ciel
 T: Message + printable + !ThreadLocal
 ```
 
@@ -74,7 +74,7 @@ The representation follows the usual sum-of-products view:
 
 In `/std/meta`:
 
-```rust
+```ciel
 export struct HNil {}
 
 export struct HCons<H, T> {
@@ -128,7 +128,7 @@ identity and reconstruction use SOP position.
 
 `/std/meta` exposes compiler-recognized type forms:
 
-```rust
+```ciel
 export struct RefRepr<T> {}
 export struct Repr<T> {}
 ```
@@ -138,7 +138,7 @@ normalizes `RefRepr<T>` and `Repr<T>` to ordinary nested generic types.
 
 For a visible struct:
 
-```rust
+```ciel
 struct Packet {
     i64 id;
     bool ok;
@@ -159,7 +159,7 @@ meta::Repr<Packet>
 
 For a visible enum:
 
-```rust
+```ciel
 enum Token {
     Number(i64),
     End,
@@ -178,7 +178,7 @@ The owned enum representation uses `Variant` and `Payload` instead of
 For a concrete closure instance, representation exposes captures in capture
 order:
 
-```rust
+```ciel
 i64 base = 10;
 _ f = |i64 x| x + base;
 
@@ -196,7 +196,7 @@ Erased closure signature types such as `i64 |(i64)|` do not expose captures.
 
 `/std/meta` exposes compiler-recognized functions:
 
-```rust
+```ciel
 export RefRepr<T> as_ref_repr<T>(*T value);
 export Repr<T> into_repr<T>(T value);
 export T from_repr<T>(Repr<T> value);
@@ -249,7 +249,7 @@ interface constraints.
 Policies are library code. A type opts into a policy by projecting itself and
 delegating to generic impls over the representation.
 
-```rust
+```ciel
 import /std/meta as meta;
 
 interface<T> u64 hash(*T value, u64 seed);

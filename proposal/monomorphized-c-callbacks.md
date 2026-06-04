@@ -60,7 +60,7 @@ compiler code. That is unnecessary for ordinary FFI callback adapters.
 
 Allow non-exported `extern "C"` function definitions:
 
-```rust
+```ciel
 extern "C" c::c_int compare_items<T>(
     *const void left_raw,
     *const void right_raw,
@@ -76,7 +76,7 @@ function.
 
 Add explicit type application for function-item expressions:
 
-```rust
+```ciel
 compare_items::<Item>
 ```
 
@@ -85,7 +85,7 @@ used when the result is a function value rather than a call.
 
 Example:
 
-```rust
+```ciel
 type CompareFn = extern "C" c::c_int fn(*const void, *const void, *void);
 
 CompareFn compare = compare_items::<Item>;

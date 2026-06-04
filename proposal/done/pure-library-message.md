@@ -6,7 +6,7 @@ owned representations.
 
 The main API change is intentional:
 
-```rust
+```ciel
 Event: Message                 // no automatic structural derivation
 meta::Repr<Event>: Message     // structural message wrapper
 ```
@@ -35,13 +35,13 @@ Do not implement a hidden blanket rule that turns every structural `T` into
 Instead, the standard library implements `Message` for the structural wrapper
 itself:
 
-```rust
+```ciel
 meta::Repr<T>
 ```
 
 For a concrete type, `meta::Repr<T>` normalizes to ordinary SOP data:
 
-```rust
+```ciel
 struct Packet {
     i64 id;
     bool ok;
@@ -62,7 +62,7 @@ impls over `HNil`, `HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and
 
 A nominal wrapper looks attractive:
 
-```rust
+```ciel
 struct Derived<T> {
     T value;
 }
@@ -70,7 +70,7 @@ struct Derived<T> {
 
 but the pure-library impl needs this condition:
 
-```rust
+```ciel
 impl<T> clone_message(*Derived<T> value)
 where meta::Repr<T>: Message
 ```
@@ -88,7 +88,7 @@ rule.
 
 `/std/message` keeps the existing interface:
 
-```rust
+```ciel
 export interface<T> Result<T, Error> clone_message(*T value);
 export interface Message = clone_message;
 ```
@@ -96,7 +96,7 @@ export interface Message = clone_message;
 The standard library supplies explicit impls for primitive values and approved
 shared handles:
 
-```rust
+```ciel
 impl clone_message(*i64 value) {
     return Ok(*value);
 }
@@ -108,7 +108,7 @@ impl<T> clone_message(*Actor<T> value) {
 
 It also supplies structural impls for owned SOP nodes:
 
-```rust
+```ciel
 impl clone_message(*meta::HNil value) {
     return Ok({});
 }
@@ -159,7 +159,7 @@ constraint fails at the SOP position.
 User code explicitly crosses the actor/channel boundary with an owned
 representation:
 
-```rust
+```ciel
 import /std/channel;
 import /std/meta as meta;
 
@@ -188,7 +188,7 @@ Result<Event, Error> recv_event(*Channel<EventMessage> channel) {
 
 Actors can use representation types as their state and message types:
 
-```rust
+```ciel
 type StateMessage = meta::Repr<State>;
 type CommandMessage = meta::Repr<Command>;
 
@@ -213,7 +213,7 @@ owned representations.
 
 Strict pure-library code can provide concrete adapters:
 
-```rust
+```ciel
 Result<void, Error> send_packet(*Channel<meta::Repr<Packet>> channel, Packet packet) {
     return channel_send(channel, meta::into_repr(packet));
 }
@@ -221,7 +221,7 @@ Result<void, Error> send_packet(*Channel<meta::Repr<Packet>> channel, Packet pac
 
 Generic convenience helpers need a general type-system feature:
 
-```rust
+```ciel
 Result<void, Error> send_structural<T>(
     *Channel<meta::Repr<T>> channel,
     T value,
@@ -238,7 +238,7 @@ directly.
 
 Concrete closure values can be projected:
 
-```rust
+```ciel
 _ handler = |i64 value| value + base;
 _ message = meta::into_repr(handler);
 ```
@@ -252,7 +252,7 @@ proposal.
 
 Failure is compile-time capability failure, not a runtime `Err`.
 
-```rust
+```ciel
 struct Bad {
     *i64 ptr;
 }
@@ -287,7 +287,7 @@ Message derivation blocked at field `ptr` (`*i64`): raw pointer.
 
 This is a real API change:
 
-```rust
+```ciel
 send(&actor, event);                       // old structural auto-derive style
 send(&actor, meta::into_repr(event));       // pure library style
 ```

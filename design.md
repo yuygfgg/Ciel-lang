@@ -192,7 +192,7 @@ declarations shadowing imported symbols.
 
 Variables declared in a `for` initializer are scoped to that `for` statement.
 
-```rust
+```ciel
 import ./reader;
 import ./writer as writer;
 
@@ -242,7 +242,7 @@ AbiSpec         ::= "extern" StringLiteral
 
 Pointer and slice views carry write permission on the view edge:
 
-```rust
+```ciel
 *T          // writable non-null pointer to T
 *const T    // read-only non-null pointer to T
 ?*T         // writable nullable pointer to T
@@ -264,7 +264,7 @@ loaded view keeps its own write permission.
 
 Standalone `const` forms are invalid:
 
-```rust
+```ciel
 const i64 value = 1;        // error
 const bool flag = true;     // error
 const Point p = make();     // error
@@ -298,7 +298,7 @@ implicit `void` value. `[]void` stores a length with a null data pointer.
 `_` in type grammar is a local type hole. It is valid only in initialized local
 declarations and initialized `for` declarations:
 
-```rust
+```ciel
 _ handler = |State<i64> state, Command<i64> command| handle(state, command);
 Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 Result<Actor<_>, Error> pending =
@@ -312,7 +312,7 @@ declaration. The solved concrete type is stored on the local before later
 assignments, monomorphization, and code generation. Holes do not infer from
 later uses:
 
-```rust
+```ciel
 _ value = 1;  // i64
 value = 2;    // ok
 value = 2.0;  // error: expected i64
@@ -324,7 +324,7 @@ _ ptr = null;  // error: null needs an expected nullable pointer type
 Partial annotations provide context, but expressions that already require an
 expected type still require one:
 
-```rust
+```ciel
 _ point = { x: 1, y: 2 }; // error: struct literal needs a struct type
 _ empty = [];             // error: empty array literal has no element type
 
@@ -336,7 +336,7 @@ A fully typed closure can infer a concrete compiler-created closure type. An
 untyped closure still needs an expected callable type, and `_` alone does not
 infer block-bodied closure return types:
 
-```rust
+```ciel
 _ inc = |i64 value| value + 1;
 _ bad = |value| value + 1; // error: parameter type is not known
 ```
@@ -352,7 +352,7 @@ they do not introduce nominal identity.
 C spelling type declarations introduce transparent scalar C ABI types whose
 generated C spelling is preserved exactly:
 
-```rust
+```ciel
 export extern "C" {
     type c_int = "int";
     type c_size_t = "size_t";
@@ -374,7 +374,7 @@ Function-pointer values do not carry captured state. `fn` is parsed as a
 function-type suffix only in type grammar; it can otherwise be used as an
 ordinary identifier. The `fn` suffix has lower precedence than pointer prefixes:
 
-```rust
+```ciel
 *i32 fn(i64)       // function returning *i32
 ?*i32 fn(i64)      // function returning ?*i32
 ?*(i32 fn(i64))    // nullable reference to a function type
@@ -382,14 +382,14 @@ ordinary identifier. The `fn` suffix has lower precedence than pointer prefixes:
 
 Repeated `fn` suffixes construct functions returning functions:
 
-```rust
+```ciel
 i32 fn(i64) fn(*void) // takes *void, returns i32 fn(i64)
 ```
 
 Complex function types can always be written directly. Aliases give them
 stable names:
 
-```rust
+```ciel
 void fn(i32) fn(i32, void fn(i32)) signal;
 
 type SignalHandler = void fn(i32);
@@ -446,7 +446,7 @@ function-pointer values.
 
 The callable suffixes compose from left to right:
 
-```rust
+```ciel
 i64 |(i64)|        // closure taking i64 and returning i64
 i64 fn(i64) |()|   // closure taking no arguments and returning i64 fn(i64)
 i64 |(i64)| fn()   // function taking no arguments and returning a closure
@@ -472,7 +472,7 @@ usize len;
 
 Slice fields are accessed directly:
 
-```rust
+```ciel
 [4]i64 @values = [1, 2, 3, 4];
 []i64 view = values;
 *i64 raw_values = view.ptr;
@@ -491,7 +491,7 @@ API accepts an empty range.
 A slice does not own its storage. Escape analysis keeps the backing storage
 alive when a slice escapes. Slices can be created by:
 
-```rust
+```ciel
 [4]i64 @values = [1, 2, 3, 4];
 []i64 view = values; // array-to-slice
 []i64 tail = view[2..]; // subview
@@ -558,7 +558,7 @@ OpaqueStructDecl    ::= "opaque" "struct" Identifier ";"
 Local variables and function parameters are declared with type syntax.
 `BindingName` controls whether the binding may be assigned again:
 
-```rust
+```ciel
 i64 value = 1;      // immutable binding
 i64 @count = 0;     // mutable binding
 
@@ -571,7 +571,7 @@ A binding without `@` is immutable after initialization. A binding with `@`
 may be assigned repeatedly. `@` belongs to the binding name, not to the type;
 a mutable binding may hold a read-only pointer or slice view.
 
-```rust
+```ciel
 *const i64 @cursor = start;
 cursor = next; // ok: the pointer binding is mutable
 *cursor = 1;   // error: the pointer view is read-only
@@ -596,7 +596,7 @@ Immutable locals may be declared before their initializer, but they may be
 initialized only once on every control-flow path. The initializing assignment
 must target the whole binding:
 
-```rust
+```ciel
 i64 x;
 if (cond) {
     x = 1;
@@ -609,7 +609,7 @@ x = 3; // error: x is already initialized
 
 Partial writes cannot initialize an immutable aggregate:
 
-```rust
+```ciel
 Point p;
 p.x = 1; // error: immutable delayed initialization must assign the whole value
 ```
@@ -638,7 +638,7 @@ No runtime initialized-bit checks are part of the language.
 
 Type holes still require initializers:
 
-```rust
+```ciel
 _ value = make_value(); // ok
 _ value;                // error
 _ @value;               // error
@@ -658,7 +658,7 @@ the eventual body exactly. `extern "C"` declarations do not require a Ciel body.
 An `async` function is declared by writing `async` before the ordinary return
 type:
 
-```rust
+```ciel
 async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
     Bytes header = await read_exact(stream, 8)?;
     usize len = decode_len(header)?;
@@ -694,7 +694,7 @@ shape for aggregate layout.
 If layout reaches the same concrete struct or enum instance again through only
 by-value storage edges, the program is rejected:
 
-```rust
+```ciel
 struct Node {
     i64 data;
     ?*Node next; // ok: pointer edge cuts the cycle
@@ -714,7 +714,7 @@ enum List {
 Generic aggregate layout depends only on substituted storage types. An unused
 type parameter does not force expansion:
 
-```rust
+```ciel
 struct Wrapper<T> {
     i64 tag;
 }
@@ -726,7 +726,7 @@ struct Outer {
 
 If substitution leaves a by-value cycle, the concrete instance is rejected:
 
-```rust
+```ciel
 struct Box<T> {
     T value;
 }
@@ -876,7 +876,7 @@ bindings and parameters from enclosing scopes. Top-level functions, imported
 functions, types, enum variants, and interface names are resolved directly and
 are not captured.
 
-```rust
+```ciel
 i64 base = 10;
 i64 |(i64)| add_base = |x| x + base;
 i64 y = add_base(5); // 15
@@ -903,7 +903,7 @@ context, or an explicit `as` type annotation. If no expected callable type
 exists, every closure parameter must write its type. Closure parameters use the
 same `@` mutability rule as function parameters:
 
-```rust
+```ciel
 i64 |(i64)| bump = |i64 @value| {
     value = value + 1;
     return value;
@@ -925,7 +925,7 @@ with the same signature as the same type.
 
 The `as` operator can provide the expected callable type for a closure literal:
 
-```rust
+```ciel
 (|x| x + 1) as i64 |(i64)|;
 (|x| { return x + 1; }) as i64 |(i64)|;
 (|x| x + 1) as i64 |(i64): Message|;
@@ -945,7 +945,7 @@ closure returns the value of its expression and cannot contain statements.
 
 An async closure is written by prefixing a closure literal with `async`:
 
-```rust
+```ciel
 async || work()
 async |usize value| {
     return compute(value);
@@ -970,7 +970,7 @@ only inside an async body or inside compiler-recognized async bridges such as
 expression has type `Out`. If `Out` is `Result<T, Error>`, ordinary `?`
 propagation composes after the await:
 
-```rust
+```ciel
 Bytes bytes = await socket_read(stream)?;
 ```
 
@@ -979,7 +979,7 @@ functions, futures, and `await` are specified in Section 16.
 
 `select` constructs a future that races a flat set of future expressions:
 
-```rust
+```ciel
 usize result = await select {
     case bytes = reader::read_buffered(reader, 4096): handle(bytes);
     case slept = async_time::sleep_ms(100): timeout(slept);
@@ -1020,7 +1020,7 @@ writable or read-only:
 Assignments require a writable lvalue, except for the one allowed whole-binding
 initialization of an unassigned immutable local.
 
-```rust
+```ciel
 Point p = make_point();
 p.x = 1; // error: field of an immutable owned binding
 
@@ -1044,7 +1044,7 @@ Read-only lvalues are not const-qualified rvalues. Reading a field, pointer, or
 slice descriptor from a read-only aggregate produces the ordinary stored value,
 including whatever view mutability that stored value carries:
 
-```rust
+```ciel
 struct Holder {
     *i64 ptr;
 }
@@ -1065,7 +1065,7 @@ vh->bytes[0] = 1;  // ok: the stored slice value is []u8
 `&expr` requires an lvalue and produces a non-null pointer whose view
 mutability follows the lvalue access mode:
 
-```rust
+```ciel
 i64 x = 1;
 i64 @y = 2;
 
@@ -1079,7 +1079,7 @@ read-only pointer from a writable lvalue is allowed by view weakening.
 Parameters follow the same address-of rule as initialized locals. `T value` is
 a read-only lvalue and `T @value` is a writable lvalue:
 
-```rust
+```ciel
 Result<T, Error> clone<T: Message>(T value) {
     return clone_message(&value); // &value has type *const T
 }
@@ -1102,7 +1102,7 @@ Struct literals are named-field literals and require an expected struct type.
 Every field must be initialized exactly once. Field order is irrelevant to type
 checking, but evaluation follows the written initializer order:
 
-```rust
+```ciel
 Point p = { x: 1, y: 2 };
 Point q = { y: 2, x: 1 };
 ```
@@ -1122,7 +1122,7 @@ against that type. Literal values must be in range for the inferred type.
 
 String literals have type `[]const char`:
 
-```rust
+```ciel
 []const char s = "hello"; // { ptr: static NUL-terminated bytes, len: 5 }
 *const char p = s.ptr;    // for C APIs that expect a read-only C string
 ```
@@ -1150,7 +1150,7 @@ type. `~` requires an integer operand and returns the same type. `bool`,
 `char`, floats, pointers, closures, slices, structs, enums, and dynamic
 interfaces are not bitwise operands without explicit casts to integer types.
 
-```rust
+```ciel
 u32 mask = (1 as u32) << 5;
 u8 nibble = (byte >> (4 as u8)) & (0x0f as u8);
 i64 both = left ^ right;
@@ -1181,7 +1181,7 @@ expected type as specified above.
 Pointer casts from a typed pointer to `*void` or `?*void` are safe type erasure.
 Casts from `*void` or `?*void` back to a typed pointer are unsafe operations:
 
-```rust
+```ciel
 i64 value = 1;
 *void raw = &value as *void;
 *i64 typed = unsafe { raw as *i64 };
@@ -1190,7 +1190,7 @@ i64 value = 1;
 The pointer and slice view constructors have only these implicit view
 conversions:
 
-```rust
+```ciel
 *T       -> *const T
 *T       -> ?*T
 *T       -> ?*const T
@@ -1202,7 +1202,7 @@ conversions:
 Conversions that remove read-only view mutability are rejected, including under
 `as`:
 
-```rust
+```ciel
 *const T ro = get_ro();
 *T rw = ro;        // error
 *T rw2 = ro as *T; // error
@@ -1223,7 +1223,7 @@ Narrowing applies only to local bindings of nullable pointer type, including
 parameters. It never applies to struct fields, globals, or arbitrary
 expressions.
 
-```rust
+```ciel
 ?*T p = get();
 if (p != null) {
     use(p); // p is narrowed to *T inside this branch
@@ -1233,7 +1233,7 @@ if (p != null) {
 `if (p == null) return;` narrows `p` to `*T` after the statement. Short-circuit
 `&&` is supported:
 
-```rust
+```ciel
 if (p != null && p->value > 0) {
     use(p);
 }
@@ -1243,7 +1243,7 @@ Reassigning `p`, assigning through a pointer to `p`, or passing `&p` to code
 that may write it invalidates the narrowing immediately. Fields must be copied
 to locals before narrowing:
 
-```rust
+```ciel
 ?*T temp = obj->ptr;
 if (temp != null) {
     use(temp);
@@ -1313,12 +1313,12 @@ provided by the concrete constrained type or erased dynamic value.
 
 Examples:
 
-```rust
+```ciel
 interface<T> i64 measure(*const T value);
 i64 call_measure(measure value);
 ```
 
-```rust
+```ciel
 interface<T, U> bool eq(*const T value, U other);
 
 bool check_eq(eq<i64> value, i64 target) {
@@ -1331,7 +1331,7 @@ bool bad_eq(eq value); // error: U is not supplied
 `make` is a normal capability, but it is not dynamically usable because its
 receiver type appears only in the return type:
 
-```rust
+```ciel
 interface<T, U> Result<T, Error> make(U value);
 Mutex<i64> total = must(make(0));
 must(make<Mutex<i64>>(0)); // required without expected type
@@ -1339,7 +1339,7 @@ must(make<Mutex<i64>>(0)); // required without expected type
 
 Interface aliases use `+` and `-` to form narrowed views:
 
-```rust
+```ciel
 interface streaming = read - seek;
 interface readable_seekable = read + seek;
 ```
@@ -1349,7 +1349,7 @@ type to lack `seek`.
 
 Generic constraints may use `!capability` as a global hard rejection:
 
-```rust
+```ciel
 i64 copy_stream<T: read + write + !seek>(*T stream, *u8 out, usize len);
 ```
 
@@ -1372,7 +1372,7 @@ and lowers them during semantic analysis.
 
 `/std/meta` provides product and sum vocabulary:
 
-```rust
+```ciel
 import /std/meta as meta;
 
 meta::HNil
@@ -1384,7 +1384,7 @@ meta::Coproduct<meta::VariantRef<meta::HNil>, meta::CoNil>
 normalizes to an `HCons` list of `FieldRef<FieldType>` values in declaration
 order:
 
-```rust
+```ciel
 struct Packet {
     i64 id;
     bool ok;
@@ -1405,7 +1405,7 @@ order. Each branch is a `VariantRef<PayloadProduct>` for `RefRepr<T>` and a
 `Variant<PayloadProduct>` for `Repr<T>`. Positional payloads use
 `PayloadRef<P>` or `Payload<P>` inside an `HCons` product:
 
-```rust
+```ciel
 enum Token {
     Number(i64),
     End,
@@ -1440,7 +1440,7 @@ signature types do not expose captures.
 
 The compiler-lowered functions are:
 
-```rust
+```ciel
 meta::RefRepr<T> as_ref_repr<T>(*const T value);
 meta::Repr<T> into_repr<T>(*const T value);
 T from_repr<T>(meta::Repr<T> value);
@@ -1457,7 +1457,7 @@ position.
 Policies remain library code. A type opts into a policy by projecting itself
 and delegating to ordinary generic impls:
 
-```rust
+```ciel
 interface<T> u64 hash(*const T value, u64 seed);
 interface hashable = hash;
 
@@ -1474,7 +1474,7 @@ does not change the SOP representation.
 `Message` uses this mechanism for structural user data. Ordinary structs and
 enums do not automatically implement `Message`; their owned representation can:
 
-```rust
+```ciel
 import /std/meta as meta;
 
 struct Packet {
@@ -1521,7 +1521,7 @@ be visible in the same lexical scope.
 
 Unit variants are written without parentheses:
 
-```rust
+```ciel
 enum DigitError {
     DigitNonDecimal,
 }
@@ -1531,7 +1531,7 @@ return Err(DigitNonDecimal);
 
 Payload variants are ordinary constructor calls:
 
-```rust
+```ciel
 enum ConfigError {
     MissingPort,
     InvalidPort(i64),
@@ -1546,7 +1546,7 @@ matched recursively. Pattern bindings use copy semantics and are scoped to
 their case body. Pattern bindings use the same `BindingName` rule as locals and
 parameters: `name` is immutable and `@name` is mutable.
 
-```rust
+```ciel
 enum Inner {
     A(i64),
     B,
@@ -1571,7 +1571,7 @@ i64 pick(Outer value) {
 }
 ```
 
-```rust
+```ciel
 switch (event) {
     case Click(pos):
         pos.x = 1; // error: pos is an immutable binding
@@ -1669,7 +1669,7 @@ the call site, and does not create a concurrent task by itself.
 The written return type of an async function is the value produced when its
 future is awaited:
 
-```rust
+```ciel
 async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
     Bytes header = await async_net::read(stream, 8)?;
     usize len = decode_len(header)?;
@@ -1702,7 +1702,7 @@ synchronous bridge such as `async::block_on`. The operand is evaluated exactly
 once and must implement `Awaitable<Out>`. The expression has type `Out`, and
 ordinary `?` propagation composes after the await:
 
-```rust
+```ciel
 Bytes bytes = await async_net::read(stream, 16384)?;
 ```
 
@@ -1728,7 +1728,7 @@ non-awaiting cleanup before the frame is released.
 
 `async::spawn` starts an awaitable body as an independent task:
 
-```rust
+```ciel
 Task<usize> task = async::spawn(async || compute_size(path))?;
 usize size = await task?;
 ```
@@ -1763,7 +1763,7 @@ representation, or a future unsafe ownership-transfer facility.
 
 Async tasks communicate through bounded async channels:
 
-```rust
+```ciel
 ChannelPair<Bytes> ch = async::channel<Bytes>(1024)?;
 Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
 await async::send(ch.sender, payload)?;
@@ -1794,7 +1794,7 @@ unfinished tasks through their task abort paths.
 
 `select` races a flat set of future expressions and produces one result:
 
-```rust
+```ciel
 Event event = await select {
     case bytes = async_net::read_buffered(reader, 16384):
         Event::Bytes(bytes?)
@@ -1886,7 +1886,7 @@ views or handles. In the first implementation, compound values containing slice
 or reference-view fields are rejected across await unless the compiler has an
 explicit built-in proof that the representation is owned and frame-safe.
 
-```rust
+```ciel
 []const u8 view = buffer[0..n];
 await async_time::sleep_ms(1)?;
 use(view); // error: borrowed slice crosses await
@@ -1949,7 +1949,7 @@ or synchronized handles, not borrowed interior pointers into another actor.
 
 An actor handle is a shareable reference to a mailbox:
 
-```rust
+```ciel
 struct Actor<M> {
     *void handle;
 }
@@ -1963,7 +1963,7 @@ Actors can be spawned with cloned messageable state or with actor-owned state
 constructed by an initializer. The clone-state API copies both the initial
 state and the handler through `Message`:
 
-```rust
+```ciel
 Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
@@ -1979,7 +1979,7 @@ the actor runtime to clone the handler across the actor boundary.
 The actor-owned-state API constructs `S` inside an initializer closure and
 stores it directly in actor runtime storage:
 
-```rust
+```ciel
 Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
     Result<S, Error> |(): Message| init,
     Result<void, Error> |(*S, Actor<M>, M): Message| handler
@@ -1995,7 +1995,7 @@ place and returns `Result<void, Error>`.
 
 `Message` is an explicit conversion capability:
 
-```rust
+```ciel
 unsafe interface<T> Result<T, Error> clone_message(*const T value);
 unsafe interface<T> bool share_handle_marker(*const T value);
 unsafe interface<T> bool thread_local_marker(*const T value);
@@ -2018,13 +2018,13 @@ that require `T: Message` does not require an unsafe block.
 Cross-domain standard-library APIs are ordinary functions that require
 `Message` and call `clone_message` explicitly:
 
-```rust
+```ciel
 Result<void, Error> send<M: Message>(*const Actor<M> actor, M value);
 ```
 
 Conceptually, `send` clones before storing into another actor's mailbox:
 
-```rust
+```ciel
 Result<void, Error> send<T: Message>(*const Actor<T> actor, T value) {
     T copy = clone_message(&value)?;
     enqueue(actor, copy);
@@ -2035,7 +2035,7 @@ Result<void, Error> send<T: Message>(*const Actor<T> actor, T value) {
 The sender keeps its original value. The receiver receives the result of
 `clone_message`, with independent mutable identity:
 
-```rust
+```ciel
 Buffer @buf = make_buffer();
 *Buffer p = &buf;
 send(actor, buf);        // send calls clone_message(&value)
@@ -2044,7 +2044,7 @@ append(p, "local only"); // mutates only the sender's buffer
 
 `spawn_actor_cloned` follows the same rule:
 
-```rust
+```ciel
 Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
@@ -2057,7 +2057,7 @@ Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
 
 `spawn_actor_state` does not clone `S`:
 
-```rust
+```ciel
 Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
     Result<S, Error> |(): Message| init,
     Result<void, Error> |(*S, Actor<M>, M): Message| handler
@@ -2072,7 +2072,7 @@ Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
 Closure messageability is a property of the concrete closure type's generated
 environment, not of the erased callable signature alone:
 
-```rust
+```ciel
 i64 x = 1;
 spawn_actor_cloned(0, |s, msg| s + msg + x); // ok
 
@@ -2103,7 +2103,7 @@ policy for the nominal type.
 Compiler-derived `Message` no longer applies to user structs or enums. Programs
 that want structural behavior use the owned representation at the boundary:
 
-```rust
+```ciel
 import /std/meta as meta;
 
 struct Event {
@@ -2121,7 +2121,7 @@ Result<void, Error> send_event(*const Channel<EventMessage> channel, Event event
 An explicit user-defined impl is still the way to make the original nominal
 type itself a message type:
 
-```rust
+```ciel
 unsafe impl clone_message(*const Event value) {
     return Ok(*value);
 }
@@ -2169,7 +2169,7 @@ value.
 
 Shared mutable identity is represented through synchronized handle types:
 
-```rust
+```ciel
 struct Channel<T> { *void handle; }
 struct Atomic<T> { *void handle; }
 struct Actor<M> { *void handle; }
@@ -2177,7 +2177,7 @@ struct Actor<M> { *void handle; }
 
 Their safe APIs expose operations:
 
-```rust
+```ciel
 Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value);
 Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
 
@@ -2196,7 +2196,7 @@ lifetime rooting, and it is written as `unsafe impl`.
 Mutexes are a low-level library feature. The safe mutex API uses value
 replacement:
 
-```rust
+```ciel
 struct Mutex<T> {
     *void handle;
 }
@@ -2218,7 +2218,7 @@ replacement rather than a borrowed interior pointer.
 
 The actor model uses interfaces for capability classification:
 
-```rust
+```ciel
 unsafe interface<T> Result<T, Error> clone_message(*const T value);
 unsafe interface<T> bool share_handle_marker(*const T value);
 unsafe interface<T> bool thread_local_marker(*const T value);
@@ -2240,7 +2240,7 @@ witness nor a share-handle marker.
 
 Examples:
 
-```rust
+```ciel
 Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
 Result<void, Error> accept_handle<T: ShareHandle>(T handle);
 void local_resource<T: ThreadLocal>(*const T value);
@@ -2249,7 +2249,7 @@ void local_resource<T: ThreadLocal>(*const T value);
 Negative constraints remain useful for APIs that require a type to stay
 actor-local:
 
-```rust
+```ciel
 void bind_local<T: !Message>(*const T value);
 ```
 
@@ -2316,7 +2316,7 @@ operator is syntax, and it recognizes the `Result` type exported by
 
 There is no prelude. Every standard-library module must be imported explicitly:
 
-```rust
+```ciel
 import /std/result;
 import /std/panic;
 import /std/io;
@@ -2336,7 +2336,7 @@ String literals have compiler support because each occurrence emits
 program-lifetime static NUL-terminated bytes and constructs a `[]const char`
 slice:
 
-```rust
+```ciel
 []const char name = "ciel";
 usize n = name.len;
 *const char raw = name.ptr;
@@ -2345,7 +2345,7 @@ usize n = name.len;
 The core standard library is organized around small implementation modules and
 stable facade modules:
 
-```rust
+```ciel
 // /std/error
 export import /std/result/core;
 export import /std/error/core;
@@ -2353,7 +2353,7 @@ export import /std/error/basic;
 export import /std/error/context;
 ```
 
-```rust
+```ciel
 // /std/error/core
 export interface<T> []const char format_error(*const T error);
 export interface ErrorTrait = format_error;
@@ -2369,7 +2369,7 @@ export Error error_with_context(Error source, []const char context);
 export []const char error_message(*const Error error);
 ```
 
-```rust
+```ciel
 // /std/error/basic
 export struct TextError {
     []const char text;
@@ -2383,7 +2383,7 @@ export Error text_error([]const char text);
 export Error code_error(i64 code);
 ```
 
-```rust
+```ciel
 // /std/error/context
 export Result<T, Error> error_context<T, E: ErrorTrait>(
     Result<T, E> result,
@@ -2395,7 +2395,7 @@ export Result<void, Error> error_context_void<E: ErrorTrait>(
 );
 ```
 
-```rust
+```ciel
 // /std/result/core
 export enum Result<T, E> {
     Ok(T),
@@ -2403,7 +2403,7 @@ export enum Result<T, E> {
 }
 ```
 
-```rust
+```ciel
 // /std/result
 export import /std/result/core;
 export import /std/error;
@@ -2412,19 +2412,19 @@ export T must<T, E>(Result<T, E> value);
 export T expect<T, E>(Result<T, E> value, []const char message);
 ```
 
-```rust
+```ciel
 // /std/format
 export import /std/format/number;
 ```
 
-```rust
+```ciel
 // /std/format/number
 export []const char u64_to_string(u64 value);
 export []const char usize_to_string(usize value);
 export []const char i64_to_string(i64 value);
 ```
 
-```rust
+```ciel
 // /std/panic
 unsafe extern "C" {
     noescape never ciel_panic(*const char message, usize len);
@@ -2441,7 +2441,7 @@ export never panic([]const char message) {
 nonzero exit status. The current runtime uses exit code `101` for panic
 termination.
 
-```rust
+```ciel
 // /std/c
 #c_include "stddef.h"
 #c_include "stdint.h"
@@ -2481,7 +2481,7 @@ export type c_string = *char;
 export type const_c_string = *const char;
 ```
 
-```rust
+```ciel
 // /std/io
 export import /std/result;
 import /std/message;
@@ -2560,7 +2560,7 @@ write through a scoped `File`.
 
 Low-level raw descriptor interop lives in `/std/os/fd`, not `/std/io`:
 
-```rust
+```ciel
 // /std/os/fd
 import /std/c as c;
 
@@ -2578,7 +2578,7 @@ export RawFd stderr();
 `RawFd` is a low-level interop type. It is actor-local by default and requires
 unsafe operations for adoption and extraction.
 
-```rust
+```ciel
 // /std/io_posix
 import /std/c as c;
 
@@ -2598,11 +2598,11 @@ should use `/std/io` or `/std/async_io`.
 Formatted printing uses `{}` placeholders and a `[]printable` slice, so callers
 can pass heterogeneous printable values through dynamic interface erasure:
 
-```rust
+```ciel
 print("{} = {}", ["answer", 42 as usize]);
 ```
 
-```rust
+```ciel
 // /std/message
 import /std/error;
 import /std/result;
@@ -2621,7 +2621,7 @@ export interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInter
 export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
 
-```rust
+```ciel
 // /std/meta
 export usize type_size<T>();
 export usize type_align<T>();
@@ -2710,7 +2710,7 @@ export Repr<T> into_repr<T>(*const T value);
 export T from_repr<T>(Repr<T> value);
 ```
 
-```rust
+```ciel
 // /std/actor
 import /std/result;
 import /std/message;
@@ -2732,7 +2732,7 @@ export Result<void, Error> stop<T: Message>(*const Actor<T> actor);
 export Result<void, Error> join<T: Message>(*const Actor<T> actor);
 ```
 
-```rust
+```ciel
 // /std/channel
 import /std/result;
 import /std/message;
@@ -2748,7 +2748,7 @@ export Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
 export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch);
 ```
 
-```rust
+```ciel
 // /std/atomic
 export import /std/error;
 export import /std/message;
@@ -2811,7 +2811,7 @@ export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
 );
 ```
 
-```rust
+```ciel
 // /std/sync
 import /std/result;
 import /std/message;
@@ -2842,7 +2842,7 @@ export Result<R, Error> mutex_with<T, R: Message>(
 );
 ```
 
-```rust
+```ciel
 // /std/lib
 export import /std/error;
 export import /std/result;
@@ -2872,7 +2872,7 @@ export import /std/net;
 export Result<void, Error> sleep_ms(u64 ms);
 ```
 
-```rust
+```ciel
 // /std/codec
 import /std/result;
 import /std/meta as meta;
@@ -2887,7 +2887,7 @@ export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value);
 export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value);
 ```
 
-```rust
+```ciel
 // /std/buf
 import /std/result;
 
@@ -2922,7 +2922,7 @@ readers that copy async `Bytes` into reusable buffers.
 remaining bytes down, which supports frame parsers that retain partial input
 between async reads.
 
-```rust
+```ciel
 // /std/map
 import /std/result;
 import /std/message;
@@ -2991,7 +2991,7 @@ export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
 Typical call sites write the key/value types at construction and rely on
 generic inference from the typed map receiver afterward:
 
-```rust
+```ciel
 _ @table = must(hash_map_new<u32, i64>());
 must(hash_map_insert(&table, 7 as u32, 10));
 usize count = hash_map_len(&table);
@@ -3014,7 +3014,7 @@ Structural policies cover `/std/meta` product and sum nodes used by
 with explicit `hash_key` and `key_eq` wrappers that delegate to the structural
 representation.
 
-```rust
+```ciel
 // /std/shared_map
 import /std/result;
 import /std/map as map;
@@ -3069,7 +3069,7 @@ operations clone values across the synchronized boundary. It is intended for
 registries and routing tables shared by async tasks or actors, while
 `/std/map` remains the cheaper actor-local storage primitive.
 
-```rust
+```ciel
 // /std/time
 import /std/result;
 
@@ -3085,7 +3085,7 @@ it is intended for simple backoff, tests, and blocking utility code. Async
 tasks and actor continuations that must stay non-blocking should use
 `/std/async_time::sleep_ms` or the lower-level async timer operation-token API.
 
-```rust
+```ciel
 // /std/env
 import /std/result;
 
@@ -3099,7 +3099,7 @@ standard `Error` when the index is outside the current `args_len`. Environment
 variables, working-directory access, process spawning, and path search are
 reserved for later modules.
 
-```rust
+```ciel
 // /std/crypto
 import /std/result;
 
@@ -3200,7 +3200,7 @@ completed digest/MAC values across actor boundaries instead of live streaming
 crypto contexts. `hash_clear` and `mac_clear` release their runtime handles;
 later use of the cleared value returns an error.
 
-```rust
+```ciel
 // /std/net
 import /std/result;
 
@@ -3278,7 +3278,7 @@ copies of a closed listener or stream cannot accidentally operate on a reused
 descriptor. The scoped `with_tcp_*` helpers follow the `/std/io` pattern and
 close the opened resource on normal and error returns from the body.
 
-```rust
+```ciel
 // /std/async/bytes
 export import /std/result;
 
@@ -3304,7 +3304,7 @@ a subrange handle; `bytes_copy_to` and `bytes_copy_to_chars` copy into caller
 provided mutable buffers. `bytes_capacity` exposes backing capacity for APIs
 such as async TCP `read_into`, where a returned buffer can be reused.
 
-```rust
+```ciel
 // /std/bytes
 export import /std/async/bytes;
 
@@ -3320,7 +3320,7 @@ standard-library policy, and can be copied into slices when mutable inspection
 is needed. `/std/bytes` is the general facade; `/std/async/bytes` remains the
 implementation module exported by older async modules.
 
-```rust
+```ciel
 // /std/text
 export import /std/result;
 import /std/bytes as bytes;
@@ -3343,7 +3343,7 @@ perform Unicode normalization or validation beyond preserving byte contents.
 and async-task payloads. Conversion helpers copy the contents out when mutable
 or slice inspection is needed.
 
-```rust
+```ciel
 // /std/async
 export import /std/async/core;
 
@@ -3452,7 +3452,7 @@ waiter future; it does not assume that an arbitrary underlying protocol can
 discard partial state. The operand therefore must satisfy
 `SelectableFuture<Out>`, which is `Awaitable<Out> + CancelSafe + Abortable`.
 
-```rust
+```ciel
 // /std/async/internal/adapter
 import /std/actor as actor;
 import /std/c as c;
@@ -3478,7 +3478,7 @@ runtime operation as a future. Normal application code should call awaitable
 stdlib functions such as `async_io::read_bytes`, `async_net::read`, or
 `async_time::sleep_ms` instead of implementing operation adapters directly.
 
-```rust
+```ciel
 // /std/async_io
 export import /std/result;
 export import /std/async/bytes;
@@ -3534,7 +3534,7 @@ functions are low-level hooks for direct actor-completion integration. Raw fd
 reads and writes are `Abortable` but not `CancelSafe` by default because
 cancellation may hide offset changes or partial writes.
 
-```rust
+```ciel
 // /std/async_net
 export import /std/result;
 export import /std/async/bytes;
@@ -3701,7 +3701,7 @@ It polls its user-space buffer before registering socket readiness, so a
 previous read that drained the fd into the private buffer can make a later
 `select` arm ready immediately.
 
-```rust
+```ciel
 // /std/async_time
 export import /std/result;
 import /std/actor as actor;
@@ -3771,7 +3771,7 @@ function type has an explicit ABI. A safe `extern "C"` block may contain C
 spelling type aliases and opaque declarations, but imported functions require
 `unsafe extern "C"`.
 
-```rust
+```ciel
 unsafe extern "C" {
     opaque struct FILE;
 
@@ -3814,7 +3814,7 @@ Calls to imported C functions require `unsafe { ... }` and obey the Ciel
 declaration exactly. A writable view may weaken to a read-only C parameter, but
 a read-only view cannot satisfy a writable C parameter:
 
-```rust
+```ciel
 unsafe extern "C" {
     void read_only(*const char s);
     void may_write(*char s);
@@ -3836,13 +3836,13 @@ The ordinary Ciel call path must not insert a `*const T` to `*T` cast. For rare
 C declarations where exact spelling matters but no Ciel semantics are needed,
 users should keep using C spelling aliases:
 
-```rust
+```ciel
 extern "C" type CHandle = "const struct CHandle";
 ```
 
 For exported Ciel functions, generated prototypes preserve pointee `const`:
 
-```rust
+```ciel
 export extern "C" void inspect(*const Packet packet) { ... }
 export extern "C" void mutate(*Packet packet) { ... }
 ```
@@ -3857,7 +3857,7 @@ Ciel does not need to reproduce it in generated definitions. Pointee `const`
 must match; otherwise the C and Ciel declarations describe different write
 permissions.
 
-```rust
+```ciel
 import /std/c as c;
 
 #c_include "unistd.h"
@@ -3869,7 +3869,7 @@ unsafe extern "C" {
 
 Function type ABI is explicit:
 
-```rust
+```ciel
 i32 fn(i64)                    // Ciel ABI
 extern "C" i32 fn(*void, *void) // C ABI
 ```
@@ -3882,7 +3882,7 @@ parameters.
 
 Generated Ciel libraries expose a small host ABI:
 
-```rust
+```ciel
 unsafe extern "C" {
     opaque struct CielRoot;
 
@@ -3934,7 +3934,7 @@ and deterministic generated names.
 Ciel keeps source-level value semantics. The generated C ABI for internal Ciel
 functions may avoid large copies:
 
-```rust
+```ciel
 BigResult parse_big(*const char text);
 void consume_big(BigResult value);
 ```

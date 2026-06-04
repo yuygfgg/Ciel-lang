@@ -7,7 +7,7 @@ document describes the implementation target.
 The important correction is that strict pure-library structural `Message` does
 not require const generics or callable-kind impls. The strict model is:
 
-```rust
+```ciel
 Event: Message               // no automatic structural derivation
 meta::Repr<Event>: Message   // ordinary SOP library policy
 ```
@@ -44,7 +44,7 @@ fixed-arity, chunked representation, not to `[N]T` itself.
 
 The exact node family can evolve, but it should have this shape:
 
-```rust
+```ciel
 meta::ArrayNil
 meta::ArrayChunk1<T>
 ...
@@ -60,7 +60,7 @@ the number of representation leaves remains proportional to the array length.
 
 `/std/message` owns the policy for these nodes:
 
-```rust
+```ciel
 impl<T: Message> clone_message(*meta::ArrayChunk16<T> value) {
     ...
 }
@@ -91,7 +91,7 @@ They do not need callable-kind or type-pack generics.
 
 `/std/meta` should expose a compiler-recognized marker:
 
-```rust
+```ciel
 export interface<T> bool ciel_fn_value_marker(*T value);
 export interface CielFnValue = ciel_fn_value_marker;
 ```
@@ -104,7 +104,7 @@ Ciel ABI function pointer: meta::CielFnValue
 
 Then `/std/message` owns the policy:
 
-```rust
+```ciel
 impl<F: meta::CielFnValue> clone_message(*F value) {
     return Ok(*value);
 }
@@ -121,7 +121,7 @@ anonymous. They should not be direct compiler-known `Message` leaves.
 
 `/std/meta` should expose a compiler-recognized closure-kind marker:
 
-```rust
+```ciel
 export interface<T> bool closure_value_marker(*T value);
 export interface ClosureValue = closure_value_marker;
 ```
@@ -137,7 +137,7 @@ It does not make plain erased closure signatures such as `i64 |(i64)|`
 
 Then `/std/message` can own the policy:
 
-```rust
+```ciel
 impl<C: meta::ClosureValue> clone_message(*C value) {
     meta::Repr<C> repr = meta::into_repr(*value);
     meta::Repr<C> copied = clone_message(&repr)?;

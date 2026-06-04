@@ -27,7 +27,7 @@ synchronized handles.
 
 An actor handle is a shareable reference to a mailbox:
 
-```rust
+```ciel
 struct Actor<M> {
     *void handle;
 }
@@ -38,13 +38,13 @@ the actor starts and is updated by the actor's handler.
 
 One possible handler capability:
 
-```rust
+```ciel
 interface<H, S, M> Result<S, Error> handle(*H handler, S state, M message);
 ```
 
 One possible spawn API:
 
-```rust
+```ciel
 Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message, H: Message + Handler<S, M>>(
     S initial_state,
     H handler
@@ -60,7 +60,7 @@ closure signature alone is not enough to prove `Message`.
 
 `Message` is an explicit conversion capability:
 
-```rust
+```ciel
 interface<T> Result<T, Error> clone_message(*T value);
 ```
 
@@ -70,13 +70,13 @@ resource handle, intern immutable data, or report an error.
 
 Sending is ordinary interface-constrained code:
 
-```rust
+```ciel
 Result<void, Error> send<T: Message>(*Actor<T> actor, *T value);
 ```
 
 Conceptually:
 
-```rust
+```ciel
 Result<void, Error> send<T: Message>(*Actor<T> actor, *T value) {
     T copy = clone_message(value)?;
     enqueue(actor, copy);
@@ -89,7 +89,7 @@ with independent mutable identity.
 
 Example:
 
-```rust
+```ciel
 Buffer buf = make_buffer();
 *Buffer p = &buf;
 send(actor, &buf);       // enqueues clone_message(&buf)
@@ -126,7 +126,7 @@ the wrapper's `Message` implementation.
 
 Shared mutable identity is represented through synchronized handle types:
 
-```rust
+```ciel
 struct Channel<T> { *void handle; }
 struct AtomicI64 { *void handle; }
 struct Actor<M> { *void handle; }
@@ -134,7 +134,7 @@ struct Actor<M> { *void handle; }
 
 Their safe APIs expose operations:
 
-```rust
+```ciel
 Result<void, Error> channel_send<T: Message>(*Channel<T> ch, *T value);
 Result<T, Error> channel_recv<T: Message>(*Channel<T> ch);
 
@@ -152,7 +152,7 @@ replacement.
 
 Preferred shape:
 
-```rust
+```ciel
 struct Update<T, R> {
     T value;
     R result;
@@ -172,7 +172,7 @@ than a borrowed interior pointer.
 
 The actor model uses interfaces for capability classification:
 
-```rust
+```ciel
 interface<T> Result<T, Error> clone_message(*T value);
 interface<T> bool share_handle_marker(*T value);
 interface<T> bool thread_local_marker(*T value);
@@ -180,7 +180,7 @@ interface<T> bool thread_local_marker(*T value);
 
 Useful aliases:
 
-```rust
+```ciel
 interface Message = clone_message;
 interface ShareHandle = share_handle_marker;
 interface ThreadLocal = thread_local_marker;
@@ -188,7 +188,7 @@ interface ThreadLocal = thread_local_marker;
 
 Examples:
 
-```rust
+```ciel
 Result<void, Error> send<T: Message>(*Actor<T> actor, *T value);
 Result<void, Error> accept_handle<T: ShareHandle>(T handle);
 void local_resource<T: ThreadLocal>(*T value);
@@ -197,7 +197,7 @@ void local_resource<T: ThreadLocal>(*T value);
 Negative constraints remain useful for APIs that require a type to stay
 actor-local:
 
-```rust
+```ciel
 void bind_local<T: !Message>(*T value);
 ```
 

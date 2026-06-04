@@ -27,7 +27,7 @@ concrete error types implement `format_error` explicitly.
 
 Today `?` requires the inner and outer `Result` error types to be exactly equal:
 
-```rust
+```ciel
 Result<void, AppError> init() {
     open("config.json")?; // IoError
     parse_json()?;        // JsonError
@@ -68,7 +68,7 @@ details.
 
 `/std/error` should define one formatting capability:
 
-```rust
+```ciel
 export interface<T> []char format_error(*T error);
 export interface ErrorTrait = format_error;
 ```
@@ -78,7 +78,7 @@ standard erased error type.
 
 Example:
 
-```rust
+```ciel
 enum IoError {
     MissingFile([]char),
     PermissionDenied([]char),
@@ -103,7 +103,7 @@ value.
 `Error` should be a normal standard-library struct that owns an erased error
 value through a dynamic interface field:
 
-```rust
+```ciel
 export struct Error {
     ErrorTrait value;
 }
@@ -119,7 +119,7 @@ When a concrete non-pointer value is passed where `ErrorTrait` is expected, the
 compiler already knows how to allocate a GC-owned copy and construct the dynamic
 interface value. Therefore the minimal `error_box` helper can be ordinary Ciel:
 
-```rust
+```ciel
 export Error error_box(ErrorTrait error) {
     return { value: error };
 }
@@ -128,7 +128,7 @@ export Error error_box(ErrorTrait error) {
 `Error` itself implements `format_error`, so boxed errors can be formatted
 through the same capability:
 
-```rust
+```ciel
 impl format_error(*Error error) {
     return format_error(error->value);
 }
@@ -156,7 +156,7 @@ On Err(e), return Err(error_box(e)).
 
 Conceptual lowering:
 
-```rust
+```ciel
 Result<T, E> temp = expr;
 switch (temp) {
     case Ok(value):
@@ -172,7 +172,7 @@ performs the owned erasure from `E` to `ErrorTrait`.
 
 Example:
 
-```rust
+```ciel
 Result<void, Error> init() {
     open("config.json")?;
     parse_json()?;
@@ -191,7 +191,7 @@ standard-library function.
 
 Minimal API:
 
-```rust
+```ciel
 export struct Error {
     ErrorTrait value;
     ?*Error source;
@@ -217,7 +217,7 @@ separate `must_void` and `expect_void` functions for `Result<void, E>`.
 
 Usage:
 
-```rust
+```ciel
 Result<void, Error> init() {
     error_context(open("config.json"), "open config")?;
     error_context(parse_json(), "parse config")?;
@@ -228,7 +228,7 @@ Result<void, Error> init() {
 
 Conceptual implementation:
 
-```rust
+```ciel
 export Result<T, Error> error_context<T, E: ErrorTrait>(
     Result<T, E> result,
     []char context,
@@ -244,7 +244,7 @@ export Result<T, Error> error_context<T, E: ErrorTrait>(
 
 `error_with_context` can keep a source chain. A possible representation is:
 
-```rust
+```ciel
 export struct Error {
     ErrorTrait value;
     []char context;
@@ -265,7 +265,7 @@ proposal does not require user code to construct this layout by hand.
 
 Libraries should keep precise errors when callers may recover:
 
-```rust
+```ciel
 enum ParseError {
     EmptyInput,
     InvalidNumber([]char),
@@ -276,7 +276,7 @@ Result<Config, ParseError> parse_config([]char text);
 
 Applications and task boundaries can erase:
 
-```rust
+```ciel
 Result<void, Error> run() {
     Config config = parse_config(load_config_text()?)?;
     start_service(config)?;
@@ -331,7 +331,7 @@ through `error_box`.
 
 Conceptual Ciel lowering:
 
-```rust
+```ciel
 Result<T, E> temp = inner;
 switch (temp) {
     case Ok(value):
@@ -354,7 +354,7 @@ generic instantiation, and source diagnostics on the ordinary expression path.
 
 The first version only needs a stable formatting operation:
 
-```rust
+```ciel
 export []char error_message(*Error error);
 ```
 

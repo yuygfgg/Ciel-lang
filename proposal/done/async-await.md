@@ -4,7 +4,7 @@ This proposal adds stackless async/await to Ciel. The implementation is
 actor-backed, but the normal user-facing API should look like mainstream
 async/await in languages such as Python and Rust:
 
-```rust
+```ciel
 async Result<void, Error> echo(AsyncTcpStream stream) {
     while (true) {
         Bytes bytes = await net::read(stream, 16384)?;
@@ -160,7 +160,7 @@ control flow and let the compiler generate the state machine.
 
 An async function is declared with `async`:
 
-```rust
+```ciel
 async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
     Bytes header = await net::read_exact(stream, 8)?;
     usize len = decode_len(header)?;
@@ -171,7 +171,7 @@ async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
 Calling an async function creates a first-class future. `await` is required only
 when the caller wants to drive that future to completion and observe its output:
 
-```rust
+```ciel
 Future<Result<Bytes, Error>> future = read_frame(stream);
 Bytes frame = await read_frame(stream)?;
 ```
@@ -189,7 +189,7 @@ registered an operation is cancellation and is permitted only through a
 output type. If the output is `Result<T, Error>`, ordinary `?` propagation works
 after the await:
 
-```rust
+```ciel
 Bytes frame = await future?;
 ```
 
@@ -201,7 +201,7 @@ task's mutable state.
 
 The high-level spawn API is task-shaped:
 
-```rust
+```ciel
 export struct Task<T> {
     *void handle;
 }
@@ -227,7 +227,7 @@ policy.
 
 `Task<T>` is awaitable:
 
-```rust
+```ciel
 Task<usize> task = async::spawn(async || compute_size(path))?;
 usize size = await task?;
 ```
@@ -245,7 +245,7 @@ Static `select` covers a fixed set of futures known at compile time. Dynamic
 concurrency should use task groups instead of exposing a second public dynamic
 select API:
 
-```rust
+```ciel
 export struct TaskGroup<T> {
     *void handle;
 }
@@ -268,7 +268,7 @@ group, and await completions with `group_next`.
 
 Async tasks communicate through channels, not through low-level actor mailboxes:
 
-```rust
+```ciel
 export struct Sender<T> {
     *void handle;
 }
@@ -309,7 +309,7 @@ cancel-safe sending in `select` should first await `reserve(sender)`, which is
 
 Example:
 
-```rust
+```ciel
 ChannelPair<Bytes> ch = async::channel<Bytes>(1024)?;
 Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
 await send(ch.sender, payload)?;
@@ -353,7 +353,7 @@ The runtime owns endpoint liveness:
 
 `Future<T>` is an ordinary capability interface over an opaque future value:
 
-```rust
+```ciel
 export enum Poll<T> {
     Pending,
     Ready(T),
@@ -379,7 +379,7 @@ but the source-level model is fixed:
 Two additional capabilities describe what the runtime may do to a pending
 future:
 
-```rust
+```ciel
 export unsafe interface<F> bool cancel_safe_marker(*const F future);
 export interface CancelSafe = cancel_safe_marker;
 
@@ -468,7 +468,7 @@ and may close or poison owned resources such as sockets.
 
 Example:
 
-```rust
+```ciel
 Task<Frame> frame_task = async::spawn(async || read_frame(reader))?;
 Result<Frame, Error> task_result = await async::timeout(frame_task, 5000)?;
 Frame frame = task_result?;
@@ -529,7 +529,7 @@ acceptable primary API because nested binary selection is not fair by default:
 The user-facing API should therefore include a `select` expression with
 multi-way fairness:
 
-```rust
+```ciel
 AsyncTcpSplit split = net::split(stream)?;
 BufferedStreamReader reader = net::buffered_reader(split.read, 65536)?;
 
@@ -580,7 +580,7 @@ code.
 
 Schematic internal declarations:
 
-```rust
+```ciel
 export struct SelectSet<R> {
     *void handle;
 }
@@ -605,7 +605,7 @@ surface.
 `timeout` remains a convenience wrapper implemented through the same select
 set machinery:
 
-```rust
+```ciel
 export async Result<A, Error> timeout<A, FA: SelectableFuture<A>>(
     FA future,
     u64 ms,
@@ -745,7 +745,7 @@ fields.
 
 Example rejected:
 
-```rust
+```ciel
 []const u8 view = buffer[0..n];
 await time::sleep_ms(1)?;
 use(view); // rejected: borrowed slice crosses await
@@ -753,7 +753,7 @@ use(view); // rejected: borrowed slice crosses await
 
 Example accepted:
 
-```rust
+```ciel
 []const char msg = "start processing";
 await time::sleep_ms(1)?;
 print(msg); // accepted: string literal slice has static read-only provenance
@@ -761,7 +761,7 @@ print(msg); // accepted: string literal slice has static read-only provenance
 
 Example rejected in the first implementation:
 
-```rust
+```ciel
 struct LogLine {
     []const char text;
 }
@@ -773,7 +773,7 @@ print(line.text); // rejected: a slice field crosses await
 
 Example accepted:
 
-```rust
+```ciel
 usize n = buffer_len;
 await time::sleep_ms(1)?;
 []const u8 view = buffer[0..n];
@@ -805,7 +805,7 @@ A later proposal can relax this through provenance-aware frame promotion:
 Values captured by `async::spawn` cross into a new task and therefore must be
 proven messageable:
 
-```rust
+```ciel
 Config config = parse_config()?; // compiler derives/checks Message if captured
 
 Task<void> task = async::spawn(async || {
@@ -914,7 +914,7 @@ GC for memory reclamation.
 
 For:
 
-```rust
+```ciel
 Bytes bytes = await net::read(stream, 16384)?;
 ```
 
@@ -1085,7 +1085,7 @@ The runtime must not resume two continuations of the same task concurrently.
 
 Replace the flow API with task/channel async support:
 
-```rust
+```ciel
 export enum Poll<T> {
     Pending,
     Ready(T),
@@ -1165,7 +1165,7 @@ The internal select-lowering support should live under an internal namespace,
 for example `/std/async/internal`, and should not be re-exported as ordinary
 user API:
 
-```rust
+```ciel
 export struct SelectSet<R> {
     *void handle;
 }
@@ -1242,7 +1242,7 @@ Move or re-export `Bytes` as a general owned byte buffer, preferably
 
 Expose awaitable operations:
 
-```rust
+```ciel
 export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len);
 export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes bytes);
 ```
@@ -1256,7 +1256,7 @@ state.
 
 Expose awaitable TCP operations:
 
-```rust
+```ciel
 export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener);
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
 export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len);
@@ -1283,7 +1283,7 @@ owned buffer, or observing partial writes.
 `accept` and `connect` are `CancelSafe + Abortable`. Timeout and race helpers
 therefore work directly:
 
-```rust
+```ciel
 AsyncTcpStream stream = await async::timeout(
     async_net::connect(addr),
     5000,
@@ -1292,7 +1292,7 @@ AsyncTcpStream stream = await async::timeout(
 
 Selectable stream reads should go through a buffered reader:
 
-```rust
+```ciel
 export struct AsyncTcpReadHalf {
     *void handle;
 }
@@ -1355,7 +1355,7 @@ cannot be missed.
 
 Expose awaitable timers:
 
-```rust
+```ciel
 export async Result<void, Error> sleep_ms(u64 ms);
 ```
 

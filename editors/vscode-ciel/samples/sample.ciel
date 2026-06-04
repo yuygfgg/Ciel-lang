@@ -1,0 +1,41 @@
+import /std/async as async;
+import /std/async_time;
+import /std/io;
+import /std/result;
+
+struct Packet<T> {
+    T value;
+    usize count;
+}
+
+enum Event {
+    Data(Packet<usize>),
+    Timeout,
+}
+
+interface<T> usize measure(*const T value);
+
+impl measure(*const Packet<usize> value) {
+    return value->count;
+}
+
+async Result<Event, Error> read_event() {
+    Event event = await select {
+        case tick = async_time::sleep_ms(10): Event::Timeout;
+        case value = async::sleep_ms(1): Event::Data({ value: 1, count: 2 });
+    };
+    return Ok(event);
+}
+
+i32 main() {
+    Result<Event, Error> event = async::block_on(read_event());
+    switch (event) {
+        case Ok(Data(packet)):
+            must(print_value(packet.count));
+        case Ok(Timeout):
+            must(print_value(0));
+        case Err(_):
+            return 1;
+    }
+    return 0;
+}

@@ -33,7 +33,7 @@ remainder, but they do not support:
 That gap is small for pure application code, but it becomes awkward for systems
 code:
 
-```rust
+```ciel
 // desired style
 u32 flags = READ | WRITE;
 u64 token = (generation << 32) | slot;
@@ -123,7 +123,7 @@ Rules:
 
 Examples:
 
-```rust
+```ciel
 u32 mask = (1 as u32) << 5;
 u8 nibble = (byte >> (4 as u8)) & (0x0f as u8);
 i64 both = left ^ right;
@@ -131,7 +131,7 @@ i64 both = left ^ right;
 
 Rejected:
 
-```rust
+```ciel
 bool bad = true & false;   // error
 i32 mix = 1 | (1 as u32);  // error
 f64 nope = 1.0 << 2;       // error
@@ -173,7 +173,7 @@ semantics proposal is needed.
 
 Bit flags:
 
-```rust
+```ciel
 u32 READ = (1 as u32) << 0;
 u32 WRITE = (1 as u32) << 1;
 u32 EXEC = (1 as u32) << 2;
@@ -185,7 +185,7 @@ bool has_write(u32 flags) {
 
 Packed handle:
 
-```rust
+```ciel
 u64 pack_handle(u32 generation, u32 slot) {
     return ((generation as u64) << 32) | (slot as u64);
 }
@@ -197,7 +197,7 @@ u32 unpack_slot(u64 handle) {
 
 Byte parsing:
 
-```rust
+```ciel
 u8 upper_nibble(u8 byte) {
     return (byte >> (4 as u8)) & (0x0f as u8);
 }

@@ -263,7 +263,7 @@ value as its main file abstraction. Instead, it should expose scoped helpers
 that open a descriptor, pass a private file token by value to a callback, and
 close the descriptor before returning:
 
-```rust
+```ciel
 // /std/io
 import /std/message;
 
@@ -309,7 +309,7 @@ file token or a closure that captured it through the ordinary safe result path.
 
 Ordinary file use becomes:
 
-```rust
+```ciel
 Result<usize, Error> count_header([]const char path) {
     return with_open_read(path, |file| {
         [4096]u8 @buf = [0;];
@@ -391,7 +391,7 @@ or async operations. Those use explicit runtime handles described below.
 
 A low-level interop module may still expose raw descriptor values:
 
-```rust
+```ciel
 // /std/os/fd or another interop-only module
 export struct RawFd {
     c::c_int raw;
@@ -417,7 +417,7 @@ not a hidden continuation.
 `/std/io` owns scoped blocking I/O. A separate module owns long-lived async
 handles:
 
-```rust
+```ciel
 // /std/async_io
 import /std/actor;
 import /std/io;
@@ -480,7 +480,7 @@ exposed.
 
 An interop module may provide a raw-descriptor adoption hook for platform glue:
 
-```rust
+```ciel
 export unsafe Result<AsyncFd, Error> async_from_raw_fd(os::RawFd fd);
 ```
 
@@ -514,7 +514,7 @@ callback. This avoids a generic runtime clone callback.
 
 The completion message usually carries the operation token:
 
-```rust
+```ciel
 enum ClientMsg {
     StartRead,
     ReadDone(AsyncRead),
@@ -528,7 +528,7 @@ ordinary `Message` conversion.
 
 Example:
 
-```rust
+```ciel
 Result<State, Error> handle(State state, ClientMsg msg) {
     switch (msg) {
         case StartRead:

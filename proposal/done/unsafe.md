@@ -80,7 +80,7 @@ call, raw handle adoption, pointer cast, or policy impl relies on them.
 
 Add `unsafe` as a contextual marker in four positions:
 
-```rust
+```ciel
 unsafe {
     c_call(...);
 }
@@ -113,7 +113,7 @@ interface.
 
 `unsafe` may also mark a Ciel function declaration:
 
-```rust
+```ciel
 unsafe Result<AsyncFd, Error> async_from_raw_fd(os::RawFd fd);
 ```
 
@@ -161,7 +161,7 @@ where the author accepts that contract.
 
 The standard library should declare:
 
-```rust
+```ciel
 export unsafe interface<T> Result<T, Error> clone_message(*const T value);
 export unsafe interface<T> bool share_handle_marker(*const T value);
 export unsafe interface<T> bool thread_local_marker(*const T value);
@@ -183,7 +183,7 @@ impls of the same unsafe interfaces must also use `unsafe impl`.
 
 Example:
 
-```rust
+```ciel
 struct Event {
     i64 value;
 }
@@ -199,7 +199,7 @@ receiver-owned value.
 
 Other marker capabilities follow the same rule:
 
-```rust
+```ciel
 export unsafe interface<T> bool atomic_value_marker(*const T value);
 export unsafe interface<T> bool atomic_integer_marker(*const T value);
 
@@ -217,7 +217,7 @@ operation for that representation.
 
 C function imports should be unsafe by default:
 
-```rust
+```ciel
 unsafe extern "C" {
     c::c_ssize_t read(c::c_int fd, *void buf, c::c_size_t count);
     c::c_int close(c::c_int fd);
@@ -226,7 +226,7 @@ unsafe extern "C" {
 
 Calling these declarations requires an unsafe block:
 
-```rust
+```ciel
 c::c_ssize_t n = unsafe {
     posix::read(fd, out.ptr as *void, out.len as c::c_size_t)
 };
@@ -244,7 +244,7 @@ not create Ciel names and does not bypass unsafe call rules.
 
 Type-only C ABI declarations may stay safe:
 
-```rust
+```ciel
 extern "C" {
     type c_size_t = "size_t";
     opaque struct FILE;
@@ -256,7 +256,7 @@ function declarations belong in an `unsafe extern "C"` block.
 
 Re-exporting an imported C function keeps the unsafe call requirement:
 
-```rust
+```ciel
 export unsafe extern "C" {
     c::c_int close(c::c_int fd);
 }
@@ -266,7 +266,7 @@ export unsafe extern "C" {
 
 Raw handles live in low-level modules, not in safe facades:
 
-```rust
+```ciel
 // /std/os/fd
 export struct RawFd {
     c::c_int raw;
@@ -279,7 +279,7 @@ export unsafe c::c_int raw_fd(RawFd fd);
 Safe modules may adopt raw handles only through unsafe functions with explicit
 ownership contracts:
 
-```rust
+```ciel
 export unsafe Result<AsyncFd, Error> async_from_raw_fd(os::RawFd fd);
 ```
 
@@ -313,7 +313,7 @@ unsafe when the wrapper's public contract is safe.
 
 The compiler should reject:
 
-```rust
+```ciel
 extern "C" {
     c::c_int close(c::c_int fd); // error: imported C function must be unsafe
 }

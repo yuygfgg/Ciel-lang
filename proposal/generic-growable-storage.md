@@ -26,7 +26,7 @@ GC-backed slice for an arbitrary element type and runtime capacity.
 Safe source can write fixed arrays and array literals when the element count is
 known from the type or from a compile-time literal. It cannot express:
 
-```rust
+```ciel
 []?*void buckets = zeroed_slice<?*void>(capacity);
 []u8 next = realloc_slice<u8>(old, next_capacity);
 ```
@@ -71,7 +71,7 @@ generic owned storage with dynamic length and capacity.
 Add a small unsafe standard-library module, tentatively `/std/storage`, backed
 by compiler/runtime primitives:
 
-```rust
+```ciel
 export unsafe struct RawStorage<T> {
     []T storage;
 }
@@ -107,7 +107,7 @@ length and expose only valid initialized prefixes.
 `ByteBuf` can store `RawStorage<u8>` instead of calling `u8`-specific runtime
 helpers:
 
-```rust
+```ciel
 export unsafe struct ByteBuf {
     storage::RawStorage<u8> storage;
     usize len;
@@ -116,7 +116,7 @@ export unsafe struct ByteBuf {
 
 `HashMap<K, V>` can store a real Ciel slice of nullable bucket pointers:
 
-```rust
+```ciel
 export unsafe struct HashMap<K, V> {
     storage::RawStorage<?*void> buckets;
     usize len;

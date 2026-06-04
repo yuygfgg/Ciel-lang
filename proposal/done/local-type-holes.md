@@ -24,7 +24,7 @@ inspection, and declaration generation belong to the metaprogramming proposal.
 
 Local variables currently require a complete written type:
 
-```rust
+```ciel
 Actor<Command<i64>> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(
     initial,
     |State<i64> state, Command<i64> command| {
@@ -48,7 +48,7 @@ compiler can inspect captured values.
 
 Use `_` as a type hole inside initialized local declarations:
 
-```rust
+```ciel
 _ handler = |State<i64> state, Command<i64> command| handle(state, command);
 
 _ actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
@@ -56,7 +56,7 @@ _ actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 
 The same hole may appear inside a partial local type annotation:
 
-```rust
+```ciel
 Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler));
 Result<Actor<_>, Error> pending =
     spawn_actor_cloned<State<i64>, Command<i64>>(initial, handler);
@@ -105,7 +105,7 @@ expected type.
 
 Examples:
 
-```rust
+```ciel
 _ count = 0;          // i64, by the existing integer literal default
 _ scale = 1.0;        // f64, by the existing float literal default
 []_ values = [1, 2];  // []i64
@@ -115,7 +115,7 @@ Actor<_> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, hand
 After the initializer is checked, the compiler substitutes the solved type into
 the local binding. Later assignments must use that concrete type:
 
-```rust
+```ciel
 _ value = 1;
 value = 2;   // ok
 value = 2.0; // error: expected i64
@@ -123,7 +123,7 @@ value = 2.0; // error: expected i64
 
 Type holes do not infer from later uses:
 
-```rust
+```ciel
 _ value = null; // error: `null` needs an expected nullable pointer type
 
 ?*_ ptr = null; // error: pointer element type is not known
@@ -132,14 +132,14 @@ _ value = null; // error: `null` needs an expected nullable pointer type
 
 Expressions that already require an expected type still require one:
 
-```rust
+```ciel
 _ point = { x: 1, y: 2 }; // error: struct literal needs an expected struct type
 _ empty = [];             // error: empty array literal has no element type
 ```
 
 Partial annotations can provide the missing context:
 
-```rust
+```ciel
 Point point = { x: 1, y: 2 };
 []i64 empty = [];
 ```
@@ -147,13 +147,13 @@ Point point = { x: 1, y: 2 };
 Closure literals follow the existing closure rules. A fully typed closure can
 produce its concrete closure type:
 
-```rust
+```ciel
 _ inc = |i64 value| value + 1;
 ```
 
 An untyped closure still needs an expected callable type:
 
-```rust
+```ciel
 _ inc = |value| value + 1; // error: closure parameter type is not known
 
 i64 |(i64)| erased = |value| value + 1;
@@ -167,14 +167,14 @@ return types.
 
 This proposal does not make assignment declare variables.
 
-```rust
+```ciel
 actor = make_actor(); // assignment to an existing binding
 actro = make_actor(); // error: unknown name `actro`
 ```
 
 New locals still use declaration syntax:
 
-```rust
+```ciel
 _ actor = make_actor();
 Actor<_> other = make_actor();
 ```
@@ -218,7 +218,7 @@ No runtime or standard-library change is required.
 
 The first implementation should support:
 
-```rust
+```ciel
 _ x = expr;
 Actor<_> actor = expr;
 Result<Actor<_>, Error> pending = expr;

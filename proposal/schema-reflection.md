@@ -33,7 +33,7 @@ format-specific parsers and policies are not part of this proposal.
 
 For a visible struct:
 
-```rust
+```ciel
 struct Packet {
     i64 id;
     bool ok;
@@ -42,7 +42,7 @@ struct Packet {
 
 `meta::as_ref_repr(&packet)` can produce field metadata:
 
-```rust
+```ciel
 meta::HCons<
     meta::FieldRef<i64>,
     meta::HCons<meta::FieldRef<bool>, meta::HNil>
@@ -94,7 +94,7 @@ metadata surface.
 
 Add these canonical `/std/meta` declarations:
 
-```rust
+```ciel
 export struct Schema<T> {}
 
 export struct FieldSchema<T> {
@@ -129,7 +129,7 @@ with program lifetime. They use the same source names that `Field`,
 
 A struct schema is a product list:
 
-```rust
+```ciel
 struct Packet {
     i64 id;
     bool ok;
@@ -144,7 +144,7 @@ meta::Schema<Packet>
 
 The runtime value from `meta::schema<Packet>()` carries the field names:
 
-```rust
+```ciel
 meta::HCons<
     meta::FieldSchema<i64>,
     meta::HCons<meta::FieldSchema<bool>, meta::HNil>
@@ -156,7 +156,7 @@ meta::HCons<
 
 An enum schema is a list of variant schemas, not a `Coproduct` value:
 
-```rust
+```ciel
 enum Token {
     Number(i64),
     End,
@@ -190,7 +190,7 @@ Fixed-size array schemas normalize to the same bounded `ArrayNil`,
 `ArrayChunk1` through `ArrayChunk16`, and `ArrayCat<L, R>` tree shape used by
 owned array representation, but with `Type<T>` schema leaves:
 
-```rust
+```ciel
 meta::Schema<[3]u8>
 // meta::ArrayChunk3<meta::Type<u8>>
 ```
@@ -222,7 +222,7 @@ interface constraints.
 
 `schema<T>()` is valid with exactly one type argument and no value arguments:
 
-```rust
+```ciel
 meta::Schema<Packet> schema = meta::schema<Packet>();
 ```
 
@@ -244,7 +244,7 @@ not as ownership of a `T`.
 This proposal does not add a decoder, but it must make this library pattern
 possible:
 
-```rust
+```ciel
 import /std/meta as meta;
 
 interface<S, R> Result<R, Error> decode_schema(
@@ -266,7 +266,7 @@ export Result<T, Error> decode<T>(JsonValue json) {
 
 For products, the decoder matches schema and output representation together:
 
-```rust
+```ciel
 impl decode_schema(
     *const meta::HNil schema,
     meta::Type<meta::HNil> out,
@@ -308,7 +308,7 @@ to construct a `meta::Repr<T>` without a preexisting `T`.
 A function such as `field_name<T, I>()` is not enough for generic decode over the
 current representation. After normalization, the product node for `Packet` is:
 
-```rust
+```ciel
 meta::HCons<
     meta::Field<i64>,
     meta::HCons<meta::Field<bool>, meta::HNil>

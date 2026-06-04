@@ -32,7 +32,7 @@ compatible with that direction.
 The clone-state API treats actor state and actor messages as if they had the
 same transfer requirements:
 
-```rust
+```ciel
 export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler
@@ -80,7 +80,7 @@ outside the actor cannot access that state directly. The state is constructed
 by an initializer closure, and the handler receives a mutable pointer to the
 actor-owned state plus the actor's own handle:
 
-```rust
+```ciel
 export Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
     Result<S, Error> |(): Message| init,
     Result<void, Error> |(*S, Actor<M>, M): Message| handler
@@ -101,7 +101,7 @@ notification helpers instead of storing a fake self handle in state.
 
 The existing value-oriented API remains available under an explicit name:
 
-```rust
+```ciel
 export Result<Actor<M>, Error> spawn_actor_cloned<S: Message, M: Message>(
     S initial_state,
     Result<S, Error> |(S, M): Message| handler

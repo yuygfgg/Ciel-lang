@@ -240,10 +240,12 @@ allow flag. The driver passes the selected Ciel build profile to CMake as both
 
 ## 5. Names and Scopes
 
-Ciel has a single namespace for values, functions, types, enum variants,
-interfaces, and aliases. Function overloading is forbidden. Two visible
-bare declarations with the same name are an error only when a bare use is
-ambiguous. Names inside aliased imports are not bare declarations.
+Ciel has a single namespace for values, functions, types, interfaces, and
+aliases. Function overloading is forbidden. Two visible bare declarations with
+the same name are an error only when a bare use is ambiguous. Names inside
+aliased imports are not bare declarations. Enum variants live under their enum
+type and have a canonical qualified name such as `Result::Ok` or
+`pkg::Result::Ok`.
 
 Lexical declarations shadow outer declarations from their declaration point
 forward. Each block introduces a new lexical scope. This includes local
@@ -932,8 +934,8 @@ elements in source order. `&&` and `||` short-circuit.
 Closure expressions create closure values. The closure body is not evaluated
 when the closure is created. A closure captures bare references to local value
 bindings and parameters from enclosing scopes. Top-level functions, imported
-functions, types, enum variants, and interface names are resolved directly and
-are not captured.
+functions, types, enum variants selected by enum-qualified or expected-type
+lookup, and interface names are resolved directly and are not captured.
 
 ```ciel
 i64 base = 10;
@@ -1574,9 +1576,17 @@ Ciel source, paste tokens, or run before name resolution. The order is:
 
 ## 12. Enums and Pattern Matching
 
-Enum variants live in the single namespace. Variant constructors are ordinary
-names. Since overloading is forbidden, two variants with the same name cannot
-be visible in the same lexical scope.
+Enum variants are scoped under their enum type. Two variants in the same enum
+cannot have the same name, but different enums may reuse variant names. The
+canonical constructor and pattern name is `Enum::Variant`; for an enum from an
+aliased import, write `alias::Enum::Variant`.
+
+Bare variant names are convenience syntax. A bare variant resolves when exactly
+one visible variant has that name, or when the expected enum type selects one
+candidate. Return expressions, annotated local initializers, function arguments,
+variant payloads, and `switch` case patterns provide expected types. If no
+expected enum type is available and more than one visible enum has that variant
+name, the program must use the qualified form.
 
 Unit variants are written without parentheses:
 
@@ -1585,8 +1595,11 @@ enum DigitError {
     DigitNonDecimal,
 }
 
-return Err(DigitNonDecimal);
+return Err(DigitError::DigitNonDecimal);
 ```
+
+Inside an expression with expected type `DigitError`, `DigitNonDecimal` is also
+accepted.
 
 Payload variants are ordinary constructor calls:
 
@@ -1596,8 +1609,11 @@ enum ConfigError {
     InvalidPort(i64),
 }
 
-return Err(InvalidPort(raw_port));
+return Err(ConfigError::InvalidPort(raw_port));
 ```
+
+Inside an expression with expected type `ConfigError`, `InvalidPort(raw_port)`
+is also accepted.
 
 `switch` over an enum must be exhaustive unless it has `default:`. `default:`
 is the only top-level fallback; `case _:` is invalid. Nested enum patterns are
@@ -3008,12 +3024,12 @@ export enum RemoveResult<V> {
 }
 
 export enum GetResult<V> {
-    MapFound(V),
-    MapMissing,
+    Found(V),
+    Missing,
 }
 
 export enum PopResult<K, V> {
-    Popped(K, V),
+    Item(K, V),
     Empty,
 }
 
@@ -3089,13 +3105,13 @@ export struct SharedMap<K, V> {
 }
 
 export enum SharedMapGet<V> {
-    SharedMapFound(V),
-    SharedMapMissing,
+    Found(V),
+    Missing,
 }
 
 export enum SharedMapPop<K, V> {
-    SharedMapItem(K, V),
-    SharedMapEmpty,
+    Item(K, V),
+    Empty,
 }
 
 export interface shared_map_key = map::map_key + Message;

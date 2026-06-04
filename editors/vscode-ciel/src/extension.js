@@ -405,6 +405,13 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
     }
 
     const owner = semanticOwnerForQualifiedName(qualifiedNameNode);
+    if (
+        owner &&
+        (owner.type === 'expression' || owner.type === 'call_expression' || owner.type === 'variant_pattern') &&
+        startsWithUppercase(node.text)
+    ) {
+        return token('enumMember');
+    }
     if (owner && owner.type === 'call_expression') {
         return token('function');
     }
@@ -421,6 +428,10 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
         return token('enumMember');
     }
     return token('variable');
+}
+
+function startsWithUppercase(text) {
+    return /^[A-Z]/.test(text);
 }
 
 function isCallFunctionIdentifier(node) {

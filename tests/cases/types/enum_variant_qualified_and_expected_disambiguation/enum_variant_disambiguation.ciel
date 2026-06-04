@@ -1,0 +1,60 @@
+// ciel-test: run
+// expect-exit: 42
+
+import /std/result;
+import /std/error;
+
+enum Status {
+    Ok(i64),
+    Err,
+}
+
+enum Parse {
+    Ok(i64),
+    Err(Error),
+}
+
+Result<i64, Error> parse_value(bool good) {
+    if (good) {
+        return Ok(21);
+    }
+    return Err(code_error(7));
+}
+
+i64 read_status(Status status) {
+    switch (status) {
+        case Ok(value):
+            return value;
+        case Err:
+            return 0;
+    }
+}
+
+i64 read_parse(Parse parse) {
+    switch (parse) {
+        case Ok(value):
+            return value;
+        case Err(_):
+            return 0;
+    }
+}
+
+i64 unwrap_result(Result<i64, Error> result) {
+    switch (result) {
+        case Ok(value):
+            return value;
+        case Err(_):
+            return 0;
+    }
+}
+
+i64 accept_result(Result<i64, Error> result) {
+    return unwrap_result(result);
+}
+
+i64 main() {
+    Status status = Status::Ok(11);
+    Parse parse = Parse::Ok(10);
+    Result<i64, Error> result = Ok(21);
+    return read_status(status) + read_parse(parse) + accept_result(result);
+}

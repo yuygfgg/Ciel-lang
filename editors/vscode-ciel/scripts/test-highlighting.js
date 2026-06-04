@@ -18,7 +18,9 @@ const source = [
     'type F = i64 fn(i64);',
     'impl async::poll(i64 x) { return x; }',
     'interface I = async::Readable + PlainReadable;',
-    'void match_one(i64 x) { switch (x) { case Foo: break; case ns::Bar: break; } }',
+    'enum Event { Data(i64), Timeout, }',
+    'void match_one(Result<Event, Error> x) { switch (x) { case Result::Ok(Event::Data(value)): break; case Result::Ok(Event::Timeout): break; case Result::Err(_): break; } }',
+    'void make_event() { Event::Data(1); Event::Timeout; }',
     '',
 ].join('\n');
 
@@ -102,8 +104,10 @@ function assertHighlightQuery(language, Query, rootNode) {
     assertCapture(captures, 'type', 'Task');
     assertCapture(captures, 'type', 'Readable');
     assertCapture(captures, 'type', 'PlainReadable');
-    assertCapture(captures, 'constant', 'Foo');
-    assertCapture(captures, 'constant', 'Bar');
+    assertCapture(captures, 'constant', 'Ok');
+    assertCapture(captures, 'constant', 'Err');
+    assertCapture(captures, 'constant', 'Data');
+    assertCapture(captures, 'constant', 'Timeout');
 }
 
 function assertSemanticClassifier(rootNode) {
@@ -130,8 +134,10 @@ function assertSemanticClassifier(rootNode) {
     assertToken(tokens, 'type', 'Task');
     assertToken(tokens, 'interface', 'Readable');
     assertToken(tokens, 'interface', 'PlainReadable');
-    assertToken(tokens, 'enumMember', 'Foo');
-    assertToken(tokens, 'enumMember', 'Bar');
+    assertToken(tokens, 'enumMember', 'Ok');
+    assertToken(tokens, 'enumMember', 'Err');
+    assertToken(tokens, 'enumMember', 'Data');
+    assertToken(tokens, 'enumMember', 'Timeout');
 }
 
 function assertCapture(captures, name, text) {

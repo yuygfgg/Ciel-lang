@@ -18,9 +18,9 @@ impl key_eq(*const BadKey left, *const BadKey right) {
 
 i64 removed_value(RemoveResult<i64> result) {
     switch (result) {
-        case Removed(value):
+        case RemoveResult::Removed(value):
             return value;
-        case Missing:
+        case RemoveResult::Missing:
             return -1;
     }
 }

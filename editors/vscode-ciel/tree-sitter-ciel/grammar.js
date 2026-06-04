@@ -131,7 +131,7 @@ module.exports = grammar({
         ),
 
         module_path: $ => seq(
-            optional(choice('/', seq('.', '/'))),
+            optional(choice('/', seq('.', '/'), repeat1(seq('..', '/')))),
             $.identifier,
             repeat(seq('/', $.identifier)),
         ),

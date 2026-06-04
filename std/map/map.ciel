@@ -49,23 +49,23 @@ export enum RemoveResult<V> {
 
 // Result of reading a cloned value from a map.
 export enum GetResult<V> {
-    MapFound(V),
-    MapMissing,
+    Found(V),
+    Missing,
 }
 
 // Result of removing an arbitrary entry from a map.
 export enum PopResult<K, V> {
-    Popped(K, V),
+    Item(K, V),
     Empty,
 }
 
 unsafe impl<V: Message> clone_message(*const InsertResult<V> value) {
     switch (*value) {
         case Inserted:
-            return Ok(Inserted);
+            return Ok(InsertResult::Inserted);
         case Replaced(replaced):
             V copied = clone_message(&replaced)?;
-            return Ok(Replaced(copied));
+            return Ok(InsertResult::Replaced(copied));
     }
 }
 
@@ -73,30 +73,30 @@ unsafe impl<V: Message> clone_message(*const RemoveResult<V> value) {
     switch (*value) {
         case Removed(removed):
             V copied = clone_message(&removed)?;
-            return Ok(Removed(copied));
+            return Ok(RemoveResult::Removed(copied));
         case Missing:
-            return Ok(Missing);
+            return Ok(RemoveResult::Missing);
     }
 }
 
 unsafe impl<V: Message> clone_message(*const GetResult<V> value) {
     switch (*value) {
-        case MapFound(found):
+        case Found(found):
             V copied = clone_message(&found)?;
-            return Ok(MapFound(copied));
-        case MapMissing:
-            return Ok(MapMissing);
+            return Ok(GetResult::Found(copied));
+        case Missing:
+            return Ok(GetResult::Missing);
     }
 }
 
 unsafe impl<K: Message, V: Message> clone_message(*const PopResult<K, V> value) {
     switch (*value) {
-        case Popped(key, item):
+        case Item(key, item):
             K copied_key = clone_message(&key)?;
             V copied_item = clone_message(&item)?;
-            return Ok(Popped(copied_key, copied_item));
+            return Ok(PopResult::Item(copied_key, copied_item));
         case Empty:
-            return Ok(Empty);
+            return Ok(PopResult::Empty);
     }
 }
 
@@ -301,19 +301,19 @@ export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
 ) {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
-        return Ok(MapMissing);
+        return Ok(GetResult::Missing);
     }
 
     u64 hash = hash_key(&key, unsafe { map->seed });
     ?*Node<K, V> @current = bucket_head<K, V>(map, start_index(hash, capacity));
     while (true) {
         if (current == null) {
-            return Ok(MapMissing);
+            return Ok(GetResult::Missing);
         }
         *Node<K, V> node = expect_node<K, V>(current);
         if (node->hash == hash && key_eq(&node->key, &key)) {
             V copied = clone_message(&node->value)?;
-            return Ok(MapFound(copied));
+            return Ok(GetResult::Found(copied));
         }
         current = node->next;
     }
@@ -340,7 +340,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
             V old = node->value;
             node->key = key;
             node->value = value;
-            return Ok(Replaced(old));
+            return Ok(InsertResult::Replaced(old));
         }
         current = node->next;
     }
@@ -350,7 +350,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     unsafe {
         map->len = map->len + 1;
     };
-    return Ok(Inserted);
+    return Ok(InsertResult::Inserted);
 }
 
 // Removes key and returns the stored value when present.
@@ -360,7 +360,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
 ) {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
-        return Ok(Missing);
+        return Ok(RemoveResult::Missing);
     }
 
     u64 hash = hash_key(&key, unsafe { map->seed });
@@ -369,7 +369,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     ?*Node<K, V> @current = bucket_head<K, V>(map, index);
     while (true) {
         if (current == null) {
-            return Ok(Missing);
+            return Ok(RemoveResult::Missing);
         }
         *Node<K, V> node = expect_node<K, V>(current);
         if (node->hash == hash && key_eq(&node->key, &key)) {
@@ -383,7 +383,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
             unsafe {
                 map->len = map->len - 1;
             };
-            return Ok(Removed(node->value));
+            return Ok(RemoveResult::Removed(node->value));
         }
         previous = current;
         current = node->next;
@@ -408,11 +408,11 @@ export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
             unsafe {
                 map->len = map->len - 1;
             };
-            return Ok(Popped(node->key, node->value));
+            return Ok(PopResult::Item(node->key, node->value));
         }
         index = index + 1;
     }
-    return Ok(Empty);
+    return Ok(PopResult::Empty);
 }
 
 // Gives body scoped mutable access to an existing value for key.

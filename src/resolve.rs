@@ -56,6 +56,7 @@ pub struct Def {
     pub module: ModuleId,
     pub name: String,
     pub kind: DefKind,
+    pub parent: Option<DefId>,
     pub exported: bool,
     pub span: Span,
 }
@@ -131,6 +132,23 @@ impl ResolvedProgram {
         })
     }
 
+    pub fn local_enum_variant_def(
+        &self,
+        module: ModuleId,
+        enum_def: DefId,
+        name: &str,
+    ) -> Option<DefId> {
+        self.modules[module.0].defs.iter().copied().find(|id| {
+            let def = self.def(*id);
+            def.kind == DefKind::EnumVariant && def.parent == Some(enum_def) && def.name == name
+        })
+    }
+
+    pub fn enum_variant_def(&self, enum_def: DefId, name: &str) -> Option<DefId> {
+        let enum_module = self.def(enum_def).module;
+        self.local_enum_variant_def(enum_module, enum_def, name)
+    }
+
     pub fn lookup_bare(
         &self,
         module: ModuleId,
@@ -193,6 +211,49 @@ impl ResolvedProgram {
                 candidates,
             }),
         }
+    }
+
+    pub fn lookup_bare_variants(
+        &self,
+        module: ModuleId,
+        name: &str,
+    ) -> Result<Vec<DefId>, LookupError> {
+        let local = self
+            .modules
+            .get(module.0)
+            .into_iter()
+            .flat_map(|module| module.defs.iter().copied())
+            .filter(|id| {
+                let def = self.def(*id);
+                def.kind == DefKind::EnumVariant && def.name == name
+            })
+            .collect::<Vec<_>>();
+        if !local.is_empty() {
+            return Ok(local);
+        }
+        self.lookup_imported_bare_variants(module, name)
+    }
+
+    pub fn lookup_imported_bare_variants(
+        &self,
+        module: ModuleId,
+        name: &str,
+    ) -> Result<Vec<DefId>, LookupError> {
+        let mut candidates = Vec::new();
+        let mut visited = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            let Some(target) = import.target else {
+                return Err(LookupError::UnresolvedImport {
+                    path: import.path.clone(),
+                });
+            };
+            self.exported_bare_variant_defs(target, name, &mut visited, &mut candidates);
+        }
+        dedup_defs(&mut candidates);
+        Ok(candidates)
     }
 
     pub fn lexical_def_before(
@@ -284,6 +345,74 @@ impl ResolvedProgram {
         }
     }
 
+    pub fn lookup_qualified_variants(
+        &self,
+        module: ModuleId,
+        alias: &str,
+        name: &str,
+    ) -> Result<Vec<DefId>, LookupError> {
+        let mut targets = Vec::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.as_deref() != Some(alias) {
+                continue;
+            }
+            let Some(target) = import.target else {
+                return Err(LookupError::UnresolvedImport {
+                    path: import.path.clone(),
+                });
+            };
+            targets.push(target);
+        }
+
+        let mut visited_aliases = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            let Some(target) = import.target else {
+                return Err(LookupError::UnresolvedImport {
+                    path: import.path.clone(),
+                });
+            };
+            self.exported_alias_targets(target, alias, &mut visited_aliases, &mut targets);
+        }
+
+        dedup_modules(&mut targets);
+        if targets.is_empty() {
+            return Err(LookupError::UnknownAlias {
+                alias: alias.to_string(),
+            });
+        }
+
+        let mut candidates = Vec::new();
+        for target in targets {
+            let mut visited = HashSet::new();
+            self.exported_bare_variant_defs(target, name, &mut visited, &mut candidates);
+        }
+        dedup_defs(&mut candidates);
+        if candidates.is_empty() {
+            for import in &self.modules[module.0].imports {
+                if import.alias.as_deref() == Some(alias)
+                    && let Some(target) = import.target
+                    && self
+                        .modules
+                        .get(target.0)
+                        .into_iter()
+                        .flat_map(|module| module.defs.iter().copied())
+                        .any(|id| {
+                            let def = self.def(id);
+                            def.kind == DefKind::EnumVariant && def.name == name
+                        })
+                {
+                    return Err(LookupError::NotExported {
+                        name: format!("{alias}::{name}"),
+                    });
+                }
+            }
+        }
+        Ok(candidates)
+    }
+
     pub fn lookup_path(
         &self,
         module: ModuleId,
@@ -338,6 +467,36 @@ impl ResolvedProgram {
             }
             if let Some(target) = import.target {
                 self.exported_bare_defs(target, name, kinds, visited, out);
+            }
+        }
+    }
+
+    fn exported_bare_variant_defs(
+        &self,
+        module: ModuleId,
+        name: &str,
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<DefId>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        let start_len = out.len();
+        for id in &self.modules[module.0].defs {
+            let def = self.def(*id);
+            if def.exported && def.kind == DefKind::EnumVariant && def.name == name {
+                out.push(*id);
+            }
+        }
+        if out.len() != start_len {
+            return;
+        }
+        for import in &self.modules[module.0].imports {
+            if !import.exported || import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_bare_variant_defs(target, name, visited, out);
             }
         }
     }
@@ -420,7 +579,7 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                     );
                 }
                 ItemKind::Enum(decl) => {
-                    add_def(
+                    let Some(enum_def_id) = add_def(
                         &mut diagnostics,
                         &mut defs,
                         &mut module_defs,
@@ -430,16 +589,28 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                         DefKind::Enum,
                         item.export,
                         decl.name.span,
-                    );
+                    ) else {
+                        continue;
+                    };
+                    let mut variant_names = HashSet::<String>::new();
                     for variant in &decl.variants {
-                        add_def(
+                        if !variant_names.insert(variant.name.name.clone()) {
+                            diagnostics.push(Diagnostic::new(
+                                variant.name.span,
+                                format!(
+                                    "duplicate variant `{}` in enum `{}`",
+                                    variant.name.name, decl.name.name
+                                ),
+                            ));
+                            continue;
+                        }
+                        add_variant_def(
                             &mut diagnostics,
                             &mut defs,
                             &mut module_defs,
-                            &mut local_names,
                             module.id,
+                            enum_def_id,
                             variant.name.name.clone(),
-                            DefKind::EnumVariant,
                             item.export,
                             variant.name.span,
                         );
@@ -534,7 +705,7 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                                 item.export,
                                 alias.name.span,
                             ),
-                        }
+                        };
                     }
                 }
                 ItemKind::CInclude(_) => {}
@@ -593,24 +764,72 @@ fn add_def(
     kind: DefKind,
     exported: bool,
     span: Span,
-) {
+) -> Option<DefId> {
     if !local_names.insert(name.clone()) {
         diagnostics.push(Diagnostic::new(
             span,
             format!("duplicate declaration `{name}` in module"),
         ));
-        return;
+        return None;
     }
+    Some(push_def(
+        defs,
+        module_defs,
+        module,
+        name,
+        kind,
+        None,
+        exported,
+        span,
+    ))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn add_variant_def(
+    _diagnostics: &mut Vec<Diagnostic>,
+    defs: &mut Vec<Def>,
+    module_defs: &mut Vec<DefId>,
+    module: ModuleId,
+    enum_def_id: DefId,
+    name: String,
+    exported: bool,
+    span: Span,
+) -> DefId {
+    push_def(
+        defs,
+        module_defs,
+        module,
+        name,
+        DefKind::EnumVariant,
+        Some(enum_def_id),
+        exported,
+        span,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_def(
+    defs: &mut Vec<Def>,
+    module_defs: &mut Vec<DefId>,
+    module: ModuleId,
+    name: String,
+    kind: DefKind,
+    parent: Option<DefId>,
+    exported: bool,
+    span: Span,
+) -> DefId {
     let id = DefId(defs.len());
     defs.push(Def {
         id,
         module,
         name,
         kind,
+        parent,
         exported,
         span,
     });
     module_defs.push(id);
+    id
 }
 
 fn kind_matches(kind: &DefKind, kinds: &[DefKind]) -> bool {
@@ -635,11 +854,7 @@ fn item_declared_names(item: &Item) -> Vec<&str> {
     match &item.kind {
         ItemKind::TypeAlias(decl) => vec![decl.name.name.as_str()],
         ItemKind::Struct(decl) => vec![decl.name.name.as_str()],
-        ItemKind::Enum(decl) => {
-            let mut names = vec![decl.name.name.as_str()];
-            names.extend(variant_decl_names(&decl.variants));
-            names
-        }
+        ItemKind::Enum(decl) => vec![decl.name.name.as_str()],
         ItemKind::Interface(decl) => vec![decl.signature.name.name.as_str()],
         ItemKind::InterfaceAlias(decl) => vec![decl.name.name.as_str()],
         ItemKind::Function(decl) => vec![decl.signature.name.name.as_str()],
@@ -654,13 +869,6 @@ fn item_declared_names(item: &Item) -> Vec<&str> {
             .collect(),
         ItemKind::Import(_) | ItemKind::Impl(_) | ItemKind::CInclude(_) => Vec::new(),
     }
-}
-
-fn variant_decl_names(variants: &[VariantDecl]) -> Vec<&str> {
-    variants
-        .iter()
-        .map(|variant| variant.name.name.as_str())
-        .collect()
 }
 
 fn dedup_defs(defs: &mut Vec<DefId>) {

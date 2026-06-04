@@ -494,6 +494,7 @@ mod tests {
             module,
             name: name.to_string(),
             kind,
+            parent: None,
             exported: true,
             span: Span::new(FileId(0), 0, 0),
         }

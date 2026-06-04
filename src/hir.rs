@@ -350,6 +350,7 @@ pub struct PatternName {
 #[derive(Clone, Debug)]
 pub enum PatternNameKind {
     Variant(DefId),
+    VariantCandidates(Vec<DefId>),
     Binding {
         local_id: LocalId,
         mutability: BindingMutability,
@@ -461,6 +462,7 @@ pub struct NameRef {
 pub enum NameRefKind {
     Local(LocalId),
     Def(DefId),
+    VariantCandidates(Vec<DefId>),
     Error,
 }
 
@@ -532,7 +534,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         let def_ids = self.item_def_ids(item);
         for def_id in &def_ids {
             let def = self.lowerer.resolved.def(*def_id);
-            self.lexical_defs.insert(def.name.clone(), *def_id);
+            if def.kind != DefKind::EnumVariant {
+                self.lexical_defs.insert(def.name.clone(), *def_id);
+            }
         }
         let kind = match &item.kind {
             ast::ItemKind::Import(decl) => ItemKind::Import(decl.clone()),
@@ -689,15 +693,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         match &item.kind {
             ast::ItemKind::TypeAlias(decl) => vec![decl.name.name.as_str()],
             ast::ItemKind::Struct(decl) => vec![decl.name.name.as_str()],
-            ast::ItemKind::Enum(decl) => {
-                let mut names = vec![decl.name.name.as_str()];
-                names.extend(
-                    decl.variants
-                        .iter()
-                        .map(|variant| variant.name.name.as_str()),
-                );
-                names
-            }
+            ast::ItemKind::Enum(decl) => vec![decl.name.name.as_str()],
             ast::ItemKind::Interface(decl) => vec![decl.signature.name.name.as_str()],
             ast::ItemKind::InterfaceAlias(decl) => vec![decl.name.name.as_str()],
             ast::ItemKind::Function(decl) => vec![decl.signature.name.name.as_str()],
@@ -1068,45 +1064,50 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 let display = path_display(path);
                 let span = path.first().unwrap().span.merge(path.last().unwrap().span);
                 let last = path.last().unwrap();
-                let resolved = self.try_resolve_visible_pattern_name(path);
-                let kind = match resolved {
-                    Some(def_id)
-                        if self.lowerer.resolved.def(def_id).kind == DefKind::EnumVariant =>
-                    {
-                        PatternNameKind::Variant(def_id)
-                    }
-                    Some(def_id) if is_case_head || !subpatterns.is_empty() => {
-                        let def = self.lowerer.resolved.def(def_id);
-                        self.lowerer.diagnostics.push(Diagnostic::new(
-                            span,
-                            format!(
-                                "`{}` resolves to {}, not enum variant",
-                                display,
-                                def_kind_name(&def.kind)
-                            ),
-                        ));
-                        PatternNameKind::Error
-                    }
-                    Some(_) | None if is_case_head => {
-                        self.lowerer.diagnostics.push(Diagnostic::new(
-                            span,
-                            "switch case must name an enum variant",
-                        ));
-                        PatternNameKind::Error
-                    }
-                    Some(_) | None if path.len() == 1 => {
-                        let local_id = self.alloc_local(last);
-                        self.insert_existing_local(last.clone(), local_id);
-                        PatternNameKind::Binding {
-                            local_id,
-                            mutability: BindingMutability::Immutable,
+                let variant_candidates = self.resolve_visible_variant_candidates(path);
+                let kind = match variant_candidates {
+                    Ok(candidates) if !candidates.is_empty() => pattern_variant_kind(candidates),
+                    Ok(_) => {
+                        let resolved = self.try_resolve_visible_non_variant_name(path);
+                        match resolved {
+                            Some(def_id) if is_case_head || !subpatterns.is_empty() => {
+                                let def = self.lowerer.resolved.def(def_id);
+                                self.lowerer.diagnostics.push(Diagnostic::new(
+                                    span,
+                                    format!(
+                                        "`{}` resolves to {}, not enum variant",
+                                        display,
+                                        def_kind_name(&def.kind)
+                                    ),
+                                ));
+                                PatternNameKind::Error
+                            }
+                            Some(_) | None if is_case_head => {
+                                self.lowerer.diagnostics.push(Diagnostic::new(
+                                    span,
+                                    "switch case must name an enum variant",
+                                ));
+                                PatternNameKind::Error
+                            }
+                            Some(_) | None if path.len() == 1 => {
+                                let local_id = self.alloc_local(last);
+                                self.insert_existing_local(last.clone(), local_id);
+                                PatternNameKind::Binding {
+                                    local_id,
+                                    mutability: BindingMutability::Immutable,
+                                }
+                            }
+                            Some(_) | None => {
+                                self.lowerer.diagnostics.push(Diagnostic::new(
+                                    span,
+                                    format!("unknown pattern `{display}`"),
+                                ));
+                                PatternNameKind::Error
+                            }
                         }
                     }
-                    Some(_) | None => {
-                        self.lowerer.diagnostics.push(Diagnostic::new(
-                            span,
-                            format!("unknown pattern `{display}`"),
-                        ));
+                    Err(error) => {
+                        self.push_lookup_error(error, "pattern", span);
                         PatternNameKind::Error
                     }
                 };
@@ -1301,7 +1302,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             span,
             kind: match name.kind {
                 NameRefKind::Def(def_id) => TypeNameKind::Def(def_id),
-                NameRefKind::Local(_) | NameRefKind::Error => TypeNameKind::Error,
+                NameRefKind::Local(_) | NameRefKind::VariantCandidates(_) | NameRefKind::Error => {
+                    TypeNameKind::Error
+                }
             },
         }
     }
@@ -1336,31 +1339,34 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn resolve_global_name(&mut self, path: &[ast::Ident], span: Span, context: &str) -> NameRef {
         let display = path_display(path);
-        let kinds = all_def_kinds();
-        let result = match path {
-            [name] => {
-                if let Some(def_id) = self.lexical_defs.get(&name.name).copied() {
-                    Ok(Some(def_id))
-                } else {
-                    self.lowerer
-                        .resolved
-                        .lookup_imported_bare(self.module, &name.name, &kinds)
-                }
-            }
-            [alias, name] => {
-                self.lowerer
-                    .resolved
-                    .lookup_qualified(self.module, &alias.name, &name.name, &kinds)
-            }
-            _ => Err(LookupError::TooManySegments { len: path.len() }),
-        };
-        match result {
+        let non_variant_result = self.resolve_visible_non_variant_path(path);
+        match non_variant_result.clone() {
             Ok(Some(def_id)) => NameRef {
                 display,
                 span,
                 kind: NameRefKind::Def(def_id),
             },
             Ok(None) => {
+                if context == "name" {
+                    match self.resolve_visible_variant_candidates(path) {
+                        Ok(candidates) if !candidates.is_empty() => {
+                            return NameRef {
+                                display,
+                                span,
+                                kind: name_variant_kind(candidates),
+                            };
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            self.push_lookup_error(error, context, span);
+                            return NameRef {
+                                display,
+                                span,
+                                kind: NameRefKind::Error,
+                            };
+                        }
+                    }
+                }
                 let message = if context == "type" {
                     format!("unknown type `{display}`")
                 } else {
@@ -1376,6 +1382,26 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 }
             }
             Err(error) => {
+                if context == "name" {
+                    match self.resolve_visible_variant_candidates(path) {
+                        Ok(candidates) if !candidates.is_empty() => {
+                            return NameRef {
+                                display,
+                                span,
+                                kind: name_variant_kind(candidates),
+                            };
+                        }
+                        Ok(_) => {}
+                        Err(variant_error) => {
+                            self.push_lookup_error(variant_error, context, span);
+                            return NameRef {
+                                display,
+                                span,
+                                kind: NameRefKind::Error,
+                            };
+                        }
+                    }
+                }
                 self.push_lookup_error(error, context, span);
                 NameRef {
                     display,
@@ -1384,6 +1410,133 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 }
             }
         }
+    }
+
+    fn resolve_visible_non_variant_path(
+        &mut self,
+        path: &[ast::Ident],
+    ) -> Result<Option<DefId>, LookupError> {
+        let kinds = non_variant_def_kinds();
+        match path {
+            [name] => {
+                if let Some(def_id) = self.lexical_defs.get(&name.name).copied() {
+                    let def = self.lowerer.resolved.def(def_id);
+                    if kind_matches(&def.kind, &kinds) {
+                        Ok(Some(def_id))
+                    } else {
+                        Ok(None)
+                    }
+                } else {
+                    self.lowerer
+                        .resolved
+                        .lookup_imported_bare(self.module, &name.name, &kinds)
+                }
+            }
+            [alias, name] => {
+                self.lowerer
+                    .resolved
+                    .lookup_qualified(self.module, &alias.name, &name.name, &kinds)
+            }
+            _ => Err(LookupError::TooManySegments { len: path.len() }),
+        }
+    }
+
+    fn try_resolve_visible_non_variant_name(&mut self, path: &[ast::Ident]) -> Option<DefId> {
+        self.resolve_visible_non_variant_path(path).ok().flatten()
+    }
+
+    fn resolve_visible_variant_candidates(
+        &mut self,
+        path: &[ast::Ident],
+    ) -> Result<Vec<DefId>, LookupError> {
+        match path {
+            [name] => {
+                let mut candidates = self.local_visible_variant_defs(&name.name);
+                candidates.extend(
+                    self.lowerer
+                        .resolved
+                        .lookup_imported_bare_variants(self.module, &name.name)?,
+                );
+                dedup_def_ids(&mut candidates);
+                Ok(candidates)
+            }
+            [head, tail] => {
+                if let Some(enum_def_id) = self.resolve_visible_enum_path(&[head.clone()])? {
+                    return Ok(self
+                        .lowerer
+                        .resolved
+                        .enum_variant_def(enum_def_id, &tail.name)
+                        .into_iter()
+                        .collect());
+                }
+                self.lowerer
+                    .resolved
+                    .lookup_qualified_variants(self.module, &head.name, &tail.name)
+            }
+            [alias, enum_name, variant] => {
+                if let Some(enum_def_id) =
+                    self.resolve_visible_enum_path(&[alias.clone(), enum_name.clone()])?
+                {
+                    Ok(self
+                        .lowerer
+                        .resolved
+                        .enum_variant_def(enum_def_id, &variant.name)
+                        .into_iter()
+                        .collect())
+                } else {
+                    Ok(Vec::new())
+                }
+            }
+            _ => Err(LookupError::TooManySegments { len: path.len() }),
+        }
+    }
+
+    fn resolve_visible_enum_path(
+        &mut self,
+        path: &[ast::Ident],
+    ) -> Result<Option<DefId>, LookupError> {
+        match path {
+            [name] => {
+                if let Some(def_id) = self.lexical_defs.get(&name.name).copied() {
+                    let def = self.lowerer.resolved.def(def_id);
+                    return Ok((def.kind == DefKind::Enum).then_some(def_id));
+                }
+                self.lowerer.resolved.lookup_imported_bare(
+                    self.module,
+                    &name.name,
+                    &[DefKind::Enum],
+                )
+            }
+            [alias, name] => self.lowerer.resolved.lookup_qualified(
+                self.module,
+                &alias.name,
+                &name.name,
+                &[DefKind::Enum],
+            ),
+            _ => Err(LookupError::TooManySegments { len: path.len() }),
+        }
+    }
+
+    fn local_visible_variant_defs(&self, name: &str) -> Vec<DefId> {
+        let visible_enums = self
+            .lexical_defs
+            .values()
+            .copied()
+            .filter(|def_id| self.lowerer.resolved.def(*def_id).kind == DefKind::Enum)
+            .collect::<HashSet<_>>();
+        self.lowerer.resolved.modules[self.module.0]
+            .defs
+            .iter()
+            .copied()
+            .filter(|def_id| {
+                let def = self.lowerer.resolved.def(*def_id);
+                def.kind == DefKind::EnumVariant
+                    && def.name == name
+                    && def
+                        .parent
+                        .is_some_and(|enum_def| visible_enums.contains(&enum_def))
+            })
+            .collect()
     }
 
     fn require_type_name_kind(&mut self, name: &NameRef) {
@@ -1448,9 +1601,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             LookupError::TooManySegments { len } => {
                 self.lowerer.diagnostics.push(Diagnostic::new(
                     span,
-                    format!(
-                        "qualified lookup supports exactly one import alias, got {len} segments"
-                    ),
+                    format!("unsupported qualified lookup with {len} segments"),
                 ));
             }
         }
@@ -1518,48 +1669,6 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             .rev()
             .find_map(|scope| scope.get(name).copied())
     }
-
-    fn try_resolve_visible_pattern_name(&mut self, path: &[ast::Ident]) -> Option<DefId> {
-        let kinds = all_def_kinds();
-        let result = match path {
-            [name] => {
-                if let Some(def_id) = self.lexical_defs.get(&name.name).copied() {
-                    Ok(Some(def_id))
-                } else {
-                    self.lowerer
-                        .resolved
-                        .lookup_imported_bare(self.module, &name.name, &kinds)
-                }
-            }
-            [alias, name] => {
-                self.lowerer
-                    .resolved
-                    .lookup_qualified(self.module, &alias.name, &name.name, &kinds)
-            }
-            _ => Err(LookupError::TooManySegments { len: path.len() }),
-        };
-        let span = path.first().unwrap().span.merge(path.last().unwrap().span);
-        match result {
-            Ok(def_id) => def_id,
-            Err(LookupError::Ambiguous {
-                name: lookup,
-                candidates,
-            }) => {
-                self.lowerer.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "ambiguous pattern lookup `{lookup}` ({} candidates)",
-                        candidates.len()
-                    ),
-                ));
-                None
-            }
-            Err(error) => {
-                self.push_lookup_error(error, "pattern", span);
-                None
-            }
-        }
-    }
 }
 
 fn all_def_kinds() -> [DefKind; 9] {
@@ -1574,6 +1683,48 @@ fn all_def_kinds() -> [DefKind; 9] {
         DefKind::ExternFunction,
         DefKind::OpaqueStruct,
     ]
+}
+
+fn non_variant_def_kinds() -> [DefKind; 8] {
+    [
+        DefKind::TypeAlias,
+        DefKind::Struct,
+        DefKind::Enum,
+        DefKind::Interface,
+        DefKind::InterfaceAlias,
+        DefKind::Function,
+        DefKind::ExternFunction,
+        DefKind::OpaqueStruct,
+    ]
+}
+
+fn kind_matches(kind: &DefKind, kinds: &[DefKind]) -> bool {
+    kinds.iter().any(|candidate| candidate == kind)
+}
+
+fn name_variant_kind(candidates: Vec<DefId>) -> NameRefKind {
+    let mut candidates = candidates;
+    dedup_def_ids(&mut candidates);
+    if candidates.len() == 1 {
+        NameRefKind::Def(candidates[0])
+    } else {
+        NameRefKind::VariantCandidates(candidates)
+    }
+}
+
+fn pattern_variant_kind(candidates: Vec<DefId>) -> PatternNameKind {
+    let mut candidates = candidates;
+    dedup_def_ids(&mut candidates);
+    if candidates.len() == 1 {
+        PatternNameKind::Variant(candidates[0])
+    } else {
+        PatternNameKind::VariantCandidates(candidates)
+    }
+}
+
+fn dedup_def_ids(defs: &mut Vec<DefId>) {
+    let mut seen = HashSet::new();
+    defs.retain(|id| seen.insert(*id));
 }
 
 fn def_kind_name(kind: &DefKind) -> &'static str {

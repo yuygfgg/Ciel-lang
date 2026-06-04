@@ -6,18 +6,18 @@ import /std/result;
 
 i64 insert_code(map::InsertResult<i64> result) {
     switch (result) {
-        case map::Inserted:
+        case map::InsertResult::Inserted:
             return 0;
-        case map::Replaced(value):
+        case map::InsertResult::Replaced(value):
             return value;
     }
 }
 
 i64 remove_code(map::RemoveResult<i64> result) {
     switch (result) {
-        case map::Removed(value):
+        case map::RemoveResult::Removed(value):
             return value;
-        case map::Missing:
+        case map::RemoveResult::Missing:
             return -1;
     }
 }
@@ -52,11 +52,11 @@ i64 main() {
 
     map::GetResult<i64> initial_get = must(map::hash_map_get(&table, 7 as u32));
     switch (initial_get) {
-        case map::MapFound(value):
+        case map::GetResult::Found(value):
             if (value != 10) {
                 return 15;
             }
-        case map::MapMissing:
+        case map::GetResult::Missing:
             return 16;
     }
 
@@ -90,9 +90,9 @@ i64 main() {
 
     map::GetResult<i64> missing_get = must(map::hash_map_get(&table, 9 as u32));
     switch (missing_get) {
-        case map::MapFound(_):
+        case map::GetResult::Found(_):
             return 17;
-        case map::MapMissing:
+        case map::GetResult::Missing:
             {}
     }
 

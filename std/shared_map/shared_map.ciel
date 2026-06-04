@@ -16,34 +16,34 @@ export struct SharedMap<K, V> {
 
 // Result of reading a cloned value from a SharedMap.
 export enum SharedMapGet<V> {
-    SharedMapFound(V),
-    SharedMapMissing,
+    Found(V),
+    Missing,
 }
 
 // Result of removing an arbitrary entry from a SharedMap.
 export enum SharedMapPop<K, V> {
-    SharedMapItem(K, V),
-    SharedMapEmpty,
+    Item(K, V),
+    Empty,
 }
 
 unsafe impl<V: Message> clone_message(*const SharedMapGet<V> value) {
     switch (*value) {
-        case SharedMapFound(found):
+        case Found(found):
             V copied = clone_message(&found)?;
-            return Ok(SharedMapFound(copied));
-        case SharedMapMissing:
-            return Ok(SharedMapMissing);
+            return Ok(SharedMapGet::Found(copied));
+        case Missing:
+            return Ok(SharedMapGet::Missing);
     }
 }
 
 unsafe impl<K: Message, V: Message> clone_message(*const SharedMapPop<K, V> value) {
     switch (*value) {
-        case SharedMapItem(key, item):
+        case Item(key, item):
             K copied_key = clone_message(&key)?;
             V copied_item = clone_message(&item)?;
-            return Ok(SharedMapItem(copied_key, copied_item));
-        case SharedMapEmpty:
-            return Ok(SharedMapEmpty);
+            return Ok(SharedMapPop::Item(copied_key, copied_item));
+        case Empty:
+            return Ok(SharedMapPop::Empty);
     }
 }
 
@@ -93,10 +93,10 @@ export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Messa
         |state| {
             _ item = map::hash_map_get<K, V>(unsafe { &state->inner }, key)?;
             switch (item) {
-                case map::MapFound(value):
-                    return Ok(SharedMapFound(value));
-                case map::MapMissing:
-                    return Ok(SharedMapMissing);
+                case map::GetResult::Found(value):
+                    return Ok(SharedMapGet::Found(value));
+                case map::GetResult::Missing:
+                    return Ok(SharedMapGet::Missing);
             }
         }
     );
@@ -112,10 +112,10 @@ export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Me
         |state| {
             _ removed = map::hash_map_remove<K, V>(unsafe { &state->inner }, key)?;
             switch (removed) {
-                case map::Removed(value):
-                    return Ok(SharedMapFound(value));
-                case map::Missing:
-                    return Ok(SharedMapMissing);
+                case map::RemoveResult::Removed(value):
+                    return Ok(SharedMapGet::Found(value));
+                case map::RemoveResult::Missing:
+                    return Ok(SharedMapGet::Missing);
             }
         }
     );
@@ -130,10 +130,10 @@ export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V
         |state| {
             _ popped = map::hash_map_pop_any<K, V>(unsafe { &state->inner })?;
             switch (popped) {
-                case map::Popped(key, value):
-                    return Ok(SharedMapItem(key, value));
-                case map::Empty:
-                    return Ok(SharedMapEmpty);
+                case map::PopResult::Item(key, value):
+                    return Ok(SharedMapPop::Item(key, value));
+                case map::PopResult::Empty:
+                    return Ok(SharedMapPop::Empty);
             }
         }
     );

@@ -55,6 +55,10 @@
 (impl_declaration name: (qualified_name (identifier) @function .))
 (call_expression function: (expression (identifier) @function.call))
 (call_expression function: (expression (qualified_name (identifier) @function.call .)))
+(call_expression function: (expression (qualified_name (identifier) @constant .))
+  (#match? @constant "^[A-Z]"))
+(expression (qualified_name (identifier) @constant .)
+  (#match? @constant "^[A-Z]"))
 
 (type_alias_declaration name: (identifier) @type.definition)
 (struct_declaration name: (identifier) @type.definition)

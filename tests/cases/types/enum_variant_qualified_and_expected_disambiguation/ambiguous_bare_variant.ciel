@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: ambiguous enum variant `Ok`
+
+enum Left {
+    Ok(i64),
+}
+
+enum Right {
+    Ok(i64),
+}
+
+i64 main() {
+    _ value = Ok(1);
+    return 0;
+}

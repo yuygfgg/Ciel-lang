@@ -74,9 +74,9 @@ export Result<void, Error> stream_registry_insert(
 ) {
     _ inserted = shared_map::shared_map_insert(registry.streams, stream_id, sender)?;
     switch (inserted) {
-        case map::Inserted:
+        case map::InsertResult::Inserted:
             {}
-        case map::Replaced(replaced):
+        case map::InsertResult::Replaced(replaced):
             async::close(replaced)?;
     }
     return Ok;
@@ -88,9 +88,9 @@ export Result<StreamRegistryGet, Error> stream_registry_get(
 ) {
     _ found = shared_map::shared_map_get(registry.streams, stream_id)?;
     switch (found) {
-        case shared_map::SharedMapFound(sender):
+        case shared_map::SharedMapGet::Found(sender):
             return Ok(StreamRegistryFound(sender));
-        case shared_map::SharedMapMissing:
+        case shared_map::SharedMapGet::Missing:
             return Ok(StreamRegistryMissing);
     }
 }
@@ -101,9 +101,9 @@ export Result<void, Error> stream_registry_remove_close(
 ) {
     _ removed = shared_map::shared_map_remove(registry.streams, stream_id)?;
     switch (removed) {
-        case shared_map::SharedMapFound(sender):
+        case shared_map::SharedMapGet::Found(sender):
             async::close(sender)?;
-        case shared_map::SharedMapMissing:
+        case shared_map::SharedMapGet::Missing:
             {}
     }
     return Ok;
@@ -113,9 +113,9 @@ export Result<void, Error> stream_registry_close_all(StreamRegistry registry) {
     while (true) {
         _ popped = shared_map::shared_map_pop_any(registry.streams)?;
         switch (popped) {
-            case shared_map::SharedMapItem(_, sender):
+            case shared_map::SharedMapPop::Item(_, sender):
                 async::close(sender)?;
-            case shared_map::SharedMapEmpty:
+            case shared_map::SharedMapPop::Empty:
                 return Ok;
         }
     }

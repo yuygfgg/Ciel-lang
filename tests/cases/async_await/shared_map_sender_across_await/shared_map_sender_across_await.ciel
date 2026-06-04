@@ -27,9 +27,9 @@ async Result<void, Error> dispatch_after_yield(
     await async_time::sleep_ms(0)?;
     _ found = shared_map::shared_map_get(registry, key)?;
     switch (found) {
-        case shared_map::SharedMapFound(sender):
+        case shared_map::SharedMapGet::Found(sender):
             await async::send<Event>(sender, Value(value))?;
-        case shared_map::SharedMapMissing:
+        case shared_map::SharedMapGet::Missing:
             return Err(text_error("missing shared map entry"));
     }
     return Ok;
@@ -41,9 +41,9 @@ async Result<usize, Error> drive() {
     async::ChannelPair<Event> pair = async::channel<Event>(1)?;
     _ inserted = shared_map::shared_map_insert(registry, 7, pair.sender)?;
     switch (inserted) {
-        case map::Inserted:
+        case map::InsertResult::Inserted:
             {}
-        case map::Replaced(_):
+        case map::InsertResult::Replaced(_):
             return Err(text_error("unexpected replacement"));
     }
 

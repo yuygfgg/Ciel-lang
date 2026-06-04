@@ -1392,10 +1392,10 @@ impl TypeChecker {
                         })
                         .collect::<Vec<_>>();
                     for (variant_index, variant) in decl.variants.iter().enumerate() {
-                        let Some(def_id) = self.resolved.local_def(
+                        let Some(def_id) = self.resolved.local_enum_variant_def(
                             module.id,
+                            enum_def_id,
                             &variant.name.name,
-                            &[DefKind::EnumVariant],
                         ) else {
                             continue;
                         };
@@ -3539,10 +3539,77 @@ impl TypeChecker {
         self.functions_by_def.get(&def_id).cloned()
     }
 
-    fn lookup_variant_name(&self, name: &NameRef) -> Option<(DefId, VariantSig)> {
-        let def_id = self.name_def_of_kind_ref(name, &[DefKind::EnumVariant])?;
-        let sig = self.variants.get(&def_id)?.clone();
-        Some((def_id, sig))
+    fn lookup_variant_name(
+        &mut self,
+        name: &NameRef,
+        expected: Option<&Ty>,
+    ) -> Option<(DefId, VariantSig)> {
+        match &name.kind {
+            NameRefKind::Def(def_id) if self.resolved.def(*def_id).kind == DefKind::EnumVariant => {
+                let sig = self.variants.get(def_id)?.clone();
+                Some((*def_id, sig))
+            }
+            NameRefKind::VariantCandidates(candidates) => {
+                self.select_variant_candidate(&name.display, name.span, candidates, expected)
+            }
+            _ => None,
+        }
+    }
+
+    fn select_variant_candidate(
+        &mut self,
+        display: &str,
+        span: crate::span::Span,
+        candidates: &[DefId],
+        expected: Option<&Ty>,
+    ) -> Option<(DefId, VariantSig)> {
+        let candidates = candidates
+            .iter()
+            .filter_map(|def_id| self.variants.get(def_id).cloned().map(|sig| (*def_id, sig)))
+            .collect::<Vec<_>>();
+        if let Some(Ty::Named { name, .. }) = expected {
+            let matching = candidates
+                .iter()
+                .filter(|(_, sig)| &sig.enum_name == name)
+                .cloned()
+                .collect::<Vec<_>>();
+            return match matching.len() {
+                1 => Some(matching[0].clone()),
+                0 if candidates.len() == 1 => Some(candidates[0].clone()),
+                0 => {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("no visible variant `{display}` belongs to `{name}`"),
+                    ));
+                    None
+                }
+                _ => {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "ambiguous enum variant `{display}` for expected `{name}` ({} candidates)",
+                            matching.len()
+                        ),
+                    ));
+                    None
+                }
+            };
+        }
+        match candidates.len() {
+            0 => None,
+            1 => Some(candidates[0].clone()),
+            _ => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "ambiguous enum variant `{display}` ({} candidates); use `Enum::{}` or an expected enum type",
+                        candidates.len(),
+                        display.rsplit("::").next().unwrap_or(display)
+                    ),
+                ));
+                None
+            }
+        }
     }
 
     fn lookup_interface_name(&self, name: &NameRef) -> Option<DefId> {
@@ -6039,7 +6106,7 @@ impl TypeChecker {
                 }
             }
             Pattern::Variant(name, subpatterns) => match name.kind {
-                PatternNameKind::Variant(_) => {
+                PatternNameKind::Variant(_) | PatternNameKind::VariantCandidates(_) => {
                     self.check_variant_pattern(name, subpatterns, expected_ty)
                 }
                 PatternNameKind::Binding {
@@ -6069,10 +6136,7 @@ impl TypeChecker {
         subpatterns: &[Pattern],
         expected_ty: &Ty,
     ) -> Option<TPattern> {
-        let PatternNameKind::Variant(def_id) = name.kind else {
-            return None;
-        };
-        let Some(sig) = self.variants.get(&def_id).cloned() else {
+        let Some((_def_id, sig)) = self.lookup_pattern_variant_name(name, expected_ty) else {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
                 format!("unknown enum variant `{}`", name.display),
@@ -6168,6 +6232,26 @@ impl TypeChecker {
             variant_index: sig.variant_index,
             payload,
         })
+    }
+
+    fn lookup_pattern_variant_name(
+        &mut self,
+        name: &PatternName,
+        expected_ty: &Ty,
+    ) -> Option<(DefId, VariantSig)> {
+        match &name.kind {
+            PatternNameKind::Variant(def_id) => {
+                let sig = self.variants.get(def_id)?.clone();
+                Some((*def_id, sig))
+            }
+            PatternNameKind::VariantCandidates(candidates) => self.select_variant_candidate(
+                &name.display,
+                name.span,
+                candidates,
+                Some(expected_ty),
+            ),
+            PatternNameKind::Binding { .. } | PatternNameKind::Error => None,
+        }
     }
 
     fn patterns_exhaustive_for_type(&mut self, ty: &Ty, patterns: &[TPattern]) -> bool {
@@ -6301,7 +6385,7 @@ impl TypeChecker {
                         },
                         kind: TExprKind::Function(sig.def_id, sig.name.clone()),
                     }
-                } else if let Some((def_id, sig)) = self.lookup_variant_name(name_ref) {
+                } else if let Some((def_id, sig)) = self.lookup_variant_name(name_ref, expected) {
                     let variant_name = self.resolved.def(def_id).name.clone();
                     self.check_variant_literal(
                         scopes,
@@ -6737,7 +6821,7 @@ impl TypeChecker {
             } => {
                 if let ExprKind::Name(name_ref) = &callee.kind
                     && !matches!(name_ref.kind, NameRefKind::Local(_))
-                    && let Some((def_id, sig)) = self.lookup_variant_name(name_ref)
+                    && let Some((def_id, sig)) = self.lookup_variant_name(name_ref, expected)
                 {
                     let variant_name = self.resolved.def(def_id).name.clone();
                     return self.check_variant_literal(

@@ -598,8 +598,9 @@ The split should make MIR easier to add, but not block on it.
    requirements.
 4. Gate third-party CMake execution behind driver policy and pass the selected
    Debug/Release profile to CMake.
-5. Add one repository-local example package modeled after tin's `libs/raylib`
-   or `libs/blas`, but with TOML metadata instead of `//!` directives.
+5. Add one repository-local example package. The implemented phase4 demo is
+   `libs/sqlite`, using the vendored SQLite amalgamation plus TOML metadata
+   instead of `//!` directives.
 
 ### Phase 5: Compiler File Refactor
 
@@ -648,5 +649,8 @@ The split should make MIR easier to add, but not block on it.
 17. Keep the compiler prelude as an implementation constant, not TOML metadata
    and not user `ciel.toml`.
 18. Split runtime and standard-library native C code before adding more native
-   standard-library features.
+    standard-library features.
 19. Refactor compiler structure before introducing MIR.
+20. Use a vendored SQLite package as the phase4 third-party demo because it is
+    small enough to bind directly but complete enough to be useful without
+    artificial feature cuts.

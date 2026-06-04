@@ -1,0 +1,568 @@
+// ciel-test: run
+// package-root: @repo/libs/sqlite
+// allow-native-build: true
+// expect-exit: 0
+// run-arg: @tmp/sqlite_fixture.db
+
+import /sqlite as sqlite;
+import /std/bytes as bytes;
+import /std/env as env;
+import /std/result;
+import /std/text as text;
+
+bool chars_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+bool bytes_eq([]const u8 left, []const u8 right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+Result<void, Error> expect_done(sqlite::Step step) {
+    switch (step) {
+        case sqlite::Done:
+            return Ok;
+        case sqlite::Row:
+            return Err(text_error("expected sqlite done"));
+    }
+    return Err(text_error("bad sqlite step"));
+}
+
+Result<void, Error> expect_row(sqlite::Step step) {
+    switch (step) {
+        case sqlite::Row:
+            return Ok;
+        case sqlite::Done:
+            return Err(text_error("expected sqlite row"));
+    }
+    return Err(text_error("bad sqlite step"));
+}
+
+Result<void, Error> expect_void_error(Result<void, Error> result) {
+    switch (result) {
+        case Ok:
+            return Err(text_error("expected sqlite void error"));
+        case Err(_):
+            return Ok;
+    }
+    return Err(text_error("bad sqlite error result"));
+}
+
+Result<void, Error> expect_usize_error(Result<usize, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return Err(text_error("expected sqlite usize error"));
+        case Err(_):
+            return Ok;
+    }
+    return Err(text_error("bad sqlite error result"));
+}
+
+Result<void, Error> expect_i32_error(Result<i32, Error> result) {
+    switch (result) {
+        case Ok(_):
+            return Err(text_error("expected sqlite i32 error"));
+        case Err(_):
+            return Ok;
+    }
+    return Err(text_error("bad sqlite error result"));
+}
+
+Result<void, Error> expect_column_type(
+    sqlite::Statement statement,
+    usize index,
+    sqlite::ColumnType expected
+) {
+    sqlite::ColumnType actual = sqlite::column_type(statement, index)?;
+    switch (expected) {
+        case sqlite::ColumnInteger:
+            switch (actual) {
+                case sqlite::ColumnInteger:
+                    return Ok;
+                case sqlite::ColumnFloat:
+                    return Err(text_error("expected integer column"));
+                case sqlite::ColumnText:
+                    return Err(text_error("expected integer column"));
+                case sqlite::ColumnBlob:
+                    return Err(text_error("expected integer column"));
+                case sqlite::ColumnNull:
+                    return Err(text_error("expected integer column"));
+            }
+        case sqlite::ColumnFloat:
+            switch (actual) {
+                case sqlite::ColumnFloat:
+                    return Ok;
+                case sqlite::ColumnInteger:
+                    return Err(text_error("expected float column"));
+                case sqlite::ColumnText:
+                    return Err(text_error("expected float column"));
+                case sqlite::ColumnBlob:
+                    return Err(text_error("expected float column"));
+                case sqlite::ColumnNull:
+                    return Err(text_error("expected float column"));
+            }
+        case sqlite::ColumnText:
+            switch (actual) {
+                case sqlite::ColumnText:
+                    return Ok;
+                case sqlite::ColumnInteger:
+                    return Err(text_error("expected text column"));
+                case sqlite::ColumnFloat:
+                    return Err(text_error("expected text column"));
+                case sqlite::ColumnBlob:
+                    return Err(text_error("expected text column"));
+                case sqlite::ColumnNull:
+                    return Err(text_error("expected text column"));
+            }
+        case sqlite::ColumnBlob:
+            switch (actual) {
+                case sqlite::ColumnBlob:
+                    return Ok;
+                case sqlite::ColumnInteger:
+                    return Err(text_error("expected blob column"));
+                case sqlite::ColumnFloat:
+                    return Err(text_error("expected blob column"));
+                case sqlite::ColumnText:
+                    return Err(text_error("expected blob column"));
+                case sqlite::ColumnNull:
+                    return Err(text_error("expected blob column"));
+            }
+        case sqlite::ColumnNull:
+            switch (actual) {
+                case sqlite::ColumnNull:
+                    return Ok;
+                case sqlite::ColumnInteger:
+                    return Err(text_error("expected null column"));
+                case sqlite::ColumnFloat:
+                    return Err(text_error("expected null column"));
+                case sqlite::ColumnText:
+                    return Err(text_error("expected null column"));
+                case sqlite::ColumnBlob:
+                    return Err(text_error("expected null column"));
+            }
+    }
+    return Err(text_error("bad sqlite column type"));
+}
+
+Result<void, Error> expect_value_integer(sqlite::Value value, i64 expected) {
+    switch (value) {
+        case sqlite::Integer(actual):
+            if (actual == expected) {
+                return Ok;
+            }
+            return Err(text_error("bad integer sqlite value"));
+        case sqlite::Null:
+            return Err(text_error("expected integer sqlite value"));
+        case sqlite::Float(_):
+            return Err(text_error("expected integer sqlite value"));
+        case sqlite::Text(_):
+            return Err(text_error("expected integer sqlite value"));
+        case sqlite::Blob(_):
+            return Err(text_error("expected integer sqlite value"));
+    }
+    return Err(text_error("bad sqlite value"));
+}
+
+Result<void, Error> expect_value_float(sqlite::Value value, f64 min, f64 max) {
+    switch (value) {
+        case sqlite::Float(actual):
+            if (actual > min && actual < max) {
+                return Ok;
+            }
+            return Err(text_error("bad float sqlite value"));
+        case sqlite::Null:
+            return Err(text_error("expected float sqlite value"));
+        case sqlite::Integer(_):
+            return Err(text_error("expected float sqlite value"));
+        case sqlite::Text(_):
+            return Err(text_error("expected float sqlite value"));
+        case sqlite::Blob(_):
+            return Err(text_error("expected float sqlite value"));
+    }
+    return Err(text_error("bad sqlite value"));
+}
+
+Result<void, Error> expect_value_text(sqlite::Value value, []const char expected) {
+    switch (value) {
+        case sqlite::Text(actual):
+            if (chars_eq(text::text_to_slice(actual)?, expected)) {
+                return Ok;
+            }
+            return Err(text_error("bad text sqlite value"));
+        case sqlite::Null:
+            return Err(text_error("expected text sqlite value"));
+        case sqlite::Integer(_):
+            return Err(text_error("expected text sqlite value"));
+        case sqlite::Float(_):
+            return Err(text_error("expected text sqlite value"));
+        case sqlite::Blob(_):
+            return Err(text_error("expected text sqlite value"));
+    }
+    return Err(text_error("bad sqlite value"));
+}
+
+Result<void, Error> expect_value_blob(sqlite::Value value, []const u8 expected) {
+    switch (value) {
+        case sqlite::Blob(actual):
+            if (bytes_eq(bytes::bytes_to_slice(actual)?, expected)) {
+                return Ok;
+            }
+            return Err(text_error("bad blob sqlite value"));
+        case sqlite::Null:
+            return Err(text_error("expected blob sqlite value"));
+        case sqlite::Integer(_):
+            return Err(text_error("expected blob sqlite value"));
+        case sqlite::Float(_):
+            return Err(text_error("expected blob sqlite value"));
+        case sqlite::Text(_):
+            return Err(text_error("expected blob sqlite value"));
+    }
+    return Err(text_error("bad sqlite value"));
+}
+
+Result<void, Error> expect_value_null(sqlite::Value value) {
+    switch (value) {
+        case sqlite::Null:
+            return Ok;
+        case sqlite::Integer(_):
+            return Err(text_error("expected null sqlite value"));
+        case sqlite::Float(_):
+            return Err(text_error("expected null sqlite value"));
+        case sqlite::Text(_):
+            return Err(text_error("expected null sqlite value"));
+        case sqlite::Blob(_):
+            return Err(text_error("expected null sqlite value"));
+    }
+    return Err(text_error("bad sqlite value"));
+}
+
+Result<void, Error> create_items(sqlite::Connection db) {
+    sqlite::exec(db, "DROP TABLE IF EXISTS items")?;
+    sqlite::exec(
+        db,
+        "CREATE TABLE items(id INTEGER PRIMARY KEY, name TEXT NOT NULL, score REAL NOT NULL, payload BLOB, note TEXT)"
+    )?;
+    return Ok;
+}
+
+Result<void, Error> insert_rows(sqlite::Connection db) {
+    sqlite::Statement insert = sqlite::prepare(
+        db,
+        "INSERT INTO items(id, name, score, payload, note) VALUES(:id, :name, :score, :payload, :note)"
+    )?;
+    defer sqlite::finalize(insert);
+
+    if (sqlite::bind_parameter_count(insert)? != 5) {
+        return Err(text_error("bad parameter count"));
+    }
+    usize id_index = sqlite::bind_parameter_index(insert, ":id")?;
+    usize name_index = sqlite::bind_parameter_index(insert, ":name")?;
+    usize score_index = sqlite::bind_parameter_index(insert, ":score")?;
+    usize payload_index = sqlite::bind_parameter_index(insert, ":payload")?;
+    usize note_index = sqlite::bind_parameter_index(insert, ":note")?;
+    if (id_index != 0 || name_index != 1 || score_index != 2 || payload_index != 3 || note_index != 4) {
+        return Err(text_error("bad named parameter index"));
+    }
+    expect_usize_error(sqlite::bind_parameter_index(insert, ":missing"))?;
+
+    bytes::Bytes payload_alpha = bytes::bytes_from_text("abc")?;
+    sqlite::bind<i64>(insert, id_index, 7)?;
+    sqlite::bind<text::Text>(insert, name_index, text::text_copy("alpha")?)?;
+    sqlite::bind<f64>(insert, score_index, 3.25)?;
+    sqlite::bind<bytes::Bytes>(insert, payload_index, payload_alpha)?;
+    sqlite::bind_null(insert, note_index)?;
+    expect_done(sqlite::step(insert)?)?;
+    if (sqlite::changes(db)? != 1 || sqlite::last_insert_rowid(db)? != 7) {
+        return Err(text_error("bad first insert stats"));
+    }
+
+    sqlite::reset(insert)?;
+    sqlite::clear_bindings(insert)?;
+    bytes::Bytes payload_beta = bytes::bytes_from_text("xy")?;
+    sqlite::bind_value(insert, id_index, sqlite::Integer(8))?;
+    sqlite::bind_value(insert, name_index, sqlite::Text(text::text_copy("beta")?))?;
+    sqlite::bind_value(insert, score_index, sqlite::Float(4.5))?;
+    sqlite::bind_value(insert, payload_index, sqlite::Blob(payload_beta))?;
+    sqlite::bind_value(insert, note_index, sqlite::Null)?;
+    expect_done(sqlite::step(insert)?)?;
+
+    sqlite::reset(insert)?;
+    sqlite::clear_bindings(insert)?;
+    [4]u8 payload_gamma = [9 as u8, 8 as u8, 7 as u8, 6 as u8];
+    sqlite::bind_i64(insert, id_index, 9)?;
+    sqlite::bind_text(insert, name_index, "gamma")?;
+    sqlite::bind_f64(insert, score_index, 5.75)?;
+    sqlite::bind_blob(insert, payload_index, payload_gamma[..])?;
+    sqlite::bind_text(insert, note_index, "seen")?;
+    expect_done(sqlite::step(insert)?)?;
+
+    sqlite::Statement finalized = sqlite::prepare(db, "SELECT 1")?;
+    sqlite::finalize(finalized)?;
+    sqlite::finalize(finalized)?;
+    return Ok;
+}
+
+Result<void, Error> check_first_row(sqlite::Statement query) {
+    if (sqlite::column_count(query)? != 5) {
+        return Err(text_error("bad column count"));
+    }
+    if (sqlite::column_name_len(query, 1)? != 4) {
+        return Err(text_error("bad column name length"));
+    }
+    [8]char @column_name_buf = [0;];
+    usize copied_name = sqlite::column_name_copy_to(query, 1, column_name_buf[..])?;
+    if (copied_name != 4 || !chars_eq(column_name_buf[..4], "name")) {
+        return Err(text_error("bad column name copy"));
+    }
+    if (!chars_eq(text::text_to_slice(sqlite::column_name(query, 1)?)?, "name")) {
+        return Err(text_error("bad owned column name"));
+    }
+
+    expect_column_type(query, 0, sqlite::ColumnInteger)?;
+    expect_column_type(query, 1, sqlite::ColumnText)?;
+    expect_column_type(query, 2, sqlite::ColumnFloat)?;
+    expect_column_type(query, 3, sqlite::ColumnBlob)?;
+    expect_column_type(query, 4, sqlite::ColumnNull)?;
+    if (sqlite::column_is_null(query, 0)? || !sqlite::column_is_null(query, 4)?) {
+        return Err(text_error("bad null flags"));
+    }
+
+    if (sqlite::column_i64(query, 0)? != 7) {
+        return Err(text_error("bad id column"));
+    }
+    f64 score = sqlite::column_f64(query, 2)?;
+    if (score < 3.24 || score > 3.26) {
+        return Err(text_error("bad score column"));
+    }
+    if (sqlite::column_text_len(query, 1)? != 5) {
+        return Err(text_error("bad text length"));
+    }
+    [3]char @short_text = [0;];
+    usize copied_short = sqlite::column_text_copy_to(query, 1, short_text[..])?;
+    if (copied_short != 3 || !chars_eq(short_text[..], "alp")) {
+        return Err(text_error("bad short text copy"));
+    }
+    if (!chars_eq(sqlite::column_text_slice(query, 1)?, "alpha")) {
+        return Err(text_error("bad text slice"));
+    }
+    if (!chars_eq(text::text_to_slice(sqlite::column_text(query, 1)?)?, "alpha")) {
+        return Err(text_error("bad owned text"));
+    }
+
+    if (sqlite::column_blob_len(query, 3)? != 3) {
+        return Err(text_error("bad blob length"));
+    }
+    [2]u8 @short_blob = [0;];
+    usize copied_blob = sqlite::column_blob_copy_to(query, 3, short_blob[..])?;
+    [2]u8 expected_short_blob = [0x61 as u8, 0x62 as u8];
+    if (copied_blob != 2 || !bytes_eq(short_blob[..], expected_short_blob[..])) {
+        return Err(text_error("bad short blob copy"));
+    }
+    [3]u8 expected_blob = [0x61 as u8, 0x62 as u8, 0x63 as u8];
+    if (!bytes_eq(sqlite::column_blob_slice(query, 3)?, expected_blob[..])) {
+        return Err(text_error("bad blob slice"));
+    }
+    if (!bytes_eq(bytes::bytes_to_slice(sqlite::column_blob(query, 3)?)?, expected_blob[..])) {
+        return Err(text_error("bad owned blob"));
+    }
+
+    expect_value_integer(sqlite::column_value(query, 0)?, 7)?;
+    expect_value_text(sqlite::column_value(query, 1)?, "alpha")?;
+    expect_value_float(sqlite::column_value(query, 2)?, 3.24, 3.26)?;
+    expect_value_blob(sqlite::column_value(query, 3)?, expected_blob[..])?;
+    expect_value_null(sqlite::column_value(query, 4)?)?;
+    return Ok;
+}
+
+Result<void, Error> check_query(sqlite::Connection db) {
+    sqlite::Statement query = sqlite::prepare(
+        db,
+        "SELECT id, name, score, payload, note FROM items ORDER BY id"
+    )?;
+    defer sqlite::finalize(query);
+
+    expect_row(sqlite::step(query)?)?;
+    check_first_row(query)?;
+
+    expect_row(sqlite::step(query)?)?;
+    if (sqlite::column_i64(query, 0)? != 8) {
+        return Err(text_error("bad second row id"));
+    }
+    expect_value_text(sqlite::column_value(query, 1)?, "beta")?;
+    expect_value_float(sqlite::column_value(query, 2)?, 4.49, 4.51)?;
+    expect_value_null(sqlite::column_value(query, 4)?)?;
+
+    expect_row(sqlite::step(query)?)?;
+    if (sqlite::column_i64(query, 0)? != 9) {
+        return Err(text_error("bad third row id"));
+    }
+    expect_value_text(sqlite::column_value(query, 4)?, "seen")?;
+    expect_done(sqlite::step(query)?)?;
+
+    sqlite::reset(query)?;
+    expect_row(sqlite::step(query)?)?;
+    expect_value_integer(sqlite::column_value(query, 0)?, 7)?;
+    return Ok;
+}
+
+Result<i64, Error> count_items(sqlite::Connection db) {
+    return sqlite::with_statement<i64>(db, "SELECT count(*) FROM items", |stmt| {
+        expect_row(sqlite::step(stmt)?)?;
+        return Ok(sqlite::column_i64(stmt, 0)?);
+    });
+}
+
+Result<void, Error> check_transactions(sqlite::Connection db) {
+    i32 tx = sqlite::with_transaction<i32>(db, |conn| {
+        sqlite::exec(conn, "INSERT INTO items(id, name, score, payload, note) VALUES(10, 'delta', 1.0, X'01', NULL)")?;
+        return Ok(33);
+    })?;
+    if (tx != 33 || count_items(db)? != 4) {
+        return Err(text_error("bad committed transaction"));
+    }
+
+    expect_i32_error(sqlite::with_transaction<i32>(db, |conn| {
+        sqlite::exec(conn, "INSERT INTO items(id, name, score, payload, note) VALUES(11, 'rollback', 2.0, X'02', NULL)")?;
+        return Err(text_error("force rollback"));
+    }))?;
+    if (count_items(db)? != 4) {
+        return Err(text_error("transaction did not roll back"));
+    }
+    return Ok;
+}
+
+Result<void, Error> check_error_paths(sqlite::Connection db) {
+    expect_void_error(sqlite::busy_timeout(db, -1))?;
+    expect_void_error(sqlite::exec(db, "INSERT INTO missing_table VALUES(1)"))?;
+    sqlite::Statement stmt = sqlite::prepare(db, "SELECT :ok")?;
+    defer sqlite::finalize(stmt);
+    expect_usize_error(sqlite::bind_parameter_index(stmt, ":missing"))?;
+    expect_row(sqlite::step(stmt)?)?;
+    if (!sqlite::column_is_null(stmt, 0)?) {
+        return Err(text_error("unbound sqlite parameter was not null"));
+    }
+    expect_done(sqlite::step(stmt)?)?;
+    return Ok;
+}
+
+Result<i32, Error> check_memory_database() {
+    sqlite::Connection detached = sqlite::open_memory()?;
+    sqlite::close(detached)?;
+    sqlite::close(detached)?;
+
+    return sqlite::with_memory<i32>(|db| {
+        if (sqlite::version().len == 0) {
+            return Ok(10);
+        }
+        switch (sqlite::busy_timeout(db, 1000)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(11);
+        }
+        switch (create_items(db)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(12);
+        }
+        switch (insert_rows(db)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(13);
+        }
+        if (sqlite::total_changes(db)? != 3) {
+            return Ok(14);
+        }
+        switch (check_query(db)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(15);
+        }
+        switch (check_transactions(db)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(16);
+        }
+        switch (check_error_paths(db)) {
+            case Ok:
+                {}
+            case Err(_):
+                return Ok(17);
+        }
+        sqlite::interrupt(db);
+        return Ok(0);
+    });
+}
+
+Result<void, Error> check_file_database([]const char path) {
+    sqlite::with_open<void>(path, |db| {
+        create_items(db)?;
+        sqlite::exec(db, "INSERT INTO items(id, name, score, payload, note) VALUES(1, 'file', 1.0, X'00', NULL)")?;
+        return Ok;
+    })?;
+
+    sqlite::Connection read_only = sqlite::open_with_mode(path, sqlite::ReadOnly)?;
+    if (count_items(read_only)? != 1) {
+        return Err(text_error("bad readonly count"));
+    }
+    expect_void_error(sqlite::exec(read_only, "INSERT INTO items(id, name, score, payload, note) VALUES(2, 'bad', 2.0, X'01', NULL)"))?;
+    sqlite::close(read_only)?;
+    sqlite::close(read_only)?;
+
+    sqlite::Connection read_write = sqlite::open_with_mode(path, sqlite::ReadWrite)?;
+    sqlite::exec(read_write, "INSERT INTO items(id, name, score, payload, note) VALUES(2, 'rw', 2.0, X'02', NULL)")?;
+    if (count_items(read_write)? != 2) {
+        return Err(text_error("bad readwrite count"));
+    }
+    sqlite::close(read_write)?;
+
+    sqlite::Connection default_open = sqlite::open(path)?;
+    if (count_items(default_open)? != 2) {
+        return Err(text_error("bad default open count"));
+    }
+    sqlite::close(default_open)?;
+    return Ok;
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    switch (check_memory_database()) {
+        case Ok(code):
+            if (code != 0) {
+                return code;
+            }
+        case Err(_):
+            return 1;
+    }
+    switch (check_file_database(path)) {
+        case Ok:
+            {}
+        case Err(_):
+            return 2;
+    }
+    return 0;
+}

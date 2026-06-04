@@ -179,6 +179,53 @@ macro-generated Ciel source. C preprocessing is only used later on generated C.
 `#c_include` is copied to the generated C file but does not declare any Ciel
 names; C APIs still need explicit `extern "C"` declarations.
 
+### Package Manifests
+
+The compiler understands versioned `ciel.toml` package manifests. Manifest
+version `1` declares package identity, explicit public Ciel exports, and
+optional package-owned CMake native targets:
+
+```toml
+manifest_version = 1
+
+[package]
+name = "sqlite"
+kind = "library"
+root = "."
+
+[ciel.exports]
+"/sqlite" = "sqlite.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_lib_sqlite"
+when = { os = ["linux", "macos"] }
+```
+
+`package.kind` is one of `project`, `stdlib`, `runtime`, or `library`.
+`package.root` is relative to the manifest file and defaults to `"."`.
+`[ciel.exports]` maps absolute import paths to `.ciel` source files relative
+to `package.root`. Export paths and manifest paths are validated; paths must
+not escape the package root.
+
+Standard-library manifests are loaded from compiler standard-library search
+roots. User package roots are passed explicitly with repeated
+`--package-root <root>` arguments. User package-root scanning accepts manifests
+with `kind = "library"` or `kind = "project"`.
+
+Absolute imports first resolve through standard-library package exports, then
+through user package-root exports, and finally through the legacy standard-path
+file fallback. This preserves `/std/...` ownership by compiler-shipped
+packages while allowing repository-local packages such as `/sqlite`.
+
+Executable and shared-library builds link generated C through a generated
+top-level CMake project. The build plan includes the fixed runtime CMake
+target, imported standard-library package targets, and imported user package
+targets. CMake targets loaded from user package roots are not executed unless
+the driver is invoked with `--allow-native-build`. The driver passes the
+selected Ciel build profile to CMake as both `CMAKE_BUILD_TYPE`/`--config` and
+`CIEL_BUILD_PROFILE`.
+
 ## 5. Names and Scopes
 
 Ciel has a single namespace for values, functions, types, enum variants,

@@ -27,6 +27,7 @@ pub struct CmakeOutput<'a> {
 }
 
 pub fn build_cmake_output(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<(), String> {
+    check_native_build_policy(plan)?;
     if output.kind == CmakeOutputKind::Executable {
         return build_reusable_cmake_executable(plan, output);
     }
@@ -62,6 +63,24 @@ pub fn build_cmake_output(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<
         ));
     }
     Ok(())
+}
+
+fn check_native_build_policy(plan: &BuildPlan) -> Result<(), String> {
+    if plan.allow_native_build {
+        return Ok(());
+    }
+    let blocked = plan
+        .cmake_targets
+        .iter()
+        .find(|target| target.requires_allow_native_build);
+    let Some(target) = blocked else {
+        return Ok(());
+    };
+    Err(format!(
+        "third-party native CMake target `{}` from `{}` requires --allow-native-build",
+        target.target,
+        target.package_root.display()
+    ))
 }
 
 static CMAKE_OUTPUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -200,6 +219,10 @@ fn run_cmake_configure(
         .arg(build_dir)
         .arg(format!("-DCMAKE_BUILD_TYPE={build_type}"))
         .arg(format!("-DCMAKE_C_COMPILER={c_compiler}"))
+        .arg(format!(
+            "-DCIEL_BUILD_PROFILE={}",
+            build_type.to_ascii_lowercase()
+        ))
         .arg(format!(
             "-DCIEL_RUNTIME_INCLUDE_DIR={}",
             runtime_include_dir.display()
@@ -610,11 +633,13 @@ mod tests {
                 package_root: root.clone(),
                 cmake_file: root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
+                requires_allow_native_build: false,
             },
             CmakeTarget {
                 package_root: root.clone(),
                 cmake_file: root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
+                requires_allow_native_build: false,
             },
         ];
 
@@ -688,5 +713,36 @@ mod tests {
                 "umbrella header must not include std native header {header}"
             );
         }
+    }
+
+    #[test]
+    fn native_build_policy_rejects_user_targets_without_allow_flag() {
+        let root = PathBuf::from("/repo/libs/sqlite");
+        let mut plan = BuildPlan::new(String::new(), BuildProfile::Debug, false);
+        plan.cmake_targets.push(CmakeTarget {
+            package_root: root.clone(),
+            cmake_file: root.join("CMakeLists.txt"),
+            target: "ciel_lib_sqlite".to_string(),
+            requires_allow_native_build: true,
+        });
+
+        let error = build_cmake_output(
+            &plan,
+            &CmakeOutput {
+                source_path: Path::new("/tmp/input.c"),
+                output_path: Path::new("/tmp/output"),
+                kind: CmakeOutputKind::Executable,
+                c_compiler: "cc",
+                compile_flags: Vec::new(),
+                link_flags: Vec::new(),
+                target_os: "linux",
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            error.contains("--allow-native-build") && error.contains("ciel_lib_sqlite"),
+            "{error}"
+        );
     }
 }

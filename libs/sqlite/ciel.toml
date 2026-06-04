@@ -1,0 +1,14 @@
+manifest_version = 1
+
+[package]
+name = "sqlite"
+kind = "library"
+root = "."
+
+[ciel.exports]
+"/sqlite" = "sqlite.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_lib_sqlite"
+when = { os = ["linux", "macos"] }

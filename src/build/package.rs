@@ -6,12 +6,30 @@ use std::{
 
 use super::manifest::{PackageKind, PackageManifest};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageOrigin {
+    Builtin,
+    User,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadedPackageManifest {
+    pub manifest: PackageManifest,
+    pub origin: PackageOrigin,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct PackageIndex {
-    manifests: Vec<PackageManifest>,
+    manifests: Vec<IndexedPackage>,
     by_export: HashMap<String, PathBuf>,
     by_source: HashMap<PathBuf, usize>,
     export_by_source: HashMap<PathBuf, String>,
+}
+
+#[derive(Clone, Debug)]
+struct IndexedPackage {
+    manifest: PackageManifest,
+    origin: PackageOrigin,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -39,7 +57,7 @@ impl PackageIndex {
         for path in manifest_paths {
             match PackageManifest::load(&path) {
                 Ok(manifest) if manifest.package.kind == PackageKind::Stdlib => {
-                    if let Err(error) = index.insert_manifest(manifest) {
+                    if let Err(error) = index.insert_manifest(manifest, PackageOrigin::Builtin) {
                         errors.push(error);
                     }
                 }
@@ -58,14 +76,64 @@ impl PackageIndex {
         }
     }
 
+    pub fn load_package_roots(package_roots: &[PathBuf]) -> Result<Self, Vec<PackageLoadError>> {
+        let mut manifest_paths = Vec::new();
+        let mut scanned_roots = HashSet::new();
+        for package_root in package_roots {
+            let root = normalize_path(package_root);
+            if scanned_roots.insert(root.clone()) {
+                collect_manifest_paths(&root, &mut manifest_paths)?;
+            }
+        }
+        manifest_paths.sort();
+        manifest_paths.dedup();
+
+        let mut index = Self::default();
+        let mut errors = Vec::new();
+        for path in manifest_paths {
+            match PackageManifest::load(&path) {
+                Ok(manifest)
+                    if matches!(
+                        manifest.package.kind,
+                        PackageKind::Library | PackageKind::Project
+                    ) =>
+                {
+                    if let Err(error) = index.insert_manifest(manifest, PackageOrigin::User) {
+                        errors.push(error);
+                    }
+                }
+                Ok(manifest) => errors.push(PackageLoadError {
+                    path,
+                    message: format!(
+                        "package root manifest `{}` has kind {:?}; expected library or project",
+                        manifest.package.name, manifest.package.kind
+                    ),
+                }),
+                Err(error) => errors.push(PackageLoadError {
+                    path,
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(index)
+        } else {
+            Err(errors)
+        }
+    }
+
     pub fn resolve_export(&self, export: &str) -> Option<&Path> {
         self.by_export.get(export).map(PathBuf::as_path)
     }
 
-    pub fn manifest_for_source(&self, source: &Path) -> Option<&PackageManifest> {
+    pub fn manifest_for_source(&self, source: &Path) -> Option<LoadedPackageManifest> {
         self.by_source
             .get(&normalize_path(source))
-            .map(|idx| &self.manifests[*idx])
+            .map(|idx| LoadedPackageManifest {
+                manifest: self.manifests[*idx].manifest.clone(),
+                origin: self.manifests[*idx].origin,
+            })
     }
 
     pub fn export_for_source(&self, source: &Path) -> Option<&str> {
@@ -74,7 +142,11 @@ impl PackageIndex {
             .map(String::as_str)
     }
 
-    fn insert_manifest(&mut self, manifest: PackageManifest) -> Result<(), PackageLoadError> {
+    fn insert_manifest(
+        &mut self,
+        manifest: PackageManifest,
+        origin: PackageOrigin,
+    ) -> Result<(), PackageLoadError> {
         let idx = self.manifests.len();
         if let Some(ciel) = &manifest.ciel {
             for export in ciel.exports.keys() {
@@ -100,7 +172,7 @@ impl PackageIndex {
                 self.by_source.entry(source).or_insert(idx);
             }
         }
-        self.manifests.push(manifest);
+        self.manifests.push(IndexedPackage { manifest, origin });
         Ok(())
     }
 }
@@ -214,7 +286,7 @@ mod tests {
                         .join("std/atomic/atomic.ciel")
                         .as_path()
                 )
-                .is_some_and(|manifest| manifest.package.name == "std.atomic")
+                .is_some_and(|manifest| manifest.manifest.package.name == "std.atomic")
         );
         assert_eq!(
             index.export_for_source(
@@ -245,7 +317,9 @@ root = "."
             "/repo/std/result",
         )
         .unwrap();
-        index.insert_manifest(manifest).unwrap();
+        index
+            .insert_manifest(manifest, PackageOrigin::Builtin)
+            .unwrap();
 
         assert_eq!(
             index.resolve_export("/std/result"),
@@ -291,8 +365,12 @@ root = "."
         )
         .unwrap();
 
-        index.insert_manifest(first).unwrap();
-        let error = index.insert_manifest(second).unwrap_err();
+        index
+            .insert_manifest(first, PackageOrigin::Builtin)
+            .unwrap();
+        let error = index
+            .insert_manifest(second, PackageOrigin::Builtin)
+            .unwrap_err();
         assert!(error.message.contains("duplicate ciel export"), "{error:?}");
     }
 }

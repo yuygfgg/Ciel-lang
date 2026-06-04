@@ -1,0 +1,3 @@
+libs/sqlite/native/sqlite3.c linguist-vendored
+libs/sqlite/native/sqlite3.h linguist-vendored
+libs/sqlite/native/sqlite3ext.h linguist-vendored

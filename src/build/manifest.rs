@@ -87,7 +87,11 @@ impl PackageManifest {
         raw.validate(manifest_dir, Some(path.to_path_buf()))
     }
 
-    pub fn cmake_targets(&self, target_os: &str) -> Vec<CmakeTarget> {
+    pub fn cmake_targets(
+        &self,
+        target_os: &str,
+        requires_allow_native_build: bool,
+    ) -> Vec<CmakeTarget> {
         self.native
             .cmake
             .iter()
@@ -96,6 +100,7 @@ impl PackageManifest {
                 package_root: self.package.root.clone(),
                 cmake_file: target.cmake_file.clone(),
                 target: target.target.clone(),
+                requires_allow_native_build,
             })
             .collect()
     }
@@ -432,13 +437,13 @@ when = { os = ["linux", "macos"] }
             Some(&PathBuf::from("/repo/std/async_net/async_net.ciel"))
         );
 
-        let cmake = manifest.cmake_targets("darwin");
+        let cmake = manifest.cmake_targets("darwin", false);
         assert_eq!(cmake.len(), 1);
         assert_eq!(
             cmake[0].cmake_file,
             PathBuf::from("/repo/std/async_net/native/CMakeLists.txt")
         );
-        assert!(manifest.cmake_targets("windows").is_empty());
+        assert!(manifest.cmake_targets("windows", false).is_empty());
     }
 
     #[test]

@@ -43,6 +43,9 @@ fn main() {
     for std_path in &cli.std_paths {
         options = options.with_std_path(std_path.clone());
     }
+    for package_root in &cli.package_roots {
+        options = options.with_package_root(package_root.clone());
+    }
     if let Some(target_os) = &cli.target_os {
         options = options.with_target_os(target_os.clone());
     }
@@ -50,6 +53,7 @@ fn main() {
         options = options.with_target_arch(target_arch.clone());
     }
     options = options.with_build_profile(cli.profile);
+    options = options.with_allow_native_build(cli.allow_native_build);
     for feature in &cli.features {
         options = options.with_feature(feature.clone());
     }
@@ -77,9 +81,11 @@ struct CliOptions {
     save_c: Option<PathBuf>,
     project_root: Option<PathBuf>,
     std_paths: Vec<PathBuf>,
+    package_roots: Vec<PathBuf>,
     target_os: Option<String>,
     target_arch: Option<String>,
     features: Vec<String>,
+    allow_native_build: bool,
     emit: EmitMode,
     profile: BuildProfile,
     c_compiler: String,
@@ -94,9 +100,11 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         save_c: None,
         project_root: None,
         std_paths: Vec::new(),
+        package_roots: Vec::new(),
         target_os: None,
         target_arch: None,
         features: Vec::new(),
+        allow_native_build: false,
         emit: EmitMode::Executable,
         profile: BuildProfile::Debug,
         c_compiler: env::var("CC").unwrap_or_else(|_| "cc".to_string()),
@@ -120,6 +128,10 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "--std-path" => cli
                 .std_paths
                 .push(PathBuf::from(take_value(args, &mut idx)?)),
+            "--package-root" => cli
+                .package_roots
+                .push(PathBuf::from(take_value(args, &mut idx)?)),
+            "--allow-native-build" => cli.allow_native_build = true,
             "--target-os" => cli.target_os = Some(take_value(args, &mut idx)?),
             "--target-arch" => cli.target_arch = Some(take_value(args, &mut idx)?),
             "--feature" => cli.features.push(take_value(args, &mut idx)?),
@@ -312,6 +324,6 @@ fn default_output_path(input: &Path, mode: EmitMode, target_os: &str) -> PathBuf
 
 fn print_usage() {
     eprintln!(
-        "usage: cielc [--emit MODE|--emit-c] [--debug|--release] [--cc cc] [--cflag flag] [--ldflag flag] [--save-c path] [--project-root root] [--std-path root] [--target-os os] [--target-arch arch] [--feature name] <input.ciel> [-o output]"
+        "usage: cielc [--emit MODE|--emit-c] [--debug|--release] [--cc cc] [--cflag flag] [--ldflag flag] [--save-c path] [--project-root root] [--std-path root] [--package-root root] [--allow-native-build] [--target-os os] [--target-arch arch] [--feature name] <input.ciel> [-o output]"
     );
 }

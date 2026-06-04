@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use super::{
-    manifest::PackageManifest,
+    package::{LoadedPackageManifest, PackageOrigin},
     requirements::{BuildPlan, BuildProfile, CmakeTarget},
 };
 
@@ -11,21 +11,34 @@ pub fn build_plan_for_generated_c(
     target_os: &str,
     package_inputs: Vec<PathBuf>,
 ) -> BuildPlan {
-    build_plan_for_generated_c_with_packages(generated_c, profile, target_os, package_inputs, &[])
+    build_plan_for_generated_c_with_packages(
+        generated_c,
+        profile,
+        false,
+        target_os,
+        package_inputs,
+        &[],
+    )
 }
 
 pub fn build_plan_for_generated_c_with_packages(
     generated_c: String,
     profile: BuildProfile,
+    allow_native_build: bool,
     target_os: &str,
     package_inputs: Vec<PathBuf>,
-    package_manifests: &[PackageManifest],
+    package_manifests: &[LoadedPackageManifest],
 ) -> BuildPlan {
-    let mut plan = BuildPlan::new(generated_c, profile);
+    let mut plan = BuildPlan::new(generated_c, profile, allow_native_build);
     plan.package_inputs.extend(package_inputs);
-    for manifest in package_manifests {
-        plan.cmake_targets.extend(manifest.cmake_targets(target_os));
-        if let Some(path) = &manifest.manifest_path {
+    for loaded in package_manifests {
+        let requires_allow_native_build = loaded.origin == PackageOrigin::User;
+        plan.cmake_targets.extend(
+            loaded
+                .manifest
+                .cmake_targets(target_os, requires_allow_native_build),
+        );
+        if let Some(path) = &loaded.manifest.manifest_path {
             plan.package_inputs.push(path.clone());
         }
     }
@@ -41,6 +54,7 @@ pub fn synthetic_runtime_cmake_targets(_target_os: &str) -> Vec<CmakeTarget> {
         package_root: package_root.clone(),
         cmake_file: package_root.join("CMakeLists.txt"),
         target: "ciel_runtime".to_string(),
+        requires_allow_native_build: false,
     }]
 }
 
@@ -69,7 +83,7 @@ mod tests {
 
     #[test]
     fn loaded_package_manifests_extend_build_plan() {
-        let manifest = PackageManifest::parse_str(
+        let manifest = crate::build::manifest::PackageManifest::parse_str(
             r#"
 manifest_version = 1
 
@@ -91,14 +105,58 @@ target = "ciel_std_crypto"
         let plan = build_plan_for_generated_c_with_packages(
             String::new(),
             BuildProfile::Debug,
+            false,
             "linux",
             Vec::new(),
-            &[manifest],
+            &[LoadedPackageManifest {
+                manifest,
+                origin: PackageOrigin::Builtin,
+            }],
         );
 
         assert!(plan.cmake_targets.iter().any(|target| {
             target.target == "ciel_std_crypto"
                 && target.cmake_file.ends_with("std/crypto/CMakeLists.txt")
+                && !target.requires_allow_native_build
+        }));
+    }
+
+    #[test]
+    fn user_package_native_targets_require_explicit_allow_policy() {
+        let manifest = crate::build::manifest::PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "sqlite"
+kind = "library"
+root = "."
+
+[ciel.exports]
+"/sqlite" = "sqlite.ciel"
+
+[[native.cmake]]
+path = "CMakeLists.txt"
+target = "ciel_lib_sqlite"
+"#,
+            "/repo/libs/sqlite",
+        )
+        .unwrap();
+        let plan = build_plan_for_generated_c_with_packages(
+            String::new(),
+            BuildProfile::Debug,
+            true,
+            "linux",
+            Vec::new(),
+            &[LoadedPackageManifest {
+                manifest,
+                origin: PackageOrigin::User,
+            }],
+        );
+
+        assert!(plan.allow_native_build);
+        assert!(plan.cmake_targets.iter().any(|target| {
+            target.target == "ciel_lib_sqlite" && target.requires_allow_native_build
         }));
     }
 

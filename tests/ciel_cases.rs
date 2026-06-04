@@ -87,6 +87,8 @@ struct Case {
     expect_c_counts: Vec<CCount>,
     run_args: Vec<String>,
     features: Vec<String>,
+    package_roots: Vec<PathBuf>,
+    allow_native_build: bool,
     sanitizers: Vec<Sanitizer>,
     warning_clean: bool,
     host: Option<PathBuf>,
@@ -101,14 +103,6 @@ fn ciel_case_metadata_is_valid() {
         .filter(|case| !matches!(case.kind, TestKind::Dependency | TestKind::Manual))
         .count();
     assert!(active > 0, "no active Ciel fixture cases were discovered");
-}
-
-#[test]
-#[ignore = "per-fixture tests are generated at build time"]
-fn discovered_ciel_cases_pass_their_declared_expectations() {
-    run_with_large_stack("discovered_ciel_cases", || {
-        discovered_ciel_cases_pass_their_declared_expectations_impl()
-    });
 }
 
 fn run_generated_case(relative_path: &'static str) {
@@ -133,26 +127,6 @@ fn run_generated_case(relative_path: &'static str) {
 
 mod generated_ciel_cases {
     include!(concat!(env!("OUT_DIR"), "/ciel_case_tests.rs"));
-}
-
-fn discovered_ciel_cases_pass_their_declared_expectations_impl() {
-    let cases = load_cases().unwrap_or_else(|errors| panic!("{}", errors.join("\n\n")));
-    let mut failures = Vec::new();
-    for case in cases
-        .iter()
-        .filter(|case| !matches!(case.kind, TestKind::Dependency | TestKind::Manual))
-    {
-        if let Err(error) = run_case(case) {
-            failures.push(format!("{}:\n{error}", case_label(&case.path)));
-        }
-    }
-
-    assert!(
-        failures.is_empty(),
-        "{} discovered Ciel fixture case(s) failed:\n\n{}",
-        failures.len(),
-        failures.join("\n\n")
-    );
 }
 
 fn run_with_large_stack<F>(name: &str, f: F)
@@ -324,6 +298,47 @@ fn build_plan_adds_native_requirements_from_imported_std_packages() {
     );
 }
 
+#[test]
+fn package_root_imports_user_native_package_and_requires_allow_policy() {
+    let path = cases_root().join("package/sqlite/sqlite.ciel");
+    let package_root = repo_root().join("libs/sqlite");
+    let blocked_exe = temp_artifact(&path, "blocked.exe");
+    let blocked = Command::new(cielc_bin())
+        .arg("--package-root")
+        .arg(&package_root)
+        .arg(&path)
+        .arg("-o")
+        .arg(&blocked_exe)
+        .output()
+        .unwrap();
+    assert!(
+        !blocked.status.success(),
+        "cielc unexpectedly allowed third-party native build\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&blocked.stdout),
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&blocked.stderr).contains("--allow-native-build"),
+        "stderr:\n{}",
+        String::from_utf8_lossy(&blocked.stderr)
+    );
+
+    let options = CompileOptions::new(&path)
+        .with_project_root(repo_root())
+        .with_package_root(package_root)
+        .with_allow_native_build(true);
+    let plan = compile_to_build_plan(options).unwrap();
+    assert!(plan.allow_native_build);
+    assert!(plan.cmake_targets.iter().any(|target| {
+        target.target == "ciel_lib_sqlite" && target.requires_allow_native_build
+    }));
+    assert!(
+        plan.package_inputs
+            .iter()
+            .any(|path| path.ends_with("libs/sqlite/ciel.toml"))
+    );
+}
+
 fn load_cases() -> Result<Vec<Case>, Vec<String>> {
     let mut paths = Vec::new();
     collect_ciel_files(&cases_root(), &mut paths).map_err(|error| vec![error])?;
@@ -377,6 +392,8 @@ fn parse_case(path: &Path) -> Result<Case, String> {
     let mut expect_c_counts = Vec::new();
     let mut run_args = Vec::new();
     let mut features = Vec::new();
+    let mut package_roots = Vec::new();
+    let mut allow_native_build = false;
     let mut sanitizers = Vec::new();
     let mut warning_clean = false;
     let mut host = None;
@@ -435,6 +452,14 @@ fn parse_case(path: &Path) -> Result<Case, String> {
                 });
             }
             "feature" => features.push(value.to_string()),
+            "package-root" => package_roots.push(metadata_path(path, value)),
+            "allow-native-build" => {
+                allow_native_build = match value {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(format!("invalid allow-native-build value `{value}`")),
+                };
+            }
             "sanitizer" => {
                 let sanitizer = Sanitizer::parse(value)?;
                 if sanitizers.contains(&sanitizer) {
@@ -467,6 +492,8 @@ fn parse_case(path: &Path) -> Result<Case, String> {
         expect_c_counts,
         run_args,
         features,
+        package_roots,
+        allow_native_build,
         sanitizers,
         warning_clean,
         host,
@@ -488,6 +515,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
                 || !case.features.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.sanitizers.is_empty()
                 || !case.run_args.is_empty()
             {
@@ -510,6 +539,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || !case.sanitizers.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.run_args.is_empty()
             {
                 return Err(
@@ -531,6 +562,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || !case.sanitizers.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.run_args.is_empty()
             {
                 return Err(
@@ -553,6 +586,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || !case.sanitizers.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.run_args.is_empty()
             {
                 return Err(
@@ -575,6 +610,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.warning_clean
                 || case.host.is_some()
                 || !case.sanitizers.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.run_args.is_empty()
             {
                 return Err(
@@ -637,6 +674,8 @@ fn validate_case(case: &Case) -> Result<(), String> {
                 || case.host.is_some()
                 || case.known_fail_reason.is_some()
                 || !case.sanitizers.is_empty()
+                || !case.package_roots.is_empty()
+                || case.allow_native_build
                 || !case.run_args.is_empty()
             {
                 return Err(
@@ -790,6 +829,10 @@ fn compile_case(case: &Case) -> Result<BuildPlan, String> {
     for feature in &case.features {
         options = options.with_feature(feature.clone());
     }
+    for package_root in &case.package_roots {
+        options = options.with_package_root(package_root.clone());
+    }
+    options = options.with_allow_native_build(case.allow_native_build);
     compile_to_build_plan(options).map_err(|diagnostics| {
         diagnostics
             .iter()
@@ -797,6 +840,16 @@ fn compile_case(case: &Case) -> Result<BuildPlan, String> {
             .collect::<Vec<_>>()
             .join("\n")
     })
+}
+
+fn metadata_path(case_path: &Path, value: &str) -> PathBuf {
+    if let Some(rest) = value.strip_prefix("@repo/") {
+        return repo_root().join(rest);
+    }
+    case_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(value)
 }
 
 fn compile_warning_clean(case: &Case, plan: &BuildPlan) -> Result<(), String> {

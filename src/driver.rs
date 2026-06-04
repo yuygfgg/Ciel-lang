@@ -7,8 +7,7 @@ use std::{
 use crate::{
     build::{
         BuildPlan, BuildProfile,
-        manifest::PackageManifest,
-        package::{PackageIndex, PackageLoadError},
+        package::{LoadedPackageManifest, PackageIndex, PackageLoadError},
         planner::build_plan_for_generated_c_with_packages,
     },
     codegen::generate_c,
@@ -31,9 +30,11 @@ pub struct CompileOptions {
     pub entry: PathBuf,
     pub project_root: PathBuf,
     pub std_paths: Vec<PathBuf>,
+    pub package_roots: Vec<PathBuf>,
     pub target_os: String,
     pub target_arch: String,
     pub build_profile: BuildProfile,
+    pub allow_native_build: bool,
     pub features: HashSet<String>,
 }
 
@@ -45,9 +46,11 @@ impl CompileOptions {
             entry,
             project_root: project_root.clone(),
             std_paths: vec![project_root],
+            package_roots: Vec::new(),
             target_os: std::env::consts::OS.to_string(),
             target_arch: std::env::consts::ARCH.to_string(),
             build_profile: BuildProfile::Debug,
+            allow_native_build: false,
             features: HashSet::new(),
         }
     }
@@ -67,6 +70,11 @@ impl CompileOptions {
         self
     }
 
+    pub fn with_package_root(mut self, package_root: impl Into<PathBuf>) -> Self {
+        self.package_roots.push(package_root.into());
+        self
+    }
+
     pub fn with_target_os(mut self, target_os: impl Into<String>) -> Self {
         self.target_os = target_os.into();
         self
@@ -82,6 +90,11 @@ impl CompileOptions {
         self
     }
 
+    pub fn with_allow_native_build(mut self, allow_native_build: bool) -> Self {
+        self.allow_native_build = allow_native_build;
+        self
+    }
+
     pub fn with_feature(mut self, feature: impl Into<String>) -> Self {
         self.features.insert(feature.into());
         self
@@ -90,7 +103,12 @@ impl CompileOptions {
 
 pub fn compile_to_c(options: CompileOptions) -> DiagResult<String> {
     let config = ConfigEnv::from_options(&options);
-    let mut loader = ModuleLoader::new(options.project_root, options.std_paths, config)?;
+    let mut loader = ModuleLoader::new(
+        options.project_root,
+        options.std_paths,
+        options.package_roots,
+        config,
+    )?;
     let modules = loader.load_entry(&options.entry)?;
     let resolved = resolve_modules(modules)?;
     let hir = lower_to_hir(resolved)?;
@@ -109,14 +127,19 @@ pub fn compile_to_c_with_sources(
 struct CompileOutput {
     generated_c: String,
     source_map: SourceMap,
-    package_manifests: Vec<PackageManifest>,
+    package_manifests: Vec<LoadedPackageManifest>,
 }
 
 fn compile_to_c_context(
     options: CompileOptions,
 ) -> Result<CompileOutput, (Vec<Diagnostic>, SourceMap)> {
     let config = ConfigEnv::from_options(&options);
-    let mut loader = match ModuleLoader::new(options.project_root, options.std_paths, config) {
+    let mut loader = match ModuleLoader::new(
+        options.project_root,
+        options.std_paths,
+        options.package_roots,
+        config,
+    ) {
         Ok(loader) => loader,
         Err(diagnostics) => return Err((diagnostics, SourceMap::default())),
     };
@@ -166,6 +189,7 @@ pub fn compile_to_build_plan_with_sources(
 ) -> Result<(BuildPlan, SourceMap), (Vec<Diagnostic>, SourceMap)> {
     let profile = options.build_profile;
     let target_os = options.target_os.clone();
+    let allow_native_build = options.allow_native_build;
     compile_to_c_context(options).map(|output| {
         let package_inputs = output
             .source_map
@@ -178,6 +202,7 @@ pub fn compile_to_build_plan_with_sources(
             build_plan_for_generated_c_with_packages(
                 output.generated_c,
                 profile,
+                allow_native_build,
                 &target_os,
                 package_inputs,
                 &output.package_manifests,
@@ -192,27 +217,32 @@ struct ModuleLoader {
     std_paths: Vec<PathBuf>,
     config: ConfigEnv,
     std_package_index: PackageIndex,
+    user_package_index: PackageIndex,
     source_map: SourceMap,
     loaded: HashMap<PathBuf, ModuleId>,
     loading: HashSet<PathBuf>,
     modules: Vec<ParsedModule>,
     loaded_package_keys: HashSet<PathBuf>,
-    loaded_package_manifests: Vec<PackageManifest>,
+    loaded_package_manifests: Vec<LoadedPackageManifest>,
 }
 
 impl ModuleLoader {
     fn new(
         project_root: PathBuf,
         std_paths: Vec<PathBuf>,
+        package_roots: Vec<PathBuf>,
         config: ConfigEnv,
     ) -> Result<Self, Vec<Diagnostic>> {
         let std_package_index =
             PackageIndex::load_std(&std_paths).map_err(package_load_errors_to_diagnostics)?;
+        let user_package_index = PackageIndex::load_package_roots(&package_roots)
+            .map_err(package_load_errors_to_diagnostics)?;
         Ok(Self {
             project_root,
             std_paths,
             config,
             std_package_index,
+            user_package_index,
             source_map: SourceMap::default(),
             loaded: HashMap::new(),
             loading: HashSet::new(),
@@ -294,6 +324,9 @@ impl ModuleLoader {
             if let Some(source) = self.std_package_index.resolve_export(raw) {
                 return source.to_path_buf();
             }
+            if let Some(source) = self.user_package_index.resolve_export(raw) {
+                return source.to_path_buf();
+            }
             let mut candidates = self.std_paths.iter().map(|root| root.join(rest));
             let first = candidates
                 .next()
@@ -311,13 +344,20 @@ impl ModuleLoader {
     }
 
     fn record_package_for_source(&mut self, path: &Path) {
-        let Some(manifest) = self.std_package_index.manifest_for_source(path).cloned() else {
+        let manifest = self
+            .std_package_index
+            .manifest_for_source(path)
+            .or_else(|| self.user_package_index.manifest_for_source(path));
+        let Some(manifest) = manifest else {
             return;
         };
-        let key = manifest
-            .manifest_path
-            .clone()
-            .unwrap_or_else(|| manifest.package.root.join(&manifest.package.name));
+        let key = manifest.manifest.manifest_path.clone().unwrap_or_else(|| {
+            manifest
+                .manifest
+                .package
+                .root
+                .join(&manifest.manifest.package.name)
+        });
         if self.loaded_package_keys.insert(key) {
             self.loaded_package_manifests.push(manifest);
         }

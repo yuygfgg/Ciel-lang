@@ -4,7 +4,7 @@ use std::{
     hash::{Hash, Hasher},
     path::{Path, PathBuf},
     process::Command,
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
 };
 
 use super::requirements::{BuildPlan, BuildProfile, CmakeTarget};
@@ -27,6 +27,10 @@ pub struct CmakeOutput<'a> {
 }
 
 pub fn build_cmake_output(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<(), String> {
+    if output.kind == CmakeOutputKind::Executable {
+        return build_reusable_cmake_executable(plan, output);
+    }
+
     let lock = CMAKE_OUTPUT_LOCK.get_or_init(|| Mutex::new(()));
     let _guard = lock
         .lock()
@@ -61,6 +65,109 @@ pub fn build_cmake_output(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<
 }
 
 static CMAKE_OUTPUT_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn build_reusable_cmake_executable(
+    plan: &BuildPlan,
+    output: &CmakeOutput<'_>,
+) -> Result<(), String> {
+    let cache_key = reusable_cmake_output_key(plan, output);
+    let lock = reusable_cmake_output_lock(cache_key)?;
+    let _guard = lock
+        .lock()
+        .map_err(|_| "reusable CMake output build lock was poisoned".to_string())?;
+
+    let build_root = reusable_cmake_output_build_root(output, cache_key);
+    let source_dir = build_root.join("source");
+    let binary_dir = build_root.join("build");
+    let output_dir = build_root.join("out");
+    let cached_source = source_dir.join("ciel_output_input.c");
+    let cached_output = output_dir.join("ciel_output");
+
+    fs::create_dir_all(&source_dir)
+        .map_err(|error| format!("failed to create `{}`: {error}", source_dir.display()))?;
+    fs::create_dir_all(&output_dir)
+        .map_err(|error| format!("failed to create `{}`: {error}", output_dir.display()))?;
+    if let Some(parent) = output.output_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create `{}`: {error}", parent.display()))?;
+    }
+
+    fs::write(
+        &cached_source,
+        format!("#include {}\n", c_include_quote(output.source_path)),
+    )
+    .map_err(|error| {
+        format!(
+            "failed to write cached C source `{}` from `{}`: {error}",
+            cached_source.display(),
+            output.source_path.display(),
+        )
+    })?;
+
+    let cached = CmakeOutput {
+        source_path: &cached_source,
+        output_path: &cached_output,
+        kind: CmakeOutputKind::Executable,
+        c_compiler: output.c_compiler,
+        compile_flags: output.compile_flags.clone(),
+        link_flags: output.link_flags.clone(),
+        target_os: output.target_os,
+    };
+    let cmake_lists = render_output_cmake_with_native_dirs(
+        plan,
+        &cached,
+        NativeBinaryDirs::Local { root: &build_root },
+    )?;
+    let cmake_lists_path = source_dir.join("CMakeLists.txt");
+    let needs_configure = write_if_changed(&cmake_lists_path, &cmake_lists)?
+        || !binary_dir.join("CMakeCache.txt").exists();
+    if needs_configure {
+        run_cmake_configure(&source_dir, &binary_dir, plan.profile, output.c_compiler)?;
+    }
+    run_cmake_build(&binary_dir, "ciel_output", plan.profile)?;
+    let cached_output = cmake_output_path(&cached_output, output.target_os)?;
+    if !cached_output.exists() {
+        return Err(format!(
+            "CMake target `ciel_output` finished but cached output `{}` was not produced",
+            cached_output.display()
+        ));
+    }
+
+    fs::copy(&cached_output, output.output_path).map_err(|error| {
+        format!(
+            "failed to copy cached executable `{}` to `{}`: {error}",
+            cached_output.display(),
+            output.output_path.display()
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        let permissions = fs::metadata(&cached_output)
+            .map_err(|error| format!("failed to stat `{}`: {error}", cached_output.display()))?
+            .permissions();
+        fs::set_permissions(output.output_path, permissions).map_err(|error| {
+            format!(
+                "failed to set permissions on `{}`: {error}",
+                output.output_path.display()
+            )
+        })?;
+    }
+
+    Ok(())
+}
+
+fn reusable_cmake_output_lock(key: u64) -> Result<Arc<Mutex<()>>, String> {
+    let locks = REUSABLE_CMAKE_OUTPUT_LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut locks = locks
+        .lock()
+        .map_err(|_| "reusable CMake output lock map was poisoned".to_string())?;
+    Ok(locks
+        .entry(key)
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone())
+}
+
+static REUSABLE_CMAKE_OUTPUT_LOCKS: OnceLock<Mutex<HashMap<u64, Arc<Mutex<()>>>>> = OnceLock::new();
 
 pub fn cmake_include_flags(targets: &[CmakeTarget]) -> Vec<String> {
     let mut seen = HashSet::new();
@@ -123,6 +230,19 @@ fn run_cmake_build(build_dir: &Path, target: &str, profile: BuildProfile) -> Res
 }
 
 fn render_output_cmake(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<String, String> {
+    render_output_cmake_with_native_dirs(plan, output, NativeBinaryDirs::Shared)
+}
+
+enum NativeBinaryDirs<'a> {
+    Shared,
+    Local { root: &'a Path },
+}
+
+fn render_output_cmake_with_native_dirs(
+    plan: &BuildPlan,
+    output: &CmakeOutput<'_>,
+    native_dirs: NativeBinaryDirs<'_>,
+) -> Result<String, String> {
     let mut out = String::new();
     out.push_str("cmake_minimum_required(VERSION 3.16)\n");
     out.push_str("project(ciel_generated_output C)\n\n");
@@ -146,7 +266,7 @@ fn render_output_cmake(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<Str
         let source_dir = normalize_path(source_dir);
         source_dirs
             .entry(source_dir.clone())
-            .or_insert_with(|| shared_native_binary_dir(&source_dir, plan.profile, output));
+            .or_insert_with(|| native_binary_dir(&native_dirs, &source_dir, plan.profile, output));
     }
     for (source_dir, target_binary_dir) in &source_dirs {
         out.push_str(&format!(
@@ -189,6 +309,18 @@ fn render_output_cmake(plan: &BuildPlan, output: &CmakeOutput<'_>) -> Result<Str
     Ok(out)
 }
 
+fn native_binary_dir(
+    dirs: &NativeBinaryDirs<'_>,
+    source_dir: &Path,
+    profile: BuildProfile,
+    output: &CmakeOutput<'_>,
+) -> PathBuf {
+    match dirs {
+        NativeBinaryDirs::Shared => shared_native_binary_dir(source_dir, profile, output),
+        NativeBinaryDirs::Local { root } => local_native_binary_dir(root, source_dir, profile),
+    }
+}
+
 fn shared_native_binary_dir(
     source_dir: &Path,
     profile: BuildProfile,
@@ -207,6 +339,13 @@ fn shared_native_binary_dir(
         .join(output.target_os)
         .join(cmake_build_type(profile).to_ascii_lowercase())
         .join(format!("{:x}", hasher.finish()))
+}
+
+fn local_native_binary_dir(root: &Path, source_dir: &Path, profile: BuildProfile) -> PathBuf {
+    let mut hasher = DefaultHasher::new();
+    source_dir.hash(&mut hasher);
+    profile.hash(&mut hasher);
+    root.join("native").join(format!("{:x}", hasher.finish()))
 }
 
 fn render_profile_options(out: &mut String, profile: BuildProfile, target_os: &str) {
@@ -326,6 +465,53 @@ fn cmake_output_build_root(plan: &BuildPlan, output: &CmakeOutput<'_>) -> PathBu
         .join(format!(".{stem}.ciel-cmake-{hash:x}"))
 }
 
+fn reusable_cmake_output_key(plan: &BuildPlan, output: &CmakeOutput<'_>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    output.kind.hash(&mut hasher);
+    output.c_compiler.hash(&mut hasher);
+    output.compile_flags.hash(&mut hasher);
+    output.link_flags.hash(&mut hasher);
+    output.target_os.hash(&mut hasher);
+    plan.profile.hash(&mut hasher);
+    plan.cmake_targets.hash(&mut hasher);
+    preferred_cmake_generator().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn reusable_cmake_output_build_root(output: &CmakeOutput<'_>, cache_key: u64) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("ciel-output-cache")
+        .join(std::process::id().to_string())
+        .join(output.target_os)
+        .join(format!("{cache_key:x}"))
+}
+
+fn cmake_output_path(path: &Path, target_os: &str) -> Result<PathBuf, String> {
+    if path.exists() || target_os != "windows" {
+        return Ok(path.to_path_buf());
+    }
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            format!(
+                "output path `{}` must end with a valid UTF-8 file name",
+                path.display()
+            )
+        })?;
+    Ok(path.with_file_name(format!("{file_name}.exe")))
+}
+
+fn write_if_changed(path: &Path, contents: &str) -> Result<bool, String> {
+    if fs::read_to_string(path).is_ok_and(|existing| existing == contents) {
+        return Ok(false);
+    }
+    fs::write(path, contents)
+        .map_err(|error| format!("failed to write `{}`: {error}", path.display()))?;
+    Ok(true)
+}
+
 fn cmake_build_type(profile: BuildProfile) -> &'static str {
     match profile {
         BuildProfile::Debug => "Debug",
@@ -374,6 +560,15 @@ fn cmake_quote_raw(raw: &str) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('$', "\\$");
+    format!("\"{escaped}\"")
+}
+
+fn c_include_quote(path: &Path) -> String {
+    let escaped = path
+        .display()
+        .to_string()
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"");
     format!("\"{escaped}\"")
 }
 

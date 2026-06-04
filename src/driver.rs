@@ -1,6 +1,6 @@
 use std::{
     collections::{HashMap, HashSet},
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -28,7 +28,7 @@ const COMPILER_PRELUDE_IMPORTS: &[&str] =
 #[derive(Clone, Debug)]
 pub struct CompileOptions {
     pub entry: PathBuf,
-    pub project_root: PathBuf,
+    pub project_manifest: Option<PathBuf>,
     pub std_paths: Vec<PathBuf>,
     pub package_roots: Vec<PathBuf>,
     pub target_os: String,
@@ -41,27 +41,22 @@ pub struct CompileOptions {
 impl CompileOptions {
     pub fn new(entry: impl Into<PathBuf>) -> Self {
         let entry = entry.into();
-        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let std_root = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             entry,
-            project_root: project_root.clone(),
-            std_paths: vec![project_root],
+            project_manifest: None,
+            std_paths: vec![std_root],
             package_roots: Vec::new(),
-            target_os: std::env::consts::OS.to_string(),
-            target_arch: std::env::consts::ARCH.to_string(),
+            target_os: env::consts::OS.to_string(),
+            target_arch: env::consts::ARCH.to_string(),
             build_profile: BuildProfile::Debug,
             allow_native_build: false,
             features: HashSet::new(),
         }
     }
 
-    pub fn with_project_root(mut self, project_root: impl Into<PathBuf>) -> Self {
-        let old_root = self.project_root.clone();
-        let project_root = project_root.into();
-        if self.std_paths == [old_root] {
-            self.std_paths = vec![project_root.clone()];
-        }
-        self.project_root = project_root;
+    pub fn with_project_manifest(mut self, manifest_path: impl Into<PathBuf>) -> Self {
+        self.project_manifest = Some(manifest_path.into());
         self
     }
 
@@ -104,7 +99,7 @@ impl CompileOptions {
 pub fn compile_to_c(options: CompileOptions) -> DiagResult<String> {
     let config = ConfigEnv::from_options(&options);
     let mut loader = ModuleLoader::new(
-        options.project_root,
+        options.project_manifest,
         options.std_paths,
         options.package_roots,
         config,
@@ -135,7 +130,7 @@ fn compile_to_c_context(
 ) -> Result<CompileOutput, (Vec<Diagnostic>, SourceMap)> {
     let config = ConfigEnv::from_options(&options);
     let mut loader = match ModuleLoader::new(
-        options.project_root,
+        options.project_manifest,
         options.std_paths,
         options.package_roots,
         config,
@@ -213,7 +208,7 @@ pub fn compile_to_build_plan_with_sources(
 }
 
 struct ModuleLoader {
-    project_root: PathBuf,
+    cwd: PathBuf,
     std_paths: Vec<PathBuf>,
     config: ConfigEnv,
     std_package_index: PackageIndex,
@@ -228,17 +223,20 @@ struct ModuleLoader {
 
 impl ModuleLoader {
     fn new(
-        project_root: PathBuf,
+        project_manifest: Option<PathBuf>,
         std_paths: Vec<PathBuf>,
         package_roots: Vec<PathBuf>,
         config: ConfigEnv,
     ) -> Result<Self, Vec<Diagnostic>> {
         let std_package_index =
             PackageIndex::load_std(&std_paths).map_err(package_load_errors_to_diagnostics)?;
-        let user_package_index = PackageIndex::load_package_roots(&package_roots)
-            .map_err(package_load_errors_to_diagnostics)?;
+        let user_package_index = PackageIndex::load_project_manifest_and_package_roots(
+            project_manifest.as_deref(),
+            &package_roots,
+        )
+        .map_err(package_load_errors_to_diagnostics)?;
         Ok(Self {
-            project_root,
+            cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             std_paths,
             config,
             std_package_index,
@@ -254,7 +252,7 @@ impl ModuleLoader {
 
     fn load_entry(&mut self, entry: &Path) -> DiagResult<Vec<ParsedModule>> {
         for import in COMPILER_PRELUDE_IMPORTS {
-            let import_path = self.resolve_import_path(&self.project_root, import);
+            let import_path = self.resolve_import_path(Path::new("."), import);
             self.load_file(&import_path)?;
         }
         let path = self.normalize_path(entry);
@@ -328,9 +326,7 @@ impl ModuleLoader {
                 return source.to_path_buf();
             }
             let mut candidates = self.std_paths.iter().map(|root| root.join(rest));
-            let first = candidates
-                .next()
-                .unwrap_or_else(|| self.project_root.join(rest));
+            let first = candidates.next().unwrap_or_else(|| PathBuf::from(rest));
             candidates
                 .find(|path| path.with_extension("ciel").exists())
                 .unwrap_or(first)
@@ -367,7 +363,7 @@ impl ModuleLoader {
         let path = if path.is_absolute() {
             path.to_path_buf()
         } else {
-            self.project_root.join(path)
+            self.cwd.join(path)
         };
         path.components().collect()
     }

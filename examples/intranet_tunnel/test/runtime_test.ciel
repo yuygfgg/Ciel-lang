@@ -1,8 +1,8 @@
 import /std/async_net as anet;
 import /std/result;
-import /intranet_tunnel/protocol/codec as tunnel_codec;
-import /intranet_tunnel/protocol/frame as frame;
-import /intranet_tunnel/runtime as rt;
+import ../protocol/codec as tunnel_codec;
+import ../protocol/frame as frame;
+import ../runtime as rt;
 
 bool bytes_equal_text([]const u8 bytes, []const char text) {
     if (bytes.len != text.len) {

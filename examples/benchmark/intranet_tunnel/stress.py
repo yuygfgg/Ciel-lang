@@ -346,8 +346,8 @@ def build_go_implementation(work_dir: Path) -> Implementation:
 def build_ciel_implementation(work_dir: Path) -> Implementation:
     server = work_dir / exe_name("ciel-tunnel-server")
     agent = work_dir / exe_name("ciel-tunnel-agent")
-    compile_ciel(CIEL_TUNNEL / "main_server.ciel", server)
-    compile_ciel(CIEL_TUNNEL / "main_agent.ciel", agent)
+    compile_ciel("server", server)
+    compile_ciel("agent", agent)
     return Implementation(
         name="ciel",
         server=server,
@@ -357,17 +357,18 @@ def build_ciel_implementation(work_dir: Path) -> Implementation:
     )
 
 
-def compile_ciel(src: Path, output: Path) -> None:
+def compile_ciel(entry: str, output: Path) -> None:
     cielc = os.environ.get("CIELC")
     if cielc:
         cmd = [
             cielc,
             "--release",
-            "--project-root",
-            str(EXAMPLES_ROOT),
+            "--manifest-path",
+            str(CIEL_TUNNEL / "ciel.toml"),
             "--std-path",
             str(ROOT),
-            str(src),
+            "--entry",
+            entry,
             "-o",
             str(output),
         ]
@@ -381,11 +382,12 @@ def compile_ciel(src: Path, output: Path) -> None:
             str(ROOT / "Cargo.toml"),
             "--",
             "--release",
-            "--project-root",
-            str(EXAMPLES_ROOT),
+            "--manifest-path",
+            str(CIEL_TUNNEL / "ciel.toml"),
             "--std-path",
             str(ROOT),
-            str(src),
+            "--entry",
+            entry,
             "-o",
             str(output),
         ]

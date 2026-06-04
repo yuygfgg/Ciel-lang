@@ -1,6 +1,6 @@
 import /std/result;
-import /intranet_tunnel/protocol/auth as auth;
-import /intranet_tunnel/protocol/frame as frame;
+import ../protocol/auth as auth;
+import ../protocol/frame as frame;
 
 bool bytes_eq([]const u8 left, []const u8 right) {
     if (left.len != right.len) {

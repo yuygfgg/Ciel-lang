@@ -123,6 +123,11 @@ impl Parser {
             self.advance();
             self.expect(TokenKind::Slash, "expected `/` after `.` in module path")?;
             raw.push_str("./");
+        } else {
+            while self.eat(TokenKind::DotDot).is_some() {
+                self.expect(TokenKind::Slash, "expected `/` after `..` in module path")?;
+                raw.push_str("../");
+            }
         }
 
         let first = self.expect_ident("expected module path segment")?;

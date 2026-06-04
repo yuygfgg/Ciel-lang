@@ -6,6 +6,7 @@ use std::{
 
 use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
+    build::manifest::{PackageKind, PackageManifest},
     build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output, cmake_include_flags},
     diagnostic::render_diagnostics,
     driver::compile_to_build_plan_with_sources,
@@ -31,14 +32,14 @@ fn main() {
         process::exit(2);
     });
 
-    let Some(input) = cli.input.clone() else {
-        eprintln!("missing input file");
+    let selection = resolve_cli_project(&cli).unwrap_or_else(|message| {
+        eprintln!("{message}");
         process::exit(2);
-    };
+    });
 
-    let mut options = CompileOptions::new(&input);
-    if let Some(project_root) = &cli.project_root {
-        options = options.with_project_root(project_root.clone());
+    let mut options = CompileOptions::new(&selection.input);
+    if let Some(manifest_path) = &selection.project_manifest {
+        options = options.with_project_manifest(manifest_path.clone());
     }
     for std_path in &cli.std_paths {
         options = options.with_std_path(std_path.clone());
@@ -65,7 +66,7 @@ fn main() {
                 emit_c_output(&plan.generated_c, cli.output.as_deref());
                 return;
             }
-            compile_generated_c(&input, &plan, &target_os, &cli);
+            compile_generated_c(&selection.input, &plan, &target_os, &cli);
         }
         Err((diagnostics, source_map)) => {
             eprint!("{}", render_diagnostics(&source_map, &diagnostics));
@@ -77,9 +78,10 @@ fn main() {
 #[derive(Clone, Debug)]
 struct CliOptions {
     input: Option<PathBuf>,
+    entry: Option<String>,
+    manifest_path: Option<PathBuf>,
     output: Option<PathBuf>,
     save_c: Option<PathBuf>,
-    project_root: Option<PathBuf>,
     std_paths: Vec<PathBuf>,
     package_roots: Vec<PathBuf>,
     target_os: Option<String>,
@@ -96,9 +98,10 @@ struct CliOptions {
 fn parse_args(args: &[String]) -> Result<CliOptions, String> {
     let mut cli = CliOptions {
         input: None,
+        entry: None,
+        manifest_path: None,
         output: None,
         save_c: None,
-        project_root: None,
         std_paths: Vec::new(),
         package_roots: Vec::new(),
         target_os: None,
@@ -118,13 +121,16 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             "-o" | "--output" => cli.output = Some(PathBuf::from(take_value(args, &mut idx)?)),
             "--emit-c" => cli.emit = EmitMode::C,
             "--emit" => cli.emit = parse_emit_mode(&take_value(args, &mut idx)?)?,
+            "--entry" => cli.entry = Some(take_value(args, &mut idx)?),
+            "--manifest-path" => {
+                cli.manifest_path = Some(PathBuf::from(take_value(args, &mut idx)?))
+            }
             "--save-c" => cli.save_c = Some(PathBuf::from(take_value(args, &mut idx)?)),
             "--cc" => cli.c_compiler = take_value(args, &mut idx)?,
             "--cflag" => cli.c_flags.push(take_value(args, &mut idx)?),
             "--ldflag" => cli.link_flags.push(take_value(args, &mut idx)?),
             "--debug" => cli.profile = BuildProfile::Debug,
             "--release" => cli.profile = BuildProfile::Release,
-            "--project-root" => cli.project_root = Some(PathBuf::from(take_value(args, &mut idx)?)),
             "--std-path" => cli
                 .std_paths
                 .push(PathBuf::from(take_value(args, &mut idx)?)),
@@ -138,6 +144,12 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
             arg if arg.starts_with("--emit=") => {
                 cli.emit = parse_emit_mode(arg.trim_start_matches("--emit="))?
             }
+            arg if arg.starts_with("--entry=") => {
+                cli.entry = Some(arg.trim_start_matches("--entry=").to_string())
+            }
+            arg if arg.starts_with("--manifest-path=") => {
+                cli.manifest_path = Some(PathBuf::from(arg.trim_start_matches("--manifest-path=")))
+            }
             arg if arg.starts_with('-') => return Err(format!("unknown option `{arg}`")),
             path => {
                 if cli.input.replace(PathBuf::from(path)).is_some() {
@@ -148,6 +160,126 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         idx += 1;
     }
     Ok(cli)
+}
+
+struct ProjectSelection {
+    input: PathBuf,
+    project_manifest: Option<PathBuf>,
+}
+
+fn resolve_cli_project(cli: &CliOptions) -> Result<ProjectSelection, String> {
+    if cli.input.is_some() && cli.entry.is_some() {
+        return Err("cannot combine an input file with --entry".to_string());
+    }
+
+    let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let manifest_path = resolve_manifest_path(cli, &cwd);
+    let Some(manifest_path) = manifest_path else {
+        if let Some(input) = &cli.input {
+            return Ok(ProjectSelection {
+                input: input.clone(),
+                project_manifest: None,
+            });
+        }
+        return Err(
+            "missing input file and no ciel.toml found; pass input.ciel or --manifest-path <ciel.toml>"
+                .to_string(),
+        );
+    };
+
+    let manifest = PackageManifest::load(&manifest_path).map_err(|error| {
+        format!(
+            "failed to load project manifest `{}`: {error}",
+            manifest_path.display()
+        )
+    })?;
+    if manifest.package.kind != PackageKind::Project {
+        return Err(format!(
+            "project manifest `{}` has kind {:?}; expected project",
+            manifest_path.display(),
+            manifest.package.kind
+        ));
+    }
+    let input = if let Some(input) = &cli.input {
+        input.clone()
+    } else {
+        resolve_project_entry(&manifest, &manifest_path, cli.entry.as_deref())?
+    };
+
+    Ok(ProjectSelection {
+        input,
+        project_manifest: Some(manifest_path),
+    })
+}
+
+fn resolve_manifest_path(cli: &CliOptions, cwd: &Path) -> Option<PathBuf> {
+    if let Some(path) = &cli.manifest_path {
+        return Some(normalize_cli_path(path));
+    }
+    if cli.input.is_none() {
+        return find_manifest_upwards(cwd);
+    }
+    None
+}
+
+fn find_manifest_upwards(start: &Path) -> Option<PathBuf> {
+    let mut dir = normalize_cli_path(start);
+    loop {
+        let manifest = dir.join("ciel.toml");
+        if manifest.exists() {
+            return Some(manifest);
+        }
+        if !dir.pop() {
+            return None;
+        }
+    }
+}
+
+fn normalize_cli_path(path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(path)
+    };
+    path.components().collect()
+}
+
+fn resolve_project_entry(
+    manifest: &PackageManifest,
+    manifest_path: &Path,
+    entry: Option<&str>,
+) -> Result<PathBuf, String> {
+    let project = manifest.project.as_ref().ok_or_else(|| {
+        format!(
+            "project manifest `{}` has no project section",
+            manifest_path.display()
+        )
+    })?;
+    let entry_name = match entry {
+        Some(entry) => entry,
+        None => match project.default.as_deref() {
+            Some(default) => default,
+            None if project.entries.len() == 1 => project.entries.keys().next().unwrap(),
+            None => {
+                return Err(format!(
+                    "project manifest `{}` has multiple entries; pass --entry <name>",
+                    manifest_path.display()
+                ));
+            }
+        },
+    };
+    project.entries.get(entry_name).cloned().ok_or_else(|| {
+        let mut names = project.entries.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        format!(
+            "project manifest `{}` has no entry `{}`; available entries: {}",
+            manifest_path.display(),
+            entry_name,
+            names.join(", ")
+        )
+    })
 }
 
 fn take_value(args: &[String], idx: &mut usize) -> Result<String, String> {
@@ -324,6 +456,6 @@ fn default_output_path(input: &Path, mode: EmitMode, target_os: &str) -> PathBuf
 
 fn print_usage() {
     eprintln!(
-        "usage: cielc [--emit MODE|--emit-c] [--debug|--release] [--cc cc] [--cflag flag] [--ldflag flag] [--save-c path] [--project-root root] [--std-path root] [--package-root root] [--allow-native-build] [--target-os os] [--target-arch arch] [--feature name] <input.ciel> [-o output]"
+        "usage: cielc [--emit MODE|--emit-c] [--debug|--release] [--entry name] [--manifest-path path/to/ciel.toml] [--cc cc] [--cflag flag] [--ldflag flag] [--save-c path] [--std-path root] [--package-root root] [--allow-native-build] [--target-os os] [--target-arch arch] [--feature name] [input.ciel] [-o output]"
     );
 }

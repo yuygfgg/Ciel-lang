@@ -1,7 +1,7 @@
 import /std/codec as binary;
 import /std/result;
-import /intranet_tunnel/protocol/codec as tunnel_codec;
-import /intranet_tunnel/protocol/frame as frame;
+import ../protocol/codec as tunnel_codec;
+import ../protocol/frame as frame;
 
 bool is_err_header(Result<frame::FrameHeader, Error> value) {
     switch (value) {

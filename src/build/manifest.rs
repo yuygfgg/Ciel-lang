@@ -12,6 +12,7 @@ use super::requirements::CmakeTarget;
 pub struct PackageManifest {
     pub manifest_path: Option<PathBuf>,
     pub package: PackageInfo,
+    pub project: Option<ProjectSection>,
     pub ciel: Option<CielSection>,
     pub native: NativeSection,
 }
@@ -28,8 +29,13 @@ pub struct PackageInfo {
 pub enum PackageKind {
     Project,
     Stdlib,
-    Runtime,
     Library,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProjectSection {
+    pub default: Option<String>,
+    pub entries: BTreeMap<String, PathBuf>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +135,7 @@ impl std::error::Error for ManifestError {}
 struct RawManifest {
     manifest_version: u32,
     package: RawPackage,
+    project: Option<RawProject>,
     ciel: Option<RawCiel>,
     #[serde(default)]
     native: RawNative,
@@ -141,6 +148,14 @@ struct RawPackage {
     kind: PackageKind,
     #[serde(default = "default_package_root")]
     root: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProject {
+    default: Option<String>,
+    #[serde(default)]
+    entries: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +198,35 @@ impl RawManifest {
         validate_package_name(&self.package.name)?;
         let root = clean_relative_path(&self.package.root, "package.root")?;
         let package_root = normalize_joined_path(&manifest_dir.join(root));
+        let package_kind = self.package.kind;
+        if package_kind == PackageKind::Project && self.ciel.is_some() {
+            return Err(ManifestError {
+                line: None,
+                message: "`ciel.exports` is only valid for stdlib and library manifests"
+                    .to_string(),
+            });
+        }
+
+        let project = match (package_kind, self.project) {
+            (PackageKind::Project, Some(project)) => {
+                Some(validate_project_section(project, &package_root)?)
+            }
+            (PackageKind::Project, None) => {
+                return Err(ManifestError {
+                    line: None,
+                    message: "`project` section is required when package.kind is project"
+                        .to_string(),
+                });
+            }
+            (_, Some(_)) => {
+                return Err(ManifestError {
+                    line: None,
+                    message: "`project` section is only valid when package.kind is project"
+                        .to_string(),
+                });
+            }
+            (_, None) => None,
+        };
 
         let ciel = self
             .ciel
@@ -246,13 +290,80 @@ impl RawManifest {
             manifest_path,
             package: PackageInfo {
                 name: self.package.name,
-                kind: self.package.kind,
+                kind: package_kind,
                 root: package_root,
             },
+            project,
             ciel,
             native,
         })
     }
+}
+
+fn validate_project_section(
+    section: RawProject,
+    package_root: &Path,
+) -> Result<ProjectSection, ManifestError> {
+    if section.entries.is_empty() {
+        return Err(ManifestError {
+            line: None,
+            message: "`project.entries` must not be empty".to_string(),
+        });
+    }
+    let mut entries = BTreeMap::new();
+    let mut entry_sources = HashSet::new();
+    for (name, path) in section.entries {
+        validate_project_entry_name(&name)?;
+        let field = format!("project.entries.{name}");
+        let rel = clean_relative_path(&path, &field)?;
+        if rel.extension().and_then(|ext| ext.to_str()) != Some("ciel") {
+            return Err(ManifestError {
+                line: None,
+                message: format!(
+                    "project entry `{name}` source `{path}` must use the .ciel extension"
+                ),
+            });
+        }
+        let source = normalize_joined_path(&package_root.join(rel));
+        if !entry_sources.insert(source.clone()) {
+            return Err(ManifestError {
+                line: None,
+                message: format!(
+                    "project entry source `{}` must not be listed more than once",
+                    source.display()
+                ),
+            });
+        }
+        entries.insert(name, source);
+    }
+    if let Some(default) = &section.default {
+        validate_project_entry_name(default)?;
+        if !entries.contains_key(default) {
+            return Err(ManifestError {
+                line: None,
+                message: format!("project.default `{default}` does not name a project entry"),
+            });
+        }
+    }
+    Ok(ProjectSection {
+        default: section.default,
+        entries,
+    })
+}
+
+fn validate_project_entry_name(name: &str) -> Result<(), ManifestError> {
+    validate_non_empty(name, "project entry name")?;
+    if !name
+        .chars()
+        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+    {
+        return Err(ManifestError {
+            line: None,
+            message: "project entry names must use lowercase ascii letters, digits, _, or -"
+                .to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_package_name(name: &str) -> Result<(), ManifestError> {
@@ -444,6 +555,130 @@ when = { os = ["linux", "macos"] }
             PathBuf::from("/repo/std/async_net/native/CMakeLists.txt")
         );
         assert!(manifest.cmake_targets("windows", false).is_empty());
+    }
+
+    #[test]
+    fn parses_project_manifest_entries() {
+        let manifest = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "demo"
+kind = "project"
+root = "."
+
+[project]
+default = "server"
+
+	[project.entries]
+	server = "main_server.ciel"
+	agent = "main_agent.ciel"
+	"#,
+            "/repo/examples/demo",
+        )
+        .unwrap();
+
+        assert_eq!(manifest.package.kind, PackageKind::Project);
+        let project = manifest.project.as_ref().unwrap();
+        assert_eq!(project.default.as_deref(), Some("server"));
+        assert_eq!(
+            project.entries.get("agent"),
+            Some(&PathBuf::from("/repo/examples/demo/main_agent.ciel"))
+        );
+    }
+
+    #[test]
+    fn rejects_project_exports() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "bad.project"
+kind = "project"
+
+[project.entries]
+main = "main.ciel"
+
+[ciel.exports]
+"/bad/project" = "main.ciel"
+"#,
+            "/repo/project",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("`ciel.exports` is only valid for stdlib and library manifests"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn rejects_runtime_package_kind() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "bad.runtime"
+kind = "runtime"
+"#,
+            "/repo/runtime",
+        )
+        .unwrap_err();
+
+        assert!(
+            error.message.contains("unknown variant") && error.message.contains("runtime"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn project_manifest_requires_entries() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "bad.project"
+kind = "project"
+"#,
+            "/repo/project",
+        )
+        .unwrap_err();
+
+        assert!(
+            error.message.contains("`project` section is required"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn project_section_requires_entries() {
+        let error = PackageManifest::parse_str(
+            r#"
+manifest_version = 1
+
+[package]
+name = "bad.project"
+kind = "project"
+
+[project]
+default = "main"
+"#,
+            "/repo/project",
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .message
+                .contains("`project.entries` must not be empty"),
+            "{error}"
+        );
     }
 
     #[test]

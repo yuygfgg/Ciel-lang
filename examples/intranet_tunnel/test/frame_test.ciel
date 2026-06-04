@@ -1,6 +1,6 @@
 import /std/result;
-import /intranet_tunnel/protocol/error as terr;
-import /intranet_tunnel/protocol/frame as frame;
+import ../protocol/error as terr;
+import ../protocol/frame as frame;
 
 u16 exhaustive_kind_code(frame::FrameKind kind) {
     switch (kind) {

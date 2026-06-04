@@ -16,15 +16,14 @@ From the repository root:
 
 ```sh
 cargo run --quiet -- \
-  --project-root "$PWD/examples" \
+  --manifest-path "$PWD/examples/intranet_tunnel/ciel.toml" \
   --std-path "$PWD" \
-  "$PWD/examples/intranet_tunnel/main_server.ciel" \
   -o /tmp/tunnel-server
 
 cargo run --quiet -- \
-  --project-root "$PWD/examples" \
+  --manifest-path "$PWD/examples/intranet_tunnel/ciel.toml" \
   --std-path "$PWD" \
-  "$PWD/examples/intranet_tunnel/main_agent.ciel" \
+  --entry agent \
   -o /tmp/tunnel-agent
 ```
 

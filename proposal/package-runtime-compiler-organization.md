@@ -62,7 +62,7 @@ Current implementation anchors:
 ## Goals
 
 1. Add declarative package metadata for Ciel projects, standard-library
-   packages, runtime packages, and third-party packages.
+   packages, and third-party packages.
 2. Let a manifest declare the project/package root, Ciel source files, CMake
    native targets, and their target filters.
 3. Avoid arbitrary shell execution in package metadata.
@@ -138,14 +138,15 @@ package metadata that can grow into shell scripting.
 
 A Ciel package root may contain a `ciel.toml` manifest. Single-file programs
 without a manifest continue to work. The compiler treats a manifest as the
-authoritative description of public package exports and native build
-requirements.
+authoritative description of project entries, public package exports, and
+native build requirements.
 
 The manifest declares four boundaries explicitly:
 
 1. the project or package root;
-2. the public Ciel import paths exposed by the package and their source files;
-3. CMake native targets owned by the package.
+2. compile entry files for entry projects;
+3. the public Ciel import paths exposed by the package and their source files;
+4. CMake native targets owned by the package.
 
 The first manifest version should use this concrete shape:
 
@@ -171,29 +172,72 @@ Top-level fields:
 1. `manifest_version`: required integer. Version `1` is the schema described
    here.
 2. `[package]`: required package identity.
-3. `[ciel.exports]`: required for packages that expose Ciel modules.
-4. `[[native.cmake]]`: optional native CMake targets.
+3. `[project]`: required only when `package.kind = "project"`.
+4. `[ciel.exports]`: required for `stdlib` and `library` packages that expose
+   Ciel modules; invalid for `project` manifests.
+5. `[[native.cmake]]`: optional native CMake targets.
 
 `[package]` fields:
 
 1. `name`: required stable package id, using lowercase segments separated by
    `.`.
-2. `kind`: one of `project`, `stdlib`, `runtime`, or `library`.
+2. `kind`: one of `project`, `stdlib`, or `library`.
 3. `root`: package root relative to the manifest file. It defaults to `"."`.
+
+`project` is the entry-project kind. It is not a library marker. A project
+manifest describes compile entry points:
+
+```toml
+manifest_version = 1
+
+[package]
+name = "intranet_tunnel"
+kind = "project"
+root = "."
+
+[project]
+default = "server"
+
+[project.entries]
+server = "main_server.ciel"
+agent = "main_agent.ciel"
+frame_test = "test/frame_test.ciel"
+```
+
+`[project]` fields:
+
+1. `default`: optional entry name used when the CLI does not pass `--entry`.
+2. `entries`: required map from entry names to `.ciel` source files relative to
+   `package.root`.
+
+Project entries are compile entry points. They are not import exports and do not
+make the project a library. Project modules should use relative imports. A
+project manifest must not contain `[ciel.exports]`; code that needs absolute
+public imports should be a `library` package. Version 1 does not add test
+metadata, workspaces, or per-entry build profiles.
+
+The project CLI should feel like a small Cargo-style manifest flow. Running from
+inside a project may use the nearest `ciel.toml` found by walking from the
+current directory toward the filesystem root. Scripts may pass
+`--manifest-path path/to/ciel.toml` to select a project explicitly. `--entry
+<name>` selects a named project entry; if it is omitted, `project.default` is
+used. Passing an input file compiles that source directly; source-file
+compilation does not have a separate root override.
 
 `[ciel.exports]` fields:
 
-1. Each key is a public absolute import path exposed by this package. The
-   import path syntax remains compatible with current `/std/...` imports.
+1. Each key is a public absolute import path exposed by a `stdlib` or `library`
+   package. The import path syntax remains compatible with current `/std/...`
+   imports.
 2. Each value is the `.ciel` source file for that import path, relative to
    `package.root`. Globs are not part of version 1.
 
-Version 1 uses one manifest per package directory. A package may contain
-multiple Ciel source files and may expose multiple import paths through
-`[ciel.exports]`. Import path mapping is explicit; the compiler must not infer
-import paths or source files from `package.name`. Non-public helper files are
-loaded through normal relative imports from exported source files and do not
-need to be listed in the manifest.
+Version 1 uses one manifest per package directory. A `stdlib` or `library`
+package may contain multiple Ciel source files and may expose multiple import
+paths through `[ciel.exports]`. Import path mapping is explicit; the compiler
+must not infer import paths or source files from `package.name`. Non-public
+helper files are loaded through normal relative imports from exported source
+files and do not need to be listed in the manifest.
 
 Package metadata may describe CMake native targets:
 
@@ -219,11 +263,11 @@ standard-library package needs native flags.
 The proposal chooses CMake as the only external build descriptor for version 1.
 Make is deliberately excluded because Make recipes are shell commands. CMake is
 not perfectly declarative either. Version 1 allows CMake for the entry project
-and compiler-shipped runtime/standard-library packages by default. CMake targets
-loaded from `--package-root` require `--allow-native-build`.
+and compiler-shipped standard-library packages by default. CMake targets loaded
+from `--package-root` require `--allow-native-build`.
 
-Builtin runtime and standard-library packages should use small CMake targets
-too, even when the native code is only one `.c` file.
+Builtin runtime units and standard-library packages should use small CMake
+targets, even when the native code is only one `.c` file.
 
 The descriptor is intentionally a file reference plus structured fields. A
 package can provide `CMakeLists.txt`, static archives, generated headers, or
@@ -295,11 +339,11 @@ inputs and outputs, and requires explicit user opt-in for side effects.
 
 The compiler should search package roots in this order:
 
-1. the entry project's manifest root;
-2. builtin runtime packages shipped with the compiler;
-3. builtin standard-library packages shipped with the compiler;
-4. user-specified package roots from `--package-root`;
-5. relative imports next to the importing source file.
+1. builtin standard-library packages shipped with the compiler;
+2. the entry project selected by `--manifest-path` or nearest-ancestor
+   `ciel.toml` discovery;
+3. user-specified package roots from `--package-root`;
+4. relative imports next to the importing source file.
 
 The exact path syntax can remain compatible with current Ciel imports. The
 important change is that a resolved import points to a package-owned module
@@ -359,8 +403,9 @@ intended std definition, but they should not trigger new imports in phase 1.
 
 ## Runtime Split
 
-`runtime_prelude.c` should be split into runtime packages. The initial split
-should be mechanical and preserve behavior:
+`runtime_prelude.c` should be split into compiler-owned runtime CMake target
+sources. Runtime code is not a `ciel.toml` package kind and is not importable by
+user code. The initial split should be mechanical and preserve behavior:
 
 ```text
 runtime/
@@ -386,32 +431,15 @@ runtime/
   crypto_botan.c
 ```
 
-Each runtime unit has package metadata:
+The compiler owns the runtime target registry. In version 1 the driver builds a
+fixed runtime target set for every executable build. This removes the need to
+paste a complete C runtime into every generated C file without adding a new
+codegen-to-driver feature selection API.
 
-```toml
-manifest_version = 1
-
-[package]
-name = "runtime.crypto_botan"
-kind = "runtime"
-root = "."
-
-[[native.cmake]]
-path = "CMakeLists.txt"
-target = "ciel_runtime_crypto_botan"
-```
-
-The compiler owns a small runtime package registry. In version 1 the driver
-builds a fixed runtime target set for every executable build. This removes the
-need to paste a complete C runtime into every generated C file without adding a
-new codegen-to-driver feature selection API.
-
-The compiler distribution owns these runtime packages. The first
-implementation may still embed or copy them from compiler resources and build
-all runtime CMake targets by default for simplicity. The architectural change
-is that runtime units are separate CMake targets with separate metadata. After
-that, selecting only needed units through a future `RuntimeNeed` mechanism is
-an incremental optimization.
+The compiler distribution owns these runtime sources and CMake targets. The
+first implementation may build one aggregate `ciel_runtime` target by default
+for simplicity. After that, selecting only needed units through a future
+`RuntimeNeed` mechanism is an incremental optimization.
 
 ## Standard Library Split
 
@@ -483,7 +511,7 @@ The build plan is assembled from:
 1. entry project package metadata;
 2. imported Ciel packages;
 3. compiler prelude packages;
-4. builtin runtime packages;
+4. the compiler-owned runtime CMake target set;
 5. standard-library package metadata;
 6. explicit CLI flags such as `--cflag` and `--ldflag`.
 
@@ -575,9 +603,9 @@ The split should make MIR easier to add, but not block on it.
 2. Add runtime headers under `runtime/include`.
 3. Teach codegen to emit declarations/includes for runtime headers instead of
    pasting the whole runtime body.
-4. Add CMake targets for runtime units.
+4. Add compiler-owned CMake targets for runtime units.
 5. Teach the driver to link generated C through a top-level CMake project that
-   consumes runtime CMake targets.
+   consumes the compiler-owned runtime CMake target set.
 6. Include all runtime targets in version 1.
 
 ### Phase 3: Standard-Library Package Split
@@ -639,7 +667,8 @@ The split should make MIR easier to add, but not block on it.
    `--package-root`.
 10. Do not introduce `build.ciel` in version 1.
 11. Do not add `CIEL_PACKAGE_PATH` in version 1.
-12. Runtime packages are build-planning inputs, not user-importable modules.
+12. Runtime targets are compiler-owned build-planning inputs, not manifest
+    packages and not user-importable modules.
 13. Keep `compile_to_c` for tests and `--emit-c`; executable/object/shared
    builds use `BuildPlan`.
 14. Let packages own their native code and CMake target dependencies.

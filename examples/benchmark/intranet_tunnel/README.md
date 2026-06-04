@@ -9,16 +9,8 @@ Cargo-built Rust load tool based on Tokio.
 sudo env CIELC="$PWD/target/release/cielc" \
     nice -n -20 \
     python3 examples/benchmark/intranet_tunnel/stress.py --ceiling 4096
-Password:
+
 fd limit: soft=65536 hard=9223372036854775807
-+ cargo build --quiet --release --locked
-+ go build -C /Users/a1/Ciel-lang/examples/intranet_tunnel_go -o /tmp/ciel_tunnel_stress_0uix5htk/go-tunnel-server ./cmd/tunnel-server
-+ go build -C /Users/a1/Ciel-lang/examples/intranet_tunnel_go -o /tmp/ciel_tunnel_stress_0uix5htk/go-tunnel-agent ./cmd/tunnel-agent
-+ /Users/a1/Ciel-lang/target/release/cielc --release --project-root /Users/a1/Ciel-lang/examples --std-path /Users/a1/Ciel-lang /Users/a1/Ciel-lang/examples/intranet_tunnel/main_server.ciel -o /tmp/ciel_tunnel_stress_0uix5htk/ciel-tunnel-server
-+ /Users/a1/Ciel-lang/target/release/cielc --release --project-root /Users/a1/Ciel-lang/examples --std-path /Users/a1/Ciel-lang /Users/a1/Ciel-lang/examples/intranet_tunnel/main_agent.ciel -o /tmp/ciel_tunnel_stress_0uix5htk/ciel-tunnel-agent
-echo target: 127.0.0.1:60728
-baseline: validating load rig at concurrency=4096
-baseline: concurrency=4096 ok mibps=605.2 rps=4841.9 elapsed_ms=6768
 
 === go ===
 go: concurrency=1 ok mibps=338.1 rps=2704.7 elapsed_ms=3

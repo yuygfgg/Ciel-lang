@@ -9,6 +9,7 @@ use super::manifest::{PackageKind, PackageManifest};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PackageOrigin {
     Builtin,
+    Project,
     User,
 }
 
@@ -92,12 +93,7 @@ impl PackageIndex {
         let mut errors = Vec::new();
         for path in manifest_paths {
             match PackageManifest::load(&path) {
-                Ok(manifest)
-                    if matches!(
-                        manifest.package.kind,
-                        PackageKind::Library | PackageKind::Project
-                    ) =>
-                {
+                Ok(manifest) if manifest.package.kind == PackageKind::Library => {
                     if let Err(error) = index.insert_manifest(manifest, PackageOrigin::User) {
                         errors.push(error);
                     }
@@ -105,7 +101,7 @@ impl PackageIndex {
                 Ok(manifest) => errors.push(PackageLoadError {
                     path,
                     message: format!(
-                        "package root manifest `{}` has kind {:?}; expected library or project",
+                        "package root manifest `{}` has kind {:?}; expected library",
                         manifest.package.name, manifest.package.kind
                     ),
                 }),
@@ -114,6 +110,52 @@ impl PackageIndex {
                     message: error.to_string(),
                 }),
             }
+        }
+
+        if errors.is_empty() {
+            Ok(index)
+        } else {
+            Err(errors)
+        }
+    }
+
+    pub fn load_project_manifest_and_package_roots(
+        project_manifest: Option<&Path>,
+        package_roots: &[PathBuf],
+    ) -> Result<Self, Vec<PackageLoadError>> {
+        let mut index = Self::default();
+        let mut errors = Vec::new();
+
+        if let Some(project_manifest) = project_manifest.map(normalize_path) {
+            match PackageManifest::load(&project_manifest) {
+                Ok(manifest) if manifest.package.kind == PackageKind::Project => {
+                    if let Err(error) = index.insert_manifest(manifest, PackageOrigin::Project) {
+                        errors.push(error);
+                    }
+                }
+                Ok(manifest) => errors.push(PackageLoadError {
+                    path: project_manifest.clone(),
+                    message: format!(
+                        "project manifest `{}` has kind {:?}; expected project",
+                        manifest.package.name, manifest.package.kind
+                    ),
+                }),
+                Err(error) => errors.push(PackageLoadError {
+                    path: project_manifest.clone(),
+                    message: error.to_string(),
+                }),
+            }
+        }
+
+        match Self::load_package_roots(package_roots) {
+            Ok(packages) => {
+                for indexed in packages.manifests {
+                    if let Err(error) = index.insert_manifest(indexed.manifest, indexed.origin) {
+                        errors.push(error);
+                    }
+                }
+            }
+            Err(package_errors) => errors.extend(package_errors),
         }
 
         if errors.is_empty() {
@@ -170,6 +212,11 @@ impl PackageIndex {
                     .or_insert_with(|| export.clone());
                 self.by_export.insert(export.clone(), source.clone());
                 self.by_source.entry(source).or_insert(idx);
+            }
+        }
+        if let Some(project) = &manifest.project {
+            for source in project.entries.values() {
+                self.by_source.entry(normalize_path(source)).or_insert(idx);
             }
         }
         self.manifests.push(IndexedPackage { manifest, origin });
@@ -329,6 +376,66 @@ root = "."
             index.resolve_export("/std/result/core"),
             Some(Path::new("/repo/std/result/core.ciel"))
         );
+    }
+
+    #[test]
+    fn project_manifest_maps_entries_and_library_exports() {
+        let root =
+            std::env::temp_dir().join(format!("ciel_project_package_index_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let project = root.join("project");
+        let library = root.join("library");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(&library).unwrap();
+        fs::write(
+            project.join("ciel.toml"),
+            r#"
+manifest_version = 1
+
+[package]
+name = "demo"
+kind = "project"
+
+[project]
+default = "main"
+
+	[project.entries]
+	main = "main.ciel"
+	"#,
+        )
+        .unwrap();
+        fs::write(
+            library.join("ciel.toml"),
+            r#"
+manifest_version = 1
+
+[package]
+name = "demo_lib"
+kind = "library"
+
+[ciel.exports]
+"/demo_lib" = "lib.ciel"
+"#,
+        )
+        .unwrap();
+
+        let index = PackageIndex::load_project_manifest_and_package_roots(
+            Some(project.join("ciel.toml").as_path()),
+            std::slice::from_ref(&library),
+        )
+        .unwrap();
+
+        let entry_manifest = index
+            .manifest_for_source(&project.join("main.ciel"))
+            .unwrap();
+        assert_eq!(entry_manifest.origin, PackageOrigin::Project);
+        assert_eq!(entry_manifest.manifest.package.name, "demo");
+        let lib_manifest = index
+            .manifest_for_source(&library.join("lib.ciel"))
+            .unwrap();
+        assert_eq!(lib_manifest.origin, PackageOrigin::User);
+        let lib = library.join("lib.ciel");
+        assert_eq!(index.resolve_export("/demo_lib"), Some(lib.as_path()));
     }
 
     #[test]

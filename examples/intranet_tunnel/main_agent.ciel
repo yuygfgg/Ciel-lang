@@ -1,7 +1,7 @@
 import /std/io as io;
 import /std/result;
-import /intranet_tunnel/agent as agent;
-import /intranet_tunnel/cli as cli;
+import ./agent as agent;
+import ./cli as cli;
 
 i32 main() {
     Result<cli::AgentConfig, Error> parsed = cli::parse_agent_args();

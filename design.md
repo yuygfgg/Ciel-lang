@@ -181,8 +181,8 @@ names; C APIs still need explicit `extern "C"` declarations.
 
 ### Package Manifests
 
-The compiler understands versioned `ciel.toml` package manifests. Manifest
-version `1` declares package identity, explicit public Ciel exports, and
+The compiler understands versioned `ciel.toml` manifests. Manifest version `1`
+declares package identity, project entries, explicit public Ciel exports, and
 optional package-owned CMake native targets:
 
 ```toml
@@ -202,29 +202,41 @@ target = "ciel_lib_sqlite"
 when = { os = ["linux", "macos"] }
 ```
 
-`package.kind` is one of `project`, `stdlib`, `runtime`, or `library`.
-`package.root` is relative to the manifest file and defaults to `"."`.
-`[ciel.exports]` maps absolute import paths to `.ciel` source files relative
-to `package.root`. Export paths and manifest paths are validated; paths must
-not escape the package root.
+`package.kind` is one of `project`, `stdlib`, or `library`. `project` marks an
+entry project rooted at `package.root`. A project manifest must contain a
+`[project.entries]` table mapping entry names to `.ciel` source files relative
+to `package.root`; `project.default` may name the entry used when the CLI does
+not pass `--entry`. Project entries are compile entry points, not import
+exports, and project modules should be loaded through relative imports. Project
+manifests do not use `[ciel.exports]`. Manifest version `1` does not define test
+metadata or workspace membership. `package.root` is relative to the manifest file
+and defaults to `"."`. In `stdlib` and `library` manifests, `[ciel.exports]`
+maps absolute import paths to `.ciel` source files relative to `package.root`.
+Export paths and manifest paths are validated; paths must not escape the package
+root.
 
 Standard-library manifests are loaded from compiler standard-library search
-roots. User package roots are passed explicitly with repeated
-`--package-root <root>` arguments. User package-root scanning accepts manifests
-with `kind = "library"` or `kind = "project"`.
+roots. Project builds load the entry project manifest from
+`--manifest-path <path/to/ciel.toml>` or, when no input file is passed, by
+searching the current directory and its parents for `ciel.toml`. Passing an
+input file compiles that source directly; project metadata is loaded only when a
+project manifest is selected explicitly or discovered for an entry build. User
+package roots are passed explicitly with repeated `--package-root <root>`
+arguments. User package-root scanning accepts only library manifests.
 
 Absolute imports first resolve through standard-library package exports, then
 through user package-root exports, and finally through the legacy standard-path
-file fallback. This preserves `/std/...` ownership by compiler-shipped
-packages while allowing repository-local packages such as `/sqlite`.
+file fallback. This preserves `/std/...` ownership by compiler-shipped packages
+while allowing repository-local library packages such as `/sqlite`.
 
 Executable and shared-library builds link generated C through a generated
 top-level CMake project. The build plan includes the fixed runtime CMake
-target, imported standard-library package targets, and imported user package
-targets. CMake targets loaded from user package roots are not executed unless
-the driver is invoked with `--allow-native-build`. The driver passes the
-selected Ciel build profile to CMake as both `CMAKE_BUILD_TYPE`/`--config` and
-`CIEL_BUILD_PROFILE`.
+target, imported entry-project targets, imported standard-library package
+targets, and imported user package targets. CMake targets loaded from user
+package roots are not executed unless the driver is invoked with
+`--allow-native-build`; entry-project targets do not require that third-party
+allow flag. The driver passes the selected Ciel build profile to CMake as both
+`CMAKE_BUILD_TYPE`/`--config` and `CIEL_BUILD_PROFILE`.
 
 ## 5. Names and Scopes
 

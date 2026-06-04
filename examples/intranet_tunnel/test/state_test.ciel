@@ -1,6 +1,6 @@
 import /std/result;
-import /intranet_tunnel/protocol/error as terr;
-import /intranet_tunnel/protocol/state as state;
+import ../protocol/error as terr;
+import ../protocol/state as state;
 
 i64 server_state_code(state::ServerStreamState item) {
     switch (item) {

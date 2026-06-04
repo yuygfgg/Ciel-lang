@@ -1,0 +1,18 @@
+manifest_version = 1
+
+[package]
+name = "intranet_tunnel"
+kind = "project"
+root = "."
+
+[project]
+default = "server"
+
+[project.entries]
+server = "main_server.ciel"
+agent = "main_agent.ciel"
+auth_test = "test/auth_test.ciel"
+codec_test = "test/codec_test.ciel"
+frame_test = "test/frame_test.ciel"
+runtime_test = "test/runtime_test.ciel"
+state_test = "test/state_test.ciel"

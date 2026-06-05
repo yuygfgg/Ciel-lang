@@ -15,7 +15,8 @@ add_library(ciel_std_atomic STATIC
 )
 
 target_include_directories(ciel_std_atomic
-    PRIVATE
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CIEL_RUNTIME_INCLUDE_DIR}
 )
 

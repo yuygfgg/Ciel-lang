@@ -33,8 +33,10 @@ handles `Message` by default.
 
 `dispatch-actor-io-runtime` and `async-await` own the runtime execution model
 that supplies task and actor lifetimes. Resource owners are attached to those
-lifetimes. `actor-owned-state` remains the path for long-lived actor-local
-state that contains resources.
+lifetimes. The resource registry proposed here must be a generalization of the
+existing async operation-token routing and generation checks, not a second
+parallel runtime substrate. `actor-owned-state` remains the path for long-lived
+actor-local state that contains resources.
 
 `generic-growable-storage` is independent. GC-backed storage is still memory,
 not a deterministic external resource.
@@ -69,6 +71,9 @@ story:
    mechanism, not a resource ownership proof.
 5. Panic is process termination in the current model. It does not unwind and
    does not run resource cleanup.
+6. The async runtime already has operation tokens, task routing, callback
+   generation checks, and cleanup paths. A resource proposal that adds a
+   separate but similar table would duplicate the hardest runtime machinery.
 
 ## Goals
 
@@ -85,6 +90,10 @@ story:
 9. Integrate with async cancellation and actor shutdown where the runtime
    continues executing cleanup.
 10. Keep unsafe C interop as an explicit escape hatch.
+11. Reuse and generalize the existing async operation-token substrate instead
+    of adding a competing slot/generation system.
+12. Keep high-level async APIs simple while making low-level async resource
+    tokens explicit and resource-backed.
 
 ## Non-Goals
 
@@ -100,6 +109,12 @@ story:
 9. Making actor-local or task-local resources generally `Message`.
 10. Hiding explicit lifetime extension. Moving a resource to a longer-lived
     owner remains explicit.
+11. A second runtime registry that is independent from async operation tokens.
+12. Unlimited per-task, per-actor, or process-wide resource growth.
+13. Adding an explicit resource scope parameter to every high-level async I/O
+    API.
+14. Removing low-level async operation-token APIs that are still needed for
+    runtime integration tests and custom adapters.
 
 ## Resource Owners
 
@@ -128,6 +143,48 @@ one owner.
 
 The owner table is the source of truth. The compiler and runtime do not need to
 find every copied handle token in the heap before closing a resource.
+
+## Unification With Async Runtime
+
+The current async runtime already uses the essential ingredients of this
+proposal:
+
+1. runtime operation tokens;
+2. task-owned wakeup routing;
+3. operation id and generation validation;
+4. stale callback rejection;
+5. cancellation and abort cleanup hooks.
+
+Resource management should not introduce an unrelated second mechanism for the
+same shape of problem. The resource registry is the shared substrate for both
+ordinary resources and async operation tokens.
+
+Conceptually, an async operation token is a resource entry whose close action is
+operation-specific cleanup:
+
+1. a sleep token cancels or finishes a timer;
+2. an async read token cancels, finishes, or poisons the read operation;
+3. an accept/connect token cancels or finishes the socket operation;
+4. a buffered read token releases the runtime-owned operation state.
+
+The accepted async generation checks remain the model for external callbacks.
+Callbacks carry enough routing identity to find the target task and operation
+entry, validate generation, and discard stale completions without touching
+released task frames. This proposal extends that table discipline to blocking
+file descriptors, blocking sockets, SQLite handles, statement handles, and
+other non-memory resources.
+
+The implementation may still use specialized structs internally for fast paths,
+but there is one semantic model:
+
+```text
+owner -> registry entry -> kind-specific close/cancel/finish policy
+handle token -> entry id + generation
+```
+
+Standard modules must not grow independent slot tables once the common registry
+exists. Existing `/std/io` and `/std/net` generation-checked tables are
+migration sources, not permanent parallel ownership systems.
 
 ## Ambient Current Owner
 
@@ -199,6 +256,131 @@ operate on a reused host descriptor or dereference stale runtime state.
 Closing a resource entry revokes all existing token copies. Reusing an internal
 resource id increments the generation.
 
+## Identifier and Generation Exhaustion
+
+Resource ids, owner ids, and generations must have defined exhaustion behavior.
+The safety story must not rely on "this counter never overflows" as an
+unstated assumption.
+
+The registry should use 64-bit ids and generations. Overflow remains a checked
+runtime condition:
+
+1. allocating a new owner id fails with a stable `Error` classified as resource
+   id exhaustion if no fresh owner id can be produced;
+2. allocating a new resource id fails with a stable `Error` classified as
+   resource id exhaustion if no fresh entry id can be produced;
+3. advancing a generation at the maximum value permanently retires that entry
+   slot instead of wrapping;
+4. if no usable slot remains after retirements, registration fails with a
+   stable resource id exhaustion error;
+5. transfer that would require a fresh generation or entry and cannot allocate
+   one fails without moving the resource.
+
+Retired slots are never reused in a way that can make an old token valid again.
+An implementation may compact or rebuild an owner table only if all live handle
+tokens for retired entries remain invalid. It is acceptable for compaction to
+allocate fresh entry ids and generations.
+
+These errors are ordinary resource errors, not undefined behavior. They are
+expected to be practically unreachable under normal 64-bit counters, but they
+are still part of the contract.
+
+## Owner Quotas and Resource Pressure
+
+Each owner enforces resource limits. A task, actor, lexical scope, or process
+owner must not be able to grow its registry without bound merely because safe
+code forgot to create a shorter scope.
+
+At minimum, an owner tracks:
+
+1. live resource count;
+2. child owner count;
+3. pending async operation count;
+4. optional kind-specific counts such as descriptors, timers, and database
+   handles;
+5. optional approximate native memory or kernel-resource cost.
+
+Registration fails with a stable `Error` classified as resource limit
+exhaustion when adding an entry would exceed the effective limit. Effective
+limits are inherited from the parent owner unless an owner is created with an
+explicit override. An override may raise or lower a child owner's own limits,
+subject to any configured process-wide or ancestor aggregate caps.
+
+The default limits should be conservative enough to catch accidental leaks in
+long-lived tasks, while still high enough for normal servers. Programs that
+need many concurrent descriptors should raise limits explicitly near the
+service boundary instead of relying on unbounded task-local ownership:
+
+```ciel
+export struct Limits {
+    usize max_resources;
+    usize max_child_owners;
+    usize max_pending_ops;
+    usize max_descriptors;
+}
+
+export Result<R, Error> scoped_with_limits<R: ResourceFree>(
+    Limits limits,
+    Result<R, Error> |()| body
+);
+
+resource::scoped_with_limits<void>(resource::Limits {
+    max_resources: 4096,
+    max_child_owners: 1024,
+    max_pending_ops: 8192,
+    max_descriptors: 4096,
+}, || {
+    return serve_many_connections();
+});
+```
+
+Async code has the matching form:
+
+```ciel
+export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
+    Limits limits,
+    async Result<R, Error> |()| body
+);
+```
+
+Task, actor, and group construction also need limit-bearing variants so quota
+changes can be made at ownership boundaries instead of inside arbitrary helper
+functions:
+
+```ciel
+export Result<Task<Out>, Error> spawn_with_limits<Out: Message>(
+    resource::Limits limits,
+    async Result<Out, Error> |()| body
+);
+
+export async Result<R, Error> with_task_group_with_limits<
+    T: Message,
+    R: ResourceFree
+>(
+    resource::Limits limits,
+    async Result<R, Error> |(*TaskGroup<T>)| body
+);
+
+export Result<ActorHandle<A>, Error> spawn_actor_with_limits<A: Actor>(
+    resource::Limits limits,
+    A initial_state
+);
+```
+
+The runtime also exposes process or runtime-default configuration for embedding
+and service setup. The exact configuration transport is implementation-defined,
+but safe Ciel must have a way to install stricter or looser owner defaults at a
+clear boundary before the affected owners are created.
+
+Owner cleanup releases quota as entries close. Transfer releases quota from the
+source owner and consumes quota in the destination owner atomically; if the
+destination has no capacity, transfer fails and the source resource remains
+owned by the source owner.
+
+Quotas are not a substitute for application-level backpressure. They are the
+runtime safety floor that prevents one task or actor from silently accumulating
+unbounded resources.
+
 ## Heap Storage
 
 Safe Ciel may store resource handle tokens in ordinary heap values. This is not
@@ -229,13 +411,14 @@ the resource lifetime.
 the body, and closes it after the body returns:
 
 ```ciel
-export Result<R, Error> scoped<R: Message>(Result<R, Error> |()| body);
+export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body);
 ```
 
 The result type is constrained so a scoped resource token cannot be returned
-through the ordinary result path. A later implementation may use a more direct
-`NonResource` or `ResourceFree` capability instead of `Message`, but the first
-shape should reuse existing capability machinery if practical.
+through the ordinary result path. This uses `ResourceFree`, not `Message`.
+`Message` means a value can cross task or actor ownership; resource scopes only
+need to prove that the returned value does not contain resource handles owned by
+the closing scope.
 
 The body may call arbitrarily deep functions. Every resource opened inside
 those functions registers with the current scoped owner unless a function
@@ -245,23 +428,88 @@ explicitly opens in or transfers to another owner.
 remain GC-managed values. Closing the resource scope releases only registered
 non-memory resources.
 
+## ResourceFree
+
+`ResourceFree` is the standard capability for values that do not contain a
+resource handle. It is recursive and structural for visible Ciel value shapes.
+It is not the same as `Message`.
+
+Tentative surface:
+
+```ciel
+unsafe interface<T> bool resource_free_marker(*const T value);
+unsafe interface<T> bool resource_handle_marker(*const T value);
+
+interface ResourceFreeInternal = resource_free_marker;
+interface ResourceHandleInternal = resource_handle_marker;
+interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
+```
+
+The compiler and `/std/meta` must make this capability transitive:
+
+1. primitive scalars, `void`, `never` values that never return, ordinary
+   strings, owned bytes, and GC memory handles are `ResourceFree` unless their
+   wrapper declares a resource marker;
+2. a resource handle type is not `ResourceFree`;
+3. a visible struct is `ResourceFree` when every field is `ResourceFree`;
+4. a visible enum is `ResourceFree` when every payload field of every variant is
+   `ResourceFree`;
+5. a fixed-size array is `ResourceFree` when its element type is
+   `ResourceFree`;
+6. a concrete closure value is `ResourceFree` when every captured field is
+   `ResourceFree`;
+7. generic code must carry `T: ResourceFree` when it returns or stores an
+   unconstrained `T` across a closing resource scope;
+8. erased dynamic interface values need an explicit retained `ResourceFree`
+   witness when the erased value crosses a resource-scope boundary.
+
+The compiler recognizes the canonical `/std/resource` capability names for
+generic constraint checking and for structural expansion over visible Ciel
+shapes. `/std/meta` owns the ordinary structural impls over representation nodes
+such as `HNil`, `HCons`, `Field<T>`, `Variant<T>`, and bounded array chunks.
+This keeps recursive policy explicit in the standard library while still giving
+ordinary visible structs, enums, arrays, and concrete closures useful
+`ResourceFree` behavior.
+
+`meta::Repr<T>` does not bypass resource policy. If any owned leaf in the
+representation is a resource handle, the representation is not `ResourceFree`.
+Likewise, `meta::RefRepr<T>` is a borrowed view and does not make a resource
+free to return from a closing scope.
+
 ## Explicit Transfer
 
 Extending a resource lifetime is explicit. The core transfer operations are:
 
 ```ciel
 export Result<File, Error> transfer_to_parent(File file);
-export Result<File, Error> transfer_to_task(File file, async::TaskOwner owner);
-export Result<File, Error> transfer_to_actor(File file, actor::ActorOwner owner);
 ```
 
-The exact API names are placeholders. The contract is:
+The first public surface should avoid exposing raw `TaskOwner` or `ActorOwner`
+objects. Transfer to a task or actor is expressed through construction helpers
+that create the destination owner and move selected resources into it:
+
+```ciel
+export Result<Task<Out>, Error> spawn_with_resource<Out: Message>(
+    File file,
+    async Result<Out, Error> |(File)| body
+);
+
+export Result<ActorHandle<A>, Error> spawn_actor_with_resource<A: Actor>(
+    File file,
+    A |(File)| make_initial_state
+);
+```
+
+These signatures are placeholders. The owner-internal primitive is still a
+generic move from one registry owner to another, but it is runtime or framework
+API, not the normal application API. The contract is:
 
 1. transfer removes the resource entry from the source owner or marks it moved;
 2. transfer installs a new entry in the destination owner;
 3. transfer returns a fresh handle token;
 4. old token copies are revoked, usually by advancing generation;
-5. transfer fails if the destination owner is closed or incompatible.
+5. transfer fails if the destination owner is closed, incompatible, or over
+   quota.
 
 This makes lifetime extension visible without requiring all normal APIs to pass
 scope parameters.
@@ -289,8 +537,9 @@ export Result<void, Error> close(File file);
 ```
 
 `close` closes the owner-table entry and revokes all token copies. It does not
-need to find those copies. Repeated close returns a stable error or a documented
-idempotent success, depending on the resource type.
+need to find those copies. Repeated close on the same entry and generation is
+idempotent. Stale, transferred, mismatched, or retired tokens return a stable
+error.
 
 Implicit owner close cannot reliably report close errors to the source program.
 APIs where close errors matter should expose an explicit close or flush
@@ -320,6 +569,108 @@ Async operation tokens are resources too. A pending operation belongs to an
 owner and has a cleanup path that cancels, finishes, or poisons the operation
 according to its `CancelSafe` and `Abortable` contracts.
 
+## Async Surface API
+
+High-level async APIs continue to use the current owner implicitly. Users should
+not pass a resource scope to every async read, write, connect, or sleep:
+
+```ciel
+AsyncTcpStream stream = await async_net::connect(addr)?;
+Bytes data = await async_net::read(stream, 4096)?;
+await async_time::sleep_ms(10)?;
+```
+
+Those operations register stream handles, operation tokens, and timers with
+the current task owner or the innermost active resource scope.
+
+Resource scopes need an async form:
+
+```ciel
+export async Result<R, Error> scoped_async<R: ResourceFree>(
+    async Result<R, Error> |()| body
+);
+```
+
+The exact async closure type syntax may follow the accepted async closure
+surface. The semantics are:
+
+1. create a child owner;
+2. install it as the current owner for the async body;
+3. preserve that owner across `await`;
+4. close the owner on normal return or `Err` return;
+5. close the owner during task cancellation or cleanup-capable abort;
+6. leave panic and process exit outside the cleanup guarantee.
+
+Async resource helpers should mirror blocking scoped helpers:
+
+```ciel
+export async Result<R, Error> with_connect<R: ResourceFree>(
+    SocketAddr addr,
+    async Result<R, Error> |(AsyncTcpStream)| body
+);
+
+export async Result<R, Error> with_open_read<R: ResourceFree>(
+    []const char path,
+    async Result<R, Error> |(AsyncFd)| body
+);
+```
+
+These helpers are convenience wrappers over `scoped_async`, open/connect, and
+owner close. They do not require callers to thread scope parameters through
+deep helper functions.
+
+Low-level operation-token APIs remain available, but their names and namespace
+should make their resource nature explicit. Normal application code should call
+high-level awaitable functions:
+
+```ciel
+Bytes data = await async_io::read_bytes(file, 4096)?;
+usize written = await async_net::write(stream, bytes)?;
+```
+
+Low-level integration code may use operation-token names such as:
+
+```ciel
+AsyncRead op = async_io::start_read(file, 4096)?;
+Bytes data = async_io::finish_read(op)?;
+```
+
+or keep the current `*_async` naming if the distinction remains clear. These
+tokens are resource handles backed by the common registry. `finish` and
+`cancel` close or consume the registry entry; stale token copies fail through
+ordinary generation validation.
+
+`TaskGroup` should be a natural async resource scope:
+
+```ciel
+export async Result<R, Error> with_task_group<
+    T: Message,
+    R: ResourceFree
+>(
+    async Result<R, Error> |(*TaskGroup<T>)| body
+);
+```
+
+Closing a task group cancels unfinished tasks, closes the group owner, and
+releases group-owned resources. The existing explicit `group_close` remains the
+manual form. `T: Message` is the task result boundary; `R: ResourceFree` is the
+value returned after the group owner closes.
+
+`async::spawn` remains a task-ownership boundary. It does not capture ordinary
+resource handles through `Message`. A resource needed by the spawned task must
+be constructed inside the spawned task, transferred to the child owner, or
+wrapped in an explicitly synchronized `ShareHandle`.
+
+Future surface work may add an explicit transfer helper:
+
+```ciel
+Task<void> task = async::spawn_with_resource(file, async |owned_file| {
+    ...
+});
+```
+
+Such an API is a move/transfer boundary, not `Message` cloning.
+
 ## Actor Owners
 
 Each actor has a resource owner. Actor-owned state may contain resource handle
@@ -345,25 +696,29 @@ message cloning or transfer through a separate move-only channel facility.
 
 ## Capability Policy
 
-Resource handle types should have a standard marker, tentatively:
+Resource capability policy uses two canonical markers:
 
 ```ciel
+unsafe interface<T> bool resource_free_marker(*const T value);
 unsafe interface<T> bool resource_handle_marker(*const T value);
 
-interface ResourceHandle = resource_handle_marker + !MessageInternal;
+interface ResourceFreeInternal = resource_free_marker;
+interface ResourceHandleInternal = resource_handle_marker;
+interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
 ```
 
 The exact alias must fit the accepted `/std/message` lattice. The important
 policy is:
 
-1. resource handles are not `Message` by default;
-2. resource handles are not `ShareHandle` by default;
-3. a wrapper can implement `ShareHandle` only when its operations are internally
+1. resource handles are not `ResourceFree`;
+2. resource handles are not `Message` by default;
+3. resource handles are not `ShareHandle` by default;
+4. a wrapper can implement `ShareHandle` only when its operations are internally
    synchronized or immutable and its cleanup model is well-defined;
-4. a wrapper can implement `Message` only by constructing an independent
+5. a wrapper can implement `Message` only by constructing an independent
    receiver-owned resource or by using an explicit synchronized shared handle
    policy;
-5. `meta::Repr<T>` must not bypass resource-local policy.
+6. `meta::Repr<T>` must not bypass resource-local policy.
 
 `ThreadLocal` remains useful for resources that are tied to one actor or task.
 Some resources may be process-shareable but still require owner registration.
@@ -372,21 +727,36 @@ should force every resource handle to have an explicit boundary policy.
 
 ## Runtime Model
 
-The runtime provides:
+The runtime provides a single registry substrate shared by resource owners and
+async operation tokens:
 
 1. owner creation and close;
 2. current-owner push/pop for scoped blocks;
-3. task-local and actor-local current owner lookup;
+3. task execution-context and actor-local current owner lookup;
 4. owner-table registration;
 5. handle validation;
 6. resource close and transfer;
 7. generation advancement;
-8. diagnostic resource errors;
-9. optional leak diagnostics at process shutdown.
+8. checked id allocation and slot retirement;
+9. per-owner quotas and registration failure;
+10. async callback routing through the same entry/generation validation model;
+11. async owner preservation across suspension and resumption;
+12. active scoped-owner cleanup from generated async cleanup functions;
+13. `block_on` and task entry owner installation;
+14. diagnostic resource errors;
+15. optional leak diagnostics at process shutdown.
 
 The runtime must not depend on GC finalizers for correctness. A finalizer may
 report a leaked owner or perform emergency cleanup as a debugging aid, but the
 language guarantee comes from owner close.
+
+Async runtime implementation details may keep specialized internal types for
+performance, but the observable semantics for stale events, stale handles,
+entry generation, and cleanup ownership must be shared.
+
+The ambient owner for async code is task-context state, not only OS-thread TLS.
+If a task resumes on a different thread, current-owner lookup still resolves to
+that task's owner stack.
 
 ## Standard Library Shape
 
@@ -408,7 +778,7 @@ export Result<File, Error> open_read_in(resource::Owner owner, []const char path
 Scoped helpers remain useful as convenience wrappers:
 
 ```ciel
-export Result<R, Error> with_open_read<R: Message>(
+export Result<R, Error> with_open_read<R: ResourceFree>(
     []const char path,
     Result<R, Error> |(File)| body
 );
@@ -419,6 +789,17 @@ open operation.
 
 Low-level raw descriptor APIs remain `unsafe` and outside the resource owner
 guarantee unless wrapped back into an owner entry.
+
+Resource failures use the existing `Error` and error-box mechanism. This
+proposal does not require a new global family of resource error constructors.
+Modules may return module-specific errors, wrap a runtime resource error in an
+error box, or attach context to an existing source error. The required contract
+is semantic rather than constructor-based:
+
+1. stale handles report a stable error instead of touching host resources;
+2. quota exhaustion reports a stable error instead of registering the resource;
+3. id or generation exhaustion reports a stable error instead of wrapping;
+4. tests can identify these cases through the existing error inspection surface.
 
 ## Panic and Process Exit
 
@@ -442,20 +823,27 @@ paths.
 
 ## Migration Plan
 
-1. Add a runtime resource owner table and handle representation.
-2. Add a `/std/resource` module with owner, scoped block, close, and transfer
-   primitives.
-3. Rework `/std/io` to register files in the current owner while preserving
+1. Inventory the existing async operation-token registry, task routing,
+   generation checks, and cleanup hooks.
+2. Extract or generalize that machinery into the common resource registry
+   substrate.
+3. Add a `/std/resource` module with owner, scoped block, close, transfer,
+   `ResourceFree`, and limit primitives.
+4. Add checked id/generation exhaustion behavior and per-owner quota failures.
+5. Rework `/std/io` to register files in the current owner while preserving
    scoped helpers.
-4. Rework blocking `/std/net` listener and stream handles to use owner entries.
-5. Rework SQLite connection and statement wrappers to use owner entries.
-6. Classify async fd, async TCP stream, and async operation-token wrappers as
-   resources or explicit share handles.
-7. Attach owners to async task and actor runtime state.
-8. Add stale-token and generation-reuse regression tests.
-9. Add diagnostics or lints for opening many resources in a long-lived owner
+6. Rework blocking `/std/net` listener and stream handles to use owner entries.
+7. Rework SQLite connection and statement wrappers to use owner entries.
+8. Classify async fd, async TCP stream, and async operation-token wrappers as
+   resources or explicit share handles backed by the common registry.
+9. Attach owners to async task and actor runtime state.
+10. Add `resource::scoped_async` and async scoped helper APIs.
+11. Normalize low-level async operation-token naming and namespace placement.
+12. Align `TaskGroup` close/cancel semantics with resource-owner cleanup.
+13. Add stale-token, generation-retirement, and quota regression tests.
+14. Add diagnostics or lints for opening many resources in a long-lived owner
    without an inner scope.
-10. Keep raw fd adoption unsafe until it registers the fd with a resource owner.
+15. Keep raw fd adoption unsafe until it registers the fd with a resource owner.
 
 ## Test Plan
 
@@ -473,22 +861,61 @@ paths.
    fails under the existing capability rules.
 9. Task cancellation closes task-owned resources and pending operation tokens.
 10. Panic tests document that cleanup does not run.
+11. Async stale callback tests and ordinary stale handle tests use the same
+    generation-validation semantics.
+12. A generation-at-maximum test retires the slot instead of wrapping.
+13. Resource creation fails with a stable `Error` when an owner quota is
+    reached.
+14. Transfer to an owner without remaining quota fails without moving the
+    source resource.
+15. `scoped_async` closes resources after awaits on normal and error returns.
+16. Task cancellation closes an active `scoped_async` owner.
+17. High-level async I/O APIs use the current owner without explicit scope
+    parameters.
+18. Low-level operation-token `finish` and `cancel` revoke stale token copies.
+19. `TaskGroup` scoped helpers cancel unfinished tasks and close group-owned
+    resources.
 
-## Open Questions
+## Resolved Policy Decisions
 
-1. Should the first public constraint for `resource::scoped` be `R: Message`, or
-   should the language add a narrower `ResourceFree` capability?
-2. Should stale-token operations return a shared `resource_closed_error()`, a
-   module-specific error, or preserve existing generation-error behavior?
-3. Should repeated explicit close be idempotent for all standard resources or
-   resource-specific?
-4. What transfer APIs are needed for task and actor owners without exposing
-   unstable runtime internals?
-5. Should `ShareHandle` resources use owner entries, reference-counted runtime
-   state, or both?
-6. How should owner close report multiple close errors during best-effort
-   cleanup?
-7. Should the compiler enforce that resource handles do not implement `Message`
-   accidentally, or is the existing capability lattice sufficient?
-8. Should `resource::scoped` be ordinary library syntax, special lowering, or
-   later surface syntax such as `resource { ... }`?
+1. `resource::scoped`, `resource::scoped_with_limits`,
+   `resource::scoped_async`, async `with_*` helpers, and task-group scoped
+   helpers use `R: ResourceFree`, not `R: Message`.
+2. `ResourceFree` is recursive and transitive over visible structs, enums,
+   arrays, concrete closure captures, and `/std/meta` owned representation
+   nodes. `meta::Repr<T>` does not bypass resource policy.
+3. Resource failures use the existing `Error` and error-box mechanism. The
+   proposal specifies stable failure behavior, not a mandatory global
+   constructor family.
+4. Repeated explicit close is idempotent for the same entry and generation.
+   Stale, transferred, mismatched, or retired tokens report a stable error.
+5. V1 exposes minimal transfer helpers such as `transfer_to_parent` and
+   high-level task transfer helpers. It does not expose unstable `TaskOwner` or
+   `ActorOwner` internals as ordinary application API.
+6. `ShareHandle` resources use both owner entries and synchronized or
+   reference-counted runtime state. The owner gives deterministic release; the
+   shared state gives safe concurrent access.
+7. Owner close performs best-effort cleanup of every entry. If the body already
+   returned an error, cleanup errors are attached as context or diagnostics
+   rather than replacing the primary error.
+8. The compiler enforces a coherence guard: a resource handle cannot implement
+   `Message` or `ShareHandle` accidentally. Any exception requires an explicit
+   unsafe sharing, cloning, or transfer policy.
+9. The first surface is library-shaped and compiler-recognized:
+   `resource::scoped` and `resource::scoped_async`. Dedicated syntax such as
+   `resource { ... }` can come later if the pattern becomes common enough.
+10. Quotas are configurable. The runtime supplies defaults, but applications
+    can override limits at scoped, async scoped, task-group, actor, process, or
+    embedding boundaries before the affected owners are created.
+11. The common registry owns id/generation validation, owner attachment,
+    quota accounting, close/cancel/finish dispatch, and stale callback
+    rejection. Backend-specific dispatch I/O state, buffered reader state,
+    channel queues, and generated future frame layout stay specialized.
+12. Low-level async operation-token APIs should move toward explicit `start_*`,
+    `finish_*`, and `cancel_*` naming or an internal adapter namespace. High
+    level `await read/connect/sleep` APIs remain the normal user path.
+13. Async closure type spelling for `scoped_async` and async `with_*` helpers
+    follows the accepted async closure surface. This proposal does not introduce
+    a full `AsyncFnOnce` interface hierarchy.
+14. `TaskGroup<T>` does not expose raw owner controls. Owner limits are supplied
+    through scoped helper construction or surrounding resource scopes.

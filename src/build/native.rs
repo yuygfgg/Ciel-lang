@@ -627,25 +627,42 @@ mod tests {
 
     #[test]
     fn cmake_include_flags_use_package_include_dirs_once() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime");
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let runtime_root = repo.join("runtime");
+        let atomic_root = repo.join("std/atomic");
         let targets = vec![
             CmakeTarget {
-                package_root: root.clone(),
-                cmake_file: root.join("CMakeLists.txt"),
+                package_root: runtime_root.clone(),
+                cmake_file: runtime_root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
                 requires_allow_native_build: false,
             },
             CmakeTarget {
-                package_root: root.clone(),
-                cmake_file: root.join("CMakeLists.txt"),
+                package_root: runtime_root.clone(),
+                cmake_file: runtime_root.join("CMakeLists.txt"),
                 target: "ciel_runtime".to_string(),
+                requires_allow_native_build: false,
+            },
+            CmakeTarget {
+                package_root: atomic_root.clone(),
+                cmake_file: atomic_root.join("CMakeLists.txt"),
+                target: "ciel_std_atomic".to_string(),
+                requires_allow_native_build: false,
+            },
+            CmakeTarget {
+                package_root: atomic_root.clone(),
+                cmake_file: atomic_root.join("CMakeLists.txt"),
+                target: "ciel_std_atomic".to_string(),
                 requires_allow_native_build: false,
             },
         ];
 
         assert_eq!(
             cmake_include_flags(&targets),
-            vec![format!("-I{}", root.join("include").display())]
+            vec![
+                format!("-I{}", runtime_root.join("include").display()),
+                format!("-I{}", atomic_root.join("include").display()),
+            ]
         );
     }
 
@@ -662,6 +679,11 @@ mod tests {
             assert!(
                 contents.contains("CIEL_RUNTIME_INCLUDE_DIR"),
                 "{} must consume driver-supplied CIEL_RUNTIME_INCLUDE_DIR",
+                path.display()
+            );
+            assert!(
+                contents.contains("${CMAKE_CURRENT_SOURCE_DIR}/include"),
+                "{} must expose its package-owned include directory",
                 path.display()
             );
             assert!(
@@ -688,11 +710,7 @@ mod tests {
             "ciel_io.h",
         ];
         let std_native_headers = ["ciel_crypto.h", "ciel_atomic.h", "ciel_sync.h"];
-        for header in runtime_headers
-            .iter()
-            .copied()
-            .chain(std_native_headers.iter().copied())
-        {
+        for header in runtime_headers {
             let contents = fs::read_to_string(include_dir.join(header)).unwrap();
             assert!(
                 !contents.contains("#include \"ciel_runtime.h\""),
@@ -711,6 +729,29 @@ mod tests {
             assert!(
                 !umbrella.contains(&format!("#include \"{header}\"")),
                 "umbrella header must not include std native header {header}"
+            );
+        }
+    }
+
+    #[test]
+    fn std_native_headers_live_with_their_packages() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let runtime_include_dir = repo.join("runtime").join("include");
+        let std_native_headers = [
+            ("std/atomic/include/ciel_atomic.h", "ciel_atomic.h"),
+            ("std/crypto/include/ciel_crypto.h", "ciel_crypto.h"),
+            ("std/sync/include/ciel_sync.h", "ciel_sync.h"),
+        ];
+
+        for (package_header, header) in std_native_headers {
+            let contents = fs::read_to_string(repo.join(package_header)).unwrap();
+            assert!(
+                !contents.contains("#include \"ciel_runtime.h\""),
+                "{package_header} must not include the umbrella header"
+            );
+            assert!(
+                !runtime_include_dir.join(header).exists(),
+                "{header} must be owned by its std package, not runtime/include"
             );
         }
     }

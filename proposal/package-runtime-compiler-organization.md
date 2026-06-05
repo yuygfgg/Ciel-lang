@@ -412,23 +412,20 @@ runtime/
   include/
     ciel_runtime.h
     ciel_gc.h
+    ciel_checks.h
     ciel_async.h
     ciel_actor.h
+    ciel_io.h
     ciel_net.h
-    ciel_crypto.h
-  core.c
-  gc.c
-  args.c
-  alloc.c
-  error.c
-  panic.c
-  async.c
-  async_io.c
-  actor_dispatch.c
-  sync_channel.c
-  atomic.c
-  net_tcp.c
-  crypto_botan.c
+  src/
+    core.c
+    gc.c
+    checks.c
+    actor.c
+    async.c
+    io.c
+    net_tcp.c
+    bytes.c
 ```
 
 The compiler owns the runtime target registry. In version 1 the driver builds a
@@ -453,29 +450,39 @@ std/
     ciel.toml
     core.ciel
     channel.ciel
-    native/CMakeLists.txt
+    CMakeLists.txt
+    include/ciel_async_channel.h
     native/channel.c
   async_net/
     ciel.toml
     async_net.ciel
-    native/CMakeLists.txt
+    CMakeLists.txt
+    include/ciel_async_net.h
     native/tcp_posix.c
   crypto/
     ciel.toml
     crypto.ciel
-    native/CMakeLists.txt
+    CMakeLists.txt
+    include/ciel_crypto.h
     native/botan.c
   atomic/
     ciel.toml
     atomic.ciel
-    native/CMakeLists.txt
+    CMakeLists.txt
+    include/ciel_atomic.h
     native/atomic.c
+  sync/
+    ciel.toml
+    sync.ciel
+    CMakeLists.txt
+    include/ciel_sync.h
+    native/sync.c
 ```
 
 The `/std/crypto` package should own Botan requirements. The `/std/async_net`
-package should own TCP/UDP helper sources. `/std/channel` and `/std/atomic`
-should own their native synchronization helpers. The core runtime should not
-know about every standard-library wrapper.
+package should own TCP/UDP helper sources. `/std/sync` and `/std/atomic` should
+own their native synchronization helpers. The core runtime should not know
+about every standard-library wrapper.
 
 This mirrors tin's structure, where `stdlib/net/udp` owns `udp.c`, `stdlib/sync`
 owns channel and mutex helpers, and optional packages such as `libs/raylib`

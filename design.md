@@ -2698,7 +2698,7 @@ the process standard streams. Printable values are values that implement
 `to_string`; printing functions convert values to `[]const char` first, then
 write through a scoped `File`.
 
-Low-level raw descriptor interop lives in `/std/os/fd`, not `/std/io`:
+Low-level raw descriptor interop lives in `/std/os/fd`:
 
 ```ciel
 // /std/os/fd

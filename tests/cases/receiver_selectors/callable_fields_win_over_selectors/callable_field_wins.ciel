@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+
+struct Tool {
+    i64 |(i64)| apply;
+    i64 base;
+}
+
+i64 tool_apply(*Tool tool, i64 value) = .apply {
+    return tool->base + value + 100;
+}
+
+i64 main() {
+    Tool @tool = {
+        apply: |i64 value| value + 1,
+        base: 20,
+    };
+    if (tool.apply(4) != 5) {
+        return 1;
+    }
+    return 0;
+}

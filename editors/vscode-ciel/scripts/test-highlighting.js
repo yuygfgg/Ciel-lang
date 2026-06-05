@@ -18,6 +18,10 @@ const source = [
     'type F = i64 fn(i64);',
     'impl async::poll(i64 x) { return x; }',
     'interface I = async::Readable + PlainReadable;',
+    'struct Box { i64 value; }',
+    'export i64 box_len(*const Box box) = .len { return box->value; }',
+    'export bool box_contains(i64 key, *const Box box) = box.contains { return true; }',
+    'void selectors(Box @box) { box.len(); box.symbols::len(); box.contains(1); }',
     'enum Event { Data(i64), Timeout, }',
     'void match_one(Result<Event, Error> x) { switch (x) { case Result::Ok(Event::Data(value)): break; case Result::Ok(Event::Timeout): break; case Result::Err(_): break; } }',
     'void make_event() { Event::Data(1); Event::Timeout; }',
@@ -100,8 +104,13 @@ function assertHighlightQuery(language, Query, rootNode) {
     assertCapture(captures, 'function.call', 'plain_call');
     assertCapture(captures, 'function.call', 'block_on');
     assertCapture(captures, 'function.call', 'recv');
+    assertCapture(captures, 'function.call', 'len');
+    assertCapture(captures, 'function.call', 'contains');
     assertCapture(captures, 'function', 'poll');
+    assertCapture(captures, 'function', 'len');
+    assertCapture(captures, 'function', 'contains');
     assertCapture(captures, 'type', 'Task');
+    assertCapture(captures, 'type', 'Box');
     assertCapture(captures, 'type', 'Readable');
     assertCapture(captures, 'type', 'PlainReadable');
     assertCapture(captures, 'constant', 'Ok');
@@ -130,8 +139,11 @@ function assertSemanticClassifier(rootNode) {
     assertToken(tokens, 'function', 'plain_call');
     assertToken(tokens, 'function', 'block_on');
     assertToken(tokens, 'function', 'recv');
+    assertToken(tokens, 'function', 'len');
+    assertToken(tokens, 'function', 'contains');
     assertToken(tokens, 'function', 'poll');
     assertToken(tokens, 'type', 'Task');
+    assertToken(tokens, 'struct', 'Box');
     assertToken(tokens, 'interface', 'Readable');
     assertToken(tokens, 'interface', 'PlainReadable');
     assertToken(tokens, 'enumMember', 'Ok');

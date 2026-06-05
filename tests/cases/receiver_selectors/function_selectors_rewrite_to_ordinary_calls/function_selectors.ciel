@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+
+struct Counter {
+    i64 value;
+}
+
+void counter_add(*Counter counter, i64 amount) = .add {
+    counter->value = counter->value + amount;
+}
+
+i64 counter_get(*const Counter counter) = .get {
+    return counter->value;
+}
+
+i64 counter_add_after(i64 amount, *Counter counter) = counter.add_after {
+    counter->value = counter->value + amount;
+    return counter->value;
+}
+
+i64 main() {
+    Counter @counter = { value: 1 };
+    counter.add(4);
+    if (counter.get() != 5) {
+        return 1;
+    }
+    if (counter.add_after(2) != 7) {
+        return 2;
+    }
+
+    *Counter ptr = &counter;
+    ptr.add(3);
+    if (counter.get() != 10) {
+        return 3;
+    }
+    return 0;
+}

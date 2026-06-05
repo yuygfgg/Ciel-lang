@@ -19,7 +19,7 @@ export Result<raw::Bytes, Error> bytes_from_text([]const char text) {
 }
 
 // Copies an owned Bytes value into a mutable byte slice allocation.
-export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) {
+export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) = .to_slice {
     usize len = raw::bytes_len(bytes);
     []u8 out = unsafe { ciel_runtime_u8_alloc_slice(len) };
     usize copied = raw::bytes_copy_to(bytes, out)?;
@@ -30,7 +30,7 @@ export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) {
 }
 
 // Appends two owned Bytes values and returns a new owned Bytes value.
-export Result<raw::Bytes, Error> bytes_append(raw::Bytes left, raw::Bytes right) {
+export Result<raw::Bytes, Error> bytes_append(raw::Bytes left, raw::Bytes right) = .append {
     []u8 left_slice = bytes_to_slice(left)?;
     []u8 right_slice = bytes_to_slice(right)?;
     return raw::bytes_concat(left_slice, right_slice);

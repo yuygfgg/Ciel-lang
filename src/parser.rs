@@ -411,12 +411,36 @@ impl Parser {
         let generics = self.parse_generic_param_list_opt()?;
         self.expect(TokenKind::LParen, "expected `(` after function name")?;
         let params = self.parse_param_list_until_rparen()?;
+        let receiver_selector = self.parse_receiver_selector_opt()?;
         Ok(FunctionSignature {
             ret,
             name,
             generics,
             params,
+            receiver_selector,
         })
+    }
+
+    fn parse_receiver_selector_opt(&mut self) -> Result<Option<ReceiverSelector>, Diagnostic> {
+        let Some(eq) = self.eat(TokenKind::Eq) else {
+            return Ok(None);
+        };
+        if self.eat(TokenKind::Dot).is_some() {
+            let name = self.expect_ident("expected receiver selector name")?;
+            return Ok(Some(ReceiverSelector {
+                receiver_param: None,
+                span: eq.span.merge(name.span),
+                name,
+            }));
+        }
+        let receiver_param = self.expect_ident("expected receiver parameter name")?;
+        self.expect(TokenKind::Dot, "expected `.` after receiver parameter name")?;
+        let name = self.expect_ident("expected receiver selector name")?;
+        Ok(Some(ReceiverSelector {
+            span: eq.span.merge(name.span),
+            receiver_param: Some(receiver_param),
+            name,
+        }))
     }
 
     fn parse_param_list_until_rparen(&mut self) -> Result<Vec<Param>, Diagnostic> {
@@ -1387,6 +1411,17 @@ impl Parser {
                 };
             } else if self.eat(TokenKind::Dot).is_some() {
                 let field = self.expect_ident("expected field name")?;
+                if self.eat(TokenKind::ColonColon).is_some() {
+                    let selector = self.expect_ident("expected selector name after `::`")?;
+                    expr = Expr {
+                        span: expr.span.merge(selector.span),
+                        kind: ExprKind::ReceiverSelector {
+                            base: Box::new(expr),
+                            selector: vec![field, selector],
+                        },
+                    };
+                    continue;
+                }
                 expr = Expr {
                     span: expr.span.merge(field.span),
                     kind: ExprKind::Field {

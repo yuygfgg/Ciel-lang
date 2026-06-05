@@ -13,7 +13,7 @@ enum Event {
     Timeout,
 }
 
-interface<T> usize measure(*const T value);
+interface<T> usize measure(*const T value) = .measure;
 
 impl measure(*const Packet<usize> value) {
     return value->count;
@@ -31,7 +31,7 @@ i32 main() {
     Result<Event, Error> event = async::block_on(read_event());
     switch (event) {
         case Result::Ok(Event::Data(packet)):
-            must(print_value(packet.count));
+            must(print_value(packet.measure()));
         case Result::Ok(Event::Timeout):
             must(print_value(0));
         case Result::Err(_):

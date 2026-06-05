@@ -17,7 +17,7 @@ export Error error_box(ErrorTrait error) {
 }
 
 // Wraps a standard Error with a new context string while preserving the source.
-export Error error_with_context(Error source, []const char context) {
+export Error error_with_context(Error source, []const char context) = .with_context {
     Error source_copy = source;
     return { value: source.value, context: context, source: &source_copy };
 }
@@ -30,6 +30,6 @@ impl format_error(*const Error error) {
 }
 
 // Returns the display message for a standard Error.
-export []const char error_message(*const Error error) {
+export []const char error_message(*const Error error) = .message {
     return format_error(error);
 }

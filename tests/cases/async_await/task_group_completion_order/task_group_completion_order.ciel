@@ -17,11 +17,11 @@ async Result<usize, Error> drive() {
     async::TaskGroup<usize> group = async::task_group<usize>()?;
     async::Task<usize> slow = async::spawn<usize>(after(20, 9))?;
     async::Task<usize> fast = async::spawn<usize>(after(1, 3))?;
-    async::group_add<usize>(&group, slow)?;
-    async::group_add<usize>(&group, fast)?;
-    usize first = await async::group_next<usize>(&group)?;
-    usize second = await async::group_next<usize>(&group)?;
-    async::group_close<usize>(&group)?;
+    group.async::add(slow)?;
+    group.async::add(fast)?;
+    usize first = await group.async::next()?;
+    usize second = await group.async::next()?;
+    group.async::close()?;
     return Ok(first * 10 + second);
 }
 

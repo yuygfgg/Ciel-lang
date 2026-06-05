@@ -92,7 +92,7 @@ export Result<R, Error> with_open<R: Message>(
     []const char path,
     OpenMode mode,
     Result<R, Error> |(File)| body
-) {
+) = .with_open {
     File file = open_file(path, mode)?;
     defer close_scoped_file(file);
     return body(file);
@@ -102,7 +102,7 @@ export Result<R, Error> with_open<R: Message>(
 export Result<R, Error> with_open_read<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-) {
+) = .with_open_read {
     return with_open(path, Read, body);
 }
 
@@ -110,7 +110,7 @@ export Result<R, Error> with_open_read<R: Message>(
 export Result<R, Error> with_create<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-) {
+) = .with_create {
     return with_open(path, Write, body);
 }
 
@@ -118,12 +118,12 @@ export Result<R, Error> with_create<R: Message>(
 export Result<R, Error> with_append<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-) {
+) = .with_append {
     return with_open(path, Append, body);
 }
 
 // Reads up to out.len bytes from a scoped File token.
-export Result<usize, Error> read(File file, []u8 out) {
+export Result<usize, Error> read(File file, []u8 out) = .read {
     c::c_ssize_t n = unsafe { ciel_file_read(file.slot, file.generation, out.ptr as *void, out.len) };
     if ((n as i64) < 0) {
         return Err(last_error());
@@ -132,7 +132,7 @@ export Result<usize, Error> read(File file, []u8 out) {
 }
 
 // Writes up to data.len bytes to a scoped File token.
-export Result<usize, Error> write(File file, []const u8 data) {
+export Result<usize, Error> write(File file, []const u8 data) = .write {
     c::c_ssize_t n = unsafe { ciel_file_write(file.slot, file.generation, data.ptr as *const void, data.len) };
     if ((n as i64) < 0) {
         return Err(last_error());
@@ -141,7 +141,7 @@ export Result<usize, Error> write(File file, []const u8 data) {
 }
 
 // Writes up to text.len bytes to a scoped File token without retrying short writes.
-export Result<usize, Error> write_text_once(File file, []const char text) {
+export Result<usize, Error> write_text_once(File file, []const char text) = .write_text_once {
     c::c_ssize_t n = unsafe { ciel_file_write(file.slot, file.generation, text.ptr as *const void, text.len) };
     if ((n as i64) < 0) {
         return Err(last_error());
@@ -150,7 +150,7 @@ export Result<usize, Error> write_text_once(File file, []const char text) {
 }
 
 // Writes the full byte slice, retrying short writes until complete.
-export Result<void, Error> write_all(File file, []const u8 data) {
+export Result<void, Error> write_all(File file, []const u8 data) = .write_all {
     usize @offset = 0;
     while (offset < data.len) {
         usize n = write(file, data[offset..])?;
@@ -163,7 +163,7 @@ export Result<void, Error> write_all(File file, []const u8 data) {
 }
 
 // Writes the full character slice, retrying short writes until complete.
-export Result<void, Error> write_text(File file, []const char text) {
+export Result<void, Error> write_text(File file, []const char text) = .write_text {
     usize @offset = 0;
     while (offset < text.len) {
         usize n = write_text_once(file, text[offset..])?;
@@ -254,13 +254,13 @@ impl to_string(*const Error value) {
 }
 
 // Writes a printable value to a scoped File token.
-export Result<void, Error> write_value<T: printable>(File file, T value) {
+export Result<void, Error> write_value<T: printable>(File file, T value) = .write_value {
     T local = value;
     return write_text(file, to_string(&local));
 }
 
 // Writes fmt to file, replacing each "{}" placeholder with the next printable value.
-export Result<void, Error> write_format(File file, []const char fmt, []printable values) {
+export Result<void, Error> write_format(File file, []const char fmt, []printable values) = .write_format {
     usize @start = 0;
     usize @i = 0;
     usize @value_index = 0;

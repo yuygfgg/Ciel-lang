@@ -203,6 +203,7 @@ module.exports = grammar({
             'interface',
             $.generic_parameter_list,
             $.interface_signature,
+            optional($.receiver_selector),
             ';',
         ),
 
@@ -268,6 +269,7 @@ module.exports = grammar({
             optional($.abi_spec),
             optional('async'),
             $.function_signature,
+            optional($.receiver_selector),
             choice($.block, ';'),
         ),
 
@@ -276,6 +278,21 @@ module.exports = grammar({
             field('name', $.identifier),
             optional($.generic_parameter_list),
             field('parameters', $.parameter_list),
+        ),
+
+        receiver_selector: $ => seq(
+            '=',
+            choice(
+                seq(
+                    '.',
+                    field('name', $.identifier),
+                ),
+                seq(
+                    field('receiver', $.identifier),
+                    '.',
+                    field('name', $.identifier),
+                ),
+            ),
         ),
 
         abi_spec: $ => seq(
@@ -606,6 +623,7 @@ module.exports = grammar({
             $.binary_expression,
             $.cast_expression,
             $.call_expression,
+            $.receiver_selector_expression,
             $.field_expression,
             $.arrow_expression,
             $.index_expression,
@@ -673,6 +691,12 @@ module.exports = grammar({
             field('object', $.expression),
             '.',
             field('field', $.identifier),
+        )),
+
+        receiver_selector_expression: $ => prec(PREC.member, seq(
+            field('object', $.expression),
+            '.',
+            field('selector', $.qualified_name),
         )),
 
         arrow_expression: $ => prec(PREC.member, seq(

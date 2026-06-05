@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: no selector `.missing` for receiver type `Packet`
+
+struct Packet {
+    i64 value;
+}
+
+i64 main() {
+    Packet packet = { value: 1 };
+    return packet.missing();
+}

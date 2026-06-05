@@ -210,7 +210,7 @@ export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
 }
 
 // Atomically loads and returns the current value.
-export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) {
+export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) = .load {
     if (valid_load_order(order) == false) {
         return Err(invalid_memory_order());
     }
@@ -227,7 +227,7 @@ export Result<void, Error> atomic_store<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-) {
+) = .store {
     if (valid_store_order(order) == false) {
         return Err(invalid_memory_order());
     }
@@ -244,7 +244,7 @@ export Result<T, Error> atomic_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-) {
+) = .exchange {
     T local = value;
     ?*void raw = unsafe { ciel_atomic_exchange(raw_atomic(atomic), &local as *const void, memory_order_code(order)) };
     if (raw == null) {
@@ -262,7 +262,7 @@ export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>
     T desired,
     MemoryOrder success,
     MemoryOrder failure
-) {
+) = .compare_exchange {
     if (valid_compare_failure_order(success, failure) == false) {
         return Err(invalid_memory_order());
     }
@@ -292,7 +292,7 @@ export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-) {
+) = .fetch_add {
     T local = value;
     ?*void raw = unsafe { ciel_atomic_fetch_add(raw_atomic(atomic), &local as *const void, memory_order_code(order)) };
     if (raw == null) {
@@ -307,7 +307,7 @@ export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-) {
+) = .fetch_sub {
     T local = value;
     ?*void raw = unsafe { ciel_atomic_fetch_sub(raw_atomic(atomic), &local as *const void, memory_order_code(order)) };
     if (raw == null) {

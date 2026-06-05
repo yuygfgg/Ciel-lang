@@ -51,10 +51,18 @@
 
 (function_signature name: (identifier) @function)
 (interface_signature name: (identifier) @function)
+(receiver_selector name: (identifier) @function)
 (impl_declaration name: (identifier) @function)
 (impl_declaration name: (qualified_name (identifier) @function .))
 (call_expression function: (expression (identifier) @function.call))
 (call_expression function: (expression (qualified_name (identifier) @function.call .)))
+(call_expression
+  function: (expression
+    (field_expression field: (identifier) @function.call)))
+(call_expression
+  function: (expression
+    (receiver_selector_expression
+      selector: (qualified_name (identifier) @function.call .))))
 (call_expression function: (expression (qualified_name (identifier) @constant .))
   (#match? @constant "^[A-Z]"))
 (expression (qualified_name (identifier) @constant .)

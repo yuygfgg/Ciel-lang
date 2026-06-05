@@ -56,7 +56,7 @@ Result<void, Error> ensure_route_len([]const char route) {
 Result<void, Error> push_u16(*buf::ByteBuf out, u16 value) {
     [2]u8 @part = [0;];
     binary::put_be(part[..], value)?;
-    buf::byte_buf_push_slice(out, part[..])?;
+    out.buf::push_slice(part[..])?;
     return Ok;
 }
 
@@ -65,7 +65,7 @@ Result<void, Error> push_chars(*buf::ByteBuf out, []const char text) {
     usize @i = 0;
     while (i < text.len) {
         one[0] = text[i] as u8;
-        buf::byte_buf_push_slice(out, one[..])?;
+        out.buf::push_slice(one[..])?;
         i = i + 1;
     }
     return Ok;
@@ -80,12 +80,12 @@ Result<[]u8, Error> build_auth_transcript(
     usize capacity = (28 as usize) + (4 as usize) + route.len + nonce_len();
     buf::ByteBuf @out = buf::byte_buf_new(capacity)?;
     [28]u8 context = auth_context();
-    buf::byte_buf_push_slice(&out, context[..])?;
+    out.buf::push_slice(context[..])?;
     push_u16(&out, version)?;
     push_u16(&out, route.len as u16)?;
     push_chars(&out, route)?;
-    buf::byte_buf_push_slice(&out, nonce[..])?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    out.buf::push_slice(nonce[..])?;
+    return Ok(out.buf::mut_slice());
 }
 
 export Result<[32]u8, Error> random_nonce() {
@@ -121,9 +121,9 @@ export Result<[]u8, Error> encode_hello_with_nonce(
     push_u16(&out, frame::protocol_version())?;
     push_u16(&out, route.len as u16)?;
     push_chars(&out, route)?;
-    buf::byte_buf_push_slice(&out, nonce[..])?;
-    buf::byte_buf_push_slice(&out, tag[..])?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    out.buf::push_slice(nonce[..])?;
+    out.buf::push_slice(tag[..])?;
+    return Ok(out.buf::mut_slice());
 }
 
 export Result<[]u8, Error> encode_hello([]const char route, []const u8 psk) {
@@ -206,8 +206,8 @@ export Result<[]u8, Error> encode_hello_ok_with_nonce(
 ) {
     buf::ByteBuf @out = buf::byte_buf_new((2 as usize) + nonce_len())?;
     push_u16(&out, selected_version)?;
-    buf::byte_buf_push_slice(&out, server_nonce[..])?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    out.buf::push_slice(server_nonce[..])?;
+    return Ok(out.buf::mut_slice());
 }
 
 export Result<[]u8, Error> encode_hello_ok() {

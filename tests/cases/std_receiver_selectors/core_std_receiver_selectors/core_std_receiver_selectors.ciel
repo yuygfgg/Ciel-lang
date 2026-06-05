@@ -1,0 +1,145 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+
+struct AddOne {}
+
+impl update_value<i64, i64>(*const AddOne updater, i64 value) {
+    return Ok({
+        value: value + 1,
+        result: value + 1,
+    });
+}
+
+i64 main() {
+    Result<i64, Error> ok = Ok(7);
+    if (ok.must() != 7) {
+        return 1;
+    }
+    if (ok.expect("expected ok") != 7) {
+        return 2;
+    }
+
+    Error err = text_error("base").with_context("ctx");
+    if (err.message().len != 3) {
+        return 3;
+    }
+
+    Bytes bytes = bytes_from_text("abc").must();
+    if (bytes.len() != 3) {
+        return 4;
+    }
+    if (bytes.capacity() < 3) {
+        return 5;
+    }
+    Bytes tail = bytes.slice(1, 2).must();
+    if (tail.len() != 2) {
+        return 6;
+    }
+    [4]u8 @out = [0;];
+    if (bytes.copy_to(out[..]).must() != 3) {
+        return 7;
+    }
+    [4]char @chars = ['\0';];
+    if (bytes.copy_to_chars(chars[..]).must() != 3) {
+        return 8;
+    }
+    [1]u8 prefix = [88 as u8];
+    Bytes prefixed = bytes.prepend(prefix[..]).must();
+    if (prefixed.len() != 4) {
+        return 9;
+    }
+    Bytes appended = bytes.append(tail).must();
+    if (appended.len() != 5) {
+        return 10;
+    }
+    if (appended.to_slice().must().len != 5) {
+        return 11;
+    }
+
+    Text text = text_copy("hello").must();
+    if (text.len() != 5) {
+        return 12;
+    }
+    if (text.to_bytes().must().len() != 5) {
+        return 13;
+    }
+    if (text.to_chars().must().len != 5) {
+        return 14;
+    }
+    if (text.slice().must().len != 5) {
+        return 15;
+    }
+
+    Channel<i64> channel = make_channel<i64>().must();
+    channel.send(42).must();
+    if (channel.recv().must() != 42) {
+        return 16;
+    }
+    channel.close().must();
+
+    Mutex<i64> mutex = make_mutex<i64>(5).must();
+    AddOne updater = {};
+    Result<i64, Error> updated_result = mutex.update(&updater);
+    if (updated_result.must() != 6) {
+        return 17;
+    }
+    Result<i64, Error> with_result = mutex.with(|slot| {
+        *slot = *slot + 2;
+        return Ok(*slot);
+    });
+    if (with_result.must() != 8) {
+        return 18;
+    }
+
+    Atomic<i64> atomic = make_atomic<i64>(10).must();
+    if (atomic.load(SeqCst).must() != 10) {
+        return 19;
+    }
+    atomic.store(20, SeqCst).must();
+    if (atomic.exchange(30, SeqCst).must() != 20) {
+        return 20;
+    }
+    CompareExchange<i64> exchanged =
+        atomic.compare_exchange(30, 40, SeqCst, Acquire).must();
+    if (!exchanged.exchanged || exchanged.previous != 30) {
+        return 21;
+    }
+    if (atomic.fetch_add(2, SeqCst).must() != 40) {
+        return 22;
+    }
+    if (atomic.fetch_sub(1, SeqCst).must() != 42) {
+        return 23;
+    }
+    if (atomic.load(SeqCst).must() != 41) {
+        return 24;
+    }
+
+    SharedMap<u32, i64> shared = shared_map_new<u32, i64>().must();
+    shared.insert(3 as u32, 9).must();
+    if (shared.len().must() != 1) {
+        return 25;
+    }
+    SharedMapGet<i64> found = shared.get(3 as u32).must();
+    switch (found) {
+        case SharedMapGet::Found(value):
+            if (value != 9) {
+                return 26;
+            }
+        case SharedMapGet::Missing:
+            return 27;
+    }
+    shared.remove(3 as u32).must();
+    if (shared.len().must() != 0) {
+        return 28;
+    }
+    switch (shared.pop_any().must()) {
+        case SharedMapPop::Item(key, value):
+            return 29;
+        case SharedMapPop::Empty:
+            {}
+    }
+
+    return 0;
+}

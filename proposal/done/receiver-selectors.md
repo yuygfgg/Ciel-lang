@@ -247,9 +247,10 @@ A callable declaration with a receiver selector must satisfy these rules:
 2. Function selectors and interface selectors use the same `= parameter.name`
    syntax.
 3. `impl` declarations cannot attach selectors.
-4. Imported C declarations cannot attach selectors directly in the first
-   version. A safe or unsafe Ciel wrapper can attach a selector and preserve
-   the C boundary rules.
+4. Each callable declaration may expose at most one receiver selector. Multiple
+   public receiver spellings require separate wrapper functions.
+5. Imported C declarations cannot attach selectors directly. A safe or unsafe
+   Ciel wrapper can attach a selector and preserve the C boundary rules.
 
 The selector name does not enter the ordinary function namespace. It is not a
 bare callable name:
@@ -318,10 +319,11 @@ export Result<void, Error> byte_buf_insert(
 ) = .insert; // ok: different receiver root
 ```
 
-The implementation should be conservative when checking generic overlap. If
-two receiver patterns unify for the same selector, reject the second
-declaration rather than relying on non-receiver constraints or argument counts
-to disambiguate calls.
+The implementation must be conservative when checking generic overlap. If two
+receiver patterns unify for the same selector, reject the second declaration
+rather than relying on non-receiver constraints, interface constraints, or
+argument counts to disambiguate calls. Constraints are checked after selector
+desugaring, not during selector choice.
 
 Pointer view differences do not make receiver patterns disjoint:
 
@@ -562,12 +564,3 @@ Because the desugared call uses existing call checking, receiver selectors do
 not need separate code generation. Codegen sees the ordinary function call,
 interface call, dynamic-interface call, async call, or unsafe call that would
 have been written without the receiver selector.
-
-## Open Questions
-
-1. Should imported C declarations be allowed to attach selectors directly, or
-   should selectors always live on Ciel wrapper functions?
-2. Should a callable be allowed to expose more than one selector, or should
-   multiple public spellings require separate wrapper functions?
-3. Should selector overlap checking treat interface constraints as disjoint, or
-   should any unifiable receiver roots conflict regardless of constraints?

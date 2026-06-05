@@ -22,24 +22,24 @@ export Result<ByteBuf, Error> byte_buf_new(usize capacity) {
 }
 
 // Returns the number of initialized bytes in the buffer.
-export usize byte_buf_len(*const ByteBuf buf) {
+export usize byte_buf_len(*const ByteBuf buf) = .len {
     return unsafe { buf->len };
 }
 
 // Resets the initialized length to zero without releasing capacity.
-export void byte_buf_clear(*ByteBuf buf) {
+export void byte_buf_clear(*ByteBuf buf) = .clear {
     unsafe {
         buf->len = 0;
     };
 }
 
 // Returns a read-only view of the initialized byte prefix.
-export []const u8 byte_buf_slice(*const ByteBuf buf) {
+export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice {
     return unsafe { buf->storage[..buf->len] };
 }
 
 // Returns a mutable view of the initialized byte prefix.
-export []u8 byte_buf_mut_slice(*ByteBuf buf) {
+export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice {
     return unsafe { buf->storage[..buf->len] };
 }
 
@@ -73,7 +73,7 @@ usize grown_capacity(usize current, usize needed) {
 }
 
 // Ensures room for additional bytes after the initialized prefix.
-export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) {
+export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > ((~(0 as usize)) - len)) {
@@ -94,7 +94,7 @@ export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) {
 }
 
 // Appends a byte slice to the initialized prefix, growing as needed.
-export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
+export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice {
     byte_buf_reserve(buf, data.len)?;
     usize len = byte_buf_len(buf);
     if (data.len > 0) {
@@ -110,14 +110,14 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) {
 }
 
 // Reserves additional uninitialized tail space and returns a mutable view to it.
-export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) {
+export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
     byte_buf_reserve(buf, additional)?;
     usize len = byte_buf_len(buf);
     return Ok(unsafe { buf->storage[len..(len + additional)] });
 }
 
 // Marks additional bytes previously written through byte_buf_spare_mut_slice as initialized.
-export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) {
+export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > (cap - len)) {
@@ -130,7 +130,7 @@ export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) 
 }
 
 // Removes count initialized bytes from the front and shifts the remaining bytes down.
-export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) {
+export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix {
     usize len = byte_buf_len(buf);
     if (count > len) {
         return Err(text_error("byte buffer discard exceeds length"));

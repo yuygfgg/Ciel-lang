@@ -99,8 +99,8 @@ export Result<ServerConfig, Error> parse_server_args() {
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
     return Ok({
-        control_addr: net::parse_addr(control)?,
-        public_addr: net::parse_addr(public)?,
+        control_addr: control.net::parse_addr()?,
+        public_addr: public.net::parse_addr()?,
         route: text::text_copy(route)?,
         psk: bytes::bytes_from_text(psk)?
     });
@@ -113,8 +113,8 @@ export Result<AgentConfig, Error> parse_agent_args() {
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
     return Ok({
-        server_addr: net::parse_addr(server)?,
-        target_addr: net::parse_addr(target)?,
+        server_addr: server.net::parse_addr()?,
+        target_addr: target.net::parse_addr()?,
         route: text::text_copy(route)?,
         psk: bytes::bytes_from_text(psk)?
     });

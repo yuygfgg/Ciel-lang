@@ -28,7 +28,7 @@ async Result<void, Error> agent_control_writer(
         _ next = await async::recv<anet::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
-                _ wrote = await anet::write_all(stream, bytes);
+                _ wrote = await stream.anet::write_all(bytes);
                 switch (wrote) {
                     case Ok:
                         {}
@@ -112,7 +112,7 @@ async Result<void, Error> agent_stream_worker(
     async::Receiver<meta::Repr<rt::StreamEvent>> receiver,
     async::Sender<meta::Repr<rt::StreamEvent>> local_events
 ) {
-    _ connected = await anet::connect_timeout(control.target_addr, 2000);
+    _ connected = await control.target_addr.anet::connect_timeout(2000);
     switch (connected) {
         case Ok(target):
             defer agent_stream_cleanup(stream_id, target, control);
@@ -151,7 +151,7 @@ async Result<void, Error> agent_stream_worker(
                                 }
                             case rt::StreamFrame(incoming):
                                 if (rt::kind_is(incoming.kind, frame::Data)) {
-                                    _ wrote = await anet::write_all(target, incoming.payload);
+                                    _ wrote = await target.anet::write_all(incoming.payload);
                                     switch (wrote) {
                                         case Ok:
                                             {}
@@ -166,7 +166,7 @@ async Result<void, Error> agent_stream_worker(
                                     }
                                 } else if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
                                     remote_write_closed = true;
-                                    anet::shutdown_write(target);
+                                    target.anet::shutdown_write();
                                     if (local_write_closed) {
                                         return Ok;
                                     }
@@ -203,7 +203,7 @@ async Result<void, Error> agent_control_reader(
         switch (read) {
             case Ok(incoming):
                 if (rt::kind_is(incoming.kind, frame::OpenStream)) {
-                    if (anet::bytes_len(incoming.payload) != 0) {
+                    if (incoming.payload.anet::len() != 0) {
                         async::close<anet::Bytes>(control.writer)?;
                         rt::stream_registry_close_all(control.streams)?;
                         return Err(text_error("protocol error: malformed OpenStream"));
@@ -264,9 +264,9 @@ async Result<void, Error> run_agent_async(
     rt::AuthConfig auth_config
 ) {
     anet::AsyncTcpStream control_stream = await anet::connect(server_addr)?;
-    anet::AsyncTcpSplit split = anet::split(control_stream)?;
+    anet::AsyncTcpSplit split = control_stream.anet::split()?;
     anet::BufferedStreamReader reader =
-        anet::buffered_reader(split.read, frame::max_payload_len())?;
+        split.read.anet::buffered_reader(frame::max_payload_len())?;
     async::ChannelPair<anet::Bytes> control_channel = async::channel<anet::Bytes>(128)?;
     _ control_writer =
         async::spawn<void>(agent_control_writer(control_stream, control_channel.receiver))?;

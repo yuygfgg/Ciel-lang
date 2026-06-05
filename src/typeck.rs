@@ -40,6 +40,28 @@ struct FunctionSig {
     exported: bool,
 }
 
+#[derive(Clone, Debug)]
+struct ReceiverSelectorSig {
+    selector: String,
+    module: ModuleId,
+    exported: bool,
+    receiver_index: usize,
+    span: crate::span::Span,
+    callable: ReceiverSelectorCallable,
+}
+
+#[derive(Clone, Debug)]
+enum ReceiverSelectorCallable {
+    Function(DefId),
+    Interface(DefId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiverAdaptation {
+    Direct,
+    Address,
+}
+
 struct SubstitutedTy {
     ty: Ty,
     from_replacement: bool,
@@ -770,6 +792,9 @@ pub fn type_check_generic_instance(
     checker.collect_functions();
     checker.merge_existing_impls(&checked.impls);
     checker.collect_impls(false);
+    checker.normalize_function_sigs();
+    checker.collect_receiver_selectors();
+    checker.validate_receiver_selector_conflicts();
     checker.next_synthetic_def = checker.next_synthetic_def.max(next_synthetic_def);
     let base_generated = checker.generated_functions.len();
     let base_impls = checker.impls.len();
@@ -822,6 +847,7 @@ struct TypeChecker {
     diagnostics: Vec<Diagnostic>,
     functions_by_def: HashMap<DefId, FunctionSig>,
     functions_by_name: HashMap<String, Vec<DefId>>,
+    receiver_selectors: Vec<ReceiverSelectorSig>,
     type_aliases: HashMap<DefId, TypeAliasTemplate>,
     opaque_structs: HashSet<String>,
     unsafe_structs: HashSet<String>,
@@ -871,6 +897,7 @@ impl TypeChecker {
             diagnostics: Vec::new(),
             functions_by_def: HashMap::new(),
             functions_by_name: HashMap::new(),
+            receiver_selectors: Vec::new(),
             type_aliases: HashMap::new(),
             opaque_structs: HashSet::new(),
             unsafe_structs: HashSet::new(),
@@ -919,6 +946,8 @@ impl TypeChecker {
         self.collect_functions();
         self.collect_impls(true);
         self.normalize_function_sigs();
+        self.collect_receiver_selectors();
+        self.validate_receiver_selector_conflicts();
         self.validate_c_abi_functions();
         self.check_by_value_layout_cycles();
         if self.fatal_impl_coherence_error {
@@ -3725,6 +3754,192 @@ impl TypeChecker {
                     }
                     _ => {}
                 }
+            }
+        }
+    }
+
+    fn collect_receiver_selectors(&mut self) {
+        self.receiver_selectors.clear();
+        let modules = self.hir_modules.clone();
+        for module in &modules {
+            for item in &module.items {
+                match &item.kind {
+                    ItemKind::Interface(decl) => {
+                        let Some(selector) = decl.signature.receiver_selector.as_ref() else {
+                            continue;
+                        };
+                        let Some(def_id) = self.resolved.local_def(
+                            module.id,
+                            &decl.signature.name.name,
+                            &[DefKind::Interface],
+                        ) else {
+                            continue;
+                        };
+                        let exported = self.resolved.def(def_id).exported;
+                        self.collect_receiver_selector_for_signature(
+                            module.id,
+                            &decl.signature,
+                            selector,
+                            exported,
+                            ReceiverSelectorCallable::Interface(def_id),
+                        );
+                    }
+                    ItemKind::Function(function) => {
+                        let Some(selector) = function.signature.receiver_selector.as_ref() else {
+                            continue;
+                        };
+                        let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
+                            let def = self.resolved.def(*def_id);
+                            def.name == function.signature.name.name
+                                && matches!(def.kind, DefKind::Function | DefKind::ExternFunction)
+                        }) else {
+                            continue;
+                        };
+                        if function.abi.as_deref() == Some("C") && function.body.is_none() {
+                            self.diagnostics.push(Diagnostic::new(
+                                selector.span,
+                                "imported C function declarations cannot attach receiver selectors",
+                            ));
+                            continue;
+                        }
+                        let exported = self.resolved.def(def_id).exported;
+                        self.collect_receiver_selector_for_signature(
+                            module.id,
+                            &function.signature,
+                            selector,
+                            exported,
+                            ReceiverSelectorCallable::Function(def_id),
+                        );
+                    }
+                    ItemKind::ExternBlock(block) => {
+                        for extern_item in &block.items {
+                            let ExternItem::Function { signature, .. } = extern_item else {
+                                continue;
+                            };
+                            if let Some(selector) = signature.receiver_selector.as_ref() {
+                                self.diagnostics.push(Diagnostic::new(
+                                    selector.span,
+                                    "imported C function declarations cannot attach receiver selectors",
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    fn collect_receiver_selector_for_signature(
+        &mut self,
+        module: ModuleId,
+        signature: &FunctionSignature,
+        selector: &ReceiverSelector,
+        exported: bool,
+        callable: ReceiverSelectorCallable,
+    ) {
+        if signature.params.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                selector.span,
+                format!(
+                    "receiver selector `.{}` requires at least one parameter",
+                    selector.name.name
+                ),
+            ));
+            return;
+        }
+        let receiver_index = if let Some(receiver_param) = &selector.receiver_param {
+            let Some(index) = signature
+                .params
+                .iter()
+                .position(|param| param.name.name == receiver_param.name)
+            else {
+                self.diagnostics.push(Diagnostic::new(
+                    receiver_param.span,
+                    format!(
+                        "unknown receiver parameter `{}` for selector `.{}`",
+                        receiver_param.name, selector.name.name
+                    ),
+                ));
+                return;
+            };
+            index
+        } else {
+            0
+        };
+        self.receiver_selectors.push(ReceiverSelectorSig {
+            selector: selector.name.name.clone(),
+            module,
+            exported,
+            receiver_index,
+            span: selector.span,
+            callable,
+        });
+    }
+
+    fn validate_receiver_selector_conflicts(&mut self) {
+        let selectors = self.receiver_selectors.clone();
+        for (idx, left) in selectors.iter().enumerate() {
+            for right in selectors.iter().skip(idx + 1) {
+                if left.module != right.module || left.selector != right.selector {
+                    continue;
+                }
+                if self.receiver_selector_patterns_overlap(left, right) {
+                    let receiver = self
+                        .receiver_selector_pattern_ty(left)
+                        .map(|ty| receiver_selector_root_ty(&ty).to_string())
+                        .unwrap_or_else(|| "unknown".to_string());
+                    self.diagnostics.push(Diagnostic::new(
+                        right.span,
+                        format!(
+                            "conflicting selector `.{}` for receiver `{receiver}`; selector declarations are not overloaded by non-receiver arguments",
+                            right.selector
+                        ),
+                    ));
+                }
+            }
+        }
+    }
+
+    fn receiver_selector_patterns_overlap(
+        &mut self,
+        left: &ReceiverSelectorSig,
+        right: &ReceiverSelectorSig,
+    ) -> bool {
+        let Some(left_ty) = self.receiver_selector_pattern_ty(left) else {
+            return false;
+        };
+        let Some(right_ty) = self.receiver_selector_pattern_ty(right) else {
+            return false;
+        };
+        let left_root = receiver_selector_root_ty(&left_ty);
+        let right_root = receiver_selector_root_ty(&right_ty);
+        let mut subst = HashMap::new();
+        if unify_ty(&left_root, &right_root, &mut subst) {
+            return true;
+        }
+        let mut subst = HashMap::new();
+        unify_ty(&right_root, &left_root, &mut subst)
+    }
+
+    fn receiver_selector_pattern_ty(&mut self, selector: &ReceiverSelectorSig) -> Option<Ty> {
+        match selector.callable {
+            ReceiverSelectorCallable::Function(def_id) => self
+                .functions_by_def
+                .get(&def_id)
+                .and_then(|sig| sig.params.get(selector.receiver_index).cloned()),
+            ReceiverSelectorCallable::Interface(def_id) => {
+                let interface = self.interfaces.get(&def_id).cloned()?;
+                let subst = interface
+                    .generics
+                    .iter()
+                    .cloned()
+                    .map(|name| (name.clone(), Ty::Generic(name)))
+                    .collect::<HashMap<_, _>>();
+                interface
+                    .params
+                    .get(selector.receiver_index)
+                    .map(|param| self.lower_type_with_subst(&param.ty, &subst))
             }
         }
     }
@@ -6819,6 +7034,16 @@ impl TypeChecker {
                 type_args,
                 args,
             } => {
+                if let ExprKind::Field { base, field } = &callee.kind {
+                    return self.check_field_or_receiver_selector_call(
+                        scopes, expr.span, base, field, type_args, args, expected,
+                    );
+                }
+                if let ExprKind::ReceiverSelector { base, selector } = &callee.kind {
+                    return self.check_receiver_selector_call(
+                        scopes, expr.span, base, selector, type_args, args, expected,
+                    );
+                }
                 if let ExprKind::Name(name_ref) = &callee.kind
                     && !matches!(name_ref.kind, NameRefKind::Local(_))
                     && let Some((def_id, sig)) = self.lookup_variant_name(name_ref, expected)
@@ -6920,6 +7145,16 @@ impl TypeChecker {
                         field: field.name.clone(),
                     },
                 }
+            }
+            ExprKind::ReceiverSelector { selector, .. } => {
+                self.diagnostics.push(Diagnostic::new(
+                    expr.span,
+                    format!(
+                        "receiver selector `{}` must be called",
+                        receiver_selector_path_display(selector)
+                    ),
+                ));
+                return None;
             }
             ExprKind::Arrow { base, field } => {
                 let base = self.check_expr(scopes, base, None)?;
@@ -8640,6 +8875,297 @@ impl TypeChecker {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn check_field_or_receiver_selector_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        base: &Expr,
+        field: &crate::ast::Ident,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let checked_base = self.check_expr(scopes, base, None)?;
+        if let Some(field_ty) = self.field_ty_silent(&checked_base.ty, &field.name, field.span)
+            && callable_ret_params_ty(&field_ty).is_some()
+        {
+            if !type_args.is_empty() {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "type arguments can only be used on generic function or interface calls",
+                ));
+                return None;
+            }
+            let field_ty = self
+                .field_ty(&checked_base.ty, &field.name, field.span)
+                .unwrap_or(field_ty);
+            let callee = TExpr {
+                span: checked_base.span.merge(field.span),
+                ty: field_ty,
+                kind: TExprKind::Field {
+                    base: Box::new(checked_base),
+                    field: field.name.clone(),
+                },
+            };
+            if matches!(
+                &callee.ty,
+                Ty::Function {
+                    is_unsafe: true,
+                    ..
+                }
+            ) {
+                self.require_unsafe(
+                    callee.span,
+                    "call to unsafe function value requires unsafe block",
+                );
+            }
+            let Some((ret, params)) = callable_ret_params_ty(&callee.ty) else {
+                unreachable!("callable field type was checked above");
+            };
+            return self.check_call_with_sig(scopes, span, callee, &ret, &params, args);
+        }
+
+        let selector = vec![field.clone()];
+        self.check_receiver_selector_call(scopes, span, base, &selector, type_args, args, expected)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_receiver_selector_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        receiver: &Expr,
+        selector_path: &[crate::ast::Ident],
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        let Some(selector_name) = selector_path.last().map(|name| name.name.clone()) else {
+            return None;
+        };
+        let checked_receiver = self.check_expr(scopes, receiver, None)?;
+        let visible = self.visible_receiver_selector_candidates(self.current_module, selector_path);
+        let mut matches = Vec::new();
+        for candidate in visible {
+            let Some(param_ty) = self.receiver_selector_pattern_ty(&candidate) else {
+                continue;
+            };
+            if let Some(adaptation) = receiver_selector_adaptation(&param_ty, &checked_receiver.ty)
+            {
+                matches.push((candidate, adaptation));
+            }
+        }
+        match matches.len() {
+            0 => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "no selector `.{selector_name}` for receiver type `{}`",
+                        checked_receiver.ty
+                    ),
+                ));
+                None
+            }
+            1 => {
+                let (selector, adaptation) = matches.into_iter().next().unwrap();
+                self.check_receiver_selector_target_call(
+                    scopes, span, receiver, selector, adaptation, type_args, args, expected,
+                )
+            }
+            count => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "ambiguous selector `.{selector_name}` for receiver type `{}` ({count} candidates)",
+                        checked_receiver.ty
+                    ),
+                ));
+                None
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_receiver_selector_target_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        receiver: &Expr,
+        selector: ReceiverSelectorSig,
+        adaptation: ReceiverAdaptation,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+    ) -> Option<TExpr> {
+        match selector.callable {
+            ReceiverSelectorCallable::Function(def_id) => {
+                let sig = self.functions_by_def.get(&def_id).cloned()?;
+                let call_args = receiver_selector_desugared_args(
+                    receiver,
+                    args,
+                    sig.params.len(),
+                    selector.receiver_index,
+                    adaptation,
+                );
+                self.check_direct_function_call(scopes, span, sig, type_args, &call_args, expected)
+            }
+            ReceiverSelectorCallable::Interface(def_id) => {
+                let interface = self.interfaces.get(&def_id).cloned()?;
+                let call_args = receiver_selector_desugared_args(
+                    receiver,
+                    args,
+                    interface.params.len(),
+                    selector.receiver_index,
+                    adaptation,
+                );
+                self.check_interface_call_with_receiver_index(
+                    scopes,
+                    span,
+                    def_id,
+                    type_args,
+                    &call_args,
+                    expected,
+                    selector.receiver_index,
+                )
+            }
+        }
+    }
+
+    fn visible_receiver_selector_candidates(
+        &self,
+        module: ModuleId,
+        selector_path: &[crate::ast::Ident],
+    ) -> Vec<ReceiverSelectorSig> {
+        let Some(selector_name) = selector_path.last().map(|name| name.name.as_str()) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        match selector_path {
+            [_name] => {
+                out.extend(
+                    self.receiver_selectors
+                        .iter()
+                        .filter(|selector| {
+                            selector.module == module && selector.selector == selector_name
+                        })
+                        .cloned(),
+                );
+                let mut visited = HashSet::new();
+                for import in &self.resolved.modules[module.0].imports {
+                    if import.alias.is_some() {
+                        continue;
+                    }
+                    if let Some(target) = import.target {
+                        self.exported_receiver_selectors_from_module(
+                            target,
+                            selector_name,
+                            &mut visited,
+                            &mut out,
+                        );
+                    }
+                }
+            }
+            [alias, _name] => {
+                for target in self.receiver_selector_alias_targets(module, &alias.name) {
+                    let mut visited = HashSet::new();
+                    self.exported_receiver_selectors_from_module(
+                        target,
+                        selector_name,
+                        &mut visited,
+                        &mut out,
+                    );
+                }
+            }
+            _ => {}
+        }
+        dedup_receiver_selectors(&mut out);
+        out
+    }
+
+    fn exported_receiver_selectors_from_module(
+        &self,
+        module: ModuleId,
+        selector_name: &str,
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<ReceiverSelectorSig>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        out.extend(
+            self.receiver_selectors
+                .iter()
+                .filter(|selector| {
+                    selector.module == module
+                        && selector.exported
+                        && selector.selector == selector_name
+                })
+                .cloned(),
+        );
+        for import in &self.resolved.modules[module.0].imports {
+            if !import.exported || import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_receiver_selectors_from_module(target, selector_name, visited, out);
+            }
+        }
+    }
+
+    fn receiver_selector_alias_targets(&self, module: ModuleId, alias: &str) -> Vec<ModuleId> {
+        let mut targets = Vec::new();
+        for import in &self.resolved.modules[module.0].imports {
+            if import.alias.as_deref() == Some(alias)
+                && let Some(target) = import.target
+            {
+                targets.push(target);
+            }
+        }
+        let mut visited = HashSet::new();
+        for import in &self.resolved.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_receiver_selector_alias_targets(
+                    target,
+                    alias,
+                    &mut visited,
+                    &mut targets,
+                );
+            }
+        }
+        dedup_modules(&mut targets);
+        targets
+    }
+
+    fn exported_receiver_selector_alias_targets(
+        &self,
+        module: ModuleId,
+        alias: &str,
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<ModuleId>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        for import in &self.resolved.modules[module.0].imports {
+            if !import.exported {
+                continue;
+            }
+            if import.alias.as_deref() == Some(alias) {
+                if let Some(target) = import.target {
+                    out.push(target);
+                }
+            } else if import.alias.is_none()
+                && let Some(target) = import.target
+            {
+                self.exported_receiver_selector_alias_targets(target, alias, visited, out);
+            }
+        }
+    }
+
     fn check_async_block_on_call(
         &mut self,
         scopes: &mut LocalScopes,
@@ -9807,6 +10333,22 @@ impl TypeChecker {
         args: &[Expr],
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
+        self.check_interface_call_with_receiver_index(
+            scopes, span, def_id, type_args, args, expected, 0,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn check_interface_call_with_receiver_index(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        def_id: DefId,
+        type_args: &[Type],
+        args: &[Expr],
+        expected: Option<&Ty>,
+        receiver_index: usize,
+    ) -> Option<TExpr> {
         let name = self.resolved.def(def_id).name.clone();
         let Some(interface) = self.interfaces.get(&def_id).cloned() else {
             self.diagnostics.push(Diagnostic::new(
@@ -9815,7 +10357,7 @@ impl TypeChecker {
             ));
             return None;
         };
-        if interface.params.is_empty() || args.is_empty() {
+        if interface.params.is_empty() || args.get(receiver_index).is_none() {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("interface call `{name}` requires a receiver argument"),
@@ -9827,19 +10369,28 @@ impl TypeChecker {
             .iter()
             .map(|arg| self.lower_type(arg))
             .collect::<Vec<_>>();
-        let first_arg = self.check_expr(scopes, &args[0], None)?;
+        let receiver_arg = self.check_expr(scopes, &args[receiver_index], None)?;
         if let Ty::DynamicInterface {
             name: dyn_name,
             args: dyn_args,
-        } = &first_arg.ty
+        } = &receiver_arg.ty
             && let Some(interface_ref) = self.dynamic_view_interface(dyn_name, dyn_args, &name)
         {
+            if receiver_index != 0 {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "dynamic interface call `{name}` requires the receiver parameter to be first"
+                    ),
+                ));
+                return None;
+            }
             return self.check_dynamic_interface_call(
                 scopes,
                 span,
                 interface,
                 &interface_ref.args,
-                first_arg,
+                receiver_arg,
                 &args[1..],
             );
         }
@@ -9864,17 +10415,20 @@ impl TypeChecker {
             let ret = self.lower_type_with_subst(&interface.ret, &subst);
             self.unify_ty_for_inference(&ret, expected, &mut subst);
         }
-        let mut checked_args = vec![first_arg.clone()];
+        if let Some(param) = interface.params.get(receiver_index) {
+            unify_receiver_param(
+                &self.lower_type_with_subst(&param.ty, &subst),
+                &receiver_arg.ty,
+                &mut subst,
+            );
+        }
+        let mut checked_args = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
             let Some(param) = interface.params.get(idx) else {
                 continue;
             };
-            if idx == 0 {
-                unify_receiver_param(
-                    &self.lower_type_with_subst(&param.ty, &subst),
-                    &first_arg.ty,
-                    &mut subst,
-                );
+            if idx == receiver_index {
+                checked_args.push(receiver_arg.clone());
                 continue;
             }
             let param_ty = self.lower_type_with_subst(&param.ty, &subst);
@@ -9928,7 +10482,7 @@ impl TypeChecker {
                 kind: TExprKind::RetainedClosureInterfaceCall {
                     interface_name: name.clone(),
                     interface_args: non_receiver_args.to_vec(),
-                    receiver: Box::new(checked_args.remove(0)),
+                    receiver: Box::new(checked_args.remove(receiver_index)),
                     args: checked_args,
                 },
             });
@@ -11006,6 +11560,13 @@ impl TypeChecker {
                 None
             }
         }
+    }
+
+    fn field_ty_silent(&mut self, base: &Ty, field: &str, span: crate::span::Span) -> Option<Ty> {
+        let diagnostic_count = self.diagnostics.len();
+        let ty = self.field_ty(base, field, span);
+        self.diagnostics.truncate(diagnostic_count);
+        ty
     }
 
     fn ty_can_assign_from(&self, expected: &Ty, actual: &Ty) -> bool {
@@ -12536,6 +13097,127 @@ fn lvalue_root_local(expr: &TExpr) -> Option<(LocalId, &str)> {
         TExprKind::Field { base, .. } | TExprKind::Index { base, .. } => lvalue_root_local(base),
         _ => None,
     }
+}
+
+fn receiver_selector_path_display(selector: &[crate::ast::Ident]) -> String {
+    match selector {
+        [name] => format!(".{}", name.name),
+        [alias, name] => format!(".{}::{}", alias.name, name.name),
+        _ => ".<invalid>".to_string(),
+    }
+}
+
+fn receiver_selector_desugared_args(
+    receiver: &Expr,
+    args: &[Expr],
+    param_len: usize,
+    receiver_index: usize,
+    adaptation: ReceiverAdaptation,
+) -> Vec<Expr> {
+    let receiver_arg = match adaptation {
+        ReceiverAdaptation::Direct => receiver.clone(),
+        ReceiverAdaptation::Address => Expr {
+            span: receiver.span,
+            kind: ExprKind::Unary {
+                op: UnaryOp::Addr,
+                expr: Box::new(receiver.clone()),
+            },
+        },
+    };
+    let mut explicit = args.iter();
+    let mut out = Vec::new();
+    for idx in 0..param_len {
+        if idx == receiver_index {
+            out.push(receiver_arg.clone());
+        } else if let Some(arg) = explicit.next() {
+            out.push(arg.clone());
+        }
+    }
+    out.extend(explicit.cloned());
+    out
+}
+
+fn receiver_selector_adaptation(param_ty: &Ty, receiver_ty: &Ty) -> Option<ReceiverAdaptation> {
+    let mut subst = HashMap::new();
+    if selector_pattern_assignable(param_ty, receiver_ty, &mut subst) {
+        return Some(ReceiverAdaptation::Direct);
+    }
+    let Ty::Pointer { inner, .. } = param_ty else {
+        return None;
+    };
+    let mut subst = HashMap::new();
+    if selector_pattern_assignable(inner, receiver_ty, &mut subst) {
+        Some(ReceiverAdaptation::Address)
+    } else {
+        None
+    }
+}
+
+fn selector_pattern_assignable(
+    expected: &Ty,
+    actual: &Ty,
+    subst: &mut HashMap<String, Ty>,
+) -> bool {
+    let mut trial = subst.clone();
+    if unify_ty(expected, actual, &mut trial) {
+        *subst = trial;
+        return true;
+    }
+    match (expected, actual) {
+        (
+            Ty::Pointer {
+                nullable: expected_nullable,
+                mutability: expected_mutability,
+                inner: expected_inner,
+            },
+            Ty::Pointer {
+                nullable: actual_nullable,
+                mutability: actual_mutability,
+                inner: actual_inner,
+            },
+        ) if (*expected_nullable == *actual_nullable
+            || (*expected_nullable && !*actual_nullable))
+            && pointer_view_can_weaken(*expected_mutability, *actual_mutability) =>
+        {
+            selector_pattern_assignable(expected_inner, actual_inner, subst)
+        }
+        (
+            Ty::Slice {
+                mutability: expected_mutability,
+                elem: expected_elem,
+            },
+            Ty::Slice {
+                mutability: actual_mutability,
+                elem: actual_elem,
+            },
+        ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability) => {
+            selector_pattern_assignable(expected_elem, actual_elem, subst)
+        }
+        _ => false,
+    }
+}
+
+fn receiver_selector_root_ty(ty: &Ty) -> Ty {
+    match ty {
+        Ty::Pointer { inner, .. } => receiver_selector_root_ty(inner),
+        other => other.clone(),
+    }
+}
+
+fn dedup_receiver_selectors(selectors: &mut Vec<ReceiverSelectorSig>) {
+    let mut seen = HashSet::<(String, ModuleId, usize, &'static str)>::new();
+    selectors.retain(|selector| {
+        let (id, kind) = match selector.callable {
+            ReceiverSelectorCallable::Function(def_id) => (def_id.0, "function"),
+            ReceiverSelectorCallable::Interface(def_id) => (def_id.0, "interface"),
+        };
+        seen.insert((selector.selector.clone(), selector.module, id, kind))
+    });
+}
+
+fn dedup_modules(modules: &mut Vec<ModuleId>) {
+    let mut seen = HashSet::new();
+    modules.retain(|module| seen.insert(*module));
 }
 
 fn enum_instance_name(name: &str, args: &[Ty]) -> String {

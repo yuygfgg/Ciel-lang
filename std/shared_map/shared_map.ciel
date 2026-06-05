@@ -76,7 +76,7 @@ export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, 
     SharedMap<K, V> shared,
     K key,
     V value
-) {
+) = .insert {
     return sync::mutex_with<SharedMapState<K, V>, map::InsertResult<V>>(
         &shared.state,
         |state| map::hash_map_insert<K, V>(unsafe { &state->inner }, key, value)
@@ -87,7 +87,7 @@ export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, 
 export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
-) {
+) = .get {
     return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
         &shared.state,
         |state| {
@@ -106,7 +106,7 @@ export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Messa
 export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
-) {
+) = .remove {
     return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
         &shared.state,
         |state| {
@@ -124,7 +124,7 @@ export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Me
 // Removes and returns an arbitrary entry while holding the lock.
 export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
-) {
+) = .pop_any {
     return sync::mutex_with<SharedMapState<K, V>, SharedMapPop<K, V>>(
         &shared.state,
         |state| {
@@ -142,7 +142,7 @@ export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V
 // Returns the current entry count while holding the lock.
 export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
-) {
+) = .len {
     return sync::mutex_with<SharedMapState<K, V>, usize>(
         &shared.state,
         |state| Ok(map::hash_map_len<K, V>(unsafe { &state->inner }))

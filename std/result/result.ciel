@@ -6,7 +6,7 @@ export import /std/error;
 import /std/panic;
 
 // Unwraps an Ok value or panics with the provided message on Err.
-export T expect<T, E>(Result<T, E> value, []const char message) {
+export T expect<T, E>(Result<T, E> value, []const char message) = .expect {
     switch (value) {
         case Ok(result):
             return result;
@@ -16,6 +16,6 @@ export T expect<T, E>(Result<T, E> value, []const char message) {
 }
 
 // Unwraps an Ok value or panics with the default "must failed" message on Err.
-export T must<T, E>(Result<T, E> value) {
+export T must<T, E>(Result<T, E> value) = .must {
     return expect(value, "must failed");
 }

@@ -51,7 +51,7 @@ export Result<Channel<T>, Error> make_channel<T: Message>() {
 }
 
 // Clones and sends a value to a blocking channel.
-export Result<void, Error> channel_send<T: Message>(*const Channel<T> channel, T value) {
+export Result<void, Error> channel_send<T: Message>(*const Channel<T> channel, T value) = .send {
     T local = value;
     T cloned = clone_message(&local)?;
     c::c_int rc = unsafe { ciel_channel_send(channel->handle as *CielChannel, &cloned as *const void) };
@@ -62,7 +62,7 @@ export Result<void, Error> channel_send<T: Message>(*const Channel<T> channel, T
 }
 
 // Receives the next value from a blocking channel or returns an error if closed.
-export Result<T, Error> channel_recv<T: Message>(*const Channel<T> channel) {
+export Result<T, Error> channel_recv<T: Message>(*const Channel<T> channel) = .recv {
     ?*void raw = unsafe { ciel_channel_recv(channel->handle as *CielChannel) };
     if (raw == null) {
         return Err(runtime_error());
@@ -73,7 +73,7 @@ export Result<T, Error> channel_recv<T: Message>(*const Channel<T> channel) {
 }
 
 // Closes a blocking channel and wakes blocked receivers.
-export Result<void, Error> channel_close<T: Message>(*const Channel<T> channel) {
+export Result<void, Error> channel_close<T: Message>(*const Channel<T> channel) = .close {
     c::c_int rc = unsafe { ciel_channel_close(channel->handle as *CielChannel) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));

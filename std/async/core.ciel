@@ -106,10 +106,10 @@ unsafe impl<T> awaitable_future<Result<T, Error>>(*const Task<T> task) {
 export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(A body);
 
 // Requests cancellation of a task and aborts its current suspended operation.
-export Result<void, Error> cancel<T>(*const Task<T> task);
+export Result<void, Error> cancel<T>(*const Task<T> task) = .cancel;
 
 // Returns whether a task has reached a terminal state.
-export Result<bool, Error> is_finished<T>(*const Task<T> task);
+export Result<bool, Error> is_finished<T>(*const Task<T> task) = .is_finished;
 
 unsafe impl<T> cancel_safe_marker(*const Task<T> task) {
     return true;
@@ -206,22 +206,22 @@ export Result<ChannelPair<T>, Error> channel<T>(usize capacity) {
 }
 
 // Awaits channel capacity and sends value.
-export async Result<void, Error> send<T>(Sender<T> sender, T value);
+export async Result<void, Error> send<T>(Sender<T> sender, T value) = .send;
 
 // Attempts to send value without suspension.
-export Result<void, Error> try_send<T>(Sender<T> sender, T value);
+export Result<void, Error> try_send<T>(Sender<T> sender, T value) = .try_send;
 
 // Awaits and reserves one channel slot for a later permit_send.
-export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender);
+export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender) = .reserve;
 
 // Sends value into a previously reserved slot.
-export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value);
+export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value) = .send;
 
 // Awaits and receives the next value from the channel.
-export async Result<T, Error> recv<T>(Receiver<T> receiver);
+export async Result<T, Error> recv<T>(Receiver<T> receiver) = .recv;
 
 // Closes the sender side and wakes receivers.
-export Result<void, Error> close<T>(Sender<T> sender) {
+export Result<void, Error> close<T>(Sender<T> sender) = .close {
     c::c_int rc = unsafe { ciel_async_sender_close(sender.handle as *CielAsyncSender) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
@@ -230,7 +230,7 @@ export Result<void, Error> close<T>(Sender<T> sender) {
 }
 
 // Closes the receiver side and wakes senders and reservations.
-export Result<void, Error> close_receiver<T>(Receiver<T> receiver) {
+export Result<void, Error> close_receiver<T>(Receiver<T> receiver) = .close {
     c::c_int rc = unsafe { ciel_async_receiver_close(receiver.handle as *CielAsyncReceiver) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
@@ -253,7 +253,7 @@ export Result<TaskGroup<T>, Error> task_group<T>() {
 }
 
 // Adds a task to a group.
-export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task) {
+export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task) = .add {
     c::c_int rc = unsafe {
         ciel_task_group_add(group->handle as *CielTaskGroup, task.handle)
     };
@@ -272,13 +272,13 @@ Result<Task<T>, Error> group_next_task<T>(*const TaskGroup<T> group) {
 }
 
 // Awaits and returns the next completed task result in completion order.
-export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) {
+export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next {
     Task<T> task = group_next_task<T>(group)?;
     return await task;
 }
 
 // Cancels all unfinished tasks in the group.
-export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) {
+export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all {
     c::c_int rc = unsafe { ciel_task_group_cancel_all(group->handle as *CielTaskGroup) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
@@ -287,7 +287,7 @@ export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) {
 }
 
 // Closes the group handle; unfinished tasks are no longer yielded.
-export Result<void, Error> group_close<T>(*const TaskGroup<T> group) {
+export Result<void, Error> group_close<T>(*const TaskGroup<T> group) = .close {
     c::c_int rc = unsafe { ciel_task_group_close(group->handle as *CielTaskGroup) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));

@@ -19,7 +19,7 @@ export struct CloseReason {
 Result<void, Error> push_u16(*buf::ByteBuf out, u16 value) {
     [2]u8 @part = [0;];
     binary::put_be(part[..], value)?;
-    buf::byte_buf_push_slice(out, part[..])?;
+    out.buf::push_slice(part[..])?;
     return Ok;
 }
 
@@ -28,7 +28,7 @@ Result<void, Error> push_chars(*buf::ByteBuf out, []const char text) {
     usize @i = 0;
     while (i < text.len) {
         one[0] = text[i] as u8;
-        buf::byte_buf_push_slice(out, one[..])?;
+        out.buf::push_slice(one[..])?;
         i = i + 1;
     }
     return Ok;
@@ -85,11 +85,11 @@ export Result<[]u8, Error> encode_open_result_error(u16 code, []const char messa
     }
     buf::ByteBuf @out = buf::byte_buf_new((5 as usize) + message.len)?;
     [1]u8 status = [1 as u8];
-    buf::byte_buf_push_slice(&out, status[..])?;
+    out.buf::push_slice(status[..])?;
     push_u16(&out, code)?;
     push_u16(&out, message.len as u16)?;
     push_chars(&out, message)?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    return Ok(out.buf::mut_slice());
 }
 
 export Result<OpenResultPayload, Error> decode_open_result([]const u8 input) {
@@ -136,7 +136,7 @@ export Result<[]u8, Error> encode_close_reason(u16 code, []const char message) {
     push_u16(&out, code)?;
     push_u16(&out, message.len as u16)?;
     push_chars(&out, message)?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    return Ok(out.buf::mut_slice());
 }
 
 export Result<CloseReason, Error> decode_close_reason([]const u8 input) {
@@ -162,5 +162,5 @@ export Result<[]u8, Error> encode_error_message([]const char message) {
     frame::validate_payload_len(message.len)?;
     buf::ByteBuf @out = buf::byte_buf_new(message.len)?;
     push_chars(&out, message)?;
-    return Ok(buf::byte_buf_mut_slice(&out));
+    return Ok(out.buf::mut_slice());
 }

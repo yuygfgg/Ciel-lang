@@ -584,7 +584,7 @@ EnumBody            ::= "{" [ VariantDecl { "," VariantDecl } [ "," ] ] "}"
 VariantDecl         ::= Identifier [ "(" TypeList ")" ]
 
 InterfaceDecl       ::= [ "unsafe" ] "interface" GenericParamList
-                        InterfaceSignature ";"
+                        InterfaceSignature [ ReceiverSelector ] ";"
 InterfaceSignature  ::= Type Identifier "(" [ ParamList ] ")"
 InterfaceAliasDecl  ::= "interface" Identifier "=" InterfaceExpr ";"
 
@@ -595,9 +595,10 @@ ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ Ty
                         "(" [ ParamList ] ")" Block
 
 FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] [ "async" ] FunctionSignature
-                        ( Block | ";" )
+                        [ ReceiverSelector ] ( Block | ";" )
 FunctionSignature   ::= Type Identifier [ GenericParamList ]
                         "(" [ ParamList ] ")"
+ReceiverSelector    ::= "=" ( "." Identifier | Identifier "." Identifier )
 
 GenericParamList    ::= "<" GenericParam { "," GenericParam } [ "," ] ">"
 GenericParam        ::= Identifier [ ":" ConstraintExpr ]
@@ -869,12 +870,14 @@ UnaryExpr       ::= ( "!" | "~" | "-" | "&" | "*" ) UnaryExpr | PostfixExpr
 PostfixExpr     ::= PrimaryExpr { PostfixOp }
 PostfixOp       ::= CallSuffix
                  | FieldSuffix
+                 | ReceiverSelectorSuffix
                  | ArrowSuffix
                  | IndexSuffix
                  | SliceSuffix
                  | TrySuffix
 CallSuffix      ::= [ TypeArgList ] "(" [ ArgList ] ")"
 FieldSuffix     ::= "." Identifier
+ReceiverSelectorSuffix ::= "." QualifiedName
 ArrowSuffix     ::= "->" Identifier
 IndexSuffix     ::= "[" Expr "]"
 SliceSuffix     ::= "[" [ Expr ] ".." [ Expr ] "]"
@@ -1023,6 +1026,68 @@ the surrounding API requires an ordinary messageable closure value.
 A call suffix may call a function item, function-pointer value, or closure
 value. Closure arguments are evaluated in source order, then the closure's
 generated call function is invoked with its environment and the arguments.
+
+Receiver selectors let a function or interface declaration expose one
+receiver-call spelling while keeping the semantic model as an ordinary call.
+The declaration syntax is `= .name` for the first parameter or
+`= parameter.name` for a named receiver parameter:
+
+```ciel
+export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) = .len;
+export bool contains_entry<K, V>(K key, *const HashMap<K, V> map) = map.contains;
+```
+
+The selector name does not enter the bare function namespace and does not
+create a method value. `map.len()` can desugar to `hash_map_len(&map)`, but
+`len(map)` is still ordinary name lookup. `map.len` without a call remains
+field access.
+
+For a selector declared as `R f(P0 p0, ..., PI pI, ..., PN pN) = pI.name`,
+`receiver.name(a0, ...)` desugars to an ordinary call to `f`. The receiver
+expression fills `pI`; explicit receiver-call arguments fill every other
+parameter slot in declaration order. For a non-first receiver parameter,
+evaluation order follows the equivalent ordinary call after desugaring.
+
+Only the receiver expression may be adapted during selector desugaring. If the
+receiver expression is assignable to the receiver parameter as written, it is
+passed as written. Otherwise, when the receiver parameter is a pointer view of
+`T` and the receiver expression is an addressable `T`, the compiler may insert
+`&receiver`. Writable pointer receivers require a writable receiver lvalue;
+read-only pointer receivers require only an addressable receiver. Nullable
+pointer widening and read-only view weakening then follow the ordinary
+assignability rules. Non-receiver arguments are checked exactly like ordinary
+call arguments.
+
+Selector resolution chooses a desugaring target from visible callable
+declarations with the requested selector name. It filters candidates only by
+the declared receiver parameter and the receiver expression type; remaining
+arguments, return type, and generic constraints do not participate in selector
+choice. If exactly one candidate matches, the desugared function or interface
+call is type-checked through the existing call path. If none match, the call is
+an error; if more than one matches, the call is ambiguous.
+
+Selectors follow the visibility of their callable declaration. Selectors from
+unaliased imports are available to unqualified receiver calls. Selectors from
+aliased imports stay behind the alias and are called with a qualified selector:
+
+```ciel
+import /std/map as map;
+
+table.map::insert(key, value)?;
+```
+
+`obj.name(args)` first tries the existing callable-field interpretation. If
+that field call type-checks, it wins. Qualified receiver calls such as
+`obj.map::insert(args)` are selector calls only.
+
+Declarations in the same module conflict when they expose the same selector
+name for overlapping receiver type patterns. Pointer view differences such as
+`T`, `*T`, `*const T`, `?*T`, and `?*const T` are not overload dimensions for
+the same receiver root. Interface selectors use the existing interface-call
+semantics after desugaring; selectors do not make a type implement an
+interface, and `impl` declarations do not attach selectors.
+Extern block function items cannot attach selectors directly; a Ciel wrapper
+can expose a selector while preserving the unsafe C boundary.
 
 Calling an async function or async closure produces a future value immediately;
 it does not run the body to completion at the call site. `await future` is valid
@@ -2440,8 +2505,8 @@ export struct Error {
 }
 
 export Error error_box(ErrorTrait error);
-export Error error_with_context(Error source, []const char context);
-export []const char error_message(*const Error error);
+export Error error_with_context(Error source, []const char context) = .with_context;
+export []const char error_message(*const Error error) = .message;
 ```
 
 ```ciel
@@ -2483,8 +2548,8 @@ export enum Result<T, E> {
 export import /std/result/core;
 export import /std/error;
 
-export T must<T, E>(Result<T, E> value);
-export T expect<T, E>(Result<T, E> value, []const char message);
+export T must<T, E>(Result<T, E> value) = .must;
+export T expect<T, E>(Result<T, E> value, []const char message) = .expect;
 ```
 
 ```ciel
@@ -2578,34 +2643,34 @@ export Result<R, Error> with_open<R: Message>(
     []const char path,
     OpenMode mode,
     Result<R, Error> |(File)| body
-);
+) = .with_open;
 
 export Result<R, Error> with_open_read<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-);
+) = .with_open_read;
 
 export Result<R, Error> with_create<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-);
+) = .with_create;
 
 export Result<R, Error> with_append<R: Message>(
     []const char path,
     Result<R, Error> |(File)| body
-);
+) = .with_append;
 
-export Result<usize, Error> read(File file, []u8 out);
-export Result<usize, Error> write(File file, []const u8 data);
-export Result<usize, Error> write_text_once(File file, []const char text);
-export Result<void, Error> write_all(File file, []const u8 data);
-export Result<void, Error> write_text(File file, []const char text);
+export Result<usize, Error> read(File file, []u8 out) = .read;
+export Result<usize, Error> write(File file, []const u8 data) = .write;
+export Result<usize, Error> write_text_once(File file, []const char text) = .write_text_once;
+export Result<void, Error> write_all(File file, []const u8 data) = .write_all;
+export Result<void, Error> write_text(File file, []const char text) = .write_text;
 
 export []const char f32_to_string(f32 value);
 export []const char f64_to_string(f64 value);
 
-export Result<void, Error> write_value<T: printable>(File file, T value);
-export Result<void, Error> write_format(File file, []const char fmt, []printable values);
+export Result<void, Error> write_value<T: printable>(File file, T value) = .write_value;
+export Result<void, Error> write_format(File file, []const char fmt, []printable values) = .write_format;
 export Result<void, Error> print_value<T: printable>(T value);
 export Result<void, Error> println_value<T: printable>(T value);
 export Result<void, Error> eprint_value<T: printable>(T value);
@@ -2802,9 +2867,9 @@ export Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
     Result<S, Error> |(): Message| init,
     Result<void, Error> |(*S, Actor<M>, M): Message| handler
 );
-export Result<void, Error> send<T: Message>(*const Actor<T> actor, T value);
-export Result<void, Error> stop<T: Message>(*const Actor<T> actor);
-export Result<void, Error> join<T: Message>(*const Actor<T> actor);
+export Result<void, Error> send<T: Message>(*const Actor<T> actor, T value) = .send;
+export Result<void, Error> stop<T: Message>(*const Actor<T> actor) = .stop;
+export Result<void, Error> join<T: Message>(*const Actor<T> actor) = .join;
 ```
 
 ```ciel
@@ -2818,9 +2883,9 @@ export struct Channel<T> {
 }
 
 export Result<Channel<T>, Error> make_channel<T: Message>();
-export Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value);
-export Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
-export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch);
+export Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value) = .send;
+export Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch) = .recv;
+export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch) = .close;
 ```
 
 ```ciel
@@ -2856,34 +2921,34 @@ export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial);
 export Result<T, Error> atomic_load<T: AtomicValue>(
     *const Atomic<T> atomic,
     MemoryOrder order
-);
+) = .load;
 export Result<void, Error> atomic_store<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-);
+) = .store;
 export Result<T, Error> atomic_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-);
+) = .exchange;
 export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T expected,
     T desired,
     MemoryOrder success,
     MemoryOrder failure
-);
+) = .compare_exchange;
 export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-);
+) = .fetch_add;
 export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
-);
+) = .fetch_sub;
 ```
 
 ```ciel
@@ -2910,11 +2975,11 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial);
 export Result<R, Error> mutex_update<T: Message, F, R>(
     *const Mutex<T> mutex,
     *const F f
-);
+) = .update;
 export Result<R, Error> mutex_with<T, R: Message>(
     *const Mutex<T> mutex,
     Result<R, Error> |(*T)| body
-);
+) = .with;
 ```
 
 ```ciel
@@ -2972,15 +3037,18 @@ export unsafe struct ByteBuf {
 }
 
 export Result<ByteBuf, Error> byte_buf_new(usize capacity);
-export usize byte_buf_len(*const ByteBuf buf);
-export void byte_buf_clear(*ByteBuf buf);
-export []const u8 byte_buf_slice(*const ByteBuf buf);
-export []u8 byte_buf_mut_slice(*ByteBuf buf);
-export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional);
-export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data);
-export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional);
-export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional);
-export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count);
+export usize byte_buf_len(*const ByteBuf buf) = .len;
+export void byte_buf_clear(*ByteBuf buf) = .clear;
+export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice;
+export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice;
+export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve;
+export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice;
+export Result<[]u8, Error> byte_buf_spare_mut_slice(
+    *ByteBuf buf,
+    usize additional
+) = .spare_mut_slice;
+export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail;
+export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix;
 ```
 
 `/std/buf` provides a GC-backed growable byte buffer. `ByteBuf` is an unsafe
@@ -3034,33 +3102,33 @@ export enum PopResult<K, V> {
 }
 
 export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>();
-export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map);
-export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map);
+export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) = .len;
+export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear;
 export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
     *const HashMap<K, V> map,
     K key
-);
+) = .contains_key;
 export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
-);
+) = .get;
 export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
     V value
-);
+) = .insert;
 export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
-);
+) = .remove;
 export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
     *HashMap<K, V> map
-);
+) = .pop_any;
 export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
     *HashMap<K, V> map,
     K key,
     Result<R, Error> |(*V)| body
-);
+) = .with;
 ```
 
 Typical call sites write the key/value types at construction and rely on
@@ -3068,8 +3136,8 @@ generic inference from the typed map receiver afterward:
 
 ```ciel
 _ @table = must(hash_map_new<u32, i64>());
-must(hash_map_insert(&table, 7 as u32, 10));
-usize count = hash_map_len(&table);
+must(table.insert(7 as u32, 10));
+usize count = table.len();
 ```
 
 `HashMap<K, V>` itself is the type witness for operations that take the map;
@@ -3121,21 +3189,21 @@ export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, 
     SharedMap<K, V> shared,
     K key,
     V value
-);
+) = .insert;
 export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
-);
+) = .get;
 export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
-);
+) = .remove;
 export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
-);
+) = .pop_any;
 export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
-);
+) = .len;
 ```
 
 `/std/shared_map` wraps an actor-local `HashMap` in a shareable `Mutex` handle.
@@ -3204,12 +3272,12 @@ export enum MacAlgorithm {
     HmacSha512,
 }
 
-export []const char hash_algorithm_name(HashAlgorithm algorithm);
-export []const char mac_algorithm_name(MacAlgorithm algorithm);
+export []const char hash_algorithm_name(HashAlgorithm algorithm) = .name;
+export []const char mac_algorithm_name(MacAlgorithm algorithm) = .name;
 
 export Result<void, Error> random_bytes([]u8 out);
 export Result<SystemRng, Error> system_rng();
-export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out);
+export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out) = .random_bytes;
 
 export Result<usize, Error> hash_once(
     []const char algorithm,
@@ -3221,13 +3289,13 @@ export Result<usize, Error> hash_once_alg(
     HashAlgorithm algorithm,
     []const u8 data,
     []u8 out
-);
+) = .hash_once;
 
 export Result<Hash, Error> hash_new([]const char algorithm);
-export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm);
-export Result<void, Error> hash_update(Hash hash, []const u8 data);
-export Result<usize, Error> hash_finish(Hash hash, []u8 out);
-export Result<void, Error> hash_clear(Hash hash);
+export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm) = .new_hash;
+export Result<void, Error> hash_update(Hash hash, []const u8 data) = .update;
+export Result<usize, Error> hash_finish(Hash hash, []u8 out) = .finish;
+export Result<void, Error> hash_clear(Hash hash) = .clear;
 
 export Result<usize, Error> mac_once(
     []const char algorithm,
@@ -3241,13 +3309,13 @@ export Result<usize, Error> mac_once_alg(
     []const u8 key,
     []const u8 data,
     []u8 out
-);
+) = .mac_once;
 
 export Result<Mac, Error> mac_new([]const char algorithm, []const u8 key);
-export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key);
-export Result<void, Error> mac_update(Mac mac, []const u8 data);
-export Result<usize, Error> mac_finish(Mac mac, []u8 out);
-export Result<void, Error> mac_clear(Mac mac);
+export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key) = .new_mac;
+export Result<void, Error> mac_update(Mac mac, []const u8 data) = .update;
+export Result<usize, Error> mac_finish(Mac mac, []u8 out) = .finish;
+export Result<void, Error> mac_clear(Mac mac) = .clear;
 
 export bool constant_time_eq([]const u8 left, []const u8 right);
 ```
@@ -3298,44 +3366,44 @@ export unsafe struct TcpStream {
     u32 generation;
 }
 
-export Result<SocketAddr, Error> parse_addr([]const char text);
-export Result<SocketAddr, Error> resolve_tcp([]const char host, u16 port);
-export Result<AddressFamily, Error> addr_family(SocketAddr addr);
-export Result<u16, Error> addr_port(SocketAddr addr);
-export Result<usize, Error> addr_write(SocketAddr addr, []char out);
-export Result<[]const char, Error> addr_to_string(SocketAddr addr);
+export Result<SocketAddr, Error> parse_addr([]const char text) = .parse_addr;
+export Result<SocketAddr, Error> resolve_tcp([]const char host, u16 port) = .resolve_tcp;
+export Result<AddressFamily, Error> addr_family(SocketAddr addr) = .family;
+export Result<u16, Error> addr_port(SocketAddr addr) = .port;
+export Result<usize, Error> addr_write(SocketAddr addr, []char out) = .write;
+export Result<[]const char, Error> addr_to_string(SocketAddr addr) = .to_string;
 
-export Result<TcpListener, Error> tcp_listen(SocketAddr addr);
-export Result<TcpStream, Error> tcp_accept(TcpListener listener);
-export Result<TcpStream, Error> tcp_connect(SocketAddr addr);
+export Result<TcpListener, Error> tcp_listen(SocketAddr addr) = .listen;
+export Result<TcpStream, Error> tcp_accept(TcpListener listener) = .accept;
+export Result<TcpStream, Error> tcp_connect(SocketAddr addr) = .connect;
 export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port);
-export Result<usize, Error> tcp_read(TcpStream stream, []u8 out);
-export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data);
-export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data);
-export Result<void, Error> tcp_shutdown_read(TcpStream stream);
-export Result<void, Error> tcp_shutdown_write(TcpStream stream);
-export Result<void, Error> tcp_shutdown(TcpStream stream);
-export Result<void, Error> tcp_close(TcpStream stream);
-export Result<void, Error> listener_close(TcpListener listener);
-export Result<SocketAddr, Error> listener_addr(TcpListener listener);
-export Result<SocketAddr, Error> stream_local_addr(TcpStream stream);
-export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream);
+export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read;
+export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data) = .write;
+export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data) = .write_all;
+export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read;
+export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_write;
+export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown;
+export Result<void, Error> tcp_close(TcpStream stream) = .close;
+export Result<void, Error> listener_close(TcpListener listener) = .close;
+export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr;
+export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_addr;
+export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream) = .peer_addr;
 
 export Result<R, Error> with_tcp_connect<R: Message>(
     SocketAddr addr,
     Result<R, Error> |(TcpStream)| body
-);
+) = .with_connect;
 
 export Result<R, Error> with_tcp_connect_host<R: Message>(
     []const char host,
     u16 port,
     Result<R, Error> |(TcpStream)| body
-);
+) = .with_tcp_connect;
 
 export Result<R, Error> with_tcp_listen<R: Message>(
     SocketAddr addr,
     Result<R, Error> |(TcpListener)| body
-);
+) = .with_listen;
 ```
 
 `/std/net` provides a blocking TCP socket layer over the platform socket API.
@@ -3364,12 +3432,12 @@ export struct Bytes {
 export Result<Bytes, Error> bytes_copy([]const u8 data);
 export Result<Bytes, Error> bytes_copy_chars([]const char text);
 export Result<Bytes, Error> bytes_concat([]const u8 left, []const u8 right);
-export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes);
-export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len);
-export usize bytes_len(Bytes bytes);
-export usize bytes_capacity(Bytes bytes);
-export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out);
-export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out);
+export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend;
+export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len) = .slice;
+export usize bytes_len(Bytes bytes) = .len;
+export usize bytes_capacity(Bytes bytes) = .capacity;
+export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to;
+export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars;
 ```
 
 `/std/async/bytes` is the implementation module for immutable runtime-backed
@@ -3385,8 +3453,8 @@ export import /std/async/bytes;
 
 export Result<Bytes, Error> bytes_empty();
 export Result<Bytes, Error> bytes_from_text([]const char text);
-export Result<[]u8, Error> bytes_to_slice(Bytes bytes);
-export Result<Bytes, Error> bytes_append(Bytes left, Bytes right);
+export Result<[]u8, Error> bytes_to_slice(Bytes bytes) = .to_slice;
+export Result<Bytes, Error> bytes_append(Bytes left, Bytes right) = .append;
 ```
 
 `Bytes` is the general immutable owned byte buffer used by async file and TCP
@@ -3406,10 +3474,10 @@ export struct Text {
 
 export Result<Text, Error> text_empty();
 export Result<Text, Error> text_copy([]const char text);
-export usize text_len(Text text);
-export Result<bytes::Bytes, Error> text_to_bytes(Text text);
-export Result<[]char, Error> text_to_chars(Text text);
-export Result<[]const char, Error> text_to_slice(Text text);
+export usize text_len(Text text) = .len;
+export Result<bytes::Bytes, Error> text_to_bytes(Text text) = .to_bytes;
+export Result<[]char, Error> text_to_chars(Text text) = .to_chars;
+export Result<[]const char, Error> text_to_slice(Text text) = .slice;
 ```
 
 `/std/text` wraps immutable owned bytes as text-oriented data. It does not yet
@@ -3449,8 +3517,8 @@ export struct Task<T> {
 export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
     A body
 );
-export Result<void, Error> cancel<T>(*const Task<T> task);
-export Result<bool, Error> is_finished<T>(*const Task<T> task);
+export Result<void, Error> cancel<T>(*const Task<T> task) = .cancel;
+export Result<bool, Error> is_finished<T>(*const Task<T> task) = .is_finished;
 
 export struct Sender<T> {
     *void handle;
@@ -3470,23 +3538,23 @@ export struct ChannelPair<T> {
 }
 
 export Result<ChannelPair<T>, Error> channel<T>(usize capacity);
-export async Result<void, Error> send<T>(Sender<T> sender, T value);
-export Result<void, Error> try_send<T>(Sender<T> sender, T value);
-export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender);
-export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value);
-export async Result<T, Error> recv<T>(Receiver<T> receiver);
-export Result<void, Error> close<T>(Sender<T> sender);
-export Result<void, Error> close_receiver<T>(Receiver<T> receiver);
+export async Result<void, Error> send<T>(Sender<T> sender, T value) = .send;
+export Result<void, Error> try_send<T>(Sender<T> sender, T value) = .try_send;
+export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender) = .reserve;
+export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value) = .send;
+export async Result<T, Error> recv<T>(Receiver<T> receiver) = .recv;
+export Result<void, Error> close<T>(Sender<T> sender) = .close;
+export Result<void, Error> close_receiver<T>(Receiver<T> receiver) = .close;
 
 export struct TaskGroup<T> {
     *void handle;
 }
 
 export Result<TaskGroup<T>, Error> task_group<T>();
-export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task);
-export async Result<T, Error> group_next<T>(*const TaskGroup<T> group);
-export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group);
-export Result<void, Error> group_close<T>(*const TaskGroup<T> group);
+export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task) = .add;
+export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next;
+export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
+export Result<void, Error> group_close<T>(*const TaskGroup<T> group) = .close;
 
 export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
     A future,
@@ -3574,32 +3642,32 @@ export struct AsyncWrite {
     *void handle;
 }
 
-export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode);
-export Result<AsyncFd, Error> open_async_read([]const char path);
-export Result<AsyncFd, Error> create_async([]const char path);
-export Result<AsyncFd, Error> append_async([]const char path);
+export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode) = .open_async;
+export Result<AsyncFd, Error> open_async_read([]const char path) = .open_async_read;
+export Result<AsyncFd, Error> create_async([]const char path) = .create_async;
+export Result<AsyncFd, Error> append_async([]const char path) = .append_async;
 export unsafe Result<AsyncFd, Error> async_from_raw_fd(os_fd::RawFd fd);
-export Result<void, Error> close_async(AsyncFd fd);
+export Result<void, Error> close_async(AsyncFd fd) = .close;
 
-export Result<AsyncRead, Error> read_bytes_async(AsyncFd fd, usize max_len);
-export Result<AsyncWrite, Error> write_bytes_async(AsyncFd fd, Bytes data);
-export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len);
-export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data);
+export Result<AsyncRead, Error> read_bytes_async(AsyncFd fd, usize max_len) = .read_async;
+export Result<AsyncWrite, Error> write_bytes_async(AsyncFd fd, Bytes data) = .write_async;
+export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len) = .read;
+export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data) = .write;
 
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncRead op,
     *const actor::Actor<M> actor_handle,
     M message
-);
+) = .notify_done;
 export Result<void, Error> notify_write_done<M: Message>(
     *const AsyncWrite op,
     *const actor::Actor<M> actor_handle,
     M message
-);
-export Result<Bytes, Error> finish_read(AsyncRead op);
-export Result<usize, Error> finish_write(AsyncWrite op);
-export Result<void, Error> cancel_read(AsyncRead op);
-export Result<void, Error> cancel_write(AsyncWrite op);
+) = .notify_done;
+export Result<Bytes, Error> finish_read(AsyncRead op) = .finish;
+export Result<usize, Error> finish_write(AsyncWrite op) = .finish;
+export Result<void, Error> cancel_read(AsyncRead op) = .cancel;
+export Result<void, Error> cancel_write(AsyncWrite op) = .cancel;
 ```
 
 `/std/async_io` provides awaitable file-descriptor operations. The high-level
@@ -3667,87 +3735,87 @@ export struct ReadIntoResult {
     usize read;
 }
 
-export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr);
-export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener);
-export Result<void, Error> close_listener(AsyncTcpListener listener);
-export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener);
-export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr);
-export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener);
+export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) = .listen_async;
+export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener) = .addr;
+export Result<void, Error> close_listener(AsyncTcpListener listener) = .close;
+export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener) = .accept_async;
+export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connect_async;
+export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) = .accept;
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
-export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms);
+export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout;
 
-export Result<void, Error> close_stream(AsyncTcpStream stream);
-export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream);
-export Result<void, Error> shutdown_read(AsyncTcpStream stream);
-export Result<void, Error> shutdown_read_half(AsyncTcpReadHalf half);
-export Result<void, Error> shutdown_write(AsyncTcpStream stream);
-export Result<void, Error> shutdown_write_half(AsyncTcpWriteHalf half);
-export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream);
-export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream);
+export Result<void, Error> close_stream(AsyncTcpStream stream) = .close;
+export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream) = .split;
+export Result<void, Error> shutdown_read(AsyncTcpStream stream) = .shutdown_read;
+export Result<void, Error> shutdown_read_half(AsyncTcpReadHalf half) = .shutdown_read;
+export Result<void, Error> shutdown_write(AsyncTcpStream stream) = .shutdown_write;
+export Result<void, Error> shutdown_write_half(AsyncTcpWriteHalf half) = .shutdown_write;
+export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream) = .local_addr;
+export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream) = .peer_addr;
 
-export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len);
-export Result<AsyncTcpRead, Error> read_into_async(AsyncTcpStream stream, Bytes buffer);
-export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data);
-export Result<AsyncTcpWrite, Error> write_half_bytes(AsyncTcpWriteHalf half, Bytes data);
-export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len);
-export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer);
-export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data);
-export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data);
-export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data);
-export async Result<void, Error> write_all_half(AsyncTcpWriteHalf half, Bytes data);
+export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len) = .read_async;
+export Result<AsyncTcpRead, Error> read_into_async(AsyncTcpStream stream, Bytes buffer) = .read_into_async;
+export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data) = .write_async;
+export Result<AsyncTcpWrite, Error> write_half_bytes(AsyncTcpWriteHalf half, Bytes data) = .write_async;
+export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len) = .read;
+export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer) = .read_into;
+export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data) = .write;
+export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data) = .write;
+export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data) = .write_all;
+export async Result<void, Error> write_all_half(AsyncTcpWriteHalf half, Bytes data) = .write_all;
 
 export Result<BufferedStreamReader, Error> buffered_reader(
     AsyncTcpReadHalf half,
     usize capacity
-);
-export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader reader);
+) = .buffered_reader;
+export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader reader) = .into_read_half;
 export Result<AsyncBufferedRead, Error> read_buffered_async(
     BufferedStreamReader reader,
     usize max_len
-);
+) = .read_async;
 export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
     BufferedStreamReader reader,
     usize len
-);
+) = .read_exact_async;
 export async Result<Bytes, Error> read_buffered(
     BufferedStreamReader reader,
     usize max_len
-);
+) = .read;
 export async Result<Bytes, Error> read_exact_buffered(
     BufferedStreamReader reader,
     usize len
-);
+) = .read_exact;
 
 export Result<void, Error> notify_accept_done<M: Message>(
     *const AsyncAccept op,
     *const actor::Actor<M> actor_handle,
     M message
-);
+) = .notify_done;
 export Result<void, Error> notify_connect_done<M: Message>(
     *const AsyncConnect op,
     *const actor::Actor<M> actor_handle,
     M message
-);
+) = .notify_done;
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncTcpRead op,
     *const actor::Actor<M> actor_handle,
     M message
-);
+) = .notify_done;
 export Result<void, Error> notify_write_done<M: Message>(
     *const AsyncTcpWrite op,
     *const actor::Actor<M> actor_handle,
     M message
-);
+) = .notify_done;
 
-export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op);
-export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op);
-export Result<Bytes, Error> finish_read(AsyncTcpRead op);
-export Result<usize, Error> finish_write(AsyncTcpWrite op);
-export Result<void, Error> cancel_accept(AsyncAccept op);
-export Result<void, Error> cancel_connect(AsyncConnect op);
-export Result<void, Error> cancel_read(AsyncTcpRead op);
-export Result<void, Error> cancel_write(AsyncTcpWrite op);
-export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op);
+export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op) = .finish;
+export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op) = .finish;
+export Result<Bytes, Error> finish_read(AsyncTcpRead op) = .finish;
+export Result<usize, Error> finish_write(AsyncTcpWrite op) = .finish;
+export Result<void, Error> cancel_accept(AsyncAccept op) = .cancel;
+export Result<void, Error> cancel_connect(AsyncConnect op) = .cancel;
+export Result<void, Error> cancel_read(AsyncTcpRead op) = .cancel;
+export Result<void, Error> cancel_write(AsyncTcpWrite op) = .cancel;
+export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op) = .cancel;
 ```
 
 `/std/async_net` provides awaitable TCP operations over nonblocking runtime
@@ -3792,9 +3860,9 @@ export Result<void, Error> notify_sleep_done<M: Message>(
     *const AsyncSleep op,
     *const actor::Actor<M> actor_handle,
     M message
-);
-export Result<void, Error> finish_sleep(AsyncSleep op);
-export Result<void, Error> cancel_sleep(AsyncSleep op);
+) = .notify_done;
+export Result<void, Error> finish_sleep(AsyncSleep op) = .finish;
+export Result<void, Error> cancel_sleep(AsyncSleep op) = .cancel;
 ```
 
 `/std/async_time` provides monotonic awaitable timers. `sleep_ms` is the normal

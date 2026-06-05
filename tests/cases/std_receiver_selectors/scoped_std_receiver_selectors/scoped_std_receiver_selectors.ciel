@@ -1,0 +1,75 @@
+// ciel-test: compile
+
+import /std/lib;
+import /std/async as async;
+
+Result<void, Error> use_io_path_selectors([]const char path, []const u8 data) {
+    path.with_open(Write, |file| {
+        file.write_all(data)?;
+        return Ok(1);
+    })?;
+    path.with_open_read(|file| {
+        [8]u8 @out = [0;];
+        _ read = file.read(out[..])?;
+        return Ok(2);
+    })?;
+    path.with_create(|file| {
+        file.write(data)?;
+        return Ok(3);
+    })?;
+    path.with_append(|file| {
+        file.write(data)?;
+        return Ok(4);
+    })?;
+    return Ok;
+}
+
+async Result<void, Error> use_async_path_selectors([]const char path, Bytes data) {
+    AsyncFd read_fd = path.open_async_read()?;
+    read_fd.close()?;
+    AsyncFd write_fd = path.create_async()?;
+    write_fd.close()?;
+    AsyncFd append_fd = path.append_async()?;
+    append_fd.close()?;
+    AsyncFd generic_fd = path.open_async(Write)?;
+    AsyncWrite write_op = generic_fd.write_async(data)?;
+    write_op.cancel()?;
+    generic_fd.close()?;
+    return Ok;
+}
+
+Result<void, Error> use_net_path_selectors(
+    []const char text,
+    []const char host
+) {
+    SocketAddr addr = text.parse_addr()?;
+    host.resolve_tcp(80 as u16)?;
+    addr.with_connect(|stream| {
+        stream.close()?;
+        return Ok(1);
+    })?;
+    host.with_tcp_connect(80 as u16, |stream| {
+        stream.close()?;
+        return Ok(2);
+    })?;
+    addr.with_listen(|listener| {
+        listener.close()?;
+        return Ok(3);
+    })?;
+    return Ok;
+}
+
+async Result<i64, Error> use_task_group_selectors(
+    async::TaskGroup<i64> group,
+    async::Task<i64> task
+) {
+    group.async::add(task)?;
+    group.async::cancel_all()?;
+    i64 value = await group.async::next()?;
+    group.async::close()?;
+    return Ok(value);
+}
+
+i32 main() {
+    return 0;
+}

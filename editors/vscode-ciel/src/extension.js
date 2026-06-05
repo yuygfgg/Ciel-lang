@@ -328,6 +328,10 @@ function classifyIdentifier(node) {
         return token('property', ['declaration']);
     }
 
+    if (parent.type === 'receiver_selector') {
+        return classifyReceiverSelectorPart(node, parent);
+    }
+
     if (parent.type === 'variant_declaration') {
         return token('enumMember', ['declaration']);
     }
@@ -336,7 +340,14 @@ function classifyIdentifier(node) {
         return token('enumMember');
     }
 
-    if (parent.type === 'field_expression' || parent.type === 'arrow_expression') {
+    if (parent.type === 'field_expression') {
+        if (isExpressionCallee(parent)) {
+            return token('function');
+        }
+        return token('property');
+    }
+
+    if (parent.type === 'arrow_expression') {
         return token('property');
     }
 
@@ -415,6 +426,9 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
     if (owner && owner.type === 'call_expression') {
         return token('function');
     }
+    if (owner && owner.type === 'receiver_selector_expression') {
+        return token('function');
+    }
     if (owner && owner.type === 'named_type') {
         return token('type');
     }
@@ -428,6 +442,15 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
         return token('enumMember');
     }
     return token('variable');
+}
+
+function classifyReceiverSelectorPart(node, receiverSelectorNode) {
+    const identifiers = directIdentifierChildren(receiverSelectorNode);
+    const lastIdentifier = identifiers[identifiers.length - 1];
+    if (sameNode(node, lastIdentifier)) {
+        return token('function', ['declaration']);
+    }
+    return token('parameter');
 }
 
 function startsWithUppercase(text) {
@@ -447,6 +470,11 @@ function isCallFunctionNode(callNode, candidate) {
         return false;
     }
     return sameNode(firstNamedChild(callNode), candidate);
+}
+
+function isExpressionCallee(node) {
+    const expression = node.parent;
+    return expression && expression.type === 'expression' && isCallFunctionNode(expression.parent, expression);
 }
 
 function semanticOwnerForQualifiedName(qualifiedNameNode) {

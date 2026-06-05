@@ -1,0 +1,13 @@
+// ciel-test: dependency
+
+export struct Counter {
+    i64 value;
+}
+
+export void counter_add(*Counter counter, i64 amount) = .add {
+    counter->value = counter->value + amount;
+}
+
+export i64 counter_get(*const Counter counter) = .get {
+    return counter->value;
+}

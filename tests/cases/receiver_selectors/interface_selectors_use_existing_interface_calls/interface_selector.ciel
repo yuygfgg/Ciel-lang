@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+
+interface<T> i64 measure(*const T value) = .measure;
+
+struct Box {
+    i64 value;
+}
+
+impl measure(*const Box value) {
+    return value->value;
+}
+
+i64 read<T: measure>(*const T value) {
+    return value.measure();
+}
+
+i64 main() {
+    Box @box = { value: 42 };
+    if (box.measure() != 42) {
+        return 1;
+    }
+    if (read(&box) != 42) {
+        return 2;
+    }
+    return 0;
+}

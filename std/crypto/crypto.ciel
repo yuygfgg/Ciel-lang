@@ -145,7 +145,7 @@ Error crypto_error(c::c_int code) {
 }
 
 // Returns the backend algorithm name for a built-in hash algorithm.
-export []const char hash_algorithm_name(HashAlgorithm algorithm) {
+export []const char hash_algorithm_name(HashAlgorithm algorithm) = .name {
     switch (algorithm) {
         case Sha256:
             return "SHA-256";
@@ -158,7 +158,7 @@ export []const char hash_algorithm_name(HashAlgorithm algorithm) {
 }
 
 // Returns the backend algorithm name for a built-in MAC algorithm.
-export []const char mac_algorithm_name(MacAlgorithm algorithm) {
+export []const char mac_algorithm_name(MacAlgorithm algorithm) = .name {
     switch (algorithm) {
         case HmacSha256:
             return "HMAC(SHA-256)";
@@ -193,7 +193,7 @@ export Result<SystemRng, Error> system_rng() {
 }
 
 // Fills out with random bytes using an existing SystemRng handle.
-export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out) {
+export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out) = .random_bytes {
     c::c_int rc = unsafe { ciel_crypto_rng_random_bytes(raw_rng(rng), out.ptr, out.len) };
     if ((rc as i64) != 0) {
         return Err(crypto_error(rc));
@@ -222,7 +222,7 @@ export Result<usize, Error> hash_once([]const char algorithm, []const u8 data, [
 }
 
 // Computes a one-shot hash using a built-in algorithm enum.
-export Result<usize, Error> hash_once_alg(HashAlgorithm algorithm, []const u8 data, []u8 out) {
+export Result<usize, Error> hash_once_alg(HashAlgorithm algorithm, []const u8 data, []u8 out) = .hash_once {
     return hash_once(hash_algorithm_name(algorithm), data, out);
 }
 
@@ -240,12 +240,12 @@ export Result<Hash, Error> hash_new([]const char algorithm) {
 }
 
 // Creates a streaming hash context using a built-in algorithm enum.
-export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm) {
+export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm) = .new_hash {
     return hash_new(hash_algorithm_name(algorithm));
 }
 
 // Adds data to a streaming hash context.
-export Result<void, Error> hash_update(Hash hash, []const u8 data) {
+export Result<void, Error> hash_update(Hash hash, []const u8 data) = .update {
     c::c_int rc = unsafe { ciel_crypto_hash_update(raw_hash(hash), data.ptr, data.len) };
     if ((rc as i64) != 0) {
         return Err(crypto_error(rc));
@@ -254,7 +254,7 @@ export Result<void, Error> hash_update(Hash hash, []const u8 data) {
 }
 
 // Finalizes a streaming hash context into out and returns bytes written.
-export Result<usize, Error> hash_finish(Hash hash, []u8 out) {
+export Result<usize, Error> hash_finish(Hash hash, []u8 out) = .finish {
     usize @written = 0;
     c::c_int rc = unsafe { ciel_crypto_hash_finish(raw_hash(hash), out.ptr, out.len, &written) };
     if ((rc as i64) != 0) {
@@ -264,7 +264,7 @@ export Result<usize, Error> hash_finish(Hash hash, []u8 out) {
 }
 
 // Releases a streaming hash context; later use of it returns an error.
-export Result<void, Error> hash_clear(Hash hash) {
+export Result<void, Error> hash_clear(Hash hash) = .clear {
     c::c_int rc = unsafe { ciel_crypto_hash_clear(raw_hash(hash)) };
     if ((rc as i64) != 0) {
         return Err(crypto_error(rc));
@@ -305,7 +305,7 @@ export Result<usize, Error> mac_once_alg(
     []const u8 key,
     []const u8 data,
     []u8 out
-) {
+) = .mac_once {
     return mac_once(mac_algorithm_name(algorithm), key, data, out);
 }
 
@@ -323,12 +323,12 @@ export Result<Mac, Error> mac_new([]const char algorithm, []const u8 key) {
 }
 
 // Creates a streaming MAC context using a built-in algorithm enum and key.
-export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key) {
+export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key) = .new_mac {
     return mac_new(mac_algorithm_name(algorithm), key);
 }
 
 // Adds data to a streaming MAC context.
-export Result<void, Error> mac_update(Mac mac, []const u8 data) {
+export Result<void, Error> mac_update(Mac mac, []const u8 data) = .update {
     c::c_int rc = unsafe { ciel_crypto_mac_update(raw_mac(mac), data.ptr, data.len) };
     if ((rc as i64) != 0) {
         return Err(crypto_error(rc));
@@ -337,7 +337,7 @@ export Result<void, Error> mac_update(Mac mac, []const u8 data) {
 }
 
 // Finalizes a streaming MAC context into out and returns bytes written.
-export Result<usize, Error> mac_finish(Mac mac, []u8 out) {
+export Result<usize, Error> mac_finish(Mac mac, []u8 out) = .finish {
     usize @written = 0;
     c::c_int rc = unsafe { ciel_crypto_mac_finish(raw_mac(mac), out.ptr, out.len, &written) };
     if ((rc as i64) != 0) {
@@ -347,7 +347,7 @@ export Result<usize, Error> mac_finish(Mac mac, []u8 out) {
 }
 
 // Releases a streaming MAC context; later use of it returns an error.
-export Result<void, Error> mac_clear(Mac mac) {
+export Result<void, Error> mac_clear(Mac mac) = .clear {
     c::c_int rc = unsafe { ciel_crypto_mac_clear(raw_mac(mac)) };
     if ((rc as i64) != 0) {
         return Err(crypto_error(rc));

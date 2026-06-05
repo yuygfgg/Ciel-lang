@@ -1,0 +1,40 @@
+// ciel-test: compile
+
+import /std/lib;
+
+Result<void, Error> use_crypto_selectors(
+    SystemRng rng,
+    Hash hash,
+    Mac mac,
+    []u8 out,
+    []const u8 data,
+    []const u8 key
+) {
+    []const char hash_name = Sha256.name();
+    []const char mac_name = HmacSha256.name();
+    rng.random_bytes(out)?;
+    Sha256.hash_once(data, out)?;
+    Hash new_hash = Sha256.new_hash()?;
+    new_hash.update(data)?;
+    new_hash.finish(out)?;
+    new_hash.clear()?;
+    hash.update(data)?;
+    hash.finish(out)?;
+    hash.clear()?;
+    HmacSha256.mac_once(key, data, out)?;
+    Mac new_mac = HmacSha256.new_mac(key)?;
+    new_mac.update(data)?;
+    new_mac.finish(out)?;
+    new_mac.clear()?;
+    mac.update(data)?;
+    mac.finish(out)?;
+    mac.clear()?;
+    if (hash_name.len + mac_name.len == 0) {
+        return Err(text_error("empty crypto names"));
+    }
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

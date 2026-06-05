@@ -252,12 +252,12 @@ export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>() {
 }
 
 // Returns the number of entries currently stored in the map.
-export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) {
+export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) = .len {
     return unsafe { map->len };
 }
 
 // Removes all entries while keeping the map reusable.
-export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) {
+export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear {
     usize @capacity = unsafe { map->capacity };
     if (capacity == 0) {
         capacity = initial_capacity();
@@ -274,7 +274,7 @@ export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) {
 export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
     *const HashMap<K, V> map,
     K key
-) {
+) = .contains_key {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Ok(false);
@@ -298,7 +298,7 @@ export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
 export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
-) {
+) = .get {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Ok(GetResult::Missing);
@@ -324,7 +324,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
     V value
-) {
+) = .insert {
     ensure_insert_capacity<K, V>(map)?;
 
     usize capacity = unsafe { map->capacity };
@@ -357,7 +357,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
 export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
-) {
+) = .remove {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Ok(RemoveResult::Missing);
@@ -393,7 +393,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
 // Removes and returns an arbitrary entry, or Empty when the map has no entries.
 export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
     *HashMap<K, V> map
-) {
+) = .pop_any {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Ok(Empty);
@@ -420,7 +420,7 @@ export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
     *HashMap<K, V> map,
     K key,
     Result<R, Error> |(*V)| body
-) {
+) = .with {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Err(map_missing_error());

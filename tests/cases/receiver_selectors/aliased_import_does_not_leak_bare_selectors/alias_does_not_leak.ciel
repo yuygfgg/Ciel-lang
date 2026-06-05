@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: no selector `.add` for receiver type `Counter`
+
+import ./selector_symbols as symbols;
+
+i64 main() {
+    symbols::Counter @counter = { value: 3 };
+    counter.add(4);
+    return counter.value;
+}

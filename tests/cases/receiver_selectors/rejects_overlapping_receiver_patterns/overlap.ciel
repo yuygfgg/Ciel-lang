@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: conflicting selector `.len` for receiver `Packet`
+
+struct Packet {
+    i64 len;
+}
+
+i64 packet_len(Packet packet) = .len {
+    return packet.len;
+}
+
+i64 packet_len_ref(*const Packet packet) = .len {
+    return packet->len;
+}

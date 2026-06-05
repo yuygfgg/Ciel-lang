@@ -142,6 +142,14 @@ pub struct FunctionSignature {
     pub name: Ident,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
+    pub receiver_selector: Option<ReceiverSelector>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReceiverSelector {
+    pub receiver_param: Option<Ident>,
+    pub name: Ident,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -412,6 +420,10 @@ pub enum ExprKind {
     Field {
         base: Box<Expr>,
         field: Ident,
+    },
+    ReceiverSelector {
+        base: Box<Expr>,
+        selector: Vec<Ident>,
     },
     Arrow {
         base: Box<Expr>,

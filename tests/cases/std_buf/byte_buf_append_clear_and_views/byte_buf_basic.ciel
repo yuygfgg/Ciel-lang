@@ -15,62 +15,62 @@ bool is_err_void(Result<void, Error> value) {
 
 i64 main() {
     buf::ByteBuf @bytes = must(buf::byte_buf_new(4));
-    if (buf::byte_buf_len(&bytes) != 0) {
+    if (bytes.buf::len() != 0) {
         return 1;
     }
 
-    must(buf::byte_buf_push_slice(&bytes, [1 as u8, 2 as u8, 3 as u8]));
-    if (buf::byte_buf_len(&bytes) != 3) {
+    must(bytes.buf::push_slice([1 as u8, 2 as u8, 3 as u8]));
+    if (bytes.buf::len() != 3) {
         return 2;
     }
 
-    []const u8 readonly = buf::byte_buf_slice(&bytes);
+    []const u8 readonly = bytes.buf::slice();
     if (readonly.len != 3 || readonly[0] != (1 as u8) || readonly[2] != (3 as u8)) {
         return 3;
     }
 
-    []u8 writable = buf::byte_buf_mut_slice(&bytes);
+    []u8 writable = bytes.buf::mut_slice();
     if (writable.len != 3) {
         return 4;
     }
     writable[1] = 9 as u8;
 
-    []const u8 after_write = buf::byte_buf_slice(&bytes);
+    []const u8 after_write = bytes.buf::slice();
     if (after_write[1] != (9 as u8)) {
         return 5;
     }
 
-    buf::byte_buf_clear(&bytes);
-    if (buf::byte_buf_len(&bytes) != 0) {
+    bytes.buf::clear();
+    if (bytes.buf::len() != 0) {
         return 6;
     }
-    if (buf::byte_buf_slice(&bytes).len != 0 || buf::byte_buf_mut_slice(&bytes).len != 0) {
+    if (bytes.buf::slice().len != 0 || bytes.buf::mut_slice().len != 0) {
         return 7;
     }
 
-    must(buf::byte_buf_push_slice(&bytes, [7 as u8, 8 as u8, 9 as u8, 10 as u8]));
-    []const u8 reused = buf::byte_buf_slice(&bytes);
+    must(bytes.buf::push_slice([7 as u8, 8 as u8, 9 as u8, 10 as u8]));
+    []const u8 reused = bytes.buf::slice();
     if (reused.len != 4 || reused[0] != (7 as u8) || reused[3] != (10 as u8)) {
         return 8;
     }
 
-    must(buf::byte_buf_discard_prefix(&bytes, 2));
-    []const u8 discarded = buf::byte_buf_slice(&bytes);
+    must(bytes.buf::discard_prefix(2));
+    []const u8 discarded = bytes.buf::slice();
     if (discarded.len != 2 || discarded[0] != (9 as u8) || discarded[1] != (10 as u8)) {
         return 9;
     }
 
-    must(buf::byte_buf_discard_prefix(&bytes, 0));
-    if (buf::byte_buf_len(&bytes) != 2) {
+    must(bytes.buf::discard_prefix(0));
+    if (bytes.buf::len() != 2) {
         return 10;
     }
 
-    if (!is_err_void(buf::byte_buf_discard_prefix(&bytes, 3))) {
+    if (!is_err_void(bytes.buf::discard_prefix(3))) {
         return 11;
     }
 
-    must(buf::byte_buf_discard_prefix(&bytes, 2));
-    if (buf::byte_buf_len(&bytes) != 0 || buf::byte_buf_slice(&bytes).len != 0) {
+    must(bytes.buf::discard_prefix(2));
+    if (bytes.buf::len() != 0 || bytes.buf::slice().len != 0) {
         return 12;
     }
 

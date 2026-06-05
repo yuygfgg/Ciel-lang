@@ -37,12 +37,12 @@ export Result<Actor<M>, Error> spawn_actor_state<S, M: Message>(
 
 // Sends a cloned message value to an actor mailbox.
 // Compiler built-in: clones the payload before enqueueing it.
-export Result<void, Error> send<M: Message>(*const Actor<M> actor, M value);
+export Result<void, Error> send<M: Message>(*const Actor<M> actor, M value) = .send;
 
 // Requests actor shutdown after already queued messages are handled.
 // Compiler built-in.
-export Result<void, Error> stop<M: Message>(*const Actor<M> actor);
+export Result<void, Error> stop<M: Message>(*const Actor<M> actor) = .stop;
 
 // Waits for the actor worker to finish.
 // Compiler built-in.
-export Result<void, Error> join<M: Message>(*const Actor<M> actor);
+export Result<void, Error> join<M: Message>(*const Actor<M> actor) = .join;

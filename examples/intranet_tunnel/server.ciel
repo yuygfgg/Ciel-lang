@@ -54,7 +54,7 @@ async Result<void, Error> server_control_accept_loop(
     async::Sender<meta::Repr<ServerEvent>> events
 ) {
     while (true) {
-        anet::AsyncTcpStream stream = await anet::accept(listener)?;
+        anet::AsyncTcpStream stream = await listener.anet::accept()?;
         await send_server_event(events, ServerControlAccepted(stream))?;
     }
     return Ok;
@@ -65,7 +65,7 @@ async Result<void, Error> server_public_accept_loop(
     async::Sender<meta::Repr<ServerEvent>> events
 ) {
     while (true) {
-        anet::AsyncTcpStream stream = await anet::accept(listener)?;
+        anet::AsyncTcpStream stream = await listener.anet::accept()?;
         await send_server_event(events, ServerPublicAccepted(stream))?;
     }
     return Ok;
@@ -79,7 +79,7 @@ async Result<void, Error> server_control_writer(
         _ next = await async::recv<anet::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
-                _ wrote = await anet::write_all(stream, bytes);
+                _ wrote = await stream.anet::write_all(bytes);
                 switch (wrote) {
                     case Ok:
                         {}
@@ -201,9 +201,9 @@ async Result<ServerControlState, Error> accept_server_control(
     u32 epoch,
     async::Sender<meta::Repr<ServerEvent>> events
 ) {
-    anet::AsyncTcpSplit split = anet::split(stream)?;
+    anet::AsyncTcpSplit split = stream.anet::split()?;
     anet::BufferedStreamReader reader =
-        anet::buffered_reader(split.read, frame::max_payload_len())?;
+        split.read.anet::buffered_reader(frame::max_payload_len())?;
     async::ChannelPair<anet::Bytes> writer_channel = async::channel<anet::Bytes>(128)?;
     _ control_writer = async::spawn<void>(server_control_writer(stream, writer_channel.receiver))?;
 
@@ -297,7 +297,7 @@ async Result<void, Error> server_stream_worker(
                                     return Ok;
                             }
                             if (!result.ok) {
-                                anet::shutdown_write(client);
+                                client.anet::shutdown_write();
                                 return Ok;
                             }
                             reader_started = true;
@@ -308,7 +308,7 @@ async Result<void, Error> server_stream_worker(
                                 local_events
                             )?;
                         } else if (rt::kind_is(incoming.kind, frame::Data)) {
-                            _ wrote = await anet::write_all(client, incoming.payload);
+                            _ wrote = await client.anet::write_all(incoming.payload);
                             switch (wrote) {
                                 case Ok:
                                     {}
@@ -323,7 +323,7 @@ async Result<void, Error> server_stream_worker(
                             }
                         } else if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
                             remote_write_closed = true;
-                            anet::shutdown_write(client);
+                            client.anet::shutdown_write();
                             if (local_write_closed) {
                                 return Ok;
                             }

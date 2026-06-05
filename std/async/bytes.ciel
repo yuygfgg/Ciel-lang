@@ -76,7 +76,7 @@ export Result<Bytes, Error> bytes_concat([]const u8 left, []const u8 right) {
 }
 
 // Prepends a byte slice to an existing Bytes handle and returns a new handle.
-export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) {
+export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend {
     ?*CielBytes raw = unsafe { ciel_bytes_prepend(prefix.ptr, prefix.len, raw_bytes(bytes)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -85,7 +85,7 @@ export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) {
 }
 
 // Returns a new Bytes handle for a subrange of an existing Bytes value.
-export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len) {
+export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len) = .slice {
     ?*CielBytes raw = unsafe { ciel_bytes_slice(raw_bytes(bytes), offset, len) };
     if (raw == null) {
         return Err(runtime_error());
@@ -94,17 +94,17 @@ export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len) {
 }
 
 // Returns the logical length in bytes.
-export usize bytes_len(Bytes bytes) {
+export usize bytes_len(Bytes bytes) = .len {
     return unsafe { ciel_bytes_len(raw_bytes(bytes)) };
 }
 
 // Returns the backing capacity, useful when reusing buffers after read_into.
-export usize bytes_capacity(Bytes bytes) {
+export usize bytes_capacity(Bytes bytes) = .capacity {
     return unsafe { ciel_bytes_capacity(raw_bytes(bytes)) };
 }
 
 // Copies bytes into out and returns the number of bytes copied.
-export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) {
+export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to {
     usize @copied = 0;
     c::c_int rc = unsafe { ciel_bytes_copy_to(raw_bytes(bytes), out.ptr, out.len, &copied) };
     if ((rc as i64) != 0) {
@@ -114,7 +114,7 @@ export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) {
 }
 
 // Copies bytes into a char slice and returns the number of bytes copied.
-export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out) {
+export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars {
     usize @copied = 0;
     c::c_int rc =
         unsafe { ciel_bytes_copy_to_chars(raw_bytes(bytes), out.ptr, out.len, &copied) };

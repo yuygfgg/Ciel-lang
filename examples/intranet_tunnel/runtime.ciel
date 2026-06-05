@@ -51,8 +51,8 @@ export Result<FrameReader, Error> frame_reader_new() {
 }
 
 export Result<AuthConfig, Error> auth_config_new(text::Text route, bytes::Bytes psk) {
-    usize route_len = text::text_len(route);
-    usize psk_len = bytes::bytes_len(psk);
+    usize route_len = route.text::len();
+    usize psk_len = psk.bytes::len();
     if (route_len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(route_len)));
     }
@@ -72,12 +72,12 @@ export Result<void, Error> stream_registry_insert(
     u32 stream_id,
     async::Sender<meta::Repr<StreamEvent>> sender
 ) {
-    _ inserted = shared_map::shared_map_insert(registry.streams, stream_id, sender)?;
+    _ inserted = registry.streams.shared_map::insert(stream_id, sender)?;
     switch (inserted) {
         case map::InsertResult::Inserted:
             {}
         case map::InsertResult::Replaced(replaced):
-            async::close(replaced)?;
+            replaced.async::close()?;
     }
     return Ok;
 }
@@ -86,7 +86,7 @@ export Result<StreamRegistryGet, Error> stream_registry_get(
     StreamRegistry registry,
     u32 stream_id
 ) {
-    _ found = shared_map::shared_map_get(registry.streams, stream_id)?;
+    _ found = registry.streams.shared_map::get(stream_id)?;
     switch (found) {
         case shared_map::SharedMapGet::Found(sender):
             return Ok(StreamRegistryFound(sender));
@@ -99,10 +99,10 @@ export Result<void, Error> stream_registry_remove_close(
     StreamRegistry registry,
     u32 stream_id
 ) {
-    _ removed = shared_map::shared_map_remove(registry.streams, stream_id)?;
+    _ removed = registry.streams.shared_map::remove(stream_id)?;
     switch (removed) {
         case shared_map::SharedMapGet::Found(sender):
-            async::close(sender)?;
+            sender.async::close()?;
         case shared_map::SharedMapGet::Missing:
             {}
     }
@@ -111,10 +111,10 @@ export Result<void, Error> stream_registry_remove_close(
 
 export Result<void, Error> stream_registry_close_all(StreamRegistry registry) {
     while (true) {
-        _ popped = shared_map::shared_map_pop_any(registry.streams)?;
+        _ popped = registry.streams.shared_map::pop_any()?;
         switch (popped) {
             case shared_map::SharedMapPop::Item(_, sender):
-                async::close(sender)?;
+                sender.async::close()?;
             case shared_map::SharedMapPop::Empty:
                 return Ok;
         }
@@ -123,15 +123,15 @@ export Result<void, Error> stream_registry_close_all(StreamRegistry registry) {
 }
 
 export Result<[]const char, Error> auth_config_route(*const AuthConfig config) {
-    return text::text_to_slice(config->route);
+    return config->route.text::slice();
 }
 
 export Result<[]u8, Error> auth_config_psk(*const AuthConfig config) {
-    return bytes::bytes_to_slice(config->psk);
+    return config->psk.bytes::to_slice();
 }
 
 export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
-    usize len = anet::bytes_len(bytes);
+    usize len = bytes.anet::len();
     if (len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
     }
@@ -150,21 +150,21 @@ Result<anet::Bytes, Error> map_exact_frame_read(
 }
 
 export Result<void, Error> frame_reader_push(*FrameReader reader, anet::Bytes bytes) {
-    usize len = anet::bytes_len(bytes);
+    usize len = bytes.anet::len();
     if (len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
     }
-    []u8 dst = buf::byte_buf_spare_mut_slice(&reader->buffer, len)?;
-    usize copied = anet::bytes_copy_to(bytes, dst)?;
+    []u8 dst = reader->buffer.buf::spare_mut_slice(len)?;
+    usize copied = bytes.anet::copy_to(dst)?;
     if (copied != len) {
         return Err(text_error("short async byte copy"));
     }
-    buf::byte_buf_commit_tail(&reader->buffer, copied)?;
+    reader->buffer.buf::commit_tail(copied)?;
     return Ok;
 }
 
 export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
-    []const u8 input = buf::byte_buf_slice(&reader->buffer);
+    []const u8 input = reader->buffer.buf::slice();
     if (input.len < frame::header_len()) {
         return Ok(NeedMore);
     }
@@ -177,19 +177,19 @@ export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
     }
 
     anet::Bytes payload = anet::bytes_copy(input[frame::header_len()..total_len])?;
-    buf::byte_buf_discard_prefix(&reader->buffer, total_len)?;
+    reader->buffer.buf::discard_prefix(total_len)?;
     return Ok(FrameReady({ kind: header.kind, stream_id: header.stream_id, payload: payload }));
 }
 
 export async Result<AsyncFrame, Error> read_frame(anet::BufferedStreamReader reader) {
     anet::Bytes header_exact = map_exact_frame_read(
-        await anet::read_exact_buffered(reader, frame::header_len())
+        await reader.anet::read_exact(frame::header_len())
     )?;
     []u8 header_bytes = bytes_to_slice(header_exact)?;
     frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
     usize payload_len = header.length as usize;
     anet::Bytes payload = map_exact_frame_read(
-        await anet::read_exact_buffered(reader, payload_len)
+        await reader.anet::read_exact(payload_len)
     )?;
     return Ok({ kind: header.kind, stream_id: header.stream_id, payload: payload });
 }
@@ -200,9 +200,9 @@ export Result<anet::Bytes, Error> empty_bytes() {
 }
 
 export void close_stream_silent(anet::AsyncTcpStream stream) {
-    anet::shutdown_read(stream);
-    anet::shutdown_write(stream);
-    anet::close_stream(stream);
+    stream.anet::shutdown_read();
+    stream.anet::shutdown_write();
+    stream.anet::close();
 }
 
 export Result<anet::Bytes, Error> encode_frame_from_slice(
@@ -226,7 +226,7 @@ export Result<anet::Bytes, Error> encode_frame_from_bytes(
     u32 stream_id,
     anet::Bytes payload
 ) {
-    usize len = anet::bytes_len(payload);
+    usize len = payload.anet::len();
     frame::validate_stream_id(kind, stream_id)?;
     frame::validate_payload_len(len)?;
     frame::FrameHeader header = {
@@ -235,14 +235,14 @@ export Result<anet::Bytes, Error> encode_frame_from_bytes(
         length: len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    return anet::bytes_prepend(encoded_header, payload);
+    return payload.anet::prepend(encoded_header);
 }
 
 export async Result<void, Error> send_control_bytes(
     async::Sender<anet::Bytes> control,
     anet::Bytes bytes
 ) {
-    await async::send<anet::Bytes>(control, bytes)?;
+    await control.async::send(bytes)?;
     return Ok;
 }
 
@@ -305,7 +305,7 @@ export async Result<void, Error> send_stream_event(
     async::Sender<meta::Repr<StreamEvent>> events,
     StreamEvent event
 ) {
-    await async::send<meta::Repr<StreamEvent>>(events, meta::into_repr(&event))?;
+    await events.async::send(meta::into_repr(&event))?;
     return Ok;
 }
 

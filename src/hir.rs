@@ -151,6 +151,14 @@ pub struct FunctionSignature {
     pub name: ast::Ident,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
+    pub receiver_selector: Option<ReceiverSelector>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ReceiverSelector {
+    pub receiver_param: Option<ast::Ident>,
+    pub name: ast::Ident,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -409,6 +417,10 @@ pub enum ExprKind {
     Field {
         base: Box<Expr>,
         field: ast::Ident,
+    },
+    ReceiverSelector {
+        base: Box<Expr>,
+        selector: Vec<ast::Ident>,
     },
     Arrow {
         base: Box<Expr>,
@@ -819,6 +831,13 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             name: signature.name.clone(),
             generics,
             params,
+            receiver_selector: signature.receiver_selector.clone().map(|selector| {
+                ReceiverSelector {
+                    receiver_param: selector.receiver_param,
+                    name: selector.name,
+                    span: selector.span,
+                }
+            }),
         }
     }
 
@@ -1210,6 +1229,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             ast::ExprKind::Field { base, field } => ExprKind::Field {
                 base: Box::new(self.lower_expr(base)),
                 field: field.clone(),
+            },
+            ast::ExprKind::ReceiverSelector { base, selector } => ExprKind::ReceiverSelector {
+                base: Box::new(self.lower_expr(base)),
+                selector: selector.clone(),
             },
             ast::ExprKind::Arrow { base, field } => ExprKind::Arrow {
                 base: Box::new(self.lower_expr(base)),

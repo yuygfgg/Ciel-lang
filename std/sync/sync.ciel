@@ -65,7 +65,7 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
 
 // Locks the mutex, clones the current value, applies update_value, and stores
 // the returned replacement before unlocking.
-export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *const F updater) {
+export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *const F updater) = .update {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {
@@ -86,7 +86,7 @@ export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *c
 export Result<R, Error> mutex_with<T, R: Message>(
     *const Mutex<T> mutex,
     Result<R, Error> |(*T)| body
-) {
+) = .with {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {

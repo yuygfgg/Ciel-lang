@@ -76,7 +76,7 @@ export Result<void, Error> notify_sleep_done<M: Message>(
     *const AsyncSleep op,
     *const actor::Actor<M> actor_handle,
     M message
-) {
+) = .notify_done {
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_notify_sleep(raw_sleep(*op), actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
@@ -86,7 +86,7 @@ export Result<void, Error> notify_sleep_done<M: Message>(
 }
 
 // Finishes a completed sleep operation.
-export Result<void, Error> finish_sleep(AsyncSleep op) {
+export Result<void, Error> finish_sleep(AsyncSleep op) = .finish {
     c::c_int rc = unsafe { ciel_async_finish_sleep(raw_sleep(op)) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
@@ -95,7 +95,7 @@ export Result<void, Error> finish_sleep(AsyncSleep op) {
 }
 
 // Cancels a pending sleep operation.
-export Result<void, Error> cancel_sleep(AsyncSleep op) {
+export Result<void, Error> cancel_sleep(AsyncSleep op) = .cancel {
     c::c_int rc = unsafe { ciel_async_cancel(raw_sleep(op)) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));

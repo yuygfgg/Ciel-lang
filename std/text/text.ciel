@@ -32,18 +32,18 @@ export Result<Text, Error> text_copy([]const char text) {
 }
 
 // Returns the byte length of the Text value.
-export usize text_len(Text text) {
+export usize text_len(Text text) = .len {
     return bytes::bytes_len(text.bytes);
 }
 
 // Returns a cloned owned Bytes handle for the Text contents.
-export Result<bytes::Bytes, Error> text_to_bytes(Text text) {
+export Result<bytes::Bytes, Error> text_to_bytes(Text text) = .to_bytes {
     bytes::Bytes copied = clone_message(&text.bytes)?;
     return Ok(copied);
 }
 
 // Copies Text contents into a mutable character slice allocation.
-export Result<[]char, Error> text_to_chars(Text text) {
+export Result<[]char, Error> text_to_chars(Text text) = .to_chars {
     usize len = text_len(text);
     []char out = unsafe { ciel_runtime_char_alloc_slice(len) };
     usize copied = bytes::bytes_copy_to_chars(text.bytes, out)?;
@@ -54,7 +54,7 @@ export Result<[]char, Error> text_to_chars(Text text) {
 }
 
 // Copies Text contents into a read-only character slice.
-export Result<[]const char, Error> text_to_slice(Text text) {
+export Result<[]const char, Error> text_to_slice(Text text) = .slice {
     []char chars = text_to_chars(text)?;
     return Ok(chars);
 }

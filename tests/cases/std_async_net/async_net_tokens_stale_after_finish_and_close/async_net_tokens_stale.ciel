@@ -1,0 +1,65 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 1
+
+import /std/async as async;
+import /std/async_net as anet;
+import /std/io as io;
+import /std/net as net;
+import /std/panic;
+import /std/result;
+
+bool connect_finish_is_err(Result<anet::AsyncTcpStream, Error> value) {
+    switch (value) {
+        case Ok(stream):
+            _ close_stream_result = anet::close_stream(stream);
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+bool addr_is_err(Result<net::SocketAddr, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
+    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::close_stream(server)?;
+    return Ok;
+}
+
+async Result<usize, Error> drive() {
+    anet::AsyncTcpListener listener =
+        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    net::SocketAddr bound = anet::listener_addr(listener)?;
+    async::Task<void> server = async::spawn<void>(accept_once(listener))?;
+
+    anet::AsyncConnect op = anet::connect_async(bound)?;
+    anet::AsyncConnect old_op = op;
+    anet::AsyncTcpStream client =
+        await async::future_from_op<anet::AsyncConnect, anet::AsyncTcpStream>(op)?;
+    if (!connect_finish_is_err(anet::finish_connect(old_op))) {
+        return Err(code_error(91));
+    }
+
+    anet::AsyncTcpStream old_client = client;
+    anet::close_stream(client)?;
+    if (!addr_is_err(anet::stream_peer_addr(old_client))) {
+        return Err(code_error(92));
+    }
+
+    await server?;
+    anet::close_listener(listener)?;
+    return Ok(1);
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive()))));
+    return 0;
+}

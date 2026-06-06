@@ -397,6 +397,7 @@ typedef enum {
 struct CielFuture {
     CielFutureRunFn run;
     CielFutureCleanupFn cleanup;
+    CielResourceOwner *owner;
     void *ctx;
     void *result;
     size_t result_size;
@@ -419,6 +420,7 @@ struct CielFuture {
 struct CielTask {
     CielFuture *future;
     CielFuture *wait_future;
+    CielResourceOwner *owner;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
     CielTaskWaitNode *waiters;
@@ -2366,6 +2368,7 @@ CielFuture *ciel_future_new(size_t result_size, size_t result_align,
     memset(future, 0, sizeof(CielFuture));
     future->run = run;
     future->cleanup = cleanup;
+    future->owner = ciel_resource_current_owner_or_root();
     future->ctx = ctx;
     future->result_size = result_size;
     future->result_align = result_align;
@@ -2400,9 +2403,12 @@ static void ciel_future_run_cleanup(CielFuture *future, int32_t reason) {
     }
     future->cleanup_started = 1;
     CielFutureCleanupFn cleanup = future->cleanup;
+    CielResourceOwner *owner = future->owner;
     void *ctx = future->ctx;
     pthread_mutex_unlock(&future->mutex);
+    CielResourceOwner *previous = ciel_resource_set_current_owner(owner);
     cleanup(ctx, reason);
+    ciel_resource_restore_current_owner(previous);
 }
 
 int32_t ciel_future_cancel(CielFuture *future) {
@@ -2636,9 +2642,12 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
         return EALREADY;
     }
     future->state = CIEL_FUTURE_RUNNING;
+    CielResourceOwner *owner = future->owner;
     pthread_mutex_unlock(&future->mutex);
 
+    CielResourceOwner *previous = ciel_resource_set_current_owner(owner);
     int32_t rc = future->run(future->ctx, future->result);
+    ciel_resource_restore_current_owner(previous);
 
     pthread_mutex_lock(&future->mutex);
     if (rc == 0) {
@@ -3029,6 +3038,7 @@ static void ciel_task_finish(CielTask *task, int32_t rc) {
         return;
     CielTaskWaitNode *waiters = NULL;
     CielRoot *root = NULL;
+    CielResourceOwner *owner = NULL;
     pthread_mutex_lock(&task->mutex);
     uint8_t was_scheduled = task->scheduled;
     task->scheduled = 0;
@@ -3037,6 +3047,8 @@ static void ciel_task_finish(CielTask *task, int32_t rc) {
         task->rc = rc;
         waiters = task->waiters;
         task->waiters = NULL;
+        owner = task->owner;
+        task->owner = NULL;
         if (!was_scheduled) {
             root = task->self_root;
             task->self_root = NULL;
@@ -3044,6 +3056,8 @@ static void ciel_task_finish(CielTask *task, int32_t rc) {
     }
     pthread_cond_broadcast(&task->cond);
     pthread_mutex_unlock(&task->mutex);
+    if (owner != NULL)
+        (void)ciel_resource_owner_close(owner);
     ciel_task_schedule_waiters(waiters);
     ciel_root_unpin(root);
 }
@@ -3109,9 +3123,29 @@ void *ciel_task_spawn(CielFuture *future) {
     CielTask *task = (CielTask *)ciel_alloc(sizeof(CielTask));
     memset(task, 0, sizeof(CielTask));
     task->future = future;
+    int32_t owner_rc = 0;
+    task->owner = ciel_resource_owner_new_child(
+        ciel_resource_current_owner_or_root(), ciel_resource_default_limits(),
+        &owner_rc);
+    if (task->owner == NULL) {
+        errno = owner_rc == 0 ? ENOMEM : owner_rc;
+        return NULL;
+    }
+    int32_t detach_rc = ciel_resource_owner_detach(task->owner);
+    if (detach_rc != 0) {
+        (void)ciel_resource_owner_close(task->owner);
+        task->owner = NULL;
+        errno = detach_rc;
+        return NULL;
+    }
+    pthread_mutex_lock(&future->mutex);
+    future->owner = task->owner;
+    pthread_mutex_unlock(&future->mutex);
     task->self_root = ciel_root_pin(task);
     int rc = pthread_mutex_init(&task->mutex, NULL);
     if (rc != 0) {
+        (void)ciel_resource_owner_close(task->owner);
+        task->owner = NULL;
         ciel_root_unpin(task->self_root);
         task->self_root = NULL;
         errno = rc;
@@ -3119,6 +3153,8 @@ void *ciel_task_spawn(CielFuture *future) {
     }
     rc = pthread_cond_init(&task->cond, NULL);
     if (rc != 0) {
+        (void)ciel_resource_owner_close(task->owner);
+        task->owner = NULL;
         ciel_root_unpin(task->self_root);
         task->self_root = NULL;
         errno = rc;
@@ -3131,6 +3167,8 @@ void *ciel_task_spawn(CielFuture *future) {
         ciel_future_new(future->result_size, future->result_align,
                         ciel_task_wait_future_run, wait, NULL);
     if (task->wait_future == NULL) {
+        (void)ciel_resource_owner_close(task->owner);
+        task->owner = NULL;
         ciel_root_unpin(task->self_root);
         task->self_root = NULL;
         return NULL;

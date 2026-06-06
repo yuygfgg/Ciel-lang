@@ -9,23 +9,24 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<Channel<i64>, Error> handle(Channel<i64> done, atime::AsyncSleep op) {
-    atime::finish_sleep(op)?;
-    channel_send(&done, 1)?;
+Result<Channel<i64>, Error> handle(Channel<i64> done, i64 value) {
+    channel_send(&done, value)?;
     return Ok(done);
 }
 
 i32 main() {
     Channel<i64> done = must(make_channel<i64>());
-    Actor<atime::AsyncSleep> actor =
-        must(spawn_actor_cloned<Channel<i64>, atime::AsyncSleep>(done, handle));
+    Actor<i64> actor =
+        must(spawn_actor_cloned<Channel<i64>, i64>(done, handle));
 
     atime::AsyncSleep fast = must(atime::sleep_ms_async(0));
     atime::AsyncSleep slow = must(atime::sleep_ms_async(1));
-    must(atime::notify_sleep_done(&fast, &actor, fast));
-    must(atime::notify_sleep_done(&slow, &actor, slow));
+    must(atime::notify_sleep_done(&fast, &actor, 1));
+    must(atime::notify_sleep_done(&slow, &actor, 1));
 
     i64 total = must(channel_recv(&done)) + must(channel_recv(&done));
+    must(atime::finish_sleep(fast));
+    must(atime::finish_sleep(slow));
     must(print_value(total));
 
     must(join(&actor));

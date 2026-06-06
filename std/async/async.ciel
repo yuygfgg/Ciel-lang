@@ -1,6 +1,7 @@
 // User-facing async facade re-exporting futures, tasks, channels, and groups.
 export import /std/async/core;
 import /std/async_time as async_time;
+import /std/resource as resource;
 
 Result<Out, Error> timeout_elapsed<Out>(Result<void, Error> sleep_result) {
     sleep_result?;
@@ -17,4 +18,23 @@ export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
         case value = future: Ok(value);
         case sleep_result = async_time::sleep_ms(ms): timeout_elapsed<Out>(sleep_result);
     };
+}
+
+void cancel_task_group_on_exit<T>(TaskGroup<T> group) {
+    group_cancel_all<T>(&group);
+}
+
+void close_task_group_on_exit<T>(TaskGroup<T> group) {
+    group_close<T>(&group);
+}
+
+// Creates a task group for body and closes it after body returns or is cancelled.
+export async Result<R, Error> with_task_group<T: Message, R: resource::ResourceFree>(
+    Future<Result<R, Error>> |(*const TaskGroup<T>)| body
+) = .with_task_group {
+    TaskGroup<T> group = task_group<T>()?;
+    Future<Result<R, Error>> @future = body(&group);
+    defer close_task_group_on_exit<T>(group);
+    defer cancel_task_group_on_exit<T>(group);
+    return await future;
 }

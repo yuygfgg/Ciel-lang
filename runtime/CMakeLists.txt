@@ -12,6 +12,7 @@ get_filename_component(CIEL_RUNTIME_INCLUDE_DIR "${CIEL_RUNTIME_INCLUDE_DIR}" AB
 
 add_library(ciel_runtime STATIC
     src/core.c
+    src/resource.c
     src/gc.c
     src/checks.c
     src/net_tcp.c

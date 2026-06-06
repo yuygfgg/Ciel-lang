@@ -25,6 +25,9 @@ export import /std/async_time;
 // Re-exports Message, ShareHandle, and ThreadLocal policies.
 export import /std/message;
 
+// Re-exports resource-owner scopes and ResourceFree policy.
+export import /std/resource;
+
 // Re-exports type-layout and structural-representation helpers.
 export import /std/meta;
 

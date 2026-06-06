@@ -25,7 +25,7 @@ bool is_stream_err(Result<net::TcpStream, Error> result) {
 i32 main() {
     net::TcpListener listener = must(net::tcp_listen(must(net::parse_addr("127.0.0.1:0"))));
     must(net::listener_close(listener));
-    if (!is_void_err(net::listener_close(listener))) {
+    if (is_void_err(net::listener_close(listener))) {
         return 1;
     }
     if (!is_stream_err(net::tcp_accept(listener))) {

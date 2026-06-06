@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_quota.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+import /std/resource as resource;
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(file, "quota")?;
+        return Ok;
+    }));
+
+    resource::Limits limits = {
+        max_resources: 1,
+        max_child_owners: 16,
+        max_pending_ops: 16,
+        max_descriptors: 1,
+    };
+    must(resource::scoped_with_limits<void>(limits, || {
+        io::File first = io::open_read(path)?;
+        switch (io::open_read(path)) {
+            case Ok(second):
+                io::close(second);
+                io::close(first);
+                return Err(text_error("quota accepted second file"));
+            case Err(_):
+                return Ok;
+        }
+    }));
+    return 0;
+}

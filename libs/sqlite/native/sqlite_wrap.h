@@ -11,12 +11,20 @@ typedef struct CielSqliteConnection CielSqliteConnection;
 typedef struct CielSqliteStatement CielSqliteStatement;
 
 int ciel_sqlite_open(const char* path, size_t path_len, int flags,
-                     CielSqliteConnection** out);
-int ciel_sqlite_open_memory(CielSqliteConnection** out);
+                     uint64_t* out_owner, uint64_t* out_resource,
+                     uint64_t* out_generation);
+int ciel_sqlite_open_memory(uint64_t* out_owner, uint64_t* out_resource,
+                            uint64_t* out_generation);
 int ciel_sqlite_close(CielSqliteConnection* connection);
+int ciel_sqlite_close_handle(uint64_t owner, uint64_t resource,
+                             uint64_t generation);
+int ciel_sqlite_connection_snapshot(uint64_t owner, uint64_t resource,
+                                    uint64_t generation,
+                                    CielSqliteConnection** out);
 int ciel_sqlite_exec(CielSqliteConnection* connection, const char* sql,
                      size_t sql_len);
-int ciel_sqlite_busy_timeout(CielSqliteConnection* connection, int milliseconds);
+int ciel_sqlite_busy_timeout(CielSqliteConnection* connection,
+                             int milliseconds);
 void ciel_sqlite_interrupt(CielSqliteConnection* connection);
 int ciel_sqlite_last_insert_rowid(CielSqliteConnection* connection,
                                   int64_t* out);
@@ -24,8 +32,14 @@ int ciel_sqlite_changes(CielSqliteConnection* connection, int64_t* out);
 int ciel_sqlite_total_changes(CielSqliteConnection* connection, int64_t* out);
 
 int ciel_sqlite_prepare(CielSqliteConnection* connection, const char* sql,
-                        size_t sql_len, CielSqliteStatement** out);
+                        size_t sql_len, uint64_t* out_owner,
+                        uint64_t* out_resource, uint64_t* out_generation);
 int ciel_sqlite_finalize(CielSqliteStatement* statement);
+int ciel_sqlite_finalize_handle(uint64_t owner, uint64_t resource,
+                                uint64_t generation);
+int ciel_sqlite_statement_snapshot(uint64_t owner, uint64_t resource,
+                                   uint64_t generation,
+                                   CielSqliteStatement** out);
 int ciel_sqlite_reset(CielSqliteStatement* statement);
 int ciel_sqlite_clear_bindings(CielSqliteStatement* statement);
 int ciel_sqlite_step(CielSqliteStatement* statement);

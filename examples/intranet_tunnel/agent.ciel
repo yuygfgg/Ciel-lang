@@ -78,10 +78,8 @@ async Result<void, Error> handle_agent_handshake(
 
 void agent_stream_cleanup(
     u32 stream_id,
-    anet::AsyncTcpStream target,
     AgentControlState control
 ) {
-    rt::close_stream_silent(target);
     rt::stream_registry_remove_close(control.streams, stream_id);
 }
 
@@ -115,7 +113,7 @@ async Result<void, Error> agent_stream_worker(
     _ connected = await control.target_addr.anet::connect_timeout(2000);
     switch (connected) {
         case Ok(target):
-            defer agent_stream_cleanup(stream_id, target, control);
+            defer agent_stream_cleanup(stream_id, control);
 
             []u8 success = tunnel_codec::encode_open_result_success()?;
             anet::Bytes success_frame =

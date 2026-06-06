@@ -8,15 +8,8 @@ import /std/net as net;
 import /std/panic;
 import /std/result;
 
-Result<Channel<bool>, Error> handle(Channel<bool> out, anet::AsyncConnect op) {
-    Result<anet::AsyncTcpStream, Error> result = anet::finish_connect(op);
-    switch (result) {
-        case Ok(stream):
-            anet::close_stream(stream)?;
-            channel_send(&out, false)?;
-        case Err(_):
-            channel_send(&out, true)?;
-    }
+Result<Channel<bool>, Error> handle(Channel<bool> out, bool ready) {
+    channel_send(&out, ready)?;
     return Ok(out);
 }
 
@@ -27,15 +20,22 @@ i32 main() {
     must(anet::close_listener(listener));
 
     Channel<bool> done = must(make_channel<bool>());
-    Actor<anet::AsyncConnect> actor =
-        must(spawn_actor_cloned<Channel<bool>, anet::AsyncConnect>(done, handle));
+    Actor<bool> actor =
+        must(spawn_actor_cloned<Channel<bool>, bool>(done, handle));
     anet::AsyncConnect op = must(anet::connect_async(addr));
-    must(anet::notify_connect_done(&op, &actor, op));
-    bool refused = must(channel_recv(&done));
+    must(anet::notify_connect_done(&op, &actor, true));
+    bool notified = must(channel_recv(&done));
     must(join(&actor));
     must(channel_close(&done));
-    if (!refused) {
+    if (!notified) {
         return 1;
+    }
+    switch (anet::finish_connect(op)) {
+        case Ok(stream):
+            must(anet::close_stream(stream));
+            return 1;
+        case Err(_):
+            return 0;
     }
     return 0;
 }

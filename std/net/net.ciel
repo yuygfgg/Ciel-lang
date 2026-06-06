@@ -2,6 +2,8 @@
 export import /std/result;
 import /std/c as c;
 import /std/message;
+import /std/resource;
+import /std/resource as resource;
 
 unsafe extern "C" {
     opaque struct CielSocketAddr;
@@ -14,20 +16,20 @@ unsafe extern "C" {
     c::c_int ciel_net_addr_port(*CielSocketAddr addr, *u16 out);
     c::c_int ciel_net_addr_write(*CielSocketAddr addr, *char out, usize cap, *usize written);
 
-    c::c_int ciel_net_tcp_listen(*CielSocketAddr addr, *u32 out_slot, *u32 out_generation);
-    c::c_int ciel_net_tcp_accept(u32 listener_slot, u32 listener_generation, *u32 out_slot, *u32 out_generation);
-    c::c_int ciel_net_tcp_connect(*CielSocketAddr addr, *u32 out_slot, *u32 out_generation);
-    c::c_int ciel_net_tcp_connect_host(*const char host, usize host_len, u16 port, *u32 out_slot, *u32 out_generation);
-    c::c_intptr_t ciel_net_tcp_read(u32 stream_slot, u32 stream_generation, *void buf, usize count);
-    c::c_intptr_t ciel_net_tcp_write(u32 stream_slot, u32 stream_generation, *const void buf, usize count);
-    c::c_int ciel_net_tcp_shutdown_read(u32 stream_slot, u32 stream_generation);
-    c::c_int ciel_net_tcp_shutdown_write(u32 stream_slot, u32 stream_generation);
-    c::c_int ciel_net_tcp_shutdown(u32 stream_slot, u32 stream_generation);
-    c::c_int ciel_net_tcp_close(u32 stream_slot, u32 stream_generation);
-    c::c_int ciel_net_listener_close(u32 listener_slot, u32 listener_generation);
-    c::c_int ciel_net_listener_addr(u32 listener_slot, u32 listener_generation, *?*CielSocketAddr out);
-    c::c_int ciel_net_stream_local_addr(u32 stream_slot, u32 stream_generation, *?*CielSocketAddr out);
-    c::c_int ciel_net_stream_peer_addr(u32 stream_slot, u32 stream_generation, *?*CielSocketAddr out);
+    c::c_int ciel_net_tcp_listen(*CielSocketAddr addr, *u64 out_owner, *u64 out_resource, *u64 out_generation);
+    c::c_int ciel_net_tcp_accept(u64 listener_owner, u64 listener_resource, u64 listener_generation, *u64 out_owner, *u64 out_resource, *u64 out_generation);
+    c::c_int ciel_net_tcp_connect(*CielSocketAddr addr, *u64 out_owner, *u64 out_resource, *u64 out_generation);
+    c::c_int ciel_net_tcp_connect_host(*const char host, usize host_len, u16 port, *u64 out_owner, *u64 out_resource, *u64 out_generation);
+    c::c_intptr_t ciel_net_tcp_read(u64 stream_owner, u64 stream_resource, u64 stream_generation, *void buf, usize count);
+    c::c_intptr_t ciel_net_tcp_write(u64 stream_owner, u64 stream_resource, u64 stream_generation, *const void buf, usize count);
+    c::c_int ciel_net_tcp_shutdown_read(u64 stream_owner, u64 stream_resource, u64 stream_generation);
+    c::c_int ciel_net_tcp_shutdown_write(u64 stream_owner, u64 stream_resource, u64 stream_generation);
+    c::c_int ciel_net_tcp_shutdown(u64 stream_owner, u64 stream_resource, u64 stream_generation);
+    c::c_int ciel_net_tcp_close(u64 stream_owner, u64 stream_resource, u64 stream_generation);
+    c::c_int ciel_net_listener_close(u64 listener_owner, u64 listener_resource, u64 listener_generation);
+    c::c_int ciel_net_listener_addr(u64 listener_owner, u64 listener_resource, u64 listener_generation, *?*CielSocketAddr out);
+    c::c_int ciel_net_stream_local_addr(u64 stream_owner, u64 stream_resource, u64 stream_generation, *?*CielSocketAddr out);
+    c::c_int ciel_net_stream_peer_addr(u64 stream_owner, u64 stream_resource, u64 stream_generation, *?*CielSocketAddr out);
 }
 
 // IP address family of a SocketAddr.
@@ -43,14 +45,12 @@ export unsafe struct SocketAddr {
 
 // Actor-local TCP listener handle stored in the runtime descriptor table.
 export unsafe struct TcpListener {
-    u32 slot;
-    u32 generation;
+    resource::Handle handle;
 }
 
 // Actor-local TCP stream handle stored in the runtime descriptor table.
 export unsafe struct TcpStream {
-    u32 slot;
-    u32 generation;
+    resource::Handle handle;
 }
 
 unsafe impl clone_message(*const SocketAddr value) {
@@ -66,6 +66,14 @@ unsafe impl thread_local_marker(*const TcpListener value) {
 }
 
 unsafe impl thread_local_marker(*const TcpStream value) {
+    return true;
+}
+
+unsafe impl resource_handle_marker(*const TcpListener value) {
+    return true;
+}
+
+unsafe impl resource_handle_marker(*const TcpStream value) {
     return true;
 }
 
@@ -92,12 +100,42 @@ SocketAddr addr_from_raw(*CielSocketAddr raw) {
     return unsafe { { handle: raw as *void } };
 }
 
-TcpListener listener_from_parts(u32 slot, u32 generation) {
-    return unsafe { { slot: slot, generation: generation } };
+resource::Handle handle_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
+    return unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } };
 }
 
-TcpStream stream_from_parts(u32 slot, u32 generation) {
-    return unsafe { { slot: slot, generation: generation } };
+TcpListener listener_from_handle(resource::Handle handle) {
+    return unsafe { { handle: handle } };
+}
+
+TcpListener listener_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
+    return listener_from_handle(handle_from_parts(owner_id, resource_id, generation));
+}
+
+TcpStream stream_from_handle(resource::Handle handle) {
+    return unsafe { { handle: handle } };
+}
+
+TcpStream stream_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
+    return stream_from_handle(handle_from_parts(owner_id, resource_id, generation));
+}
+
+resource::Handle listener_handle(TcpListener listener) {
+    return unsafe { listener.handle };
+}
+
+resource::Handle stream_handle(TcpStream stream) {
+    return unsafe { stream.handle };
+}
+
+impl transfer_to_parent(*const TcpListener value) {
+    resource::Handle handle = resource::transfer_handle_to_parent(unsafe { value->handle })?;
+    return Ok(listener_from_handle(handle));
+}
+
+impl transfer_to_parent(*const TcpStream value) {
+    resource::Handle handle = resource::transfer_handle_to_parent(unsafe { value->handle })?;
+    return Ok(stream_from_handle(handle));
 }
 
 // Parses a numeric IPv4 or bracketed IPv6 endpoint such as "127.0.0.1:8080".
@@ -171,61 +209,70 @@ export Result<[]const char, Error> addr_to_string(SocketAddr addr) = .to_string 
 
 // Opens a blocking TCP listener bound to addr.
 export Result<TcpListener, Error> tcp_listen(SocketAddr addr) = .listen {
-    u32 @slot = 0;
-    u32 @generation = 0;
-    c::c_int rc = unsafe { ciel_net_tcp_listen(raw_addr(addr), &slot, &generation) };
+    u64 @owner_id = 0;
+    u64 @resource_id = 0;
+    u64 @generation = 0;
+    c::c_int rc = unsafe { ciel_net_tcp_listen(raw_addr(addr), &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
-    return Ok(listener_from_parts(slot, generation));
+    return Ok(listener_from_parts(owner_id, resource_id, generation));
 }
 
 // Accepts one incoming TCP connection from listener.
 export Result<TcpStream, Error> tcp_accept(TcpListener listener) = .accept {
-    u32 @slot = 0;
-    u32 @generation = 0;
+    resource::Handle listener_resource = listener_handle(listener);
+    u64 @owner_id = 0;
+    u64 @resource_id = 0;
+    u64 @generation = 0;
     c::c_int rc = unsafe {
         ciel_net_tcp_accept(
-            unsafe { listener.slot },
-            unsafe { listener.generation },
-            &slot,
+            unsafe { listener_resource.owner_id },
+            unsafe { listener_resource.resource_id },
+            unsafe { listener_resource.generation },
+            &owner_id,
+            &resource_id,
             &generation
         )
     };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
-    return Ok(stream_from_parts(slot, generation));
+    return Ok(stream_from_parts(owner_id, resource_id, generation));
 }
 
 // Opens a blocking TCP stream connected to addr.
 export Result<TcpStream, Error> tcp_connect(SocketAddr addr) = .connect {
-    u32 @slot = 0;
-    u32 @generation = 0;
-    c::c_int rc = unsafe { ciel_net_tcp_connect(raw_addr(addr), &slot, &generation) };
+    u64 @owner_id = 0;
+    u64 @resource_id = 0;
+    u64 @generation = 0;
+    c::c_int rc = unsafe { ciel_net_tcp_connect(raw_addr(addr), &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
-    return Ok(stream_from_parts(slot, generation));
+    return Ok(stream_from_parts(owner_id, resource_id, generation));
 }
 
 // Resolves host and connects a blocking TCP stream to the first reachable address.
 export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port) {
-    u32 @slot = 0;
-    u32 @generation = 0;
-    c::c_int rc = unsafe { ciel_net_tcp_connect_host(host.ptr, host.len, port, &slot, &generation) };
+    u64 @owner_id = 0;
+    u64 @resource_id = 0;
+    u64 @generation = 0;
+    c::c_int rc = unsafe { ciel_net_tcp_connect_host(host.ptr, host.len, port, &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
-    return Ok(stream_from_parts(slot, generation));
+    return Ok(stream_from_parts(owner_id, resource_id, generation));
 }
 
 // Reads up to out.len bytes from stream; zero bytes indicates EOF.
 export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read {
+    resource::Handle handle = stream_handle(stream);
     c::c_intptr_t n = unsafe {
         ciel_net_tcp_read(
-            unsafe { stream.slot },
-            unsafe { stream.generation },
+            unsafe { handle.owner_id },
+            unsafe { handle.resource_id },
+            unsafe { handle.generation },
             out.ptr as *void,
             out.len
         )
@@ -238,10 +285,12 @@ export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read {
 
 // Writes up to data.len bytes to stream.
 export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data) = .write {
+    resource::Handle handle = stream_handle(stream);
     c::c_intptr_t n = unsafe {
         ciel_net_tcp_write(
-            unsafe { stream.slot },
-            unsafe { stream.generation },
+            unsafe { handle.owner_id },
+            unsafe { handle.resource_id },
+            unsafe { handle.generation },
             data.ptr as *const void,
             data.len
         )
@@ -267,7 +316,8 @@ export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data) = .w
 
 // Shuts down the read half of stream.
 export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read {
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown_read(unsafe { stream.slot }, unsafe { stream.generation }) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown_read(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -276,7 +326,8 @@ export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read 
 
 // Shuts down the write half of stream.
 export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_write {
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown_write(unsafe { stream.slot }, unsafe { stream.generation }) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown_write(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -285,7 +336,8 @@ export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_writ
 
 // Shuts down both halves of stream.
 export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown {
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown(unsafe { stream.slot }, unsafe { stream.generation }) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -294,7 +346,8 @@ export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown {
 
 // Closes stream and invalidates its generation-checked handle.
 export Result<void, Error> tcp_close(TcpStream stream) = .close {
-    c::c_int rc = unsafe { ciel_net_tcp_close(unsafe { stream.slot }, unsafe { stream.generation }) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_close(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -303,7 +356,8 @@ export Result<void, Error> tcp_close(TcpStream stream) = .close {
 
 // Closes listener and invalidates its generation-checked handle.
 export Result<void, Error> listener_close(TcpListener listener) = .close {
-    c::c_int rc = unsafe { ciel_net_listener_close(unsafe { listener.slot }, unsafe { listener.generation }) };
+    resource::Handle handle = listener_handle(listener);
+    c::c_int rc = unsafe { ciel_net_listener_close(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -313,7 +367,8 @@ export Result<void, Error> listener_close(TcpListener listener) = .close {
 // Returns the local address bound to listener.
 export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr {
     ?*CielSocketAddr @raw = null;
-    c::c_int rc = unsafe { ciel_net_listener_addr(unsafe { listener.slot }, unsafe { listener.generation }, &raw) };
+    resource::Handle handle = listener_handle(listener);
+    c::c_int rc = unsafe { ciel_net_listener_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -326,7 +381,8 @@ export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr {
 // Returns the local address of stream.
 export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_addr {
     ?*CielSocketAddr @raw = null;
-    c::c_int rc = unsafe { ciel_net_stream_local_addr(unsafe { stream.slot }, unsafe { stream.generation }, &raw) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_stream_local_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -339,7 +395,8 @@ export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_ad
 // Returns the peer address of stream.
 export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream) = .peer_addr {
     ?*CielSocketAddr @raw = null;
-    c::c_int rc = unsafe { ciel_net_stream_peer_addr(unsafe { stream.slot }, unsafe { stream.generation }, &raw) };
+    resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_stream_peer_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -358,32 +415,35 @@ void close_scoped_listener(TcpListener listener) {
 }
 
 // Connects to addr, passes a scoped stream to body, and closes on return.
-export Result<R, Error> with_tcp_connect<R: Message>(
+export Result<R, Error> with_tcp_connect<R: resource::ResourceFree>(
     SocketAddr addr,
     Result<R, Error> |(TcpStream)| body
 ) = .with_connect {
-    TcpStream stream = tcp_connect(addr)?;
-    defer close_scoped_stream(stream);
-    return body(stream);
+    return resource::scoped<R>(|| {
+        TcpStream stream = tcp_connect(addr)?;
+        return body(stream);
+    });
 }
 
 // Resolves and connects to host:port, passes a scoped stream to body, and closes on return.
-export Result<R, Error> with_tcp_connect_host<R: Message>(
+export Result<R, Error> with_tcp_connect_host<R: resource::ResourceFree>(
     []const char host,
     u16 port,
     Result<R, Error> |(TcpStream)| body
 ) = .with_tcp_connect {
-    TcpStream stream = tcp_connect_host(host, port)?;
-    defer close_scoped_stream(stream);
-    return body(stream);
+    return resource::scoped<R>(|| {
+        TcpStream stream = tcp_connect_host(host, port)?;
+        return body(stream);
+    });
 }
 
 // Listens on addr, passes a scoped listener to body, and closes on return.
-export Result<R, Error> with_tcp_listen<R: Message>(
+export Result<R, Error> with_tcp_listen<R: resource::ResourceFree>(
     SocketAddr addr,
     Result<R, Error> |(TcpListener)| body
 ) = .with_listen {
-    TcpListener listener = tcp_listen(addr)?;
-    defer close_scoped_listener(listener);
-    return body(listener);
+    return resource::scoped<R>(|| {
+        TcpListener listener = tcp_listen(addr)?;
+        return body(listener);
+    });
 }

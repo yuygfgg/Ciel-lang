@@ -57,5 +57,7 @@ uint8_t* ciel_bytes_data_alloc(size_t len);
 CielSocketAddr* ciel_net_addr_from_fd(int fd, int peer, int32_t* out_rc);
 int ciel_net_make_socket(const struct sockaddr* addr);
 int32_t ciel_fd_set_nonblocking(int fd);
+void ciel_resource_runtime_init(void);
+void ciel_resource_close_root_at_shutdown(void);
 
 #endif

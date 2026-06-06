@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: constructing unsafe struct `File` requires unsafe block
+
+import /std/io as io;
+import /std/resource as resource;
+
+i32 main() {
+    resource::Handle handle = unsafe { { owner_id: 1, resource_id: 1, generation: 1 } };
+    io::File file = { handle: handle };
+    return 0;
+}

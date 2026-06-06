@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/message;
+import /std/result;
+
+struct Fake {
+    i64 value;
+}
+
+unsafe interface<T> bool resource_handle_marker(*const T value);
+
+unsafe impl resource_handle_marker(*const Fake value) {
+    return true;
+}
+
+unsafe impl clone_message(*const Fake value) {
+    return Ok(*value);
+}
+
+i32 main() {
+    Fake fake = { value: 42 };
+    Fake copied = must(clone_message(&fake));
+    if (copied.value == 42) {
+        return 0;
+    }
+    return 1;
+}

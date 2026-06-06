@@ -1,0 +1,77 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_actor_escape.txt
+
+import /std/actor;
+import /std/channel;
+import /std/env as env;
+import /std/io as io;
+import /std/message;
+import /std/result;
+import /std/resource as resource;
+
+enum Command {
+    Probe(void),
+}
+
+unsafe impl clone_message(*const Command value) {
+    return Ok(*value);
+}
+
+struct OwnedState {
+    io::File file;
+    Channel<usize> out;
+}
+
+Result<OwnedState, Error> init_state(Channel<usize> out) {
+    []const char path = env::arg(1)?;
+    return Ok({
+        file: io::open_read(path)?,
+        out: out,
+    });
+}
+
+Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command command) {
+    switch (command) {
+        case Probe(_):
+            [1]u8 @buffer = [0;];
+            usize @status = 0;
+            switch (io::read(state->file, buffer[..])) {
+                case Ok(read):
+                    status = read;
+                case Err(_):
+                    status = 0;
+            }
+            channel_send(&state->out, status)?;
+            stop(&self)?;
+            return Ok;
+    }
+}
+
+Result<Actor<Command>, Error> spawn_inside_scope(Channel<usize> out) {
+    return resource::scoped<Actor<Command>>(|| {
+        return spawn_actor_state<OwnedState, Command>(
+            || init_state(out),
+            handle
+        );
+    });
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(file, "actor-escape")?;
+        return Ok;
+    }));
+
+    Channel<usize> out = must(make_channel<usize>());
+    Actor<Command> actor = must(spawn_inside_scope(out));
+    must(send(&actor, Probe));
+    usize status = must(channel_recv(&out));
+    must(join(&actor));
+    must(channel_close(&out));
+    if (status != 1) {
+        return 1;
+    }
+    return 0;
+}

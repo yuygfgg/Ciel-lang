@@ -1,21 +1,31 @@
 use std::collections::HashMap;
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
-use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
+use crate::types::{
+    META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, STD_RESOURCE_FREE_INTERFACE,
+    STD_RESOURCE_HANDLE_INTERFACE, Ty, unify_ty,
+};
 
 const STD_RESULT_EXPORT: &str = "/std/result";
 const STD_RESULT_CORE_EXPORT: &str = "/std/result/core";
 const STD_ERROR_EXPORT: &str = "/std/error";
 const STD_ERROR_CORE_EXPORT: &str = "/std/error/core";
 const STD_MESSAGE_EXPORT: &str = "/std/message";
+const STD_RESOURCE_EXPORT: &str = "/std/resource";
 const STD_ACTOR_EXPORT: &str = "/std/actor";
 const STD_META_EXPORT: &str = "/std/meta";
 const STD_ASYNC_EXPORT: &str = "/std/async";
 const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
+const STD_ASYNC_IO_EXPORT: &str = "/std/async_io";
+const STD_ASYNC_NET_EXPORT: &str = "/std/async_net";
 const STD_ASYNC_TIME_EXPORT: &str = "/std/async_time";
 
 fn module_export_matches(resolved: &ResolvedProgram, module: ModuleId, export: &str) -> bool {
     resolved.modules[module.0].std_export.as_deref() == Some(export)
+}
+
+pub fn is_std_module(resolved: &ResolvedProgram, module: ModuleId) -> bool {
+    resolved.modules[module.0].std_export.is_some()
 }
 
 fn module_export_matches_any(
@@ -53,6 +63,12 @@ pub fn is_std_result_enum(resolved: &ResolvedProgram, def_id: DefId) -> bool {
             "Result",
             STD_RESULT_CORE_EXPORT,
         )
+}
+
+pub fn is_std_result_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    resolved.defs.iter().any(|def| {
+        is_std_result_enum(resolved, def.id) && nominal_type_name(resolved, def.id) == ty_name
+    })
 }
 
 pub fn module_can_see_std_result(resolved: &ResolvedProgram, module: ModuleId) -> bool {
@@ -124,6 +140,28 @@ pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId)
     is_std_message_interface(resolved, def_id, STD_MESSAGE_CLONE_INTERFACE)
 }
 
+pub fn is_std_resource_interface(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_RESOURCE_EXPORT,
+    )
+}
+
+pub fn is_std_resource_free_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    is_std_resource_interface(resolved, def_id, STD_RESOURCE_FREE_INTERFACE)
+}
+
+pub fn is_std_resource_handle_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    is_std_resource_interface(resolved, def_id, STD_RESOURCE_HANDLE_INTERFACE)
+}
+
 pub fn is_std_actor_function(
     resolved: &ResolvedProgram,
     module: ModuleId,
@@ -131,6 +169,10 @@ pub fn is_std_actor_function(
     expected_name: &str,
 ) -> bool {
     name == expected_name && module_export_matches(resolved, module, STD_ACTOR_EXPORT)
+}
+
+pub fn is_std_actor_type(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    def_matches(resolved, def_id, DefKind::Struct, "Actor", STD_ACTOR_EXPORT)
 }
 
 pub fn is_std_meta_function(
@@ -287,18 +329,76 @@ pub fn is_std_async_task_group_type_name(resolved: &ResolvedProgram, ty_name: &s
     is_std_async_type(resolved, ty_name, StdAsyncType::TaskGroup)
 }
 
+fn is_std_exported_struct_type_name(
+    resolved: &ResolvedProgram,
+    ty_name: &str,
+    export: &str,
+    expected_name: &str,
+) -> bool {
+    let std_match = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && def.kind == DefKind::Struct
+            && module_export_matches(resolved, def.module, export)
+            && nominal_type_name(resolved, def.id) == ty_name
+    });
+    if std_match {
+        return true;
+    }
+    let has_std_def = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && def.kind == DefKind::Struct
+            && module_export_matches(resolved, def.module, export)
+    });
+    let has_user_nominal = resolved.defs.iter().any(|def| {
+        def.name == expected_name
+            && is_nominal_type_def_kind(&def.kind)
+            && !module_export_matches(resolved, def.module, export)
+    });
+    has_std_def && ty_name == expected_name && !has_user_nominal
+}
+
+pub fn is_std_async_resource_runtime_handle_type_name(
+    resolved: &ResolvedProgram,
+    ty_name: &str,
+) -> bool {
+    const ASYNC_IO_HANDLES: &[&str] = &["AsyncFd", "AsyncRead", "AsyncWrite"];
+    const ASYNC_NET_HANDLES: &[&str] = &[
+        "AsyncTcpListener",
+        "AsyncTcpStream",
+        "AsyncTcpReadHalf",
+        "AsyncTcpWriteHalf",
+        "AsyncTcpSplit",
+        "BufferedStreamReader",
+        "AsyncAccept",
+        "AsyncConnect",
+        "AsyncTcpRead",
+        "AsyncTcpWrite",
+        "AsyncBufferedRead",
+    ];
+
+    ASYNC_IO_HANDLES
+        .iter()
+        .any(|name| is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_IO_EXPORT, name))
+        || ASYNC_NET_HANDLES.iter().any(|name| {
+            is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_NET_EXPORT, name)
+        })
+        || is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_TIME_EXPORT, "AsyncSleep")
+}
+
 pub fn is_std_async_runtime_handle_ty(resolved: &ResolvedProgram, ty: &Ty) -> bool {
     let Ty::Named { name, args } = ty else {
         return false;
     };
-    args.len() == 1
-        && (is_std_async_future_type_name(resolved, name)
+    if args.len() == 1 {
+        return is_std_async_future_type_name(resolved, name)
             || is_std_async_task_type_name(resolved, name)
             || is_std_async_sender_type_name(resolved, name)
             || is_std_async_receiver_type_name(resolved, name)
             || is_std_async_send_permit_type_name(resolved, name)
             || is_std_async_channel_pair_type_name(resolved, name)
-            || is_std_async_task_group_type_name(resolved, name))
+            || is_std_async_task_group_type_name(resolved, name);
+    }
+    args.is_empty() && is_std_async_resource_runtime_handle_type_name(resolved, name)
 }
 
 pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {

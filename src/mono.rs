@@ -634,7 +634,7 @@ impl MonoContext {
             } => {
                 let inner = self.rewrite_expr(*inner)?;
                 if matches!(propagation, crate::thir::TryPropagation::ErrorBox)
-                    && let Some((_, err_ty)) = result_args(&inner.ty)
+                    && let Some((_, err_ty)) = result_args(&self.checked.resolved, &inner.ty)
                 {
                     self.mark_dynamic_impls(&std_error_trait_ty(), &err_ty);
                 }
@@ -1077,11 +1077,11 @@ impl MonoContext {
     }
 }
 
-fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
+fn result_args<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<(&'a Ty, &'a Ty)> {
     let Ty::Named { name, args } = ty else {
         return None;
     };
-    if name == "Result" && args.len() == 2 {
+    if args.len() == 2 && std_id::is_std_result_type_name(resolved, name) {
         Some((&args[0], &args[1]))
     } else {
         None
@@ -1377,7 +1377,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(expr);
                 if matches!(propagation, crate::thir::TryPropagation::ErrorBox) {
                     self.collect_ty(&std_error_trait_ty());
-                    if let Some((_, err_ty)) = result_args(&expr.ty) {
+                    if let Some((_, err_ty)) = result_args(&self.checked.resolved, &expr.ty) {
                         self.collect_ty(err_ty);
                     }
                 }

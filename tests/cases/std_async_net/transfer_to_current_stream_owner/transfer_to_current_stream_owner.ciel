@@ -1,0 +1,106 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 1
+
+import /std/async as async;
+import /std/async_net as anet;
+import /std/io as io;
+import /std/message;
+import /std/net as net;
+import /std/resource as resource;
+import /std/result;
+
+struct HandleParts {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+unsafe impl clone_message(*const HandleParts value) {
+    return Ok(*value);
+}
+
+bool addr_is_err(Result<net::SocketAddr, Error> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+HandleParts parts_from_handle(resource::Handle handle) {
+    return {
+        owner_id: unsafe { handle.owner_id },
+        resource_id: unsafe { handle.resource_id },
+        generation: unsafe { handle.generation },
+    };
+}
+
+HandleParts parts_from_stream(anet::AsyncTcpStream stream) {
+    return parts_from_handle(stream.handle);
+}
+
+anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
+    resource::Handle handle = unsafe {
+        {
+            owner_id: parts.owner_id,
+            resource_id: parts.resource_id,
+            generation: parts.generation,
+        }
+    };
+    return { handle: handle };
+}
+
+async Result<void, Error> accept_once(
+    anet::AsyncTcpListener listener,
+    async::Sender<HandleParts> sender
+) {
+    anet::AsyncTcpStream stream = await anet::accept(listener)?;
+    anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
+    await async::send<HandleParts>(sender, parts_from_stream(moved))?;
+    return Ok;
+}
+
+async Result<void, Error> adopt_in_task(anet::AsyncTcpStream stream) {
+    anet::AsyncTcpStream owned = resource::transfer_to_current(&stream)?;
+    _ keep_until_return = owned;
+    return Ok;
+}
+
+async Result<usize, Error> drive() {
+    anet::AsyncTcpListener listener =
+        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    net::SocketAddr bound = anet::listener_addr(listener)?;
+    async::ChannelPair<HandleParts> pair =
+        async::channel<HandleParts>(1)?;
+    async::Task<void> server =
+        async::spawn<void>(accept_once(listener, pair.sender))?;
+
+    anet::AsyncTcpStream client = await anet::connect(bound)?;
+    anet::AsyncTcpStream accepted =
+        stream_from_parts(await async::recv<HandleParts>(pair.receiver)?);
+    await server?;
+
+    anet::AsyncTcpStream old_accepted = accepted;
+    async::Task<void> adopted = async::spawn<void>(adopt_in_task(accepted))?;
+    await adopted?;
+
+    if (!addr_is_err(anet::stream_peer_addr(old_accepted))) {
+        return Err(code_error(91));
+    }
+
+    anet::Bytes eof = await anet::read(client, 1)?;
+    if (anet::bytes_len(eof) != 0) {
+        return Err(code_error(92));
+    }
+
+    anet::close_stream(client)?;
+    anet::close_listener(listener)?;
+    return Ok(1);
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive()))));
+    return 0;
+}

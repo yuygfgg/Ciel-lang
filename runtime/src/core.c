@@ -12,6 +12,8 @@ void ciel_runtime_init(void) {
 #if defined(GC_THREADS)
     GC_allow_register_threads();
 #endif
+    ciel_resource_runtime_init();
+    atexit(ciel_resource_close_root_at_shutdown);
 }
 
 void ciel_runtime_set_args(int argc, char **argv) {

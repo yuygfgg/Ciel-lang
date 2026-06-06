@@ -4,6 +4,7 @@ import /std/io as io;
 import /std/meta as meta;
 import /std/net as net;
 import /std/result;
+import /std/resource as resource;
 import ./cli as cli;
 import ./protocol/auth as auth;
 import ./protocol/codec as tunnel_codec;
@@ -55,7 +56,8 @@ async Result<void, Error> server_control_accept_loop(
 ) {
     while (true) {
         anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        await send_server_event(events, ServerControlAccepted(stream))?;
+        anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
+        await send_server_event(events, ServerControlAccepted(moved))?;
     }
     return Ok;
 }
@@ -66,7 +68,8 @@ async Result<void, Error> server_public_accept_loop(
 ) {
     while (true) {
         anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        await send_server_event(events, ServerPublicAccepted(stream))?;
+        anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
+        await send_server_event(events, ServerPublicAccepted(moved))?;
     }
     return Ok;
 }
@@ -227,10 +230,8 @@ async Result<ServerControlState, Error> accept_server_control(
 
 void server_stream_cleanup(
     u32 stream_id,
-    anet::AsyncTcpStream client,
     ServerControlState control
 ) {
-    rt::close_stream_silent(client);
     rt::stream_registry_remove_close(control.streams, stream_id);
 }
 
@@ -241,7 +242,7 @@ async Result<void, Error> server_stream_worker(
     async::Receiver<meta::Repr<rt::StreamEvent>> receiver,
     async::Sender<meta::Repr<rt::StreamEvent>> local_events
 ) {
-    defer server_stream_cleanup(stream_id, client, control);
+    defer server_stream_cleanup(stream_id, control);
 
     bool @remote_write_closed = false;
     bool @local_write_closed = false;
@@ -345,6 +346,7 @@ async Result<void, Error> start_server_stream(
     u32 stream_id,
     anet::AsyncTcpStream client
 ) {
+    anet::AsyncTcpStream owned_client = resource::transfer_to_current(&client)?;
     _ events = async::channel<meta::Repr<rt::StreamEvent>>(64)?;
     rt::stream_registry_insert(control.streams, stream_id, events.sender)?;
 
@@ -354,18 +356,16 @@ async Result<void, Error> start_server_stream(
             {}
         case Err(_):
             rt::stream_registry_remove_close(control.streams, stream_id)?;
-            rt::close_stream_silent(client);
             return Ok;
     }
 
-    _ worker = async::spawn<void>(server_stream_worker(
+    return await server_stream_worker(
         stream_id,
-        client,
+        owned_client,
         control,
         events.receiver,
         events.sender
-    ))?;
-    return Ok;
+    );
 }
 
 Result<void, Error> close_active_control(*ServerActiveControl active, u32 epoch) {

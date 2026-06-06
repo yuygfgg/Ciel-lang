@@ -7,21 +7,24 @@ import /std/lib;
 import /std/async_io as aio;
 import /std/env as env;
 
-Result<Channel<usize>, Error> handle(Channel<usize> out, aio::AsyncWrite op) {
-    usize written = aio::finish_write(op)?;
-    channel_send(&out, written)?;
+Result<Channel<usize>, Error> handle(Channel<usize> out, usize expected_written) {
+    channel_send(&out, expected_written)?;
     return Ok(out);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
     Channel<usize> done = must(make_channel<usize>());
-    Actor<aio::AsyncWrite> actor = must(spawn_actor_cloned<Channel<usize>, aio::AsyncWrite>(done, handle));
+    Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(done, handle));
     aio::AsyncFd fd = must(aio::create_async(path));
     aio::Bytes bytes = must(aio::bytes_copy([116 as u8, 101 as u8, 115 as u8, 116 as u8]));
     aio::AsyncWrite op = must(aio::write_bytes_async(fd, bytes));
-    must(aio::notify_write_done(&op, &actor, op));
+    must(aio::notify_write_done(&op, &actor, 4));
     usize written = must(channel_recv(&done));
+    usize finished = must(aio::finish_write(op));
+    if (finished != written) {
+        return 1;
+    }
     must(print_value(written));
     must(join(&actor));
     must(aio::close_async(fd));

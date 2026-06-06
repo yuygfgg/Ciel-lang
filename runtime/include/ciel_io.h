@@ -13,15 +13,17 @@ int ciel_io_open_read(const char* path);
 int ciel_io_open_write(const char* path);
 int ciel_io_open_append(const char* path);
 
-int32_t ciel_file_open(int32_t mode, const char* path, uint32_t* out_slot,
-                       uint32_t* out_generation);
-int32_t ciel_file_close(uint32_t slot, uint32_t generation);
-ssize_t ciel_file_read(uint32_t slot, uint32_t generation, void* buf,
-                       size_t count);
-ssize_t ciel_file_write(uint32_t slot, uint32_t generation, const void* buf,
-                        size_t count);
-int32_t ciel_file_stdout(uint32_t* out_slot, uint32_t* out_generation);
-int32_t ciel_file_stderr(uint32_t* out_slot, uint32_t* out_generation);
+int32_t ciel_file_open(int32_t mode, const char* path, uint64_t* out_owner,
+                       uint64_t* out_resource, uint64_t* out_generation);
+int32_t ciel_file_close(uint64_t owner, uint64_t resource, uint64_t generation);
+ssize_t ciel_file_read(uint64_t owner, uint64_t resource, uint64_t generation,
+                       void* buf, size_t count);
+ssize_t ciel_file_write(uint64_t owner, uint64_t resource, uint64_t generation,
+                        const void* buf, size_t count);
+int32_t ciel_file_stdout(uint64_t* out_owner, uint64_t* out_resource,
+                         uint64_t* out_generation);
+int32_t ciel_file_stderr(uint64_t* out_owner, uint64_t* out_resource,
+                         uint64_t* out_generation);
 
 CielBytes* ciel_bytes_copy(const uint8_t* ptr, size_t len);
 CielBytes* ciel_bytes_copy_chars(const char* ptr, size_t len);

@@ -1849,7 +1849,7 @@ impl<'a> CGenerator<'a> {
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr_dynamic(expr);
                 if matches!(propagation, TryPropagation::ErrorBox)
-                    && let Some((_, err_ty)) = result_args(&expr.ty)
+                    && let Some((_, err_ty)) = result_args(&self.program.checked.resolved, &expr.ty)
                 {
                     let dyn_ty = std_error_trait_ty();
                     self.collect_ty_dynamic(&dyn_ty);
@@ -2711,7 +2711,7 @@ impl<'a> CGenerator<'a> {
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr_slices(expr);
                 if matches!(propagation, TryPropagation::ErrorBox)
-                    && let Some((_, err_ty)) = result_args(&expr.ty)
+                    && let Some((_, err_ty)) = result_args(&self.program.checked.resolved, &expr.ty)
                 {
                     self.collect_ty_slice(&std_error_trait_ty());
                     self.collect_ty_slice(err_ty);
@@ -7873,7 +7873,7 @@ impl<'a> CGenerator<'a> {
         if let Some(out_raw) = self.current_async_output.clone() {
             self.line_indent(indent, &format!("if ({rc} != 0) {{"));
             self.emit_all_defers(indent + 1);
-            if result_args(&return_ty).is_some() {
+            if result_args(&self.program.checked.resolved, &return_ty).is_some() {
                 let layout = self.result_layout(&return_ty, span)?;
                 let err_value =
                     self.result_err_from_error_literal(&layout, &self.error_code_literal(rc));
@@ -8177,7 +8177,9 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let (output, rc) = self.emit_future_run(future, &expr.ty, "block_on", indent)?;
-        if result_args(&expr.ty).is_some() && !expr.ty.is_erased_value() {
+        if result_args(&self.program.checked.resolved, &expr.ty).is_some()
+            && !expr.ty.is_erased_value()
+        {
             self.line_indent(indent, &format!("if ({rc} != 0) {{"));
             let layout = self.result_layout(&expr.ty, expr.span)?;
             let err_value =
@@ -9263,9 +9265,44 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
 
         let init_src = self.emit_temp_value("actor_state_init", init, indent)?;
+        let actor_owner = self.next_temp("actor_owner");
+        let actor_owner_rc = self.next_temp("actor_owner_rc");
+        self.line_indent(indent, &format!("CielResourceOwner *{actor_owner} = NULL;"));
+        self.line_indent(indent, &format!("int32_t {actor_owner_rc} = 0;"));
+        self.line_indent(
+            indent,
+            &format!(
+                "{actor_owner} = ciel_resource_owner_new_child(ciel_resource_current_owner_or_root(), ciel_resource_default_limits(), &{actor_owner_rc});"
+            ),
+        );
+        self.line_indent(indent, &format!("if ({actor_owner} == NULL) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!("if ({actor_owner_rc} == 0) {actor_owner_rc} = ENOMEM;"),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result_temp} = {};",
+                self.result_err_from_error_literal(
+                    &result_layout,
+                    &self.error_code_literal(&actor_owner_rc)
+                )
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
         let init_call = self.callable_call_expr(&init.ty, &init_src, &[])?;
         let init_result_ty = std_result_ty(state_ty.clone(), std_error_ty());
+        let init_result_layout = self.result_layout(&init_result_ty, expr.span)?;
         let init_result = self.next_temp("actor_state_init_result");
+        let previous_owner = self.next_temp("actor_previous_owner");
+        self.line_indent(
+            indent,
+            &format!(
+                "CielResourceOwner *{previous_owner} = ciel_resource_set_current_owner({actor_owner});"
+            ),
+        );
         self.line_indent(
             indent,
             &format!(
@@ -9273,15 +9310,30 @@ impl<'a> CGenerator<'a> {
                 self.c_decl(&init_result_ty, &init_result)
             ),
         );
-        self.emit_clone_error_jump(
-            &result_temp,
-            &result_layout,
-            &init_result,
-            state_ty,
-            &done_label,
+        self.line_indent(
             indent,
-            expr.span,
-        )?;
+            &format!("ciel_resource_restore_current_owner({previous_owner});"),
+        );
+        self.line_indent(
+            indent,
+            &format!(
+                "if ({init_result}.tag == {}) {{",
+                init_result_layout.err_index
+            ),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!("(void)ciel_resource_owner_close({actor_owner});"),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result_temp} = {};",
+                self.result_err_literal(&result_layout, &init_result_layout, &init_result)
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
 
         let state_box = self.next_temp("actor_state_box");
         self.line_indent(
@@ -9291,7 +9343,6 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(state_ty, &state_box)
             ),
         );
-        let init_result_layout = self.result_layout(&init_result_ty, expr.span)?;
         self.emit_value_copy(
             &format!("(*{state_box})"),
             &format!("{init_result}.as.{}._0", init_result_layout.ok_name),
@@ -9306,15 +9357,30 @@ impl<'a> CGenerator<'a> {
             indent,
             expr.span,
         )?;
-        self.emit_clone_error_jump(
-            &result_temp,
-            &result_layout,
-            &handler_clone,
-            handler_ty,
-            &done_label,
-            indent,
+        let handler_clone_layout = self.result_layout(
+            &std_result_ty(handler_ty.clone(), std_error_ty()),
             expr.span,
         )?;
+        self.line_indent(
+            indent,
+            &format!(
+                "if ({handler_clone}.tag == {}) {{",
+                handler_clone_layout.err_index
+            ),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!("(void)ciel_resource_owner_close({actor_owner});"),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result_temp} = {};",
+                self.result_err_literal(&result_layout, &handler_clone_layout, &handler_clone)
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
         let handler_box = self.next_temp("actor_handler_box");
         self.line_indent(
             indent,
@@ -9323,16 +9389,37 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(handler_ty, &handler_box)
             ),
         );
-        let handler_clone_layout = self.result_layout(
-            &std_result_ty(handler_ty.clone(), std_error_ty()),
-            expr.span,
-        )?;
         self.emit_value_copy(
             &format!("(*{handler_box})"),
             &format!("{handler_clone}.as.{}._0", handler_clone_layout.ok_name),
             handler_ty,
             indent,
         );
+
+        let actor_owner_detach_rc = self.next_temp("actor_owner_detach_rc");
+        self.line_indent(
+            indent,
+            &format!(
+                "int32_t {actor_owner_detach_rc} = ciel_resource_owner_detach({actor_owner});"
+            ),
+        );
+        self.line_indent(indent, &format!("if ({actor_owner_detach_rc} != 0) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!("(void)ciel_resource_owner_close({actor_owner});"),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result_temp} = {};",
+                self.result_err_from_error_literal(
+                    &result_layout,
+                    &self.error_code_literal(&actor_owner_detach_rc)
+                )
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
 
         let raw_actor = self.next_temp("actor_raw");
         let rc = self.next_temp("actor_rc");
@@ -9342,10 +9429,14 @@ impl<'a> CGenerator<'a> {
         self.line_indent(
             indent,
             &format!(
-                "int32_t {rc} = ciel_actor_spawn(&{raw_actor}, (void *){state_box}, (void *){handler_box}, {dispatch});"
+                "int32_t {rc} = ciel_actor_spawn_with_owner(&{raw_actor}, (void *){state_box}, (void *){handler_box}, {dispatch}, {actor_owner});"
             ),
         );
         self.line_indent(indent, &format!("if ({rc} != 0) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!("(void)ciel_resource_owner_close({actor_owner});"),
+        );
         self.line_indent(
             indent + 1,
             &format!(
@@ -10519,9 +10610,10 @@ impl<'a> CGenerator<'a> {
                 indent,
             );
         }
-        if let (Some((source_ok, source_err)), Some((target_ok, target_err))) =
-            (result_args(source_ty), result_args(target_ty))
-            && source_err == target_err
+        if let (Some((source_ok, source_err)), Some((target_ok, target_err))) = (
+            result_args(&self.program.checked.resolved, source_ty),
+            result_args(&self.program.checked.resolved, target_ty),
+        ) && source_err == target_err
         {
             let source_layout = self.result_layout(source_ty, witness.span)?;
             let target_layout = self.result_layout(target_ty, witness.span)?;
@@ -12787,11 +12879,14 @@ fn c_function_pointer_name(name: &str, pointer_const: bool) -> String {
     }
 }
 
-fn result_args(ty: &Ty) -> Option<(&Ty, &Ty)> {
+fn result_args<'a>(
+    resolved: &crate::resolve::ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<(&'a Ty, &'a Ty)> {
     let Ty::Named { name, args } = ty else {
         return None;
     };
-    if name == "Result" && args.len() == 2 {
+    if args.len() == 2 && std_id::is_std_result_type_name(resolved, name) {
         Some((&args[0], &args[1]))
     } else {
         None

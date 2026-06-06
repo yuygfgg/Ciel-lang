@@ -1,113 +1,32 @@
 #include "internal.h"
 
-typedef enum {
-    CIEL_NET_SLOT_FREE = 0,
-    CIEL_NET_SLOT_LISTENER = 1,
-    CIEL_NET_SLOT_STREAM = 2,
-} CielNetSlotKind;
-
-typedef struct CielNetSlot {
-    int fd;
-    uint32_t generation;
-    CielNetSlotKind kind;
-    uint32_t next_free;
-} CielNetSlot;
-
-static pthread_mutex_t ciel_net_table_mutex = PTHREAD_MUTEX_INITIALIZER;
-static CielNetSlot *ciel_net_slots = NULL;
-static uint32_t ciel_net_slot_count = 0;
-static uint32_t ciel_net_slot_cap = 0;
-static uint32_t ciel_net_free_head = UINT32_MAX;
-
-static int32_t ciel_net_table_grow(void) {
-    uint32_t old_cap = ciel_net_slot_cap;
-    uint32_t new_cap = old_cap == 0 ? 16 : old_cap * 2;
-    CielNetSlot *next = (CielNetSlot *)GC_MALLOC_UNCOLLECTABLE(
-        sizeof(CielNetSlot) * (size_t)new_cap);
-    if (next == NULL)
-        return ENOMEM;
-    memset(next, 0, sizeof(CielNetSlot) * (size_t)new_cap);
-    if (ciel_net_slots != NULL) {
-        memcpy(next, ciel_net_slots, sizeof(CielNetSlot) * (size_t)old_cap);
-        GC_FREE(ciel_net_slots);
-    }
-    ciel_net_slots = next;
-    ciel_net_slot_cap = new_cap;
-    return 0;
+static CielResourceHandle
+ciel_net_handle(uint64_t owner_id, uint64_t resource_id, uint64_t generation) {
+    CielResourceHandle handle;
+    handle.owner_id = owner_id;
+    handle.resource_id = resource_id;
+    handle.generation = generation;
+    return handle;
 }
 
-static int32_t ciel_net_slot_insert_locked(int fd, CielNetSlotKind kind,
-                                           uint32_t *out_slot,
-                                           uint32_t *out_generation) {
-    uint32_t slot;
-    if (ciel_net_free_head != UINT32_MAX) {
-        slot = ciel_net_free_head;
-        ciel_net_free_head = ciel_net_slots[slot].next_free;
-    } else {
-        if (ciel_net_slot_count == ciel_net_slot_cap) {
-            int32_t rc = ciel_net_table_grow();
-            if (rc != 0)
-                return rc;
-        }
-        slot = ciel_net_slot_count++;
-        if (ciel_net_slots[slot].generation == 0)
-            ciel_net_slots[slot].generation = 1;
-    }
-    ciel_net_slots[slot].fd = fd;
-    ciel_net_slots[slot].kind = kind;
-    ciel_net_slots[slot].next_free = UINT32_MAX;
-    *out_slot = slot;
-    *out_generation = ciel_net_slots[slot].generation;
-    return 0;
-}
-
-static int32_t ciel_net_resolve_locked(uint32_t slot, uint32_t generation,
-                                       CielNetSlotKind kind,
-                                       CielNetSlot **out) {
-    if (out == NULL)
+static int32_t ciel_net_handle_out(CielResourceHandle handle,
+                                   uint64_t *out_owner_id,
+                                   uint64_t *out_resource_id,
+                                   uint64_t *out_generation) {
+    if (out_owner_id == NULL || out_resource_id == NULL ||
+        out_generation == NULL)
         return EINVAL;
-    if (slot >= ciel_net_slot_count)
-        return EBADF;
-    CielNetSlot *entry = &ciel_net_slots[slot];
-    if (entry->generation != generation || entry->kind != kind)
-        return EBADF;
-    *out = entry;
+    *out_owner_id = handle.owner_id;
+    *out_resource_id = handle.resource_id;
+    *out_generation = handle.generation;
     return 0;
 }
 
-static int32_t ciel_net_fd_snapshot(uint32_t slot, uint32_t generation,
-                                    CielNetSlotKind kind, int *fd) {
-    if (fd == NULL)
-        return EINVAL;
-    pthread_mutex_lock(&ciel_net_table_mutex);
-    CielNetSlot *entry = NULL;
-    int32_t rc = ciel_net_resolve_locked(slot, generation, kind, &entry);
-    if (rc == 0)
-        *fd = entry->fd;
-    pthread_mutex_unlock(&ciel_net_table_mutex);
-    return rc;
-}
-
-static int32_t ciel_net_slot_close(uint32_t slot, uint32_t generation,
-                                   CielNetSlotKind kind) {
-    pthread_mutex_lock(&ciel_net_table_mutex);
-    CielNetSlot *entry = NULL;
-    int32_t rc = ciel_net_resolve_locked(slot, generation, kind, &entry);
-    if (rc != 0) {
-        pthread_mutex_unlock(&ciel_net_table_mutex);
-        return rc;
-    }
-    int fd = entry->fd;
-    entry->fd = -1;
-    entry->kind = CIEL_NET_SLOT_FREE;
-    entry->generation =
-        entry->generation == UINT32_MAX ? 1 : entry->generation + 1;
-    entry->next_free = ciel_net_free_head;
-    ciel_net_free_head = slot;
-    pthread_mutex_unlock(&ciel_net_table_mutex);
-    if (close(fd) != 0)
-        return errno == 0 ? EIO : errno;
-    return 0;
+static int32_t ciel_net_fd_snapshot(uint64_t owner_id, uint64_t resource_id,
+                                    uint64_t generation, CielResourceKind kind,
+                                    int *fd) {
+    return ciel_resource_fd_snapshot(
+        ciel_net_handle(owner_id, resource_id, generation), kind, fd);
 }
 
 static int32_t ciel_net_gai_error(int rc) {
@@ -383,9 +302,10 @@ int32_t ciel_net_addr_write(CielSocketAddr *addr, char *out, size_t cap,
     return 0;
 }
 
-int32_t ciel_net_tcp_listen(CielSocketAddr *addr, uint32_t *out_slot,
-                            uint32_t *out_generation) {
-    if (addr == NULL || out_slot == NULL || out_generation == NULL)
+int32_t ciel_net_tcp_listen(CielSocketAddr *addr, uint64_t *out_owner,
+                            uint64_t *out_resource, uint64_t *out_generation) {
+    if (addr == NULL || out_owner == NULL || out_resource == NULL ||
+        out_generation == NULL)
         return EINVAL;
     struct sockaddr *sa = (struct sockaddr *)&addr->storage;
     int fd = ciel_net_make_socket(sa);
@@ -403,23 +323,25 @@ int32_t ciel_net_tcp_listen(CielSocketAddr *addr, uint32_t *out_slot,
         close(fd);
         return err;
     }
-    pthread_mutex_lock(&ciel_net_table_mutex);
-    int32_t rc = ciel_net_slot_insert_locked(fd, CIEL_NET_SLOT_LISTENER,
-                                             out_slot, out_generation);
-    pthread_mutex_unlock(&ciel_net_table_mutex);
+    CielResourceHandle handle;
+    int32_t rc = ciel_resource_register_fd(CIEL_RESOURCE_KIND_TCP_LISTENER, fd,
+                                           0, &handle);
     if (rc != 0)
         close(fd);
-    return rc;
+    return rc == 0 ? ciel_net_handle_out(handle, out_owner, out_resource,
+                                         out_generation)
+                   : rc;
 }
 
-int32_t ciel_net_tcp_accept(uint32_t listener_slot,
-                            uint32_t listener_generation, uint32_t *out_slot,
-                            uint32_t *out_generation) {
-    if (out_slot == NULL || out_generation == NULL)
+int32_t ciel_net_tcp_accept(uint64_t listener_owner, uint64_t listener_resource,
+                            uint64_t listener_generation, uint64_t *out_owner,
+                            uint64_t *out_resource, uint64_t *out_generation) {
+    if (out_owner == NULL || out_resource == NULL || out_generation == NULL)
         return EINVAL;
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(listener_slot, listener_generation,
-                                      CIEL_NET_SLOT_LISTENER, &fd);
+    int32_t rc = ciel_net_fd_snapshot(listener_owner, listener_resource,
+                                      listener_generation,
+                                      CIEL_RESOURCE_KIND_TCP_LISTENER, &fd);
     if (rc != 0)
         return rc;
     int accepted;
@@ -432,13 +354,14 @@ int32_t ciel_net_tcp_accept(uint32_t listener_slot,
     int one = 1;
     (void)setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof(one));
 #endif
-    pthread_mutex_lock(&ciel_net_table_mutex);
-    rc = ciel_net_slot_insert_locked(accepted, CIEL_NET_SLOT_STREAM, out_slot,
-                                     out_generation);
-    pthread_mutex_unlock(&ciel_net_table_mutex);
+    CielResourceHandle handle;
+    rc = ciel_resource_register_fd(CIEL_RESOURCE_KIND_TCP_STREAM, accepted, 0,
+                                   &handle);
     if (rc != 0)
         close(accepted);
-    return rc;
+    return rc == 0 ? ciel_net_handle_out(handle, out_owner, out_resource,
+                                         out_generation)
+                   : rc;
 }
 
 static int32_t ciel_net_connect_fd(const struct sockaddr *addr, socklen_t len,
@@ -457,33 +380,39 @@ static int32_t ciel_net_connect_fd(const struct sockaddr *addr, socklen_t len,
     return 0;
 }
 
-static int32_t ciel_net_insert_connected_fd(int fd, uint32_t *out_slot,
-                                            uint32_t *out_generation) {
-    pthread_mutex_lock(&ciel_net_table_mutex);
-    int32_t rc = ciel_net_slot_insert_locked(fd, CIEL_NET_SLOT_STREAM, out_slot,
-                                             out_generation);
-    pthread_mutex_unlock(&ciel_net_table_mutex);
+static int32_t ciel_net_insert_connected_fd(int fd, uint64_t *out_owner,
+                                            uint64_t *out_resource,
+                                            uint64_t *out_generation) {
+    CielResourceHandle handle;
+    int32_t rc = ciel_resource_register_fd(CIEL_RESOURCE_KIND_TCP_STREAM, fd, 0,
+                                           &handle);
     if (rc != 0)
         close(fd);
-    return rc;
+    return rc == 0 ? ciel_net_handle_out(handle, out_owner, out_resource,
+                                         out_generation)
+                   : rc;
 }
 
-int32_t ciel_net_tcp_connect(CielSocketAddr *addr, uint32_t *out_slot,
-                             uint32_t *out_generation) {
-    if (addr == NULL || out_slot == NULL || out_generation == NULL)
+int32_t ciel_net_tcp_connect(CielSocketAddr *addr, uint64_t *out_owner,
+                             uint64_t *out_resource, uint64_t *out_generation) {
+    if (addr == NULL || out_owner == NULL || out_resource == NULL ||
+        out_generation == NULL)
         return EINVAL;
     int fd = -1;
     int32_t rc =
         ciel_net_connect_fd((struct sockaddr *)&addr->storage, addr->len, &fd);
     if (rc != 0)
         return rc;
-    return ciel_net_insert_connected_fd(fd, out_slot, out_generation);
+    return ciel_net_insert_connected_fd(fd, out_owner, out_resource,
+                                        out_generation);
 }
 
 int32_t ciel_net_tcp_connect_host(const char *host, size_t host_len,
-                                  uint16_t port, uint32_t *out_slot,
-                                  uint32_t *out_generation) {
-    if (host == NULL || out_slot == NULL || out_generation == NULL)
+                                  uint16_t port, uint64_t *out_owner,
+                                  uint64_t *out_resource,
+                                  uint64_t *out_generation) {
+    if (host == NULL || out_owner == NULL || out_resource == NULL ||
+        out_generation == NULL)
         return EINVAL;
     char *host_c = ciel_cstr_from_slice(host, host_len);
     char service[6];
@@ -507,7 +436,8 @@ int32_t ciel_net_tcp_connect_host(const char *host, size_t host_len,
         int fd = -1;
         last = ciel_net_connect_fd(it->ai_addr, it->ai_addrlen, &fd);
         if (last == 0) {
-            last = ciel_net_insert_connected_fd(fd, out_slot, out_generation);
+            last = ciel_net_insert_connected_fd(fd, out_owner, out_resource,
+                                                out_generation);
             freeaddrinfo(results);
             return last;
         }
@@ -516,15 +446,17 @@ int32_t ciel_net_tcp_connect_host(const char *host, size_t host_len,
     return last;
 }
 
-intptr_t ciel_net_tcp_read(uint32_t stream_slot, uint32_t stream_generation,
-                           void *buf, size_t count) {
+intptr_t ciel_net_tcp_read(uint64_t stream_owner, uint64_t stream_resource,
+                           uint64_t stream_generation, void *buf,
+                           size_t count) {
     if (buf == NULL && count > 0) {
         errno = EINVAL;
         return -1;
     }
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0) {
         errno = rc;
         return -1;
@@ -536,15 +468,17 @@ intptr_t ciel_net_tcp_read(uint32_t stream_slot, uint32_t stream_generation,
     return (intptr_t)n;
 }
 
-intptr_t ciel_net_tcp_write(uint32_t stream_slot, uint32_t stream_generation,
-                            const void *buf, size_t count) {
+intptr_t ciel_net_tcp_write(uint64_t stream_owner, uint64_t stream_resource,
+                            uint64_t stream_generation, const void *buf,
+                            size_t count) {
     if (buf == NULL && count > 0) {
         errno = EINVAL;
         return -1;
     }
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0) {
         errno = rc;
         return -1;
@@ -561,11 +495,13 @@ intptr_t ciel_net_tcp_write(uint32_t stream_slot, uint32_t stream_generation,
     return (intptr_t)n;
 }
 
-int32_t ciel_net_tcp_shutdown_read(uint32_t stream_slot,
-                                   uint32_t stream_generation) {
+int32_t ciel_net_tcp_shutdown_read(uint64_t stream_owner,
+                                   uint64_t stream_resource,
+                                   uint64_t stream_generation) {
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0)
         return rc;
     if (shutdown(fd, SHUT_RD) != 0)
@@ -573,11 +509,13 @@ int32_t ciel_net_tcp_shutdown_read(uint32_t stream_slot,
     return 0;
 }
 
-int32_t ciel_net_tcp_shutdown_write(uint32_t stream_slot,
-                                    uint32_t stream_generation) {
+int32_t ciel_net_tcp_shutdown_write(uint64_t stream_owner,
+                                    uint64_t stream_resource,
+                                    uint64_t stream_generation) {
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0)
         return rc;
     if (shutdown(fd, SHUT_WR) != 0)
@@ -585,11 +523,12 @@ int32_t ciel_net_tcp_shutdown_write(uint32_t stream_slot,
     return 0;
 }
 
-int32_t ciel_net_tcp_shutdown(uint32_t stream_slot,
-                              uint32_t stream_generation) {
+int32_t ciel_net_tcp_shutdown(uint64_t stream_owner, uint64_t stream_resource,
+                              uint64_t stream_generation) {
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0)
         return rc;
     if (shutdown(fd, SHUT_RDWR) != 0)
@@ -597,25 +536,29 @@ int32_t ciel_net_tcp_shutdown(uint32_t stream_slot,
     return 0;
 }
 
-int32_t ciel_net_tcp_close(uint32_t stream_slot, uint32_t stream_generation) {
-    return ciel_net_slot_close(stream_slot, stream_generation,
-                               CIEL_NET_SLOT_STREAM);
+int32_t ciel_net_tcp_close(uint64_t stream_owner, uint64_t stream_resource,
+                           uint64_t stream_generation) {
+    return ciel_resource_close(
+        ciel_net_handle(stream_owner, stream_resource, stream_generation));
 }
 
-int32_t ciel_net_listener_close(uint32_t listener_slot,
-                                uint32_t listener_generation) {
-    return ciel_net_slot_close(listener_slot, listener_generation,
-                               CIEL_NET_SLOT_LISTENER);
+int32_t ciel_net_listener_close(uint64_t listener_owner,
+                                uint64_t listener_resource,
+                                uint64_t listener_generation) {
+    return ciel_resource_close(ciel_net_handle(
+        listener_owner, listener_resource, listener_generation));
 }
 
-int32_t ciel_net_listener_addr(uint32_t listener_slot,
-                               uint32_t listener_generation,
+int32_t ciel_net_listener_addr(uint64_t listener_owner,
+                               uint64_t listener_resource,
+                               uint64_t listener_generation,
                                CielSocketAddr **out) {
     if (out == NULL)
         return EINVAL;
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(listener_slot, listener_generation,
-                                      CIEL_NET_SLOT_LISTENER, &fd);
+    int32_t rc = ciel_net_fd_snapshot(listener_owner, listener_resource,
+                                      listener_generation,
+                                      CIEL_RESOURCE_KIND_TCP_LISTENER, &fd);
     if (rc != 0)
         return rc;
     CielSocketAddr *addr = ciel_net_addr_from_fd(fd, 0, &rc);
@@ -625,14 +568,16 @@ int32_t ciel_net_listener_addr(uint32_t listener_slot,
     return 0;
 }
 
-int32_t ciel_net_stream_local_addr(uint32_t stream_slot,
-                                   uint32_t stream_generation,
+int32_t ciel_net_stream_local_addr(uint64_t stream_owner,
+                                   uint64_t stream_resource,
+                                   uint64_t stream_generation,
                                    CielSocketAddr **out) {
     if (out == NULL)
         return EINVAL;
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0)
         return rc;
     CielSocketAddr *addr = ciel_net_addr_from_fd(fd, 0, &rc);
@@ -642,14 +587,16 @@ int32_t ciel_net_stream_local_addr(uint32_t stream_slot,
     return 0;
 }
 
-int32_t ciel_net_stream_peer_addr(uint32_t stream_slot,
-                                  uint32_t stream_generation,
+int32_t ciel_net_stream_peer_addr(uint64_t stream_owner,
+                                  uint64_t stream_resource,
+                                  uint64_t stream_generation,
                                   CielSocketAddr **out) {
     if (out == NULL)
         return EINVAL;
     int fd = -1;
-    int32_t rc = ciel_net_fd_snapshot(stream_slot, stream_generation,
-                                      CIEL_NET_SLOT_STREAM, &fd);
+    int32_t rc =
+        ciel_net_fd_snapshot(stream_owner, stream_resource, stream_generation,
+                             CIEL_RESOURCE_KIND_TCP_STREAM, &fd);
     if (rc != 0)
         return rc;
     CielSocketAddr *addr = ciel_net_addr_from_fd(fd, 1, &rc);

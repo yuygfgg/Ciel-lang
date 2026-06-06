@@ -339,7 +339,7 @@ Async code has the matching form:
 ```ciel
 export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
     Limits limits,
-    async Result<R, Error> |()| body
+    async_core::Future<Result<R, Error>> |()| body
 );
 ```
 
@@ -350,7 +350,7 @@ functions:
 ```ciel
 export Result<Task<Out>, Error> spawn_with_limits<Out: Message>(
     resource::Limits limits,
-    async Result<Out, Error> |()| body
+    async_core::Future<Result<Out, Error>> |()| body
 );
 
 export async Result<R, Error> with_task_group_with_limits<
@@ -358,7 +358,7 @@ export async Result<R, Error> with_task_group_with_limits<
     R: ResourceFree
 >(
     resource::Limits limits,
-    async Result<R, Error> |(*TaskGroup<T>)| body
+    async_core::Future<Result<R, Error>> |(*const TaskGroup<T>)| body
 );
 
 export Result<ActorHandle<A>, Error> spawn_actor_with_limits<A: Actor>(
@@ -491,7 +491,7 @@ that create the destination owner and move selected resources into it:
 ```ciel
 export Result<Task<Out>, Error> spawn_with_resource<Out: Message>(
     File file,
-    async Result<Out, Error> |(File)| body
+    async_core::Future<Result<Out, Error>> |(File)| body
 );
 
 export Result<ActorHandle<A>, Error> spawn_actor_with_resource<A: Actor>(
@@ -587,12 +587,13 @@ Resource scopes need an async form:
 
 ```ciel
 export async Result<R, Error> scoped_async<R: ResourceFree>(
-    async Result<R, Error> |()| body
+    async_core::Future<Result<R, Error>> |()| body
 );
 ```
 
-The exact async closure type syntax may follow the accepted async closure
-surface. The semantics are:
+The API is written in the current closure surface: an `async || { ... }`
+closure has a generated future return value that matches the standard
+`Future<Result<R, Error>> |()|` callable shape. The semantics are:
 
 1. create a child owner;
 2. install it as the current owner for the async body;
@@ -606,12 +607,12 @@ Async resource helpers should mirror blocking scoped helpers:
 ```ciel
 export async Result<R, Error> with_connect<R: ResourceFree>(
     SocketAddr addr,
-    async Result<R, Error> |(AsyncTcpStream)| body
+    async_core::Future<Result<R, Error>> |(AsyncTcpStream)| body
 );
 
 export async Result<R, Error> with_open_read<R: ResourceFree>(
     []const char path,
-    async Result<R, Error> |(AsyncFd)| body
+    async_core::Future<Result<R, Error>> |(AsyncFd)| body
 );
 ```
 
@@ -647,7 +648,7 @@ export async Result<R, Error> with_task_group<
     T: Message,
     R: ResourceFree
 >(
-    async Result<R, Error> |(*TaskGroup<T>)| body
+    async_core::Future<Result<R, Error>> |(*const TaskGroup<T>)| body
 );
 ```
 
@@ -915,7 +916,9 @@ paths.
     `finish_*`, and `cancel_*` naming or an internal adapter namespace. High
     level `await read/connect/sleep` APIs remain the normal user path.
 13. Async closure type spelling for `scoped_async` and async `with_*` helpers
-    follows the accepted async closure surface. This proposal does not introduce
-    a full `AsyncFnOnce` interface hierarchy.
+    uses the current `Future<Result<R, Error>> |(...)|` callable shape. An
+    `async || { ... }` closure is accepted through the standard `Future`
+    compatibility path. This proposal does not introduce a full `AsyncFnOnce`
+    interface hierarchy.
 14. `TaskGroup<T>` does not expose raw owner controls. Owner limits are supplied
     through scoped helper construction or surrounding resource scopes.

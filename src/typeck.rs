@@ -12,15 +12,16 @@ use crate::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET,
         STD_ASYNC_ABORT_FUTURE_INTERFACE, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
-        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
-        aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
-        closure_shape_satisfies, contains_any_generic_name, contains_generic, contains_type_hole,
-        generated_future_output_ty, generated_future_ty, mangle_ty_fragment, map_ty_children,
-        meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
-        retained_closure_proves_capability, std_actor_ty, std_error_ty, std_future_ty,
-        std_meta_repr_marker_ty, std_receiver_ty, std_result_ty, std_send_permit_ty, std_sender_ty,
-        std_task_ty, substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+        STD_RESOURCE_FREE_INTERFACE, STD_RESOURCE_HANDLE_INTERFACE, Ty, aggregate_instance_name,
+        callable_ret_params_ty, closure_instance_satisfies_signature, contains_any_generic_name,
+        contains_generic, contains_type_hole, generated_future_output_ty, generated_future_ty,
+        mangle_ty_fragment, map_ty_children, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
+        pointer_view_can_weaken, receiver_ty_from_value_ty, retained_closure_proves_capability,
+        std_actor_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty, std_receiver_ty,
+        std_result_ty, std_send_permit_ty, std_sender_ty, std_task_ty,
+        substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 
@@ -724,11 +725,6 @@ fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
     }
 }
 
-fn is_std_source_path(path: &std::path::Path) -> bool {
-    path.components()
-        .any(|component| component.as_os_str() == "std")
-}
-
 fn collect_policy_marker_templates(
     modules: &[Module],
     resolved: &ResolvedProgram,
@@ -740,7 +736,7 @@ fn collect_policy_marker_templates(
             let ItemKind::Impl(decl) = &item.kind else {
                 continue;
             };
-            if decl.name.display != interface_name
+            if !impl_targets_std_policy_marker(resolved, decl, interface_name)
                 || !decl.args.is_empty()
                 || decl
                     .generics
@@ -770,6 +766,25 @@ fn collect_policy_marker_templates(
         }
     }
     templates
+}
+
+fn impl_targets_std_policy_marker(
+    resolved: &ResolvedProgram,
+    decl: &ImplDecl,
+    interface_name: &str,
+) -> bool {
+    let NameRefKind::Def(def_id) = decl.name.kind else {
+        return false;
+    };
+    match interface_name {
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE | STD_MESSAGE_THREAD_LOCAL_INTERFACE => {
+            std_id::is_std_message_interface(resolved, def_id, interface_name)
+        }
+        STD_RESOURCE_FREE_INTERFACE | STD_RESOURCE_HANDLE_INTERFACE => {
+            std_id::is_std_resource_interface(resolved, def_id, interface_name)
+        }
+        _ => false,
+    }
 }
 
 pub fn type_check_generic_instance(
@@ -855,6 +870,7 @@ struct TypeChecker {
     visiting_structs: HashSet<String>,
     struct_templates: HashMap<String, StructTemplate>,
     enum_templates: HashMap<String, EnumTemplate>,
+    nominal_type_defs: HashMap<String, DefId>,
     visiting_enums: HashSet<String>,
     variants: HashMap<DefId, VariantSig>,
     interfaces: HashMap<DefId, InterfaceSig>,
@@ -905,6 +921,7 @@ impl TypeChecker {
             visiting_structs: HashSet::new(),
             struct_templates: HashMap::new(),
             enum_templates: HashMap::new(),
+            nominal_type_defs: HashMap::new(),
             visiting_enums: HashSet::new(),
             variants: HashMap::new(),
             interfaces: HashMap::new(),
@@ -957,7 +974,12 @@ impl TypeChecker {
         let mut checked_functions = Vec::new();
 
         let mut modules = self.hir_modules.clone();
-        modules.sort_by_key(|module| (!is_std_source_path(&module.path), module.id.0));
+        modules.sort_by_key(|module| {
+            (
+                !std_id::is_std_module(&self.resolved, module.id),
+                module.id.0,
+            )
+        });
         for module in &modules {
             for item in &module.items {
                 match &item.kind {
@@ -1292,8 +1314,9 @@ impl TypeChecker {
                                     ) else {
                                         continue;
                                     };
-                                    self.opaque_structs
-                                        .insert(nominal_type_name(&self.resolved, def_id));
+                                    let nominal_name = nominal_type_name(&self.resolved, def_id);
+                                    self.nominal_type_defs.insert(nominal_name.clone(), def_id);
+                                    self.opaque_structs.insert(nominal_name);
                                 }
                                 ExternItem::TypeAlias(decl) => {
                                     let Some(def_id) = self.resolved.local_def(
@@ -1353,6 +1376,7 @@ impl TypeChecker {
                         continue;
                     };
                     let nominal_name = nominal_type_name(&self.resolved, def_id);
+                    self.nominal_type_defs.insert(nominal_name.clone(), def_id);
                     if decl.generics.is_empty() {
                         let previous_defer_meta_repr_expansion =
                             std::mem::replace(&mut self.defer_meta_repr_expansion, true);
@@ -1407,6 +1431,8 @@ impl TypeChecker {
                         continue;
                     };
                     let enum_name = nominal_type_name(&self.resolved, enum_def_id);
+                    self.nominal_type_defs
+                        .insert(enum_name.clone(), enum_def_id);
                     let generics = decl
                         .generics
                         .iter()
@@ -3297,11 +3323,13 @@ impl TypeChecker {
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);
         let is_thread_local = self.type_implements_thread_local(&leaf_ty);
-        if root.is_some_and(|root| ty == root) && !is_thread_local {
+        let is_resource_handle = self.type_implements_resource_handle(&leaf_ty);
+        if root.is_some_and(|root| ty == root) && !(is_thread_local || is_resource_handle) {
             return false;
         }
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
+                || is_resource_handle
                 || self.type_implements_capability(
                     STD_MESSAGE_SHARE_HANDLE_INTERFACE,
                     &[],
@@ -3946,7 +3974,12 @@ impl TypeChecker {
 
     fn collect_impls(&mut self, check_concrete_bodies: bool) {
         let mut modules = self.hir_modules.clone();
-        modules.sort_by_key(|module| (!is_std_source_path(&module.path), module.id.0));
+        modules.sort_by_key(|module| {
+            (
+                !std_id::is_std_module(&self.resolved, module.id),
+                module.id.0,
+            )
+        });
         let mut pending_bodies = Vec::new();
         for module in &modules {
             for item in &module.items {
@@ -4001,6 +4034,11 @@ impl TypeChecker {
                 else {
                     continue;
                 };
+                if check_concrete_bodies
+                    && self.resource_handle_message_impl_forbidden(decl.name.span, &analysis)
+                {
+                    continue;
+                }
                 if check_concrete_bodies
                     && self.generic_marker_impl_overlaps_existing(item.span, &analysis)
                 {
@@ -4064,7 +4102,8 @@ impl TypeChecker {
         analysis: &ImplAnalysis,
     ) -> bool {
         if analysis.generics.is_empty()
-            || !self.is_std_message_capability_interface_name(&analysis.interface_name)
+            || !(self.is_std_message_capability_interface_name(&analysis.interface_name)
+                || self.is_std_resource_capability_interface_name(&analysis.interface_name))
         {
             return false;
         }
@@ -4132,6 +4171,33 @@ impl TypeChecker {
             }
         }
         false
+    }
+
+    fn resource_handle_message_impl_forbidden(
+        &mut self,
+        span: crate::span::Span,
+        analysis: &ImplAnalysis,
+    ) -> bool {
+        let is_forbidden_interface = self
+            .is_std_message_clone_interface_name(&analysis.interface_name)
+            || self.is_std_message_share_handle_marker_name(&analysis.interface_name);
+        if !is_forbidden_interface {
+            return false;
+        }
+        let Some(receiver_ty) = analysis.receiver_ty.as_ref() else {
+            return false;
+        };
+        if !self.type_implements_resource_handle(receiver_ty) {
+            return false;
+        }
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "resource handle type `{receiver_ty}` cannot implement `{}`",
+                analysis.interface_name
+            ),
+        ));
+        true
     }
 
     fn push_diagnostic_once(
@@ -8224,24 +8290,20 @@ impl TypeChecker {
     }
 
     fn actor_message_ty_from_spawn_expected(&self, expected: Option<&Ty>) -> Option<Ty> {
-        let Ty::Named { name, args } = expected? else {
+        let (ok_ty, _) = self.result_ok_err_tys(expected?)?;
+        self.actor_message_ty_from_actor_ty(&ok_ty)
+    }
+
+    fn actor_message_ty_from_actor_ty(&self, actor_ty: &Ty) -> Option<Ty> {
+        let Ty::Named { name, args } = actor_ty else {
             return None;
         };
-        if name != "Result" || args.len() != 2 {
+        if args.len() != 1 {
             return None;
         }
-        let Ty::Named {
-            name: actor_name,
-            args: actor_args,
-        } = &args[0]
-        else {
-            return None;
-        };
-        if actor_name == "Actor" && actor_args.len() == 1 {
-            Some(actor_args[0].clone())
-        } else {
-            None
-        }
+        self.nominal_type_defs.get(name).and_then(|def_id| {
+            std_id::is_std_actor_type(&self.resolved, *def_id).then(|| args[0].clone())
+        })
     }
 
     fn actor_message_ty_from_closure_literal(&mut self, expr: &Expr) -> Option<Ty> {
@@ -8282,21 +8344,14 @@ impl TypeChecker {
             ));
             return None;
         };
-        let Ty::Named { name, args } = &**inner else {
+        let Some(message_ty) = self.actor_message_ty_from_actor_ty(inner) else {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
             ));
             return None;
         };
-        if name != "Actor" || args.len() != 1 {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!("actor handle argument must be `*Actor<M>`, got `{actor_ty}`"),
-            ));
-            return None;
-        }
-        Some(args[0].clone())
+        Some(message_ty)
     }
 
     fn require_actor_handler_callable(
@@ -10607,7 +10662,7 @@ impl TypeChecker {
             params: expected_params,
             constraints: expected_constraints,
         } = &expected
-            && closure_shape_satisfies(expected_ret, expected_params, &expr_ty)
+            && self.closure_shape_satisfies(expected_ret, expected_params, &expr_ty)
         {
             if self.closure_constraints_satisfied_by_ty(
                 expected_constraints,
@@ -11574,6 +11629,30 @@ impl TypeChecker {
             || std_id::std_async_future_accepts_generated(&self.resolved, expected, actual)
     }
 
+    fn closure_shape_satisfies(
+        &self,
+        expected_ret: &Ty,
+        expected_params: &[Ty],
+        actual: &Ty,
+    ) -> bool {
+        match actual {
+            Ty::Closure {
+                ret: actual_ret,
+                params: actual_params,
+                ..
+            }
+            | Ty::ClosureInstance {
+                ret: actual_ret,
+                params: actual_params,
+                ..
+            } => {
+                expected_params == actual_params
+                    && self.ty_can_assign_from(expected_ret, actual_ret)
+            }
+            _ => false,
+        }
+    }
+
     fn require_assignable(&mut self, expected: &Ty, actual: &Ty, span: crate::span::Span) {
         if contains_type_hole(expected) || contains_type_hole(actual) {
             self.unify_type_holes(expected, actual);
@@ -11596,7 +11675,7 @@ impl TypeChecker {
             params,
             constraints,
         } = &expected
-            && closure_shape_satisfies(ret, params, &actual)
+            && self.closure_shape_satisfies(ret, params, &actual)
         {
             self.closure_constraints_satisfied_by_ty(constraints, &actual, span, false);
             return;
@@ -11827,7 +11906,21 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
-        if self.is_std_message_capability_interface_name(interface_name)
+        if self.is_std_resource_free_marker_name(interface_name)
+            && args.is_empty()
+            && self.type_implements_resource_handle(receiver_ty)
+        {
+            return false;
+        }
+        if (self.is_std_message_clone_interface_name(interface_name)
+            || self.is_std_message_share_handle_marker_name(interface_name))
+            && args.is_empty()
+            && self.type_implements_resource_handle(receiver_ty)
+        {
+            return false;
+        }
+        if (self.is_std_message_capability_interface_name(interface_name)
+            || self.is_std_resource_free_marker_name(interface_name))
             && args.is_empty()
             && let Ty::ClosureInstance { captures, .. } = receiver_ty
             && !captures
@@ -11857,6 +11950,12 @@ impl TypeChecker {
                     && *abortable);
         }
         if retained_closure_proves_capability(receiver_ty, interface_name, args) {
+            return true;
+        }
+        if self.is_std_resource_free_marker_name(interface_name)
+            && args.is_empty()
+            && self.type_is_structurally_resource_free(receiver_ty)
+        {
             return true;
         }
         self.find_impl(interface_name, args, receiver_ty).is_some()
@@ -11929,6 +12028,80 @@ impl TypeChecker {
 
     fn type_implements_message(&mut self, ty: &Ty) -> bool {
         self.type_implements_capability(STD_MESSAGE_CLONE_INTERFACE, &[], ty)
+    }
+
+    fn type_is_structurally_resource_free(&mut self, ty: &Ty) -> bool {
+        let mut visiting = HashSet::new();
+        self.type_is_structurally_resource_free_inner(ty, &mut visiting)
+    }
+
+    fn type_is_structurally_resource_free_inner(
+        &mut self,
+        ty: &Ty,
+        visiting: &mut HashSet<Ty>,
+    ) -> bool {
+        if self.type_implements_resource_handle(ty) {
+            return false;
+        }
+        match ty {
+            Ty::Unknown | Ty::Hole(_) | Ty::Generic(_) | Ty::DynamicInterface { .. } => false,
+            Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Function { .. }
+            | Ty::GeneratedFuture { .. } => true,
+            Ty::Pointer { .. } => true,
+            Ty::Slice { elem, .. } | Ty::Array { elem, .. } => {
+                self.type_implements_capability(STD_RESOURCE_FREE_INTERFACE, &[], elem)
+            }
+            Ty::Closure { .. } => false,
+            Ty::ClosureInstance { captures, .. } => captures.iter().all(|capture| {
+                self.type_implements_capability(STD_RESOURCE_FREE_INTERFACE, &[], capture)
+            }),
+            Ty::Named { name, args } => {
+                if !visiting.insert(ty.clone()) {
+                    return false;
+                }
+                let instance_name = enum_instance_name(name, args);
+                self.ensure_struct_instance(ty);
+                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                    let ok = fields.into_iter().all(|(_, field_ty)| {
+                        self.type_implements_capability(STD_RESOURCE_FREE_INTERFACE, &[], &field_ty)
+                    });
+                    visiting.remove(ty);
+                    return ok;
+                }
+                self.ensure_enum_instance(ty);
+                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                    let ok = enm.variants.into_iter().all(|variant| {
+                        variant.payload.into_iter().all(|payload_ty| {
+                            self.type_implements_capability(
+                                STD_RESOURCE_FREE_INTERFACE,
+                                &[],
+                                &payload_ty,
+                            )
+                        })
+                    });
+                    visiting.remove(ty);
+                    return ok;
+                }
+                visiting.remove(ty);
+                false
+            }
+        }
     }
 
     fn task_boundary_message_violation(
@@ -12253,6 +12426,9 @@ impl TypeChecker {
         if !self.is_std_message_share_handle_marker_name(STD_MESSAGE_SHARE_HANDLE_INTERFACE) {
             return false;
         }
+        if self.type_implements_resource_handle(ty) {
+            return false;
+        }
         self.find_impl(STD_MESSAGE_SHARE_HANDLE_INTERFACE, &[], ty)
             .is_some()
             || self.generic_impl_matches_without_constraints(
@@ -12263,7 +12439,9 @@ impl TypeChecker {
     }
 
     fn type_implements_meta_policy_marker(&mut self, ty: &Ty) -> bool {
-        self.type_implements_share_handle(ty) || self.type_implements_thread_local(ty)
+        self.type_implements_share_handle(ty)
+            || self.type_implements_thread_local(ty)
+            || self.type_implements_resource_handle(ty)
     }
 
     fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
@@ -12277,6 +12455,15 @@ impl TypeChecker {
                 &[],
                 ty,
             )
+    }
+
+    fn type_implements_resource_handle(&mut self, ty: &Ty) -> bool {
+        if !self.is_std_resource_handle_marker_name(STD_RESOURCE_HANDLE_INTERFACE) {
+            return false;
+        }
+        self.find_impl(STD_RESOURCE_HANDLE_INTERFACE, &[], ty)
+            .is_some()
+            || self.generic_impl_matches_without_constraints(STD_RESOURCE_HANDLE_INTERFACE, &[], ty)
     }
 
     fn generic_impl_matches_without_constraints(
@@ -12471,7 +12658,9 @@ impl TypeChecker {
             ));
         }
         if matches.len() > 1 {
-            if self.is_std_message_capability_interface_name(interface_name) {
+            if self.is_std_message_capability_interface_name(interface_name)
+                || self.is_std_resource_capability_interface_name(interface_name)
+            {
                 self.diagnostics.push(Diagnostic::new(
                     span.unwrap_or(matches[0].0.item_span),
                     format!("ambiguous generic impls for marker interface `{interface_name}`"),
@@ -12747,10 +12936,11 @@ impl TypeChecker {
         let Ty::Named { name, args } = ty else {
             return None;
         };
-        if name != "Result" || args.len() != 2 {
+        if args.len() != 2 {
             return None;
         }
-        if !std_id::module_can_see_std_result(&self.resolved, self.current_module) {
+        let def_id = self.nominal_type_defs.get(name).copied()?;
+        if !std_id::is_std_result_enum(&self.resolved, def_id) {
             return None;
         }
         let template = self.enum_templates.get(name)?;
@@ -12972,6 +13162,20 @@ impl TypeChecker {
             })
     }
 
+    fn is_std_resource_free_marker_name(&self, name: &str) -> bool {
+        name == STD_RESOURCE_FREE_INTERFACE
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_resource_free_interface(&self.resolved, *def_id)
+            })
+    }
+
+    fn is_std_resource_handle_marker_name(&self, name: &str) -> bool {
+        name == STD_RESOURCE_HANDLE_INTERFACE
+            && self.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_resource_handle_interface(&self.resolved, *def_id)
+            })
+    }
+
     fn is_std_meta_ciel_fn_value_marker_name(&self, name: &str) -> bool {
         name == "ciel_fn_value_marker"
             && self.interface_names.get(name).is_some_and(|def_id| {
@@ -12994,8 +13198,15 @@ impl TypeChecker {
     }
 
     fn is_std_error_ty(&self, ty: &Ty) -> bool {
-        ty == &std_error_ty()
-            && std_id::module_can_see_std_error(&self.resolved, self.current_module)
+        let Ty::Named { name, args } = ty else {
+            return false;
+        };
+        if !args.is_empty() {
+            return false;
+        }
+        self.nominal_type_defs
+            .get(name)
+            .is_some_and(|def_id| std_id::is_std_error_struct(&self.resolved, *def_id))
     }
 
     fn type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
@@ -13012,6 +13223,10 @@ impl TypeChecker {
         self.is_std_message_clone_interface_name(name)
             || self.is_std_message_share_handle_marker_name(name)
             || self.is_std_message_thread_local_marker_name(name)
+    }
+
+    fn is_std_resource_capability_interface_name(&self, name: &str) -> bool {
+        self.is_std_resource_free_marker_name(name) || self.is_std_resource_handle_marker_name(name)
     }
 
     fn apply_condition_narrowing(&mut self, scopes: &mut LocalScopes, cond: &TExpr, truth: bool) {

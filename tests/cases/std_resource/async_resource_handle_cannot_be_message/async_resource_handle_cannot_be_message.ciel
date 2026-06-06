@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: resource handle type `AsyncFd` cannot implement `clone_message`
+
+import /std/async_io as aio;
+import /std/message;
+
+unsafe impl clone_message(*const aio::AsyncFd value) {
+    return Ok(*value);
+}
+
+i32 main() {
+    return 0;
+}

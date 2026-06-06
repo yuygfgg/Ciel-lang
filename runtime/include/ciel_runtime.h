@@ -9,5 +9,6 @@
 #include "ciel_gc.h"
 #include "ciel_io.h"
 #include "ciel_net.h"
+#include "ciel_resource.h"
 
 #endif

@@ -24,9 +24,11 @@ Allocation placement is a compiler and runtime decision rather than a
 source-level operation.
 
 The language uses value semantics for structs, enums, and fixed-size arrays.
-Assignment is shallow field-wise or element-wise copy. Resource-like
-standard-library values are GC-managed handles with explicit operations such as
-`close`, usually paired with `defer`.
+Assignment is shallow field-wise or element-wise copy. Memory is GC-managed;
+non-memory resources are owned by runtime resource owners and are accessed
+through revocable handle tokens. Explicit operations such as `close` remain
+available for early release, while owner close provides deterministic cleanup on
+normal control-flow exits.
 
 Program execution starts at `i64 main()` unless the program is built as a C ABI
 library. A nonzero `main` result is returned to the host process.
@@ -2291,6 +2293,11 @@ sends while allowing accepted jobs to drain. `join` closes the mailbox, waits
 for accepted jobs through the dispatch group, rejects self-join with an error,
 and returns a standard boxed `code_error(...)` error on runtime failure.
 
+Each actor owns a child resource owner. `spawn_actor_state` runs its state
+initializer inside that owner, actor dispatch installs it as the current owner,
+and `join` closes the owner after accepted jobs drain. Resource handles opened
+by actor-local state or handlers therefore become stale after actor join.
+
 Dispatch-managed callbacks are not implicit GC roots. Runtime callbacks that
 touch Ciel values or generated code enter through counted callback scope
 helpers that attach the current thread to BDWGC/libgc on first entry and detach
@@ -2622,9 +2629,80 @@ export type const_c_string = *const char;
 ```
 
 ```ciel
+// /std/resource
+export import /std/result;
+import /std/async/core as async_core;
+
+export unsafe struct Handle {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+export struct Limits {
+    usize max_resources;
+    usize max_child_owners;
+    usize max_pending_ops;
+    usize max_descriptors;
+}
+
+export unsafe interface<T> bool resource_free_marker(*const T value);
+export unsafe interface<T> bool resource_handle_marker(*const T value);
+
+export interface ResourceFreeInternal = resource_free_marker;
+export interface ResourceHandleInternal = resource_handle_marker;
+export interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
+
+export interface<T> Result<T, Error> transfer_to_parent(*const T value);
+
+export Limits default_limits();
+export Result<void, Error> close(Handle handle);
+export Result<Handle, Error> transfer_handle_to_parent(Handle handle);
+export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body) = .scoped;
+export Result<R, Error> scoped_with_limits<R: ResourceFree>(
+    Limits limits,
+    Result<R, Error> |()| body
+) = .scoped_with_limits;
+export async Result<R, Error> scoped_async<R: ResourceFree>(
+    async_core::Future<Result<R, Error>> |()| body
+);
+export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
+    Limits limits,
+    async_core::Future<Result<R, Error>> |()| body
+);
+```
+
+`/std/resource` defines deterministic non-memory resource ownership. Memory
+remains GC-managed. Non-memory resources such as files, sockets, and async
+operation tokens are registered in the current resource owner. A visible handle
+token stores an owner id, resource id, and generation. Copying that token does
+not copy or extend ownership; closing an owner or entry revokes all token
+copies, and later operations on stale tokens return a stable `Error`.
+
+`resource::scoped` creates a child owner, installs it as the current owner for
+the body, and closes it on normal return or `Err` return. `scoped_async` accepts
+the same callable shape returning `async_core::Future<Result<R, Error>>`; an
+`async || { ... }` closure matches that API and the scoped owner is preserved
+across `await`. The result type is constrained as `R: ResourceFree`, so values
+containing resource handles cannot leave the closing owner through the ordinary
+result path. `ResourceFree` is a standard capability over visible structs,
+enums, arrays, concrete closure captures, and owned `/std/meta` representation
+nodes. Resource handle types implement `resource_handle_marker` and are not
+`ResourceFree`.
+
+`transfer_to_parent` is the explicit lifetime-extension operation. It moves the
+underlying registry entry to the parent owner, returns a fresh token, and
+revokes old token copies. Transfer fails without moving the source entry if the
+destination owner is closed, incompatible, or over quota.
+
+The compiler recognizes canonical `/std/resource` capability interfaces through
+standard-library identity metadata, not by source path or by trusting a user
+interface with the same spelling.
+
+```ciel
 // /std/io
 export import /std/result;
-import /std/message;
+import /std/resource as resource;
 
 export enum OpenMode {
     Read,
@@ -2632,30 +2710,36 @@ export enum OpenMode {
     Append,
 }
 
-struct File;
+export unsafe struct File {
+    resource::Handle handle;
+}
 
 export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
 export Error last_error();
+export Result<File, Error> open_read([]const char path);
+export Result<File, Error> create([]const char path);
+export Result<File, Error> append([]const char path);
+export Result<void, Error> close(File file);
 
-export Result<R, Error> with_open<R: Message>(
+export Result<R, Error> with_open<R: resource::ResourceFree>(
     []const char path,
     OpenMode mode,
     Result<R, Error> |(File)| body
 ) = .with_open;
 
-export Result<R, Error> with_open_read<R: Message>(
+export Result<R, Error> with_open_read<R: resource::ResourceFree>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_open_read;
 
-export Result<R, Error> with_create<R: Message>(
+export Result<R, Error> with_create<R: resource::ResourceFree>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_create;
 
-export Result<R, Error> with_append<R: Message>(
+export Result<R, Error> with_append<R: resource::ResourceFree>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_append;
@@ -2681,22 +2765,19 @@ export Result<void, Error> eprint([]const char fmt, []printable values);
 export Result<void, Error> eprintln([]const char fmt, []printable values);
 ```
 
-`/std/io` is a scoped blocking I/O API. Importers do not get a public copyable
-descriptor value from this module. Instead, a private `File` token is passed by
-value into a callback and is closed when that callback returns. The callback
-result type is constrained as `R: Message`, so safe code cannot return the
-private token through the ordinary result path.
+`/std/io` is a blocking I/O API over the current resource owner. `open_read`,
+`create`, and `append` register the real descriptor in that owner and return a
+revocable `File` token. `close` closes the registry entry early and revokes all
+token copies. The scoped helpers use `resource::scoped`, so resources opened
+deep in the callback are closed when the helper returns, and the result type is
+constrained as `R: ResourceFree`.
 
-The runtime stores real descriptors in a generation-checked slot table. The
-private `File` token contains a slot index and generation. Every blocking I/O
-operation validates that the slot is live, the generation matches, and the slot
-state is open before touching the OS descriptor. This prevents stale escaped
-tokens from touching a reused descriptor number.
-
-`stdout`, `stderr`, and formatting helpers use borrowed slot-table entries for
-the process standard streams. Printable values are values that implement
-`to_string`; printing functions convert values to `[]const char` first, then
-write through a scoped `File`.
+Every blocking I/O operation validates the file token through the common
+resource registry before touching the OS descriptor. This prevents stale tokens
+from touching a reused descriptor. `stdout`, `stderr`, and formatting helpers
+use borrowed registry entries for process standard streams. Printable values
+are values that implement `to_string`; printing functions convert values to
+`[]const char` first, then write through a `File`.
 
 Low-level raw descriptor interop lives in `/std/os/fd`:
 
@@ -3389,18 +3470,18 @@ export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr;
 export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_addr;
 export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream) = .peer_addr;
 
-export Result<R, Error> with_tcp_connect<R: Message>(
+export Result<R, Error> with_tcp_connect<R: resource::ResourceFree>(
     SocketAddr addr,
     Result<R, Error> |(TcpStream)| body
 ) = .with_connect;
 
-export Result<R, Error> with_tcp_connect_host<R: Message>(
+export Result<R, Error> with_tcp_connect_host<R: resource::ResourceFree>(
     []const char host,
     u16 port,
     Result<R, Error> |(TcpStream)| body
 ) = .with_tcp_connect;
 
-export Result<R, Error> with_tcp_listen<R: Message>(
+export Result<R, Error> with_tcp_listen<R: resource::ResourceFree>(
     SocketAddr addr,
     Result<R, Error> |(TcpListener)| body
 ) = .with_listen;
@@ -3415,11 +3496,12 @@ returned TCP addresses until one connects.
 
 `SocketAddr` is an immutable runtime-backed address value and implements
 `Message` as a shareable handle. `TcpListener` and `TcpStream` are
-runtime-backed descriptor handles and are actor-local blocking resources. The
-runtime stores real descriptors in a generation-checked slot table, so stale
-copies of a closed listener or stream cannot accidentally operate on a reused
-descriptor. The scoped `with_tcp_*` helpers follow the `/std/io` pattern and
-close the opened resource on normal and error returns from the body.
+runtime-backed resource handles and are actor-local blocking resources. The
+runtime stores real descriptors in the common resource registry, so stale
+copies of a closed or transferred listener or stream cannot accidentally
+operate on a reused descriptor. The scoped `with_tcp_*` helpers follow the
+`/std/io` pattern, use `R: ResourceFree`, and close the opened owner on normal
+and error returns from the body.
 
 ```ciel
 // /std/async/bytes
@@ -3555,6 +3637,9 @@ export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task)
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next;
 export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
 export Result<void, Error> group_close<T>(*const TaskGroup<T> group) = .close;
+export async Result<R, Error> with_task_group<T: Message, R: resource::ResourceFree>(
+    Future<Result<R, Error>> |(*const TaskGroup<T>)| body
+) = .with_task_group;
 
 export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
     A future,
@@ -3588,7 +3673,9 @@ at send and receive boundaries.
 Task groups support dynamic concurrency. `group_next` returns completed task
 results in completion order without cancelling unfinished tasks. `group_cancel_all`
 aborts unfinished tasks through `Abortable`, and `group_close` releases the
-remaining group handle state.
+remaining group handle state. `with_task_group` creates a group for an async
+body and closes it on return or cancellation, cancelling unfinished tasks before
+closing the group.
 
 `timeout` races a selectable future with a timer. Timing out cancels only the
 waiter future; it does not assume that an arbitrary underlying protocol can
@@ -3609,17 +3696,18 @@ export interface<Op, M> Result<void, Error> notify_done(
 );
 
 export interface<Op, Out> Result<Out, Error> finish(Op op);
-export unsafe interface<Op> *void raw_operation(*const Op op);
+export unsafe interface<Op> ?*void raw_operation(*const Op op);
 export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);
 ```
 
 The internal adapter namespace describes runtime operation tokens. `notify_done`
 and `finish` support low-level actor completion tests and direct operation
 integration.
-`raw_operation` and `poll_done` are used by `future_from_op` to wrap a one-shot
-runtime operation as a future. Normal application code should call awaitable
-stdlib functions such as `async_io::read_bytes`, `async_net::read`, or
-`async_time::sleep_ms` instead of implementing operation adapters directly.
+`raw_operation` returns null for a stale resource-backed operation token.
+`raw_operation` and `poll_done` are used by `future_from_op` to wrap a
+one-shot runtime operation as a future. Normal application code should call
+awaitable stdlib functions such as `async_io::read_bytes`, `async_net::read`,
+or `async_time::sleep_ms` instead of implementing operation adapters directly.
 
 ```ciel
 // /std/async_io
@@ -3629,17 +3717,18 @@ import /std/actor as actor;
 import /std/io;
 import /std/message;
 import /std/os/fd as os_fd;
+import /std/resource as resource;
 
 export struct AsyncFd {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncRead {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncWrite {
-    *void handle;
+    resource::Handle handle;
 }
 
 export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode) = .open_async;
@@ -3670,12 +3759,16 @@ export Result<void, Error> cancel_read(AsyncRead op) = .cancel;
 export Result<void, Error> cancel_write(AsyncWrite op) = .cancel;
 ```
 
-`/std/async_io` provides awaitable file-descriptor operations. The high-level
-`read_bytes` and `write_bytes` functions are async functions and are the normal
-API. The `*_async`, `notify_*`, `finish_*`, and `cancel_*` operation-token
-functions are low-level hooks for direct actor-completion integration. Raw fd
-reads and writes are `Abortable` but not `CancelSafe` by default because
-cancellation may hide offset changes or partial writes.
+`/std/async_io` provides awaitable file-descriptor operations over the current
+resource owner. `AsyncFd`, `AsyncRead`, and `AsyncWrite` are revocable resource
+tokens backed by the common registry. The high-level `read_bytes` and
+`write_bytes` functions are async functions and are the normal API. The
+`*_async`, `notify_*`, `finish_*`, and `cancel_*` operation-token functions are
+low-level hooks for direct actor-completion integration. `finish_*` and
+`cancel_*` consume or close the operation token entry, so stale token copies
+fail through ordinary registry validation. Raw fd reads and writes are
+`Abortable` but not `CancelSafe` by default because cancellation may hide
+offset changes or partial writes.
 
 ```ciel
 // /std/async_net
@@ -3684,21 +3777,22 @@ export import /std/async/bytes;
 import /std/actor as actor;
 import /std/message;
 import /std/net;
+import /std/resource as resource;
 
 export struct AsyncTcpListener {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpStream {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpReadHalf {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpWriteHalf {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpSplit {
@@ -3708,26 +3802,27 @@ export struct AsyncTcpSplit {
 
 export struct BufferedStreamReader {
     *void handle;
+    resource::Handle fd_handle;
 }
 
 export struct AsyncAccept {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncConnect {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpRead {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncTcpWrite {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct AsyncBufferedRead {
-    *void handle;
+    resource::Handle handle;
 }
 
 export struct ReadIntoResult {
@@ -3819,11 +3914,14 @@ export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op) = .cancel;
 ```
 
 `/std/async_net` provides awaitable TCP operations over nonblocking runtime
-handles. `accept` and `connect` are `CancelSafe + Abortable`, so they can be
-used directly with `timeout` and `select`. `read` returns zero-length `Bytes`
-for EOF. `read_into` moves an owned `Bytes` buffer into the future and returns
-the same owned buffer with the number of bytes read so hot loops can reuse
-capacity without keeping a mutable slice live across await.
+resources registered in the common resource registry. `AsyncTcpListener`,
+`AsyncTcpStream`, split halves, and low-level async operation tokens are
+revocable `resource::Handle` wrappers. `accept` and `connect` are
+`CancelSafe + Abortable`, so they can be used directly with `timeout` and
+`select`. `read` returns zero-length `Bytes` for EOF. `read_into` moves an
+owned `Bytes` buffer into the future and returns the same owned buffer with the
+number of bytes read so hot loops can reuse capacity without keeping a mutable
+slice live across await.
 
 Raw TCP `read`, `read_into`, `write`, and `write_all` are `Abortable` but not
 `CancelSafe`; they are rejected by `SelectableFuture` bounds. Task abort may
@@ -3833,11 +3931,15 @@ bytes, losing an owned buffer, or observing partial writes.
 
 The `*_async`, `notify_*`, `finish_*`, and `cancel_*` functions are low-level
 operation-token hooks for actor completion tests and direct operation
-integration. Normal async application code should prefer `accept`, `connect`,
-`read`, `write`, and the buffered reader helpers.
+integration. `finish_*` and `cancel_*` consume or close the registry entry for
+the operation token, so stale token copies cannot finish or cancel a reused
+runtime operation. Normal async application code should prefer `accept`,
+`connect`, `read`, `write`, and the buffered reader helpers.
 
 Selectable stream reads use `BufferedStreamReader`. The reader owns the read
-half and a private buffer. `read_buffered` is `CancelSafe + Abortable` because
+half token and a private buffer. It does not register a second owner entry for
+the same fd; converting it back with `into_read_half` returns the retained
+read-half token. `read_buffered` is `CancelSafe + Abortable` because
 cancellation preserves already-read bytes inside that private buffer and abort
 releases the pending read. The reader serializes or rejects overlapping reads.
 It polls its user-space buffer before registering socket readiness, so a
@@ -3849,9 +3951,10 @@ previous read that drained the fd into the private buffer can make a later
 export import /std/result;
 import /std/actor as actor;
 import /std/message;
+import /std/resource as resource;
 
 export struct AsyncSleep {
-    *void handle;
+    resource::Handle handle;
 }
 
 export Result<AsyncSleep, Error> sleep_ms_async(u64 ms);
@@ -3865,11 +3968,13 @@ export Result<void, Error> finish_sleep(AsyncSleep op) = .finish;
 export Result<void, Error> cancel_sleep(AsyncSleep op) = .cancel;
 ```
 
-`/std/async_time` provides monotonic awaitable timers. `sleep_ms` is the normal
-async timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
+`/std/async_time` provides monotonic awaitable timers. Low-level `AsyncSleep`
+tokens are registered async operation resources. `sleep_ms` is the normal async
+timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
 `notify_sleep_done`, `finish_sleep`, and `cancel_sleep` are low-level
-operation-token hooks for direct actor-completion integration. Timer policy is
-deliberately narrow:
+operation-token hooks for direct actor-completion integration. `finish_sleep`
+and `cancel_sleep` consume or close the registry entry, so stale token copies
+fail through ordinary resource validation. Timer policy is deliberately narrow:
 protocol-specific heartbeat, missed-pong, retry, and deadline behavior belongs
 in application code or in helpers such as `async::timeout`.
 

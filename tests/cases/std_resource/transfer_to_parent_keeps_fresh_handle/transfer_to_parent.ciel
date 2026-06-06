@@ -1,0 +1,73 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_transfer.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+import /std/resource;
+import /std/resource as resource;
+
+struct HandleParts {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+struct TransferParts {
+    HandleParts old_file;
+    HandleParts moved_file;
+}
+
+HandleParts parts_from_handle(resource::Handle handle) {
+    return {
+        owner_id: unsafe { handle.owner_id },
+        resource_id: unsafe { handle.resource_id },
+        generation: unsafe { handle.generation },
+    };
+}
+
+io::File file_from_parts(HandleParts parts) {
+    resource::Handle handle = unsafe {
+        {
+            owner_id: parts.owner_id,
+            resource_id: parts.resource_id,
+            generation: parts.generation,
+        }
+    };
+    return unsafe { { handle: handle } };
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(file, "move")?;
+        return Ok;
+    }));
+
+    TransferParts parts = must(resource::scoped<TransferParts>(|| {
+        io::File file = io::open_read(path)?;
+        resource::Handle old_handle = unsafe { file.handle };
+        io::File moved = transfer_to_parent(&file)?;
+        resource::Handle moved_handle = unsafe { moved.handle };
+        return Ok({
+            old_file: parts_from_handle(old_handle),
+            moved_file: parts_from_handle(moved_handle),
+        });
+    }));
+    io::File old_file = file_from_parts(parts.old_file);
+    io::File moved_file = file_from_parts(parts.moved_file);
+
+    [4]u8 @buffer = [0;];
+    usize read_count = must(io::read(moved_file, buffer[..]));
+    if (read_count != 4) {
+        return 1;
+    }
+    switch (io::read(old_file, buffer[..])) {
+        case Ok(_):
+            return 2;
+        case Err(_):
+            must(io::close(moved_file));
+            return 0;
+    }
+}

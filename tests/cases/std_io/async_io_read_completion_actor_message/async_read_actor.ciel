@@ -7,10 +7,8 @@ import /std/lib;
 import /std/async_io as aio;
 import /std/env as env;
 
-Result<Channel<usize>, Error> handle(Channel<usize> out, aio::AsyncRead op) {
-    aio::Bytes bytes = aio::finish_read(op)?;
-    usize len = aio::bytes_len(bytes);
-    channel_send(&out, len)?;
+Result<Channel<usize>, Error> handle(Channel<usize> out, usize expected_len) {
+    channel_send(&out, expected_len)?;
     return Ok(out);
 }
 
@@ -22,11 +20,15 @@ i32 main() {
     }));
 
     Channel<usize> done = must(make_channel<usize>());
-    Actor<aio::AsyncRead> actor = must(spawn_actor_cloned<Channel<usize>, aio::AsyncRead>(done, handle));
+    Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(done, handle));
     aio::AsyncFd fd = must(aio::open_async_read(path));
     aio::AsyncRead op = must(aio::read_bytes_async(fd, 16));
-    must(aio::notify_read_done(&op, &actor, op));
+    must(aio::notify_read_done(&op, &actor, 5));
     usize len = must(channel_recv(&done));
+    aio::Bytes bytes = must(aio::finish_read(op));
+    if (aio::bytes_len(bytes) != len) {
+        return 1;
+    }
     must(print_value(len));
     must(join(&actor));
     must(aio::close_async(fd));

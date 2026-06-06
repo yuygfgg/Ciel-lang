@@ -1,0 +1,82 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_transfer_to_current.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+import /std/resource as resource;
+
+struct HandleParts {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+HandleParts parts_from_handle(resource::Handle handle) {
+    return {
+        owner_id: unsafe { handle.owner_id },
+        resource_id: unsafe { handle.resource_id },
+        generation: unsafe { handle.generation },
+    };
+}
+
+resource::Handle handle_from_parts(HandleParts parts) {
+    return unsafe {
+        {
+            owner_id: parts.owner_id,
+            resource_id: parts.resource_id,
+            generation: parts.generation,
+        }
+    };
+}
+
+io::File file_from_handle(resource::Handle handle) {
+    return unsafe { { handle: handle } };
+}
+
+bool read_is_err(io::File file) {
+    [5]u8 @buffer = [0;];
+    switch (io::read(file, buffer[..])) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+Result<void, Error> claim_and_read(HandleParts parts) {
+    resource::Handle claimed =
+        resource::transfer_handle_to_current(handle_from_parts(parts))?;
+    io::File file = file_from_handle(claimed);
+    [5]u8 @buffer = [0;];
+    usize read_count = io::read(file, buffer[..])?;
+    if (read_count != 5) {
+        return Err(code_error(91));
+    }
+    return Ok;
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(file, "claim")?;
+        return Ok;
+    }));
+
+    HandleParts parent_parts = must(resource::scoped<HandleParts>(|| {
+        io::File file = io::open_read(path)?;
+        io::File moved = resource::transfer_to_parent(&file)?;
+        return Ok(parts_from_handle(unsafe { moved.handle }));
+    }));
+
+    must(resource::scoped<void>(|| {
+        claim_and_read(parent_parts)?;
+        return Ok;
+    }));
+
+    if (!read_is_err(file_from_handle(handle_from_parts(parent_parts)))) {
+        return 1;
+    }
+    return 0;
+}

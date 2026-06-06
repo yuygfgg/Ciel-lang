@@ -2,6 +2,7 @@
 export import /std/result;
 import /std/async/core as async_core;
 import /std/c as c;
+import /std/message;
 import /std/meta;
 import /std/meta as meta;
 
@@ -50,6 +51,13 @@ export unsafe struct Handle {
     u64 generation;
 }
 
+// Message-safe token for a resource handle already transferred out of the
+// source owner. Safe code can pass this token across concurrency boundaries,
+// but must claim it before reconstructing a live typed resource handle.
+export unsafe struct TransferToken {
+    Handle handle;
+}
+
 // Per-owner quota limits. A zero field means the runtime default for that count.
 export struct Limits {
     usize max_resources;
@@ -81,8 +89,19 @@ export interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
 // Transfers a resource-bearing value to the parent owner and returns a fresh token.
 export interface<T> Result<T, Error> transfer_to_parent(*const T value);
 
-// Transfers a resource-bearing value from an ancestor owner to the current owner.
+// Transfers a resource-bearing value from an ancestor owner to the current
+// owner. Transfer fails if the source owner is not an ancestor of the current
+// owner. If the resource is already owned by the current owner, the runtime
+// validates the handle and returns it unchanged.
 export interface<T> Result<T, Error> transfer_to_current(*const T value);
+
+unsafe impl clone_message(*const TransferToken value) {
+    return Ok(unsafe { { handle: unsafe { value->handle } } });
+}
+
+unsafe impl resource_free_marker(*const TransferToken value) {
+    return true;
+}
 
 Error resource_error(c::c_int code) {
     if ((code as i64) != 0) {
@@ -133,6 +152,9 @@ export Result<Handle, Error> transfer_handle_to_parent(Handle handle) {
 }
 
 // Transfers a raw resource handle from an ancestor owner to the current owner.
+// Transfer fails for stale handles or handles owned by a non-ancestor owner.
+// If the handle is already owned by the current owner, this validates and
+// returns it unchanged.
 export Result<Handle, Error> transfer_handle_to_current(Handle handle) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
@@ -151,6 +173,20 @@ export Result<Handle, Error> transfer_handle_to_current(Handle handle) {
         return Err(resource_error(rc));
     }
     return Ok(unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } });
+}
+
+// Transfers a raw resource handle to the parent owner and wraps the fresh
+// parent-owned handle in a Message-safe transfer token.
+export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle) {
+    Handle moved = transfer_handle_to_parent(handle)?;
+    return Ok(unsafe { { handle: moved } });
+}
+
+// Claims a transfer token into the current resource owner. This validates the
+// token through the runtime and returns an ordinary raw handle for typed stdlib
+// wrappers to rebuild their resource value. Stale tokens return Error.
+export Result<Handle, Error> claim_transfer_token(TransferToken token) {
+    return transfer_handle_to_current(unsafe { token.handle });
 }
 
 impl transfer_to_parent(*const Handle value) {

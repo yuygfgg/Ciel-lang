@@ -104,6 +104,11 @@ export struct AsyncTcpStream {
     resource::Handle handle;
 }
 
+// Message-safe transfer token for an async TCP stream.
+export unsafe struct AsyncTcpStreamTransfer {
+    resource::TransferToken token;
+}
+
 // Read half of an async TCP stream.
 export struct AsyncTcpReadHalf {
     resource::Handle handle;
@@ -162,6 +167,16 @@ unsafe impl resource_handle_marker(*const AsyncTcpListener value) {
 }
 
 unsafe impl resource_handle_marker(*const AsyncTcpStream value) {
+    return true;
+}
+
+unsafe impl clone_message(*const AsyncTcpStreamTransfer value) {
+    resource::TransferToken token = unsafe { value->token };
+    resource::TransferToken cloned = clone_message(&token)?;
+    return Ok(unsafe { { token: cloned } });
+}
+
+unsafe impl resource_free_marker(*const AsyncTcpStreamTransfer value) {
     return true;
 }
 
@@ -250,6 +265,14 @@ AsyncTcpStream stream_from_handle(resource::Handle handle) {
     return { handle: handle };
 }
 
+AsyncTcpStreamTransfer stream_transfer_from_token(resource::TransferToken token) {
+    return unsafe { { token: token } };
+}
+
+resource::TransferToken stream_transfer_token(AsyncTcpStreamTransfer transfer) {
+    return unsafe { transfer.token };
+}
+
 AsyncTcpReadHalf read_half_from_handle(resource::Handle handle) {
     return { handle: handle };
 }
@@ -285,6 +308,24 @@ impl transfer_to_parent(*const AsyncTcpListener value) {
 
 impl transfer_to_parent(*const AsyncTcpStream value) {
     resource::Handle handle = resource::transfer_handle_to_parent(value->handle)?;
+    return Ok(stream_from_handle(handle));
+}
+
+// Transfers stream to the parent owner and returns a Message-safe claim token.
+export Result<AsyncTcpStreamTransfer, Error> transfer_stream_to_parent_token(
+    *const AsyncTcpStream value
+) {
+    resource::TransferToken token =
+        resource::transfer_handle_to_parent_token(value->handle)?;
+    return Ok(stream_transfer_from_token(token));
+}
+
+// Claims a stream transfer token into the current owner.
+export Result<AsyncTcpStream, Error> claim_stream_transfer(
+    AsyncTcpStreamTransfer transfer
+) {
+    resource::Handle handle =
+        resource::claim_transfer_token(stream_transfer_token(transfer))?;
     return Ok(stream_from_handle(handle));
 }
 

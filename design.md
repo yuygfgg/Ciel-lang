@@ -2639,6 +2639,10 @@ export unsafe struct Handle {
     u64 generation;
 }
 
+export unsafe struct TransferToken {
+    Handle handle;
+}
+
 export struct Limits {
     usize max_resources;
     usize max_child_owners;
@@ -2654,10 +2658,14 @@ export interface ResourceHandleInternal = resource_handle_marker;
 export interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
 
 export interface<T> Result<T, Error> transfer_to_parent(*const T value);
+export interface<T> Result<T, Error> transfer_to_current(*const T value);
 
 export Limits default_limits();
 export Result<void, Error> close(Handle handle);
 export Result<Handle, Error> transfer_handle_to_parent(Handle handle);
+export Result<Handle, Error> transfer_handle_to_current(Handle handle);
+export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle);
+export Result<Handle, Error> claim_transfer_token(TransferToken token);
 export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body) = .scoped;
 export Result<R, Error> scoped_with_limits<R: ResourceFree>(
     Limits limits,
@@ -2694,6 +2702,20 @@ nodes. Resource handle types implement `resource_handle_marker` and are not
 underlying registry entry to the parent owner, returns a fresh token, and
 revokes old token copies. Transfer fails without moving the source entry if the
 destination owner is closed, incompatible, or over quota.
+
+`transfer_to_current` is the corresponding adoption operation. It moves an open
+entry owned by an ancestor owner into the current owner, returning a fresh token
+when the owner changes. It fails without moving the source entry for stale
+handles, closed entries, quota failures, or handles whose source owner is not an
+ancestor of the current owner. If the entry is already owned by the current
+owner, the runtime validates the handle and returns it unchanged.
+
+`TransferToken` is a `Message`-safe wrapper for a handle that has already been
+transferred out of its source owner. Safe code passes tokens across task, actor,
+or channel boundaries and then calls `claim_transfer_token`, which validates the
+token and adopts it through `transfer_handle_to_current`. A transfer token is a
+revocable capability, not a static linear value; stale token copies fail through
+ordinary generation validation.
 
 The compiler recognizes canonical `/std/resource` capability interfaces through
 standard-library identity metadata, not by source path or by trusting a user
@@ -3787,6 +3809,10 @@ export struct AsyncTcpStream {
     resource::Handle handle;
 }
 
+export unsafe struct AsyncTcpStreamTransfer {
+    resource::TransferToken token;
+}
+
 export struct AsyncTcpReadHalf {
     resource::Handle handle;
 }
@@ -3838,6 +3864,10 @@ export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connec
 export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) = .accept;
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
 export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout;
+export Result<AsyncTcpStreamTransfer, Error> transfer_stream_to_parent_token(
+    *const AsyncTcpStream stream
+);
+export Result<AsyncTcpStream, Error> claim_stream_transfer(AsyncTcpStreamTransfer token);
 
 export Result<void, Error> close_stream(AsyncTcpStream stream) = .close;
 export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream) = .split;
@@ -3922,6 +3952,11 @@ revocable `resource::Handle` wrappers. `accept` and `connect` are
 owned `Bytes` buffer into the future and returns the same owned buffer with the
 number of bytes read so hot loops can reuse capacity without keeping a mutable
 slice live across await.
+
+`AsyncTcpStreamTransfer` is the Message-safe token form for moving stream
+ownership across task, actor, or channel boundaries. It is produced by
+`transfer_stream_to_parent_token` and claimed with `claim_stream_transfer`,
+which validates and adopts the stream into the current resource owner.
 
 Raw TCP `read`, `read_into`, `write`, and `write_all` are `Abortable` but not
 `CancelSafe`; they are rejected by `SelectableFuture` bounds. Task abort may

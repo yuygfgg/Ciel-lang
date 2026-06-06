@@ -1,0 +1,58 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_claim_transfer_token.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+import /std/resource as resource;
+
+io::File file_from_handle(resource::Handle handle) {
+    return unsafe { { handle: handle } };
+}
+
+bool claim_is_err(resource::TransferToken token) {
+    switch (resource::claim_transfer_token(token)) {
+        case Ok(_):
+            return false;
+        case Err(_):
+            return true;
+    }
+}
+
+Result<void, Error> claim_and_read(resource::TransferToken token) {
+    resource::Handle claimed = resource::claim_transfer_token(token)?;
+    io::File file = file_from_handle(claimed);
+    [5]u8 @buffer = [0;];
+    usize read_count = io::read(file, buffer[..])?;
+    if (read_count != 5) {
+        return Err(code_error(92));
+    }
+    return Ok;
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(file, "token")?;
+        return Ok;
+    }));
+
+    resource::TransferToken token =
+        must(resource::scoped<resource::TransferToken>(|| {
+            io::File file = io::open_read(path)?;
+            return Ok(resource::transfer_handle_to_parent_token(
+                unsafe { file.handle }
+            )?);
+        }));
+
+    must(resource::scoped<void>(|| {
+        claim_and_read(token)?;
+        return Ok;
+    }));
+
+    if (!claim_is_err(token)) {
+        return 1;
+    }
+    return 0;
+}

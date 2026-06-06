@@ -5,20 +5,9 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/io as io;
-import /std/message;
 import /std/net as net;
 import /std/resource as resource;
 import /std/result;
-
-struct HandleParts {
-    u64 owner_id;
-    u64 resource_id;
-    u64 generation;
-}
-
-unsafe impl clone_message(*const HandleParts value) {
-    return Ok(*value);
-}
 
 bool addr_is_err(Result<net::SocketAddr, Error> value) {
     switch (value) {
@@ -29,36 +18,14 @@ bool addr_is_err(Result<net::SocketAddr, Error> value) {
     }
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
-    return {
-        owner_id: unsafe { handle.owner_id },
-        resource_id: unsafe { handle.resource_id },
-        generation: unsafe { handle.generation },
-    };
-}
-
-HandleParts parts_from_stream(anet::AsyncTcpStream stream) {
-    return parts_from_handle(stream.handle);
-}
-
-anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
-    resource::Handle handle = unsafe {
-        {
-            owner_id: parts.owner_id,
-            resource_id: parts.resource_id,
-            generation: parts.generation,
-        }
-    };
-    return { handle: handle };
-}
-
 async Result<void, Error> accept_once(
     anet::AsyncTcpListener listener,
-    async::Sender<HandleParts> sender
+    async::Sender<anet::AsyncTcpStreamTransfer> sender
 ) {
     anet::AsyncTcpStream stream = await anet::accept(listener)?;
-    anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
-    await async::send<HandleParts>(sender, parts_from_stream(moved))?;
+    anet::AsyncTcpStreamTransfer token =
+        anet::transfer_stream_to_parent_token(&stream)?;
+    await async::send<anet::AsyncTcpStreamTransfer>(sender, token)?;
     return Ok;
 }
 
@@ -72,14 +39,16 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
     net::SocketAddr bound = anet::listener_addr(listener)?;
-    async::ChannelPair<HandleParts> pair =
-        async::channel<HandleParts>(1)?;
+    async::ChannelPair<anet::AsyncTcpStreamTransfer> pair =
+        async::channel<anet::AsyncTcpStreamTransfer>(1)?;
     async::Task<void> server =
         async::spawn<void>(accept_once(listener, pair.sender))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::AsyncTcpStream accepted =
-        stream_from_parts(await async::recv<HandleParts>(pair.receiver)?);
+        anet::claim_stream_transfer(
+            await async::recv<anet::AsyncTcpStreamTransfer>(pair.receiver)?
+        )?;
     await server?;
 
     anet::AsyncTcpStream old_accepted = accepted;

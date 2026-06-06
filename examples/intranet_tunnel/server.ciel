@@ -12,8 +12,8 @@ import ./protocol/frame as frame;
 import ./runtime as rt;
 
 enum ServerEvent {
-    ServerControlAccepted(anet::AsyncTcpStream),
-    ServerPublicAccepted(anet::AsyncTcpStream),
+    ServerControlAccepted(anet::AsyncTcpStreamTransfer),
+    ServerPublicAccepted(anet::AsyncTcpStreamTransfer),
     ServerControlClosed(u32),
 }
 
@@ -56,8 +56,12 @@ async Result<void, Error> server_control_accept_loop(
 ) {
     while (true) {
         anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
-        await send_server_event(events, ServerControlAccepted(moved))?;
+        anet::AsyncTcpStreamTransfer token =
+            anet::transfer_stream_to_parent_token(&stream)?;
+        await send_server_event(
+            events,
+            ServerControlAccepted(token)
+        )?;
     }
     return Ok;
 }
@@ -68,8 +72,12 @@ async Result<void, Error> server_public_accept_loop(
 ) {
     while (true) {
         anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        anet::AsyncTcpStream moved = resource::transfer_to_parent(&stream)?;
-        await send_server_event(events, ServerPublicAccepted(moved))?;
+        anet::AsyncTcpStreamTransfer token =
+            anet::transfer_stream_to_parent_token(&stream)?;
+        await send_server_event(
+            events,
+            ServerPublicAccepted(token)
+        )?;
     }
     return Ok;
 }
@@ -406,7 +414,8 @@ async Result<void, Error> run_server_async(
         meta::Repr<ServerEvent> event_message = await async::recv<meta::Repr<ServerEvent>>(event_channel.receiver)?;
         ServerEvent event = meta::from_repr<ServerEvent>(event_message);
         switch (event) {
-            case ServerControlAccepted(stream):
+            case ServerControlAccepted(token):
+                anet::AsyncTcpStream stream = anet::claim_stream_transfer(token)?;
                 switch (active) {
                     case ServerNoControl:
                         u32 epoch = next_epoch;
@@ -430,7 +439,8 @@ async Result<void, Error> run_server_async(
                     case ServerHasControl(_):
                         rt::close_stream_silent(stream);
                 }
-            case ServerPublicAccepted(client):
+            case ServerPublicAccepted(token):
+                anet::AsyncTcpStream client = anet::claim_stream_transfer(token)?;
                 switch (active) {
                     case ServerNoControl:
                         rt::close_stream_silent(client);

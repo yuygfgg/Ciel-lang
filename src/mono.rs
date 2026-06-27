@@ -39,6 +39,14 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct MonoProgram {
     pub checked: CheckedProgram,
+    pub generic_origins: HashMap<DefId, GenericOrigin>,
+}
+
+#[derive(Clone, Debug)]
+pub struct GenericOrigin {
+    pub template_def: DefId,
+    pub template_name: String,
+    pub type_args: Vec<Ty>,
 }
 
 pub fn monomorphize(checked: CheckedProgram) -> DiagResult<MonoProgram> {
@@ -156,7 +164,25 @@ impl MonoContext {
         checked.structs = structs;
         checked.enums = enums;
         checked.generic_functions.clear();
-        Ok(MonoProgram { checked })
+        Ok(MonoProgram {
+            checked,
+            generic_origins: self
+                .generic_chains
+                .into_iter()
+                .filter_map(|(def_id, chain)| {
+                    chain.last().map(|frame| {
+                        (
+                            def_id,
+                            GenericOrigin {
+                                template_def: frame.template_def,
+                                template_name: frame.template_name.clone(),
+                                type_args: frame.type_args.clone(),
+                            },
+                        )
+                    })
+                })
+                .collect(),
+        })
     }
 
     fn root_defs(&self) -> Vec<DefId> {
@@ -411,6 +437,9 @@ impl MonoContext {
                 }
             }
             TStmtKind::Defer(expr) => TStmtKind::Defer(self.rewrite_expr(expr)?),
+            TStmtKind::ResourceCleanup(expr) => {
+                TStmtKind::ResourceCleanup(self.rewrite_expr(expr)?)
+            }
             TStmtKind::Return(expr) => {
                 TStmtKind::Return(expr.map(|expr| self.rewrite_expr(expr)).transpose()?)
             }
@@ -607,6 +636,14 @@ impl MonoContext {
                     .map(|arg| self.rewrite_expr(arg))
                     .collect::<DiagResult<Vec<_>>>()?,
             },
+            TExprKind::CloneMessage { value, message_ty } => {
+                self.mark_standard_error_code_impl();
+                self.mark_task_boundary_clone_impls(&message_ty);
+                TExprKind::CloneMessage {
+                    value: Box::new(self.rewrite_expr(*value)?),
+                    message_ty,
+                }
+            }
             TExprKind::Field { base, field } => TExprKind::Field {
                 base: Box::new(self.rewrite_expr(*base)?),
                 field,
@@ -819,7 +856,7 @@ impl MonoContext {
             } => {
                 self.mark_standard_error_code_impl();
                 if matches!(mode, ActorSpawnMode::Cloned) {
-                    self.mark_message_clone_impls(&state_ty);
+                    self.mark_task_boundary_clone_impls(&state_ty);
                 }
                 self.mark_message_clone_impls(&handler_ty);
                 TExprKind::ActorSpawn {
@@ -838,7 +875,7 @@ impl MonoContext {
                 message_ty,
             } => {
                 self.mark_standard_error_code_impl();
-                self.mark_message_clone_impls(&message_ty);
+                self.mark_task_boundary_clone_impls(&message_ty);
                 TExprKind::ActorSend {
                     actor: Box::new(self.rewrite_expr(*actor)?),
                     value: Box::new(self.rewrite_expr(*value)?),
@@ -892,6 +929,7 @@ impl MonoContext {
                 element: Box::new(self.rewrite_expr(*element)?),
                 len,
             },
+            TExprKind::Move(inner) => TExprKind::Move(Box::new(self.rewrite_expr(*inner)?)),
             TExprKind::Local(local_id, name) => TExprKind::Local(local_id, name),
             TExprKind::Literal(literal) => TExprKind::Literal(literal),
         };
@@ -1089,6 +1127,7 @@ fn result_args<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<(&'a Ty, &'
 }
 
 struct StructTemplate {
+    is_resource: bool,
     generics: Vec<String>,
     fields: Vec<FieldDecl>,
 }
@@ -1154,6 +1193,7 @@ impl<'a> AggregateCollector<'a> {
                         structs.insert(
                             nominal_type_name(&checked.resolved, def_id),
                             StructTemplate {
+                                is_resource: decl.is_resource,
                                 generics: decl
                                     .generics
                                     .iter()
@@ -1334,7 +1374,10 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_stmt(stmt);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
                 self.collect_expr(expr);
             }
             TStmtKind::Return(None)
@@ -1568,6 +1611,11 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_expr(arg);
                 }
             }
+            TExprKind::CloneMessage { value, message_ty } => {
+                self.collect_expr(value);
+                self.collect_ty(message_ty);
+                self.collect_task_boundary_clone_result_tys(message_ty);
+            }
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr(base);
             }
@@ -1651,6 +1699,7 @@ impl<'a> AggregateCollector<'a> {
                 }
             }
             TExprKind::ArrayRepeat { element, .. } => self.collect_expr(element),
+            TExprKind::Move(inner) => self.collect_expr(inner),
             TExprKind::Local(..)
             | TExprKind::Function(_, _)
             | TExprKind::GenericFunction { .. }
@@ -1837,6 +1886,7 @@ impl<'a> AggregateCollector<'a> {
         }
         let generics = template.generics.clone();
         let fields = template.fields.clone();
+        let is_resource = template.is_resource;
         let subst = generics
             .into_iter()
             .zip(args.iter().cloned())
@@ -1854,6 +1904,7 @@ impl<'a> AggregateCollector<'a> {
         self.emitted_structs.insert(instance_name.clone());
         self.checked_structs.push(CheckedStruct {
             name: instance_name,
+            is_resource,
             fields,
         });
     }
@@ -1932,29 +1983,22 @@ impl<'a> AggregateCollector<'a> {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if let Some(borrowed) = meta_repr_marker_name(name) {
-                    if preserve_markers {
-                        return Ty::Named {
-                            name: name.clone(),
-                            args: args.clone(),
-                        };
-                    }
-                    let args = args
-                        .iter()
-                        .map(|arg| {
-                            self.normalize_meta_repr_markers_inner(
-                                arg,
-                                preserve_markers,
-                                in_meta_sop,
-                            )
-                        })
-                        .collect::<Vec<_>>();
-                    if args.len() == 1 && !self.should_preserve_meta_repr_marker_source(&args[0]) {
-                        return self.meta_repr_ty(None, &args[0], borrowed);
+                if meta_repr_marker_name(name).is_some() {
+                    if args.len() != 1 {
+                        return Ty::Unknown;
                     }
                     return Ty::Named {
                         name: name.clone(),
-                        args,
+                        args: args
+                            .iter()
+                            .map(|arg| {
+                                self.normalize_meta_repr_markers_inner(
+                                    arg,
+                                    preserve_markers,
+                                    in_meta_sop,
+                                )
+                            })
+                            .collect(),
                     };
                 }
                 let original = Ty::Named {
@@ -2029,6 +2073,13 @@ impl<'a> AggregateCollector<'a> {
                 }
             }
             Ty::Named { name, args } => {
+                if let Some(marker_borrowed) = meta_repr_marker_name(name) {
+                    if args.len() != 1 {
+                        self.push_meta_unsupported_repr(span, source_ty);
+                        return Ty::Unknown;
+                    }
+                    return self.meta_repr_ty_rec(span, &args[0], marker_borrowed, root, expanding);
+                }
                 let instance_ty = Ty::Named {
                     name: name.clone(),
                     args: args.clone(),
@@ -2164,19 +2215,14 @@ impl<'a> AggregateCollector<'a> {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if let Some(borrowed) = meta_repr_marker_name(name) {
+                if meta_repr_marker_name(name).is_some() {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
-                    if root.is_some_and(|root| &args[0] == root)
-                        || self.should_preserve_meta_repr_marker_source(&args[0])
-                    {
-                        return Ty::Named {
-                            name: name.clone(),
-                            args: args.clone(),
-                        };
-                    }
-                    return self.meta_repr_ty(None, &args[0], borrowed);
+                    return Ty::Named {
+                        name: name.clone(),
+                        args: args.clone(),
+                    };
                 }
                 let original = Ty::Named {
                     name: name.clone(),
@@ -2375,12 +2421,7 @@ impl<'a> AggregateCollector<'a> {
                         ));
                         return Ty::Unknown;
                     }
-                    if preserve_meta_repr_markers
-                        || self.should_preserve_meta_repr_marker_source(&args[0])
-                    {
-                        return std_meta_repr_marker_ty(borrowed, args[0].clone());
-                    }
-                    return self.meta_repr_ty(type_name.span, &args[0], borrowed);
+                    return std_meta_repr_marker_ty(borrowed, args[0].clone());
                 }
                 if matches!(def_kind, Some(DefKind::TypeAlias))
                     && let Some(alias) = self.aliases.get(&name)
@@ -2503,23 +2544,6 @@ impl<'a> AggregateCollector<'a> {
                     .unwrap_or_default(),
             },
         }
-    }
-
-    fn is_visiting_aggregate_instance(&self, ty: &Ty) -> bool {
-        let Ty::Named { name, args } = ty else {
-            return false;
-        };
-        let instance_name = aggregate_instance_name(name, args);
-        self.visiting_structs.contains(&instance_name)
-            || self.visiting_enums.contains(&instance_name)
-    }
-
-    fn should_preserve_meta_repr_marker_source(&self, source_ty: &Ty) -> bool {
-        self.deferred_meta_repr_roots
-            .iter()
-            .any(|root| root == source_ty)
-            || self.is_visiting_aggregate_instance(source_ty)
-            || contains_generic(source_ty)
     }
 
     fn normalize_constraint_bounds(&mut self, bounds: &ConstraintBounds) -> ConstraintBounds {

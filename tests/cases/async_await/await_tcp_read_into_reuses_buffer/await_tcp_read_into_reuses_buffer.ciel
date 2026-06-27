@@ -23,11 +23,12 @@ bool same_prefix([]u8 got, []const u8 want) {
 }
 
 async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
+    anet::close_listener(listener)?;
     [3]u8 payload = [97 as u8, 98 as u8, 99 as u8];
     anet::Bytes out = anet::bytes_copy(payload[..])?;
-    await anet::write_all(server, out)?;
-    anet::shutdown_write(server)?;
+    server = await anet::write_all(server, out)?;
+    anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok(3);
 }
@@ -38,7 +39,7 @@ async Result<usize, Error> read_with_reused_buffer(net::SocketAddr bound) {
     anet::Bytes buffer = anet::bytes_copy(zeroes[..])?;
     usize cap = anet::bytes_capacity(buffer);
 
-    anet::ReadIntoResult first = await anet::read_into(client, buffer)?;
+    anet::ReadIntoResult first = await anet::read_into(&client, buffer)?;
     if (first.read != 3 || anet::bytes_len(first.bytes) != 3) {
         return Err(code_error(50));
     }
@@ -53,7 +54,7 @@ async Result<usize, Error> read_with_reused_buffer(net::SocketAddr bound) {
         return Err(code_error(52));
     }
 
-    anet::ReadIntoResult eof = await anet::read_into(client, first.bytes)?;
+    anet::ReadIntoResult eof = await anet::read_into(&client, first.bytes)?;
     if (eof.read != 0 || anet::bytes_len(eof.bytes) != 0) {
         return Err(code_error(53));
     }
@@ -68,14 +69,13 @@ async Result<usize, Error> read_with_reused_buffer(net::SocketAddr bound) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<usize> server = async::spawn<usize>(write_payload(listener))?;
     usize cap = await read_with_reused_buffer(bound)?;
     usize written = await server?;
     if (written != 3) {
         return Err(code_error(55));
     }
-    anet::close_listener(listener)?;
     return Ok(cap);
 }
 

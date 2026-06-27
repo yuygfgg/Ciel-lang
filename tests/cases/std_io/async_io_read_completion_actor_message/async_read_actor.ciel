@@ -15,14 +15,14 @@ Result<Channel<usize>, Error> handle(Channel<usize> out, usize expected_len) {
 i32 main() {
     []const char path = must(env::arg(1));
     must(with_create<void>(path, |file| {
-        write_text(file, "hello")?;
+        write_text(&file, "hello")?;
         return Ok;
     }));
 
     Channel<usize> done = must(make_channel<usize>());
     Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(done, handle));
     aio::AsyncFd fd = must(aio::open_async_read(path));
-    aio::AsyncRead op = must(aio::read_bytes_async(fd, 16));
+    aio::AsyncRead op = must(aio::read_bytes_async(&fd, 16));
     must(aio::notify_read_done(&op, &actor, 5));
     usize len = must(channel_recv(&done));
     aio::Bytes bytes = must(aio::finish_read(op));

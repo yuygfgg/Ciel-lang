@@ -16,7 +16,7 @@ Result<Channel<bool>, Error> handle(Channel<bool> out, bool ready) {
 i32 main() {
     anet::AsyncTcpListener listener =
         must(anet::listen_async(must(net::parse_addr("127.0.0.1:0"))));
-    net::SocketAddr addr = must(anet::listener_addr(listener));
+    net::SocketAddr addr = must(anet::listener_addr(&listener));
     must(anet::close_listener(listener));
 
     Channel<bool> done = must(make_channel<bool>());

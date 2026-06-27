@@ -14,16 +14,16 @@ struct HandleParts {
     u64 generation;
 }
 
-struct TransferParts {
+resource struct TransferResult {
     HandleParts old_file;
-    HandleParts moved_file;
+    io::File moved_file;
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(*const resource::Handle handle) {
     return {
-        owner_id: unsafe { handle.owner_id },
-        resource_id: unsafe { handle.resource_id },
-        generation: unsafe { handle.generation },
+        owner_id: unsafe { handle->owner_id },
+        resource_id: unsafe { handle->resource_id },
+        generation: unsafe { handle->generation },
     };
 }
 
@@ -41,29 +41,28 @@ io::File file_from_parts(HandleParts parts) {
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "move")?;
+        io::write_text(&file, "move")?;
         return Ok;
     }));
 
-    TransferParts parts = must(resource::scoped<TransferParts>(|| {
+    TransferResult transfer = must(resource::scoped<TransferResult>(|| {
         io::File file = io::open_read(path)?;
-        resource::Handle old_handle = unsafe { file.handle };
+        HandleParts old_file = parts_from_handle(unsafe { &file.handle });
         io::File moved = transfer_to_parent(&file)?;
-        resource::Handle moved_handle = unsafe { moved.handle };
         return Ok({
-            old_file: parts_from_handle(old_handle),
-            moved_file: parts_from_handle(moved_handle),
+            old_file: old_file,
+            moved_file: moved,
         });
     }));
-    io::File old_file = file_from_parts(parts.old_file);
-    io::File moved_file = file_from_parts(parts.moved_file);
+    io::File old_file = file_from_parts(transfer.old_file);
+    io::File moved_file = unsafe { transfer.moved_file };
 
     [4]u8 @buffer = [0;];
-    usize read_count = must(io::read(moved_file, buffer[..]));
+    usize read_count = must(io::read(&moved_file, buffer[..]));
     if (read_count != 4) {
         return 1;
     }
-    switch (io::read(old_file, buffer[..])) {
+    switch (io::read(&old_file, buffer[..])) {
         case Ok(_):
             return 2;
         case Err(_):

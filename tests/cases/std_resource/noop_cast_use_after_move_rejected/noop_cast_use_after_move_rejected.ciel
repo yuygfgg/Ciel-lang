@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: use of moved resource `file`
+
+import /std/io as io;
+import /std/result;
+
+Result<void, Error> bad([]const char path) {
+    io::File file = io::open_read(path)?;
+    io::File moved = file as io::File;
+    io::close(file)?;
+    io::close(moved)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

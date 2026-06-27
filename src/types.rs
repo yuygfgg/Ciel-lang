@@ -23,8 +23,6 @@ pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
 pub const STD_MESSAGE_SHARE_HANDLE_INTERFACE: &str = "share_handle_marker";
 pub const STD_MESSAGE_THREAD_LOCAL_INTERFACE: &str = "thread_local_marker";
-pub const STD_RESOURCE_FREE_INTERFACE: &str = "resource_free_marker";
-pub const STD_RESOURCE_HANDLE_INTERFACE: &str = "resource_handle_marker";
 pub const STD_ASYNC_AWAITABLE_FUTURE_INTERFACE: &str = "awaitable_future";
 pub const STD_ASYNC_CANCEL_SAFE_INTERFACE: &str = "cancel_safe_marker";
 pub const STD_ASYNC_ABORT_FUTURE_INTERFACE: &str = "abort_future";
@@ -97,6 +95,7 @@ pub enum Ty {
         output: Box<Ty>,
         cancel_safe: bool,
         abortable: bool,
+        affine_state: bool,
     },
     Generic(String),
     DynamicInterface {
@@ -423,11 +422,13 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             output,
             cancel_safe,
             abortable,
+            affine_state,
         } => Ty::GeneratedFuture {
             name: name.clone(),
             output: Box::new(substitute_ty(output, subst)),
             cancel_safe: *cancel_safe,
             abortable: *abortable,
+            affine_state: *affine_state,
         },
         Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
             name: name.clone(),
@@ -1143,11 +1144,22 @@ pub fn generated_future_ty(
     cancel_safe: bool,
     abortable: bool,
 ) -> Ty {
+    generated_future_ty_with_affine_state(name, output_ty, cancel_safe, abortable, false)
+}
+
+pub fn generated_future_ty_with_affine_state(
+    name: impl Into<String>,
+    output_ty: Ty,
+    cancel_safe: bool,
+    abortable: bool,
+    affine_state: bool,
+) -> Ty {
     Ty::GeneratedFuture {
         name: name.into(),
         output: Box::new(output_ty),
         cancel_safe,
         abortable,
+        affine_state,
     }
 }
 
@@ -1361,6 +1373,17 @@ pub fn meta_repr_marker_name(name: &str) -> Option<bool> {
     }
 }
 
+pub fn meta_repr_marker_source(ty: &Ty) -> Option<(bool, &Ty)> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    let borrowed = meta_repr_marker_name(name)?;
+    if args.len() != 1 {
+        return None;
+    }
+    Some((borrowed, &args[0]))
+}
+
 pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
     match ty {
         Ty::Named { name, args } => {
@@ -1418,11 +1441,13 @@ where
             output,
             cancel_safe,
             abortable,
+            affine_state,
         } => Ty::GeneratedFuture {
             name: name.clone(),
             output: Box::new(map_child(output)),
             cancel_safe: *cancel_safe,
             abortable: *abortable,
+            affine_state: *affine_state,
         },
         Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
             name: name.clone(),
@@ -1553,8 +1578,18 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
             format!("{prefix}_{}", mangle_ty_fragment(elem))
         }
         Ty::Named { name, args } => aggregate_instance_name(name, args),
-        Ty::GeneratedFuture { name, output, .. } => {
-            format!("generated_future_{name}_{}", mangle_ty_fragment(output))
+        Ty::GeneratedFuture {
+            name,
+            output,
+            affine_state,
+            ..
+        } => {
+            let prefix = if *affine_state {
+                "generated_affine_future"
+            } else {
+                "generated_future"
+            };
+            format!("{prefix}_{name}_{}", mangle_ty_fragment(output))
         }
         Ty::Generic(name) => format!("gen_{name}"),
         Ty::DynamicInterface { name, args } => {

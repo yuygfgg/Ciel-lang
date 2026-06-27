@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_scoped_returns_file.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+Result<io::File, Error> open_in_child_owner([]const char path) {
+    return resource::scoped<io::File>(|| {
+        io::File file = io::open_read(path)?;
+        return Ok(file);
+    });
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "scoped")?;
+        return Ok;
+    }));
+
+    io::File file = must(open_in_child_owner(path));
+    [8]u8 @buffer = [0;];
+    usize n = must(io::read(&file, buffer[..]));
+    if (n != 6) {
+        return 1;
+    }
+    must(io::close(file));
+    return 0;
+}

@@ -36,12 +36,8 @@ unsafe extern "C" {
 }
 
 // Runtime operation token for an in-flight async sleep.
-export struct AsyncSleep {
+export resource unsafe struct AsyncSleep {
     resource::Handle handle;
-}
-
-unsafe impl resource_handle_marker(*const AsyncSleep value) {
-    return true;
 }
 
 unsafe impl cancel_safe_marker(*const AsyncSleep op) {
@@ -60,14 +56,18 @@ resource::Handle handle_from_parts(u64 owner_id, u64 resource_id, u64 generation
     return unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } };
 }
 
-c::c_int close_handle(resource::Handle handle) {
-    return unsafe {
+unsafe c::c_int close_handle(*resource::Handle handle) {
+    c::c_int rc = unsafe {
         ciel_resource_close_handle(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation }
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation }
         )
     };
+    unsafe { handle->owner_id = 0; };
+    unsafe { handle->resource_id = 0; };
+    unsafe { handle->generation = 0; };
+    return rc;
 }
 
 Result<resource::Handle, Error> register_async_op(*CielAsyncOp raw) {
@@ -92,14 +92,22 @@ Result<resource::Handle, Error> register_async_op_owned(*CielAsyncOp raw) {
     }
 }
 
-Result<*CielAsyncOp, Error> raw_sleep(AsyncSleep op) {
-    resource::Handle handle = op.handle;
+*const resource::Handle sleep_handle(*const AsyncSleep op) {
+    return unsafe { &op->handle };
+}
+
+*resource::Handle sleep_handle_mut(*AsyncSleep op) {
+    return unsafe { &op->handle };
+}
+
+Result<*CielAsyncOp, Error> raw_sleep(*const AsyncSleep op) {
+    *const resource::Handle handle = sleep_handle(op);
     ?*CielAsyncOp @raw = null;
     c::c_int rc = unsafe {
         ciel_resource_async_op_snapshot_handle(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation },
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation },
             &raw
         )
     };
@@ -128,7 +136,7 @@ export Result<AsyncSleep, Error> sleep_ms_async(u64 ms) {
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok({ handle: register_async_op_owned(unsafe { raw as *CielAsyncOp })? });
+    return Ok(unsafe { { handle: register_async_op_owned(unsafe { raw as *CielAsyncOp })? } });
 }
 
 // Awaits a monotonic sleep for approximately ms milliseconds.
@@ -141,7 +149,7 @@ export Result<void, Error> notify_sleep_done<M: Message>(
     M message
 ) = .notify_done {
     *void boxed = box_message(message)?;
-    c::c_int rc = unsafe { ciel_async_notify_sleep(raw_sleep(*op)?, actor_handle->handle as *CielActor, boxed) };
+    c::c_int rc = unsafe { ciel_async_notify_sleep(raw_sleep(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
     }
@@ -149,12 +157,12 @@ export Result<void, Error> notify_sleep_done<M: Message>(
 }
 
 // Finishes a completed sleep operation.
-export Result<void, Error> finish_sleep(AsyncSleep op) = .finish {
-    c::c_int rc = unsafe { ciel_async_finish_sleep(raw_sleep(op)?) };
+export Result<void, Error> finish_sleep(AsyncSleep @op) = .finish {
+    c::c_int rc = unsafe { ciel_async_finish_sleep(raw_sleep(&op)?) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
     }
-    c::c_int close_rc = close_handle(op.handle);
+    c::c_int close_rc = unsafe { close_handle(sleep_handle_mut(&op)) };
     if ((close_rc as i64) != 0) {
         return Err(code_error(close_rc as i64));
     }
@@ -162,8 +170,8 @@ export Result<void, Error> finish_sleep(AsyncSleep op) = .finish {
 }
 
 // Cancels a pending sleep operation.
-export Result<void, Error> cancel_sleep(AsyncSleep op) = .cancel {
-    c::c_int rc = close_handle(op.handle);
+export Result<void, Error> cancel_sleep(AsyncSleep @op) = .cancel {
+    c::c_int rc = unsafe { close_handle(sleep_handle_mut(&op)) };
     if ((rc as i64) != 0) {
         return Err(code_error(rc as i64));
     }

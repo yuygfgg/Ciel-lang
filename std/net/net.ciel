@@ -44,12 +44,12 @@ export unsafe struct SocketAddr {
 }
 
 // Actor-local TCP listener handle stored in the runtime descriptor table.
-export unsafe struct TcpListener {
+export resource unsafe struct TcpListener {
     resource::Handle handle;
 }
 
 // Actor-local TCP stream handle stored in the runtime descriptor table.
-export unsafe struct TcpStream {
+export resource unsafe struct TcpStream {
     resource::Handle handle;
 }
 
@@ -58,22 +58,6 @@ unsafe impl clone_message(*const SocketAddr value) {
 }
 
 unsafe impl share_handle_marker(*const SocketAddr value) {
-    return true;
-}
-
-unsafe impl thread_local_marker(*const TcpListener value) {
-    return true;
-}
-
-unsafe impl thread_local_marker(*const TcpStream value) {
-    return true;
-}
-
-unsafe impl resource_handle_marker(*const TcpListener value) {
-    return true;
-}
-
-unsafe impl resource_handle_marker(*const TcpStream value) {
     return true;
 }
 
@@ -120,21 +104,35 @@ TcpStream stream_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
     return stream_from_handle(handle_from_parts(owner_id, resource_id, generation));
 }
 
-resource::Handle listener_handle(TcpListener listener) {
-    return unsafe { listener.handle };
+*const resource::Handle listener_handle(*const TcpListener listener) {
+    return unsafe { &listener->handle };
 }
 
-resource::Handle stream_handle(TcpStream stream) {
-    return unsafe { stream.handle };
+*resource::Handle listener_handle_mut(*TcpListener listener) {
+    return unsafe { &listener->handle };
+}
+
+*const resource::Handle stream_handle(*const TcpStream stream) {
+    return unsafe { &stream->handle };
+}
+
+*resource::Handle stream_handle_mut(*TcpStream stream) {
+    return unsafe { &stream->handle };
 }
 
 impl transfer_to_parent(*const TcpListener value) {
-    resource::Handle handle = resource::transfer_handle_to_parent(unsafe { value->handle })?;
+    TcpListener @listener = unsafe { *value };
+    resource::Handle handle = unsafe {
+        resource::transfer_handle_to_parent_in_place(listener_handle_mut(&listener))?
+    };
     return Ok(listener_from_handle(handle));
 }
 
 impl transfer_to_parent(*const TcpStream value) {
-    resource::Handle handle = resource::transfer_handle_to_parent(unsafe { value->handle })?;
+    TcpStream @stream = unsafe { *value };
+    resource::Handle handle = unsafe {
+        resource::transfer_handle_to_parent_in_place(stream_handle_mut(&stream))?
+    };
     return Ok(stream_from_handle(handle));
 }
 
@@ -220,16 +218,16 @@ export Result<TcpListener, Error> tcp_listen(SocketAddr addr) = .listen {
 }
 
 // Accepts one incoming TCP connection from listener.
-export Result<TcpStream, Error> tcp_accept(TcpListener listener) = .accept {
-    resource::Handle listener_resource = listener_handle(listener);
+export Result<TcpStream, Error> tcp_accept(*const TcpListener listener) = .accept {
+    *const resource::Handle listener_resource = listener_handle(listener);
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe {
         ciel_net_tcp_accept(
-            unsafe { listener_resource.owner_id },
-            unsafe { listener_resource.resource_id },
-            unsafe { listener_resource.generation },
+            unsafe { listener_resource->owner_id },
+            unsafe { listener_resource->resource_id },
+            unsafe { listener_resource->generation },
             &owner_id,
             &resource_id,
             &generation
@@ -266,13 +264,13 @@ export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port) {
 }
 
 // Reads up to out.len bytes from stream; zero bytes indicates EOF.
-export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read {
-    resource::Handle handle = stream_handle(stream);
+export Result<usize, Error> tcp_read(*const TcpStream stream, []u8 out) = .read {
+    *const resource::Handle handle = stream_handle(stream);
     c::c_intptr_t n = unsafe {
         ciel_net_tcp_read(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation },
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation },
             out.ptr as *void,
             out.len
         )
@@ -284,13 +282,13 @@ export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read {
 }
 
 // Writes up to data.len bytes to stream.
-export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data) = .write {
-    resource::Handle handle = stream_handle(stream);
+export Result<usize, Error> tcp_write(*const TcpStream stream, []const u8 data) = .write {
+    *const resource::Handle handle = stream_handle(stream);
     c::c_intptr_t n = unsafe {
         ciel_net_tcp_write(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation },
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation },
             data.ptr as *const void,
             data.len
         )
@@ -302,7 +300,7 @@ export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data) = .writ
 }
 
 // Writes the full byte slice to stream, retrying short writes until complete.
-export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data) = .write_all {
+export Result<void, Error> tcp_write_all(*const TcpStream stream, []const u8 data) = .write_all {
     usize @offset = 0;
     while (offset < data.len) {
         usize n = tcp_write(stream, data[offset..])?;
@@ -315,9 +313,9 @@ export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data) = .w
 }
 
 // Shuts down the read half of stream.
-export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read {
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown_read(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
+export Result<void, Error> tcp_shutdown_read(*const TcpStream stream) = .shutdown_read {
+    *const resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown_read(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -325,9 +323,9 @@ export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read 
 }
 
 // Shuts down the write half of stream.
-export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_write {
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown_write(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
+export Result<void, Error> tcp_shutdown_write(*const TcpStream stream) = .shutdown_write {
+    *const resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown_write(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -335,9 +333,9 @@ export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_writ
 }
 
 // Shuts down both halves of stream.
-export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown {
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_tcp_shutdown(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
+export Result<void, Error> tcp_shutdown(*const TcpStream stream) = .shutdown {
+    *const resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_tcp_shutdown(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -345,30 +343,20 @@ export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown {
 }
 
 // Closes stream and invalidates its generation-checked handle.
-export Result<void, Error> tcp_close(TcpStream stream) = .close {
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_tcp_close(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
-    if ((rc as i64) != 0) {
-        return Err(net_error(rc));
-    }
-    return Ok;
+export Result<void, Error> tcp_close(TcpStream @stream) = .close {
+    return unsafe { resource::close_handle_in_place(stream_handle_mut(&stream)) };
 }
 
 // Closes listener and invalidates its generation-checked handle.
-export Result<void, Error> listener_close(TcpListener listener) = .close {
-    resource::Handle handle = listener_handle(listener);
-    c::c_int rc = unsafe { ciel_net_listener_close(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }) };
-    if ((rc as i64) != 0) {
-        return Err(net_error(rc));
-    }
-    return Ok;
+export Result<void, Error> listener_close(TcpListener @listener) = .close {
+    return unsafe { resource::close_handle_in_place(listener_handle_mut(&listener)) };
 }
 
 // Returns the local address bound to listener.
-export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr {
+export Result<SocketAddr, Error> listener_addr(*const TcpListener listener) = .addr {
     ?*CielSocketAddr @raw = null;
-    resource::Handle handle = listener_handle(listener);
-    c::c_int rc = unsafe { ciel_net_listener_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
+    *const resource::Handle handle = listener_handle(listener);
+    c::c_int rc = unsafe { ciel_net_listener_addr(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -379,10 +367,10 @@ export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr {
 }
 
 // Returns the local address of stream.
-export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_addr {
+export Result<SocketAddr, Error> stream_local_addr(*const TcpStream stream) = .local_addr {
     ?*CielSocketAddr @raw = null;
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_stream_local_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
+    *const resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_stream_local_addr(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -393,10 +381,10 @@ export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_ad
 }
 
 // Returns the peer address of stream.
-export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream) = .peer_addr {
+export Result<SocketAddr, Error> stream_peer_addr(*const TcpStream stream) = .peer_addr {
     ?*CielSocketAddr @raw = null;
-    resource::Handle handle = stream_handle(stream);
-    c::c_int rc = unsafe { ciel_net_stream_peer_addr(unsafe { handle.owner_id }, unsafe { handle.resource_id }, unsafe { handle.generation }, &raw) };
+    *const resource::Handle handle = stream_handle(stream);
+    c::c_int rc = unsafe { ciel_net_stream_peer_addr(unsafe { handle->owner_id }, unsafe { handle->resource_id }, unsafe { handle->generation }, &raw) };
     if ((rc as i64) != 0) {
         return Err(net_error(rc));
     }
@@ -415,7 +403,7 @@ void close_scoped_listener(TcpListener listener) {
 }
 
 // Connects to addr, passes a scoped stream to body, and closes on return.
-export Result<R, Error> with_tcp_connect<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_connect<R>(
     SocketAddr addr,
     Result<R, Error> |(TcpStream)| body
 ) = .with_connect {
@@ -426,7 +414,7 @@ export Result<R, Error> with_tcp_connect<R: resource::ResourceFree>(
 }
 
 // Resolves and connects to host:port, passes a scoped stream to body, and closes on return.
-export Result<R, Error> with_tcp_connect_host<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_connect_host<R>(
     []const char host,
     u16 port,
     Result<R, Error> |(TcpStream)| body
@@ -438,7 +426,7 @@ export Result<R, Error> with_tcp_connect_host<R: resource::ResourceFree>(
 }
 
 // Listens on addr, passes a scoped listener to body, and closes on return.
-export Result<R, Error> with_tcp_listen<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_listen<R>(
     SocketAddr addr,
     Result<R, Error> |(TcpListener)| body
 ) = .with_listen {

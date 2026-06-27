@@ -78,6 +78,7 @@ const CONTEXTUAL_KEYWORDS = new Set([
     'biased',
     'select',
     'fn',
+    'resource',
 ]);
 
 const OPERATORS = new Set([

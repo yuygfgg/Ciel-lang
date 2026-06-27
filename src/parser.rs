@@ -47,15 +47,23 @@ impl Parser {
     fn parse_item(&mut self) -> Result<Item, Diagnostic> {
         let export = self.eat(TokenKind::Export).is_some();
         let start = self.peek().span;
+        let is_resource = if self.at_ident_named("resource")
+            && matches!(self.peek_next().kind, TokenKind::Unsafe | TokenKind::Struct)
+        {
+            self.advance();
+            true
+        } else {
+            false
+        };
         let is_unsafe = self.eat(TokenKind::Unsafe).is_some();
 
         let kind = match self.peek().kind {
             TokenKind::Import | TokenKind::HashCInclude | TokenKind::Type | TokenKind::Enum
-                if is_unsafe =>
+                if is_unsafe || is_resource =>
             {
                 return Err(Diagnostic::new(
                     start,
-                    "`unsafe` is valid only on functions, extern blocks, interfaces, impls, structs, and unsafe blocks",
+                    "item modifier is valid only on functions, extern blocks, interfaces, impls, structs, and unsafe blocks",
                 ));
             }
             TokenKind::Import => ItemKind::Import(self.parse_import_decl()?),
@@ -66,7 +74,7 @@ impl Parser {
                 ItemKind::CInclude(include)
             }
             TokenKind::Type => ItemKind::TypeAlias(self.parse_type_alias_decl(None)?),
-            TokenKind::Struct => ItemKind::Struct(self.parse_struct_decl(is_unsafe)?),
+            TokenKind::Struct => ItemKind::Struct(self.parse_struct_decl(is_resource, is_unsafe)?),
             TokenKind::Enum => ItemKind::Enum(self.parse_enum_decl()?),
             TokenKind::Interface => self.parse_interface_item(is_unsafe)?,
             TokenKind::Impl => {
@@ -89,6 +97,12 @@ impl Parser {
                 return Err(Diagnostic::new(
                     start,
                     "configuration gates are not implemented in this compiler slice",
+                ));
+            }
+            _ if is_resource => {
+                return Err(Diagnostic::new(
+                    start,
+                    "`resource` is valid only on struct declarations",
                 ));
             }
             _ => ItemKind::Function(self.parse_function_decl(None, is_unsafe)?),
@@ -175,7 +189,11 @@ impl Parser {
         })
     }
 
-    fn parse_struct_decl(&mut self, is_unsafe: bool) -> Result<StructDecl, Diagnostic> {
+    fn parse_struct_decl(
+        &mut self,
+        is_resource: bool,
+        is_unsafe: bool,
+    ) -> Result<StructDecl, Diagnostic> {
         self.expect(TokenKind::Struct, "expected `struct`")?;
         let name = self.expect_ident("expected struct name")?;
         let generics = self.parse_generic_param_list_opt()?;
@@ -189,6 +207,7 @@ impl Parser {
         }
         self.expect(TokenKind::RBrace, "expected `}` after struct declaration")?;
         Ok(StructDecl {
+            is_resource,
             is_unsafe,
             name,
             generics,
@@ -496,13 +515,25 @@ impl Parser {
             return Ok(params);
         }
         loop {
+            let is_resource = if self.at_ident_named("resource")
+                && matches!(self.peek_next().kind, TokenKind::Ident)
+            {
+                self.advance();
+                true
+            } else {
+                false
+            };
             let name = self.expect_ident("expected generic parameter name")?;
             let constraint = if self.eat(TokenKind::Colon).is_some() {
                 Some(self.parse_constraint_expr()?)
             } else {
                 None
             };
-            params.push(GenericParam { name, constraint });
+            params.push(GenericParam {
+                is_resource,
+                name,
+                constraint,
+            });
             if self.eat(TokenKind::Comma).is_some() {
                 if self.eat_type_gt().is_some() {
                     break;

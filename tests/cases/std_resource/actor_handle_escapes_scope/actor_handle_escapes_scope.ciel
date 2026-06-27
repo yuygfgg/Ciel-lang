@@ -18,7 +18,7 @@ unsafe impl clone_message(*const Command value) {
     return Ok(*value);
 }
 
-struct OwnedState {
+resource struct OwnedState {
     io::File file;
     Channel<usize> out;
 }
@@ -36,7 +36,7 @@ Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command comma
         case Probe(_):
             [1]u8 @buffer = [0;];
             usize @status = 0;
-            switch (io::read(state->file, buffer[..])) {
+            switch (io::read(&state->file, buffer[..])) {
                 case Ok(read):
                     status = read;
                 case Err(_):
@@ -60,7 +60,7 @@ Result<Actor<Command>, Error> spawn_inside_scope(Channel<usize> out) {
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "actor-escape")?;
+        io::write_text(&file, "actor-escape")?;
         return Ok;
     }));
 

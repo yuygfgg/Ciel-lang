@@ -8,13 +8,13 @@ import /std/io;
 i32 main() {
     []const char path = must(env::arg(1));
     must(with_create<void>(path, |file| {
-        write_text(file, "ok")?;
+        write_text(&file, "ok")?;
         return Ok;
     }));
 
     usize n = must(with_open_read<usize>(path, |file| {
         [8]u8 @buffer = [0;];
-        usize read_count = read(file, buffer[..])?;
+        usize read_count = read(&file, buffer[..])?;
         return Ok(read_count);
     }));
     if (n != 2) {

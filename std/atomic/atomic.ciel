@@ -49,13 +49,15 @@ export struct CompareExchange<T> {
     T previous;
 }
 
-// Marker for types supported by Atomic<T>.
+// Unsafe policy marker: implement only for plain value types whose bitwise
+// runtime storage and atomic loads/stores are valid.
 export unsafe interface<T> bool atomic_value_marker(*const T value);
 
 // Constraint alias for all atomic value types.
 export interface AtomicValue = atomic_value_marker;
 
-// Marker for Atomic<T> types that also support arithmetic fetch operations.
+// Unsafe policy marker: implement only for Atomic<T> types whose bitwise
+// arithmetic operations match the runtime implementation.
 export unsafe interface<T> bool atomic_integer_marker(*const T value);
 
 // Constraint alias for atomic integer types.

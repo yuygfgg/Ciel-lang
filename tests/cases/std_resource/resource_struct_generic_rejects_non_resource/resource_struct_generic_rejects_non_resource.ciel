@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied: `i64` is not a resource-affine type
+
+struct Only<resource T> {
+    T value;
+}
+
+i64 main() {
+    Only<i64> value = { value: 1 };
+    return value.value;
+}

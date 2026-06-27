@@ -37,6 +37,8 @@
 (select_expression "biased" @keyword)
 (select_expression "select" @keyword)
 (fn_suffix "fn" @keyword)
+(struct_declaration "resource" @keyword)
+(generic_parameter "resource" @keyword)
 
 (primitive_type) @type.builtin
 (never_type) @type.builtin

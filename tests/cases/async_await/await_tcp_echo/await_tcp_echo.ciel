@@ -23,26 +23,27 @@ bool same_prefix([]u8 got, []const u8 want) {
 }
 
 async Result<usize, Error> serve_once(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
-    anet::Bytes inbound = await anet::read(server, 8)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
+    anet::close_listener(listener)?;
+    anet::Bytes inbound = await anet::read(&server, 8)?;
     if (anet::bytes_len(inbound) != 4) {
         return Err(code_error(40));
     }
-    await anet::write_all(server, inbound)?;
+    server = await anet::write_all(server, inbound)?;
 
-    anet::Bytes eof = await anet::read(server, 8)?;
+    anet::Bytes eof = await anet::read(&server, 8)?;
     usize eof_len = anet::bytes_len(eof);
     anet::close_stream(server)?;
     return Ok(eof_len);
 }
 
 async Result<usize, Error> run_client(net::SocketAddr bound) {
-    anet::AsyncTcpStream client = await anet::connect(bound)?;
+    anet::AsyncTcpStream @client = await anet::connect(bound)?;
     [4]u8 payload = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
     anet::Bytes out = anet::bytes_copy(payload[..])?;
-    await anet::write_all(client, out)?;
+    client = await anet::write_all(client, out)?;
 
-    anet::Bytes echoed = await anet::read(client, 8)?;
+    anet::Bytes echoed = await anet::read(&client, 8)?;
     if (anet::bytes_len(echoed) != 4) {
         return Err(code_error(41));
     }
@@ -52,7 +53,7 @@ async Result<usize, Error> run_client(net::SocketAddr bound) {
         return Err(code_error(42));
     }
 
-    anet::shutdown_write(client)?;
+    anet::shutdown_write(&client)?;
     anet::close_stream(client)?;
     return Ok(copied);
 }
@@ -60,12 +61,11 @@ async Result<usize, Error> run_client(net::SocketAddr bound) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
 
     async::Task<usize> server = async::spawn<usize>(serve_once(listener))?;
     usize copied = await run_client(bound)?;
     usize eof_len = await server?;
-    anet::close_listener(listener)?;
     return Ok(copied + eof_len);
 }
 

@@ -30,7 +30,7 @@ Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
 }
 
 async Result<usize, Error> read_until_cancelled(aio::AsyncFd read_fd) {
-    aio::Bytes inbound = await aio::read_bytes(read_fd, 8)?;
+    aio::Bytes inbound = await aio::read_bytes(&read_fd, 8)?;
     aio::close_async(read_fd)?;
     return Ok(aio::bytes_len(inbound));
 }

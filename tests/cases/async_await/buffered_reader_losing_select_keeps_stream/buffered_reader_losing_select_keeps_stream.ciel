@@ -14,12 +14,13 @@ async Result<usize, Error> ready_value() {
 }
 
 async Result<usize, Error> delayed_write(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
+    anet::close_listener(listener)?;
     await async_time::sleep_ms(20)?;
     [2]u8 payload = [120 as u8, 121 as u8];
     anet::Bytes out = anet::bytes_copy(payload[..])?;
-    await anet::write_all(server, out)?;
-    anet::shutdown_write(server)?;
+    server = await anet::write_all(server, out)?;
+    anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok(2);
 }
@@ -32,24 +33,23 @@ Result<usize, Error> bytes_len_result(Result<anet::Bytes, Error> result) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<usize> server = async::spawn<usize>(delayed_write(listener))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 4)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
     Result<usize, Error> picked = await select {
-        case bytes = anet::read_buffered(reader, 2): bytes_len_result(bytes);
+        case bytes = anet::read_buffered(&reader, 2): bytes_len_result(bytes);
         case ready = ready_value(): ready;
     };
     if (picked? != 1) {
         return Err(code_error(100));
     }
 
-    anet::Bytes bytes = await anet::read_buffered(reader, 2)?;
+    anet::Bytes bytes = await anet::read_buffered(&reader, 2)?;
     usize written = await server?;
-    anet::close_listener(listener)?;
     if (written != 2) {
         return Err(code_error(101));
     }

@@ -64,6 +64,12 @@ int32_t ciel_resource_transfer_to_parent_handle(uint64_t owner_id,
                                                 uint64_t* out_owner_id,
                                                 uint64_t* out_resource_id,
                                                 uint64_t* out_generation);
+int32_t ciel_resource_reattach_to_parent_handle(uint64_t owner_id,
+                                                uint64_t resource_id,
+                                                uint64_t generation,
+                                                uint64_t* out_owner_id,
+                                                uint64_t* out_resource_id,
+                                                uint64_t* out_generation);
 int32_t ciel_resource_transfer_to_current(CielResourceHandle handle,
                                           CielResourceHandle* out);
 int32_t ciel_resource_transfer_to_current_handle(uint64_t owner_id,

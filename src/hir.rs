@@ -74,6 +74,7 @@ pub enum TypeAliasTarget {
 
 #[derive(Clone, Debug)]
 pub struct StructDecl {
+    pub is_resource: bool,
     pub is_unsafe: bool,
     pub name: ast::Ident,
     pub generics: Vec<GenericParam>,
@@ -180,6 +181,7 @@ pub enum ExternItem {
 
 #[derive(Clone, Debug)]
 pub struct GenericParam {
+    pub is_resource: bool,
     pub name: ast::Ident,
     pub constraint: Option<ConstraintExpr>,
 }
@@ -577,6 +579,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     .collect();
                 self.pop_generics();
                 ItemKind::Struct(StructDecl {
+                    is_resource: decl.is_resource,
                     is_unsafe: decl.is_unsafe,
                     name: decl.name.clone(),
                     generics,
@@ -771,6 +774,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         generics
             .iter()
             .map(|param| GenericParam {
+                is_resource: param.is_resource,
                 name: param.name.clone(),
                 constraint: param
                     .constraint

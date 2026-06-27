@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: use of moved resource `op`
+
+import /std/async_io as aio;
+import /std/result;
+
+Result<void, Error> drive([]const char path) {
+    aio::AsyncFd fd = aio::open_async_read(path)?;
+    aio::AsyncRead op = aio::read_bytes_async(&fd, 1)?;
+    aio::cancel_read(op)?;
+    aio::cancel_read(op)?;
+    aio::close_async(fd)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

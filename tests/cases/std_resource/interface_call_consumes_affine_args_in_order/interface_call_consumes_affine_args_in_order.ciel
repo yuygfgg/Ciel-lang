@@ -1,0 +1,23 @@
+// ciel-test: error
+// expect-error: use of moved resource `file`
+
+import /std/io as io;
+import /std/result;
+
+interface<T> Result<void, Error> consume_pair(T left, T right);
+
+impl consume_pair(io::File left, io::File right) {
+    io::close(left)?;
+    io::close(right)?;
+    return Ok;
+}
+
+Result<void, Error> drive([]const char path) {
+    io::File file = io::open_read(path)?;
+    consume_pair(file, file)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

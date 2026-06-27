@@ -6,7 +6,7 @@ import /std/net as net;
 import /std/result;
 
 async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream server = await anet::accept(&listener)?;
     anet::close_stream(server)?;
     return Ok;
 }
@@ -14,12 +14,11 @@ async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<void> server = async::spawn<void>(accept_once(listener))?;
     anet::AsyncTcpStream client = await anet::connect_timeout(bound, 100)?;
     anet::close_stream(client)?;
     await server?;
-    anet::close_listener(listener)?;
     return Ok(1);
 }
 

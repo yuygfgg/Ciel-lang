@@ -1,10 +1,7 @@
 use std::collections::HashMap;
 
 use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
-use crate::types::{
-    META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, STD_RESOURCE_FREE_INTERFACE,
-    STD_RESOURCE_HANDLE_INTERFACE, Ty, unify_ty,
-};
+use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
 
 const STD_RESULT_EXPORT: &str = "/std/result";
 const STD_RESULT_CORE_EXPORT: &str = "/std/result/core";
@@ -140,26 +137,17 @@ pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId)
     is_std_message_interface(resolved, def_id, STD_MESSAGE_CLONE_INTERFACE)
 }
 
-pub fn is_std_resource_interface(
+pub fn is_std_resource_handle_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
+    is_std_exported_struct_type_name(resolved, ty_name, STD_RESOURCE_EXPORT, "Handle")
+}
+
+pub fn is_std_resource_function(
     resolved: &ResolvedProgram,
-    def_id: DefId,
+    module: ModuleId,
+    name: &str,
     expected_name: &str,
 ) -> bool {
-    def_matches(
-        resolved,
-        def_id,
-        DefKind::Interface,
-        expected_name,
-        STD_RESOURCE_EXPORT,
-    )
-}
-
-pub fn is_std_resource_free_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
-    is_std_resource_interface(resolved, def_id, STD_RESOURCE_FREE_INTERFACE)
-}
-
-pub fn is_std_resource_handle_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
-    is_std_resource_interface(resolved, def_id, STD_RESOURCE_HANDLE_INTERFACE)
+    name == expected_name && module_export_matches(resolved, module, STD_RESOURCE_EXPORT)
 }
 
 pub fn is_std_actor_function(

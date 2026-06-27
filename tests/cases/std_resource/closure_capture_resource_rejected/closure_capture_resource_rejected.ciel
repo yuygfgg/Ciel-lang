@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: closure cannot capture resource `file` of type `File`
+
+import /std/io as io;
+import /std/result;
+
+Result<void, Error> |()| make_closer([]const char path) {
+    io::File file = io::open_read(path)?;
+    return || {
+        io::close(file)?;
+        return Ok;
+    };
+}
+
+i32 main() {
+    return 0;
+}

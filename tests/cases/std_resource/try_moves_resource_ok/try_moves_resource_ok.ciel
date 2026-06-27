@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_try_moves_resource_ok.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+
+Result<io::File, Error> pass_through(Result<io::File, Error> input) {
+    io::File file = input?;
+    return Ok(file);
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "try")?;
+        return Ok;
+    }));
+
+    io::File file = must(pass_through(io::open_read(path)));
+    [4]u8 @buffer = [0;];
+    usize n = must(io::read(&file, buffer[..]));
+    if (n != 3) {
+        return 1;
+    }
+    must(io::close(file));
+    return 0;
+}

@@ -9,6 +9,7 @@ const highlightQueryPath = path.join(extensionRoot, 'tree-sitter-ciel', 'queries
 
 const source = [
     'import /std/async as async;',
+    'import /std/resource as resource;',
     'async void f() {',
     '    plain_call();',
     '    await async::block_on(task);',
@@ -19,9 +20,11 @@ const source = [
     'impl async::poll(i64 x) { return x; }',
     'interface I = async::Readable + PlainReadable;',
     'struct Box { i64 value; }',
+    'resource struct FileBox<resource T> { T value; }',
     'export i64 box_len(*const Box box) = .len { return box->value; }',
     'export bool box_contains(i64 key, *const Box box) = box.contains { return true; }',
     'void selectors(Box @box) { box.len(); box.symbols::len(); box.contains(1); }',
+    'void scoped_alias() { resource::scoped(fn_value); }',
     'enum Event { Data(i64), Timeout, }',
     'void match_one(Result<Event, Error> x) { switch (x) { case Result::Ok(Event::Data(value)): break; case Result::Ok(Event::Timeout): break; case Result::Err(_): break; } }',
     'void make_event() { Event::Data(1); Event::Timeout; }',
@@ -90,8 +93,17 @@ function assertHighlightQuery(language, Query, rootNode) {
     );
     assert.deepStrictEqual(
         asyncKeywordCaptures.map(formatPosition),
-        ['1:0'],
+        ['2:0'],
         '`async` should only be a query keyword capture in the async function modifier',
+    );
+
+    const resourceKeywordCaptures = captures.filter(capture =>
+        capture.name === 'keyword' && capture.text === 'resource'
+    );
+    assert.deepStrictEqual(
+        resourceKeywordCaptures.map(formatPosition),
+        ['12:0', '12:24'],
+        '`resource` should only be a query keyword capture in resource modifier positions',
     );
 
     for (const text of ['await', 'biased', 'select', 'fn']) {
@@ -111,6 +123,7 @@ function assertHighlightQuery(language, Query, rootNode) {
     assertCapture(captures, 'function', 'contains');
     assertCapture(captures, 'type', 'Task');
     assertCapture(captures, 'type', 'Box');
+    assertCapture(captures, 'type.parameter', 'T');
     assertCapture(captures, 'type', 'Readable');
     assertCapture(captures, 'type', 'PlainReadable');
     assertCapture(captures, 'constant', 'Ok');
@@ -128,12 +141,24 @@ function assertSemanticClassifier(rootNode) {
     assert(asyncTokens.length > 1, 'expected all async spellings to receive semantic tokens');
     assert.deepStrictEqual(
         asyncTokens.filter(token => token.type === 'keyword').map(formatPosition),
-        ['1:0'],
+        ['2:0'],
         '`async` should only be a semantic keyword in the async function modifier',
     );
     assert(
         asyncTokens.filter(token => token.type !== 'keyword').every(token => token.type === 'namespace'),
         '`async` module path, import alias, and qualified-name prefixes should be namespaces',
+    );
+
+    const resourceTokens = tokens.filter(token => token.text === 'resource');
+    assert(resourceTokens.length > 2, 'expected all resource spellings to receive semantic tokens');
+    assert.deepStrictEqual(
+        resourceTokens.filter(token => token.type === 'keyword').map(formatPosition),
+        ['12:0', '12:24'],
+        '`resource` should only be a semantic keyword in resource modifier positions',
+    );
+    assert(
+        resourceTokens.filter(token => token.type !== 'keyword').every(token => token.type === 'namespace'),
+        '`resource` module path, import alias, and qualified-name prefixes should be namespaces',
     );
 
     assertToken(tokens, 'function', 'plain_call');
@@ -144,6 +169,8 @@ function assertSemanticClassifier(rootNode) {
     assertToken(tokens, 'function', 'poll');
     assertToken(tokens, 'type', 'Task');
     assertToken(tokens, 'struct', 'Box');
+    assertToken(tokens, 'struct', 'FileBox');
+    assertToken(tokens, 'typeParameter', 'T');
     assertToken(tokens, 'interface', 'Readable');
     assertToken(tokens, 'interface', 'PlainReadable');
     assertToken(tokens, 'enumMember', 'Ok');

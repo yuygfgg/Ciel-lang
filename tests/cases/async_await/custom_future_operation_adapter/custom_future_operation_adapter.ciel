@@ -12,7 +12,7 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-struct WrappedRead {
+resource struct WrappedRead {
     aio::AsyncRead inner;
 }
 
@@ -20,15 +20,15 @@ unsafe impl adapter::raw_operation(*const WrappedRead op) {
     return adapter::raw_operation(&op->inner);
 }
 
-unsafe impl adapter::poll_done<aio::Bytes>(WrappedRead op, *aio::Bytes out) {
-    return adapter::poll_done<aio::Bytes>(op.inner, out);
+unsafe impl adapter::poll_done<aio::Bytes>(*WrappedRead op, *aio::Bytes out) {
+    return adapter::poll_done<aio::Bytes>(&op->inner, out);
 }
 
 unsafe impl abort_future(*WrappedRead op) {
-    return aio::cancel_read(op->inner);
+    return aio::cancel_read(unsafe { op->inner });
 }
 
-async Result<usize, Error> read_with_wrapper(aio::AsyncFd file) {
+async Result<usize, Error> read_with_wrapper(*const aio::AsyncFd file) {
     aio::AsyncRead read = aio::read_bytes_async(file, 16)?;
     WrappedRead wrapped = { inner: read };
     aio::Bytes bytes = await async::future_from_op<WrappedRead, aio::Bytes>(wrapped)?;
@@ -38,11 +38,11 @@ async Result<usize, Error> read_with_wrapper(aio::AsyncFd file) {
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "hello")?;
+        io::write_text(&file, "hello")?;
         return Ok;
     }));
     aio::AsyncFd file = must(aio::open_async_read(path));
-    usize len = must(async::block_on(read_with_wrapper(file)));
+    usize len = must(async::block_on(read_with_wrapper(&file)));
     must(aio::close_async(file));
     must(io::print_value(len));
     return 0;

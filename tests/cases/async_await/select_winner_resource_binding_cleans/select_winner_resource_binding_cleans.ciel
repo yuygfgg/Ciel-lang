@@ -1,0 +1,47 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/async_await_select_winner_resource_binding_cleans.txt
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+async Result<io::File, Error> open_file() {
+    []const char path = env::arg(1)?;
+    return io::open_read(path);
+}
+
+async Result<usize, Error> choose_without_consuming() {
+    Result<usize, Error> picked = await biased select {
+        case file = open_file(): Ok(0);
+        case slept = async_time::sleep_ms(10000): Ok(1);
+    };
+    return picked;
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "select-cleanup")?;
+        return Ok;
+    }));
+
+    resource::Limits limits = {
+        max_resources: 8,
+        max_child_owners: 16,
+        max_pending_ops: 16,
+        max_descriptors: 1,
+    };
+    must(resource::scoped_with_limits<void>(limits, || {
+        if (must(async::block_on(choose_without_consuming())) != 0) {
+            return Err(text_error("unexpected selected arm"));
+        }
+        io::File again = io::open_read(path)?;
+        io::close(again)?;
+        return Ok;
+    }));
+    return 0;
+}

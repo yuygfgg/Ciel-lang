@@ -26,10 +26,11 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, clone_message_capability,
-        generated_future_output_ty, generated_future_ty, is_clone_message_capability,
-        mangle_constraint_ref, mangle_ty_fragment, meta_array_split_len, meta_named,
-        meta_product_ty, meta_ref_array_repr_ty, meta_repr_marker_name, meta_sum_ty,
+        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, clone_message_capability,
+        generated_future_output_ty, generated_future_ty_with_affine_state,
+        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
+        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
         std_future_ty, std_meta_repr_marker_ty, std_result_ty, std_send_permit_ty, std_task_ty,
         unify_ty,
@@ -57,7 +58,9 @@ struct CGenerator<'a> {
     current_capture_locals: HashMap<LocalId, String>,
     current_closure_owner: Option<DefId>,
     defer_stack: Vec<Vec<String>>,
+    current_owned_resource_roots: Vec<(Ty, String)>,
     loop_defer_starts: Vec<usize>,
+    break_defer_starts: Vec<usize>,
     continue_targets: Vec<Option<String>>,
     current_return_ty: Ty,
     current_async_output: Option<String>,
@@ -88,6 +91,12 @@ struct AsyncDeferArg {
 
 struct AsyncLocalUseCollector {
     locals: HashSet<LocalId>,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum ResourceScopedCall {
+    Default,
+    WithLimits,
 }
 
 impl ThirVisitor for AsyncLocalUseCollector {
@@ -138,6 +147,7 @@ struct CodegenPlanData {
     async_channel_send_payload_tys: BTreeMap<String, Ty>,
     async_channel_reserve_payload_tys: BTreeMap<String, Ty>,
     async_channel_recv_payload_tys: BTreeMap<String, Ty>,
+    resource_cleanup_tys: BTreeMap<String, Ty>,
     string_literals: BTreeMap<(usize, usize, usize), String>,
     string_literal_names: HashMap<(usize, usize, usize), String>,
     source_locations: BTreeMap<(usize, usize), SourceLocation>,
@@ -273,7 +283,9 @@ impl<'a> CGenerator<'a> {
             current_capture_locals: HashMap::new(),
             current_closure_owner: None,
             defer_stack: Vec::new(),
+            current_owned_resource_roots: Vec::new(),
             loop_defer_starts: Vec::new(),
+            break_defer_starts: Vec::new(),
             continue_targets: Vec::new(),
             current_return_ty: Ty::Void,
             current_async_output: None,
@@ -429,6 +441,8 @@ impl<'a> CGenerator<'a> {
             }
         }
         self.emit_array_return_type_layouts();
+        self.emit_resource_cleanup_helpers();
+        self.emit_resource_transfer_helpers();
 
         self.emit_async_function_contexts();
         self.emit_async_closure_contexts();
@@ -524,6 +538,336 @@ impl<'a> CGenerator<'a> {
         self.collect_array_return_types();
         self.collect_string_literals();
         self.collect_source_locations();
+        self.collect_resource_cleanup_types();
+    }
+
+    fn collect_resource_cleanup_types(&mut self) {
+        let functions = self.program.checked.functions.clone();
+        for function in &functions {
+            self.collect_resource_cleanup_ty(&function.ret);
+            for (_, _, ty) in &function.params {
+                self.collect_resource_cleanup_ty(ty);
+            }
+            if let Some(body) = &function.body {
+                self.collect_resource_cleanup_block(body);
+            }
+        }
+        for strukt in self.program.checked.structs.clone() {
+            for (_, ty) in strukt.fields {
+                self.collect_resource_cleanup_ty(&ty);
+            }
+        }
+        for enm in self.program.checked.enums.clone() {
+            for variant in enm.variants {
+                for ty in variant.payload {
+                    self.collect_resource_cleanup_ty(&ty);
+                }
+            }
+        }
+    }
+
+    fn collect_resource_cleanup_block(&mut self, block: &TBlock) {
+        for stmt in &block.statements {
+            self.collect_resource_cleanup_stmt(stmt);
+        }
+    }
+
+    fn collect_resource_cleanup_stmt(&mut self, stmt: &TStmt) {
+        match &stmt.kind {
+            TStmtKind::Block(block) => self.collect_resource_cleanup_block(block),
+            TStmtKind::VarDecl { ty, init, .. } => {
+                self.collect_resource_cleanup_ty(ty);
+                if let Some(init) = init {
+                    self.collect_resource_cleanup_expr(init);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_resource_cleanup_expr(target);
+                self.collect_resource_cleanup_expr(value);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_resource_cleanup_expr(cond);
+                self.collect_resource_cleanup_block(then_block);
+                if let Some(else_branch) = else_branch {
+                    self.collect_resource_cleanup_stmt(else_branch);
+                }
+            }
+            TStmtKind::While { cond, body } => {
+                self.collect_resource_cleanup_expr(cond);
+                self.collect_resource_cleanup_block(body);
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_resource_cleanup_for_init(init);
+                }
+                if let Some(cond) = cond {
+                    self.collect_resource_cleanup_expr(cond);
+                }
+                if let Some(step) = step {
+                    self.collect_resource_cleanup_for_init(step);
+                }
+                self.collect_resource_cleanup_block(body);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_resource_cleanup_expr(expr);
+                for case in cases {
+                    self.collect_resource_cleanup_pattern(&case.pattern);
+                    for stmt in &case.statements {
+                        self.collect_resource_cleanup_stmt(stmt);
+                    }
+                }
+                for stmt in default {
+                    self.collect_resource_cleanup_stmt(stmt);
+                }
+            }
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => self.collect_resource_cleanup_expr(expr),
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_resource_cleanup_for_init(&mut self, init: &TForInit) {
+        match init {
+            TForInit::VarDecl { ty, init, .. } => {
+                self.collect_resource_cleanup_ty(ty);
+                if let Some(init) = init {
+                    self.collect_resource_cleanup_expr(init);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_resource_cleanup_expr(target);
+                self.collect_resource_cleanup_expr(value);
+            }
+            TForInit::Expr(expr) => self.collect_resource_cleanup_expr(expr),
+        }
+    }
+
+    fn collect_resource_cleanup_pattern(&mut self, pattern: &TPattern) {
+        self.collect_resource_cleanup_ty(pattern.ty());
+        if let TPattern::Variant { payload, .. } = pattern {
+            for child in payload {
+                self.collect_resource_cleanup_pattern(child);
+            }
+        }
+    }
+
+    fn collect_resource_cleanup_expr(&mut self, expr: &TExpr) {
+        self.collect_resource_cleanup_ty(&expr.ty);
+        match &expr.kind {
+            TExprKind::Move(inner)
+            | TExprKind::FunctionToClosure(inner)
+            | TExprKind::ArrayToSlice(inner)
+            | TExprKind::SliceToConst(inner)
+            | TExprKind::Unary { expr: inner, .. }
+            | TExprKind::Cast { expr: inner, .. }
+            | TExprKind::Try { expr: inner, .. }
+            | TExprKind::Await { future: inner }
+            | TExprKind::AsyncBlockOn { future: inner }
+            | TExprKind::AsyncOpFuture { op: inner, .. }
+            | TExprKind::AsyncSpawn { body: inner, .. }
+            | TExprKind::RetainClosure { expr: inner, .. }
+            | TExprKind::MakeDynamicInterface { expr: inner, .. } => {
+                self.collect_resource_cleanup_expr(inner);
+            }
+            TExprKind::StructLiteral { fields, .. } => {
+                for (_, value) in fields {
+                    self.collect_resource_cleanup_expr(value);
+                }
+            }
+            TExprKind::EnumLiteral { payload, .. } => {
+                for value in payload {
+                    self.collect_resource_cleanup_expr(value);
+                }
+            }
+            TExprKind::ArrayLiteral(elements) => {
+                for value in elements {
+                    self.collect_resource_cleanup_expr(value);
+                }
+            }
+            TExprKind::ArrayRepeat { element, .. } => self.collect_resource_cleanup_expr(element),
+            TExprKind::Closure { body, captures, .. } => {
+                for capture in captures {
+                    self.collect_resource_cleanup_ty(&capture.ty);
+                }
+                match body {
+                    TClosureBody::Expr(expr) => self.collect_resource_cleanup_expr(expr),
+                    TClosureBody::Block(block) => self.collect_resource_cleanup_block(block),
+                }
+            }
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_resource_cleanup_stmt(stmt);
+                }
+                if let Some(value) = value {
+                    self.collect_resource_cleanup_expr(value);
+                }
+            }
+            TExprKind::Binary { left, right, .. } => {
+                self.collect_resource_cleanup_expr(left);
+                self.collect_resource_cleanup_expr(right);
+            }
+            TExprKind::Call { callee, args } => {
+                if self.std_resource_transfer_before_owner_close_call(callee)
+                    && let Some(Ty::Pointer { inner, .. }) = args.first().map(|arg| &arg.ty)
+                {
+                    self.collect_resource_cleanup_ty(inner);
+                }
+                self.collect_resource_cleanup_expr(callee);
+                for arg in args {
+                    self.collect_resource_cleanup_expr(arg);
+                }
+            }
+            TExprKind::DynamicInterfaceCall { receiver, args, .. }
+            | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
+                self.collect_resource_cleanup_expr(receiver);
+                for arg in args {
+                    self.collect_resource_cleanup_expr(arg);
+                }
+            }
+            TExprKind::CloneMessage { value, .. } => self.collect_resource_cleanup_expr(value),
+            TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
+                self.collect_resource_cleanup_expr(base);
+            }
+            TExprKind::Index { base, index } => {
+                self.collect_resource_cleanup_expr(base);
+                self.collect_resource_cleanup_expr(index);
+            }
+            TExprKind::Slice { base, start, end } => {
+                self.collect_resource_cleanup_expr(base);
+                if let Some(start) = start {
+                    self.collect_resource_cleanup_expr(start);
+                }
+                if let Some(end) = end {
+                    self.collect_resource_cleanup_expr(end);
+                }
+            }
+            TExprKind::AsyncSelect { arms, .. } => {
+                for arm in arms {
+                    self.collect_resource_cleanup_expr(&arm.future);
+                    self.collect_resource_cleanup_expr(&arm.body);
+                }
+            }
+            TExprKind::AsyncSleep { ms, .. } => self.collect_resource_cleanup_expr(ms),
+            TExprKind::AsyncTaskCancel { task, .. }
+            | TExprKind::AsyncTaskIsFinished { task, .. } => {
+                self.collect_resource_cleanup_expr(task);
+            }
+            TExprKind::AsyncChannelSend { sender, value, .. }
+            | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
+                self.collect_resource_cleanup_expr(sender);
+                self.collect_resource_cleanup_expr(value);
+            }
+            TExprKind::AsyncChannelReserve { sender, .. } => {
+                self.collect_resource_cleanup_expr(sender);
+            }
+            TExprKind::AsyncChannelRecv { receiver, .. } => {
+                self.collect_resource_cleanup_expr(receiver);
+            }
+            TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
+                self.collect_resource_cleanup_expr(permit);
+                self.collect_resource_cleanup_expr(value);
+            }
+            TExprKind::MetaAsRefRepr { value, .. }
+            | TExprKind::MetaIntoRepr { value, .. }
+            | TExprKind::MetaFromRepr { value, .. } => self.collect_resource_cleanup_expr(value),
+            TExprKind::ActorSpawn {
+                state_arg, handler, ..
+            } => {
+                self.collect_resource_cleanup_expr(state_arg);
+                self.collect_resource_cleanup_expr(handler);
+            }
+            TExprKind::ActorSend { actor, value, .. } => {
+                self.collect_resource_cleanup_expr(actor);
+                self.collect_resource_cleanup_expr(value);
+            }
+            TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
+                self.collect_resource_cleanup_expr(actor);
+            }
+            TExprKind::Local(..)
+            | TExprKind::Function(..)
+            | TExprKind::GenericFunction { .. }
+            | TExprKind::Literal(_)
+            | TExprKind::TypeSize { .. }
+            | TExprKind::TypeAlign { .. } => {}
+        }
+    }
+
+    fn collect_resource_cleanup_ty(&mut self, ty: &Ty) {
+        if !self.type_is_affine(ty) {
+            return;
+        }
+        let key = mangle_ty_fragment(ty);
+        self.plan
+            .resource_cleanup_tys
+            .entry(key)
+            .or_insert_with(|| ty.clone());
+        match ty {
+            Ty::Array { elem, .. } => self.collect_resource_cleanup_ty(elem),
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                    .is_some()
+                {
+                    return;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .cloned()
+                {
+                    for (_, field_ty) in strukt.fields {
+                        self.collect_resource_cleanup_ty(&field_ty);
+                    }
+                }
+                if let Some(enm) = self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+                {
+                    for variant in enm.variants {
+                        for payload_ty in variant.payload {
+                            self.collect_resource_cleanup_ty(&payload_ty);
+                        }
+                    }
+                }
+            }
+            Ty::ClosureInstance { captures, .. } => {
+                for capture in captures {
+                    self.collect_resource_cleanup_ty(capture);
+                }
+            }
+            Ty::GeneratedFuture { output, .. } => self.collect_resource_cleanup_ty(output),
+            _ => {}
+        }
     }
 
     fn aggregate_layout_order(&self) -> Vec<AggregateLayoutRef> {
@@ -985,7 +1329,9 @@ impl<'a> CGenerator<'a> {
                     self.collect_stmt_array_returns(stmt);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => self.collect_expr_array_returns(expr),
+            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
+                self.collect_expr_array_returns(expr);
+            }
             TStmtKind::Return(expr) => {
                 if let Some(expr) = expr {
                     self.collect_expr_array_returns(expr);
@@ -1014,7 +1360,8 @@ impl<'a> CGenerator<'a> {
     fn collect_expr_array_returns(&mut self, expr: &TExpr) {
         self.collect_ty_array_returns(&expr.ty);
         match &expr.kind {
-            TExprKind::Unary { expr, .. }
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
             | TExprKind::Cast { expr, .. }
             | TExprKind::ArrayToSlice(expr)
             | TExprKind::SliceToConst(expr)
@@ -1073,6 +1420,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_array_returns(arg);
                 }
             }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_array_returns(value),
             TExprKind::Field { base, .. }
             | TExprKind::Arrow { base, .. }
             | TExprKind::MetaAsRefRepr { value: base, .. }
@@ -1378,7 +1726,10 @@ impl<'a> CGenerator<'a> {
                     self.collect_stmt_closures(owner, stmt);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
                 self.collect_expr_closures(owner, expr);
             }
             TStmtKind::Return(None)
@@ -1456,9 +1807,9 @@ impl<'a> CGenerator<'a> {
                 self.collect_retained_closure_witnesses(&expr.ty, source_ty, expr.span);
                 self.collect_expr_closures(owner, inner);
             }
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
-                self.collect_expr_closures(owner, expr)
-            }
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.collect_expr_closures(owner, expr),
             TExprKind::Try { expr, .. } => self.collect_expr_closures(owner, expr),
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.collect_expr_closures(owner, future);
@@ -1584,6 +1935,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_closures(owner, arg);
                 }
             }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_closures(owner, value),
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_closures(owner, base)
             }
@@ -1782,9 +2134,10 @@ impl<'a> CGenerator<'a> {
                         self.collect_stmt_dynamic(stmt);
                     }
                 }
-                TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-                    self.collect_expr_dynamic(expr)
-                }
+                TStmtKind::Defer(expr)
+                | TStmtKind::ResourceCleanup(expr)
+                | TStmtKind::Return(Some(expr))
+                | TStmtKind::Expr(expr) => self.collect_expr_dynamic(expr),
                 TStmtKind::Return(None)
                 | TStmtKind::Break
                 | TStmtKind::Continue
@@ -1843,9 +2196,10 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_dynamic(arg);
                 }
             }
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
-                self.collect_expr_dynamic(expr)
-            }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_dynamic(value),
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.collect_expr_dynamic(expr),
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr_dynamic(expr);
                 if matches!(propagation, TryPropagation::ErrorBox)
@@ -2170,7 +2524,10 @@ impl<'a> CGenerator<'a> {
                     self.collect_stmt_locations(stmt);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
                 self.collect_expr_locations(expr);
             }
             TStmtKind::Return(None)
@@ -2198,9 +2555,9 @@ impl<'a> CGenerator<'a> {
     fn collect_expr_locations(&mut self, expr: &TExpr) {
         self.register_source_location(expr.span);
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
-                self.collect_expr_locations(expr)
-            }
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::Try { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.collect_expr_locations(future);
@@ -2263,6 +2620,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_locations(arg);
                 }
             }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_locations(value),
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_locations(base)
             }
@@ -2422,9 +2780,10 @@ impl<'a> CGenerator<'a> {
                         self.collect_stmt_string_literals(stmt);
                     }
                 }
-                TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-                    self.collect_expr_string_literals(expr)
-                }
+                TStmtKind::Defer(expr)
+                | TStmtKind::ResourceCleanup(expr)
+                | TStmtKind::Return(Some(expr))
+                | TStmtKind::Expr(expr) => self.collect_expr_string_literals(expr),
                 TStmtKind::Return(None)
                 | TStmtKind::Break
                 | TStmtKind::Continue
@@ -2463,9 +2822,9 @@ impl<'a> CGenerator<'a> {
                 .insert(span_key(expr.span), raw.clone());
         }
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
-                self.collect_expr_string_literals(expr)
-            }
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::Try { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.collect_expr_string_literals(future);
@@ -2530,6 +2889,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_string_literals(arg);
                 }
             }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_string_literals(value),
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_string_literals(base)
             }
@@ -2667,9 +3027,10 @@ impl<'a> CGenerator<'a> {
                         self.collect_stmt_slices(stmt);
                     }
                 }
-                TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-                    self.collect_expr_slices(expr)
-                }
+                TStmtKind::Defer(expr)
+                | TStmtKind::ResourceCleanup(expr)
+                | TStmtKind::Return(Some(expr))
+                | TStmtKind::Expr(expr) => self.collect_expr_slices(expr),
                 TStmtKind::Return(None)
                 | TStmtKind::Break
                 | TStmtKind::Continue
@@ -2705,9 +3066,9 @@ impl<'a> CGenerator<'a> {
     fn collect_expr_slices(&mut self, expr: &TExpr) {
         self.collect_ty_slice(&expr.ty);
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
-                self.collect_expr_slices(expr)
-            }
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.collect_expr_slices(expr),
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr_slices(expr);
                 if matches!(propagation, TryPropagation::ErrorBox)
@@ -2864,6 +3225,7 @@ impl<'a> CGenerator<'a> {
                     self.collect_expr_slices(arg);
                 }
             }
+            TExprKind::CloneMessage { value, .. } => self.collect_expr_slices(value),
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_slices(base)
             }
@@ -2969,7 +3331,7 @@ impl<'a> CGenerator<'a> {
             .unwrap_or_default();
         locals
             .into_iter()
-            .filter(|(id, _)| live_across_await.contains(id))
+            .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
             .map(|(id, ty)| AsyncFrameLocal {
                 id,
                 ty,
@@ -3009,7 +3371,7 @@ impl<'a> CGenerator<'a> {
             .unwrap_or_default();
         locals
             .into_iter()
-            .filter(|(id, _)| live_across_await.contains(id))
+            .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
             .map(|(id, ty)| AsyncFrameLocal {
                 id,
                 ty,
@@ -3105,7 +3467,10 @@ impl<'a> CGenerator<'a> {
                     self.collect_async_frame_locals_stmt(stmt, out, seen);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
                 self.collect_async_frame_locals_expr(expr, out, seen);
             }
             TStmtKind::Return(None)
@@ -3285,7 +3650,7 @@ impl<'a> CGenerator<'a> {
                 live.extend(Self::async_expr_used_locals(expr));
                 live
             }
-            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
                 let mut live = live_after;
                 self.async_collect_live_awaits_in_expr(expr, &live, out);
                 live.extend(Self::async_expr_used_locals(expr));
@@ -3500,9 +3865,15 @@ impl<'a> CGenerator<'a> {
                 ..
             } => {
                 self.collect_async_defer_args_expr(expr, out);
+                let mut grouped = BTreeMap::<usize, Vec<&crate::thir::TCase>>::new();
                 for case in cases {
-                    for stmt in &case.statements {
-                        self.collect_async_defer_args_stmt(stmt, out);
+                    grouped.entry(case.variant_index).or_default().push(case);
+                }
+                for (_, cases) in grouped {
+                    for case in cases {
+                        for stmt in &case.statements {
+                            self.collect_async_defer_args_stmt(stmt, out);
+                        }
                     }
                 }
                 for stmt in default {
@@ -3521,6 +3892,9 @@ impl<'a> CGenerator<'a> {
                 } else {
                     self.collect_async_defer_args_expr(expr, out);
                 }
+            }
+            TStmtKind::ResourceCleanup(expr) => {
+                self.collect_async_defer_args_expr(expr, out);
             }
             TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
                 self.collect_async_defer_args_expr(expr, out);
@@ -3619,16 +3993,25 @@ impl<'a> CGenerator<'a> {
                 ..
             } => {
                 self.collect_async_await_output_tys_expr(expr, out);
+                let mut grouped = BTreeMap::<usize, Vec<&crate::thir::TCase>>::new();
                 for case in cases {
-                    for stmt in &case.statements {
-                        self.collect_async_await_output_tys_stmt(stmt, out);
+                    grouped.entry(case.variant_index).or_default().push(case);
+                }
+                for (_, cases) in grouped {
+                    for case in cases {
+                        for stmt in &case.statements {
+                            self.collect_async_await_output_tys_stmt(stmt, out);
+                        }
                     }
                 }
                 for stmt in default {
                     self.collect_async_await_output_tys_stmt(stmt, out);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
                 self.collect_async_await_output_tys_expr(expr, out);
             }
             TStmtKind::Return(None)
@@ -4015,6 +4398,7 @@ impl<'a> CGenerator<'a> {
                 std::slice::from_ref(&context.output_ty),
                 &context.op_ty,
             )?;
+            let op_cleanup = self.resource_cleanup_call(&context.op_ty, "ctx->op_value");
             self.line(&format!(
                 "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
             ));
@@ -4030,6 +4414,7 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "if (ctx->op == NULL) {");
             self.line_indent(2, &format!("void *raw = {raw_impl}(&ctx->op_value);"));
             self.line_indent(2, "if (raw == NULL) {");
+            self.line_indent(3, &format!("{op_cleanup};"));
             self.line_indent(
                 3,
                 &format!(
@@ -4045,7 +4430,7 @@ impl<'a> CGenerator<'a> {
             let poll_value = if context.output_ty.is_erased_value() {
                 self.line_indent(
                     1,
-                    &format!("int32_t rc = {poll_impl}(ctx->op_value, NULL);"),
+                    &format!("int32_t rc = {poll_impl}(&ctx->op_value, NULL);"),
                 );
                 None
             } else {
@@ -4054,7 +4439,7 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(1, &format!("memset(&{value}, 0, sizeof({value}));"));
                 self.line_indent(
                     1,
-                    &format!("int32_t rc = {poll_impl}(ctx->op_value, &{value});"),
+                    &format!("int32_t rc = {poll_impl}(&ctx->op_value, &{value});"),
                 );
                 Some(value)
             };
@@ -4063,6 +4448,7 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "}");
             self.line_indent(1, "ciel_future_clear_operation(ctx->future, ctx->op);");
             self.line_indent(1, "ctx->op = NULL;");
+            self.line_indent(1, &format!("{op_cleanup};"));
             self.line_indent(1, "if (rc == 0) {");
             if let Some(value) = poll_value.as_deref() {
                 self.line_indent(
@@ -4091,9 +4477,12 @@ impl<'a> CGenerator<'a> {
             ));
             self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
             self.line_indent(1, "(void)reason;");
-            self.line_indent(1, "if (ctx == NULL || ctx->op == NULL) return;");
-            self.line_indent(1, "(void)ciel_async_cancel(ctx->op);");
-            self.line_indent(1, "ctx->op = NULL;");
+            self.line_indent(1, "if (ctx == NULL) return;");
+            self.line_indent(1, "if (ctx->op != NULL) {");
+            self.line_indent(2, "(void)ciel_async_cancel(ctx->op);");
+            self.line_indent(2, "ctx->op = NULL;");
+            self.line_indent(1, "}");
+            self.line_indent(1, &format!("{op_cleanup};"));
             self.line("}");
         }
         Ok(())
@@ -4426,6 +4815,7 @@ impl<'a> CGenerator<'a> {
         self.line(&format!("{} {{", self.function_decl(function, false)));
         self.defer_stack.clear();
         self.loop_defer_starts.clear();
+        self.break_defer_starts.clear();
         self.current_return_ty = function.ret.clone();
         self.current_heap_locals = self
             .escapes
@@ -4437,6 +4827,17 @@ impl<'a> CGenerator<'a> {
             .params
             .iter()
             .filter_map(|(local_id, name, _)| local_id.map(|id| (id, name.clone())))
+            .collect();
+        self.current_owned_resource_roots = function
+            .params
+            .iter()
+            .filter_map(|(local_id, name, ty)| {
+                if self.type_is_affine(ty) {
+                    local_id.map(|id| (ty.clone(), self.local_value_expr(id, name)))
+                } else {
+                    None
+                }
+            })
             .collect();
         self.current_closure_owner = Some(function.def_id);
         let falls_through = self.gen_block_inner(body, 1)?;
@@ -4451,6 +4852,7 @@ impl<'a> CGenerator<'a> {
         }
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
+        self.current_owned_resource_roots.clear();
         self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.line("}");
@@ -4517,6 +4919,7 @@ impl<'a> CGenerator<'a> {
         ));
         self.defer_stack.clear();
         self.loop_defer_starts.clear();
+        self.break_defer_starts.clear();
         self.current_return_ty = function.ret.clone();
         self.current_async_output = Some("out_raw".to_string());
         self.current_async_context = Some("ctx".to_string());
@@ -4553,6 +4956,19 @@ impl<'a> CGenerator<'a> {
             .enumerate()
             .filter_map(|(idx, (local_id, _, _))| local_id.map(|id| (id, format!("ctx->arg{idx}"))))
             .collect();
+        self.current_owned_resource_roots = function
+            .params
+            .iter()
+            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .enumerate()
+            .filter_map(|(idx, (local_id, _, ty))| {
+                if self.type_is_affine(ty) {
+                    local_id.map(|_| (ty.clone(), format!("ctx->arg{idx}")))
+                } else {
+                    None
+                }
+            })
+            .collect();
         self.current_closure_owner = Some(function.def_id);
         self.line_indent(
             1,
@@ -4578,8 +4994,10 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "return 0;");
         }
         let cleanup_cases = self.current_async_cleanup_cases.clone();
+        let owned_resource_roots = self.current_owned_resource_roots.clone();
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
+        self.current_owned_resource_roots.clear();
         self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.current_async_output = None;
@@ -4590,7 +5008,7 @@ impl<'a> CGenerator<'a> {
         self.current_async_defer_arg_index = 0;
         self.current_async_cleanup_cases.clear();
         self.line("}");
-        self.emit_async_cleanup_function(&names, &cleanup_cases);
+        self.emit_async_cleanup_function(&names, &cleanup_cases, &owned_resource_roots);
         Ok(())
     }
 
@@ -4598,6 +5016,7 @@ impl<'a> CGenerator<'a> {
         &mut self,
         names: &AsyncFunctionNames,
         cleanup_cases: &[Vec<Vec<String>>],
+        owned_resource_roots: &[(Ty, String)],
     ) {
         self.line(&format!(
             "static void {}(void *ctx_raw, int32_t reason) {{",
@@ -4608,7 +5027,14 @@ impl<'a> CGenerator<'a> {
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
         );
         self.line_indent(1, "(void)reason;");
-        self.line_indent(1, "if (ctx == NULL || ctx->cleanup_state == 0) return;");
+        self.line_indent(1, "if (ctx == NULL) return;");
+        self.line_indent(1, "if (ctx->cleanup_state == 0) {");
+        for (ty, value) in owned_resource_roots.iter().rev() {
+            self.line_indent(2, &format!("{};", self.resource_cleanup_call(ty, value)));
+        }
+        self.line_indent(2, "ciel_future_clear_pending_operation(ctx->future);");
+        self.line_indent(2, "return;");
+        self.line_indent(1, "}");
         self.line_indent(1, "if (ctx->active_future != NULL) {");
         self.line_indent(2, "(void)ciel_future_abort(ctx->active_future);");
         self.line_indent(2, "ctx->active_future = NULL;");
@@ -4639,7 +5065,7 @@ impl<'a> CGenerator<'a> {
     }
 
     fn gen_block_inner(&mut self, block: &TBlock, indent: usize) -> DiagResult<bool> {
-        self.defer_stack.push(Vec::new());
+        self.push_owned_resource_root_scope();
         let mut falls_through = true;
         for stmt in &block.statements {
             if !self.gen_stmt(stmt, indent)? {
@@ -4652,6 +5078,15 @@ impl<'a> CGenerator<'a> {
         }
         self.defer_stack.pop();
         Ok(falls_through)
+    }
+
+    fn push_owned_resource_root_scope(&mut self) {
+        self.defer_stack.push(Vec::new());
+        if self.defer_stack.len() == 1 {
+            for (ty, value) in self.current_owned_resource_roots.clone() {
+                self.push_resource_cleanup_defer(&ty, &value);
+            }
+        }
     }
 
     fn gen_stmt(&mut self, stmt: &TStmt, indent: usize) -> DiagResult<bool> {
@@ -4682,12 +5117,20 @@ impl<'a> CGenerator<'a> {
                                 self.c_object_alloc_expr(ty)
                             ),
                         );
+                        if self.type_is_affine(ty) {
+                            self.line_indent(
+                                indent,
+                                &format!("memset({cname}, 0, sizeof(*{cname}));"),
+                            );
+                        }
                         if let Some(init) = init {
                             self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
                         }
                     } else if let Some(init) = init {
                         self.emit_expr_store(&cname, init, indent)?;
                     }
+                    let local_value = self.local_value_expr(*local_id, name);
+                    self.push_resource_cleanup_defer(ty, &local_value);
                     return Ok(true);
                 }
                 if self.local_is_heap(*local_id) {
@@ -4700,16 +5143,25 @@ impl<'a> CGenerator<'a> {
                             self.c_object_alloc_expr(ty)
                         ),
                     );
+                    if self.type_is_affine(ty) {
+                        self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
+                    }
                     if let Some(init) = init {
                         self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
                     }
+                    let local_value = self.local_value_expr(*local_id, name);
+                    self.push_resource_cleanup_defer(ty, &local_value);
                     return Ok(true);
                 }
                 if let Some(init) = init {
                     self.emit_local_decl_with_init(ty, &cname, init, indent)?;
+                } else if self.type_is_affine(ty) {
+                    self.line_indent(indent, &format!("{} = {{0}};", self.c_decl(ty, &cname)));
                 } else {
                     self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
                 }
+                let local_value = self.local_value_expr(*local_id, name);
+                self.push_resource_cleanup_defer(ty, &local_value);
                 Ok(true)
             }
             TStmtKind::Assign { target, value } => {
@@ -4720,8 +5172,7 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(indent, &format!("(void)({value});"));
                     return Ok(true);
                 }
-                let target = self.gen_expr_in_stmt(target, indent)?;
-                self.emit_expr_store(&target, value, indent)?;
+                self.emit_assignment(target, value, indent)?;
                 Ok(true)
             }
             TStmtKind::If {
@@ -4747,18 +5198,22 @@ impl<'a> CGenerator<'a> {
                     let cond = self.gen_expr_in_stmt(cond, indent + 1)?;
                     self.line_indent(indent + 1, &format!("if (!({cond})) break;"));
                     self.loop_defer_starts.push(self.defer_stack.len());
+                    self.break_defer_starts.push(self.defer_stack.len());
                     self.continue_targets.push(None);
                     self.gen_block(body, indent + 1)?;
                     self.continue_targets.pop();
+                    self.break_defer_starts.pop();
                     self.loop_defer_starts.pop();
                     self.line_indent(indent, "}");
                 } else {
                     let cond = self.gen_expr(cond)?;
                     self.line_indent(indent, &format!("while ({cond})"));
                     self.loop_defer_starts.push(self.defer_stack.len());
+                    self.break_defer_starts.push(self.defer_stack.len());
                     self.continue_targets.push(None);
                     self.gen_block(body, indent)?;
                     self.continue_targets.pop();
+                    self.break_defer_starts.pop();
                     self.loop_defer_starts.pop();
                 }
                 Ok(true)
@@ -4769,7 +5224,13 @@ impl<'a> CGenerator<'a> {
                 step,
                 body,
             } => {
-                if for_stmt_needs_stmt_lowering(init.as_ref(), cond.as_ref(), step.as_ref()) {
+                if for_stmt_needs_stmt_lowering(init.as_ref(), cond.as_ref(), step.as_ref())
+                    || self.for_stmt_needs_resource_lowering(
+                        init.as_ref(),
+                        cond.as_ref(),
+                        step.as_ref(),
+                    )
+                {
                     return self.gen_lowered_for_stmt(
                         init.as_ref(),
                         cond.as_ref(),
@@ -4806,9 +5267,11 @@ impl<'a> CGenerator<'a> {
                     .unwrap_or_default();
                 self.line_indent(indent, &format!("for ({init}; {cond}; {step})"));
                 self.loop_defer_starts.push(self.defer_stack.len());
+                self.break_defer_starts.push(self.defer_stack.len());
                 self.continue_targets.push(None);
                 self.gen_block(body, indent)?;
                 self.continue_targets.pop();
+                self.break_defer_starts.pop();
                 self.loop_defer_starts.pop();
                 Ok(true)
             }
@@ -4820,13 +5283,20 @@ impl<'a> CGenerator<'a> {
                 default,
                 can_fallthrough,
             } => {
-                let temp = self.next_temp("switch");
-                let expr_code = self.gen_expr_in_stmt(expr, indent)?;
-                self.line_indent(indent, &format!("{enum_type_name} {temp} = {expr_code};"));
+                let switch_is_affine = self.type_is_affine(&expr.ty);
+                let temp = if switch_is_affine {
+                    self.emit_temp_value("switch", expr, indent)?
+                } else {
+                    let temp = self.next_temp("switch");
+                    let expr_code = self.gen_expr_in_stmt(expr, indent)?;
+                    self.line_indent(indent, &format!("{enum_type_name} {temp} = {expr_code};"));
+                    temp
+                };
                 let matched = has_default.then(|| self.next_temp("matched"));
                 if let Some(matched) = &matched {
                     self.line_indent(indent, &format!("bool {matched} = false;"));
                 }
+                self.break_defer_starts.push(self.defer_stack.len());
                 self.line_indent(indent, &format!("switch ({temp}.tag) {{"));
                 let mut grouped = BTreeMap::<usize, Vec<&crate::thir::TCase>>::new();
                 for case in cases {
@@ -4851,7 +5321,12 @@ impl<'a> CGenerator<'a> {
                         if let Some(matched) = &matched {
                             self.line_indent(indent + 3, &format!("{matched} = true;"));
                         }
+                        self.defer_stack.push(Vec::new());
                         self.emit_pattern_bindings(&case.pattern, &temp, indent + 3)?;
+                        if switch_is_affine {
+                            let cleanup = self.resource_cleanup_call(&expr.ty, &temp);
+                            self.line_indent(indent + 3, &format!("{cleanup};"));
+                        }
                         let mut branch_falls_through = true;
                         for stmt in &case.statements {
                             if !self.gen_stmt(stmt, indent + 3)? {
@@ -4860,8 +5335,10 @@ impl<'a> CGenerator<'a> {
                             }
                         }
                         if branch_falls_through {
+                            self.emit_current_defers(indent + 3);
                             self.line_indent(indent + 3, "break;");
                         }
+                        self.defer_stack.pop();
                         self.line_indent(indent + 2, "}");
                     }
                     self.line_indent(indent + 2, "break;");
@@ -4870,13 +5347,25 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, "}");
                 if let Some(matched) = &matched {
                     self.line_indent(indent, &format!("if (!{matched}) {{"));
+                    self.defer_stack.push(Vec::new());
+                    if switch_is_affine {
+                        let cleanup = self.resource_cleanup_call(&expr.ty, &temp);
+                        self.line_indent(indent + 1, &format!("{cleanup};"));
+                    }
+                    let mut default_falls_through = true;
                     for stmt in default {
                         if !self.gen_stmt(stmt, indent + 1)? {
+                            default_falls_through = false;
                             break;
                         }
                     }
+                    if default_falls_through {
+                        self.emit_current_defers(indent + 1);
+                    }
+                    self.defer_stack.pop();
                     self.line_indent(indent, "}");
                 }
+                self.break_defer_starts.pop();
                 Ok(*can_fallthrough)
             }
             TStmtKind::Defer(expr) => {
@@ -4885,6 +5374,17 @@ impl<'a> CGenerator<'a> {
                     .last_mut()
                     .expect("defer stack is not empty")
                     .push(call);
+                Ok(true)
+            }
+            TStmtKind::ResourceCleanup(expr) => {
+                if self.type_is_affine(&expr.ty) {
+                    let value = self.gen_expr_in_stmt(expr, indent)?;
+                    let helper = self.resource_cleanup_name(&expr.ty);
+                    self.line_indent(indent, &format!("{helper}(&{value});"));
+                } else {
+                    let value = self.gen_expr_in_stmt(expr, indent)?;
+                    self.line_indent(indent, &format!("(void)({value});"));
+                }
                 Ok(true)
             }
             TStmtKind::Return(expr) => {
@@ -4928,7 +5428,7 @@ impl<'a> CGenerator<'a> {
                 Ok(false)
             }
             TStmtKind::Break => {
-                self.emit_loop_defers(indent);
+                self.emit_break_defers(indent);
                 self.line_indent(indent, "break;");
                 Ok(false)
             }
@@ -4943,8 +5443,7 @@ impl<'a> CGenerator<'a> {
             }
             TStmtKind::Expr(expr) => {
                 let terminates = expr.is_never();
-                let expr = self.gen_expr_in_stmt(expr, indent)?;
-                self.line_indent(indent, &format!("(void)({expr});"));
+                self.emit_expr_statement(expr, indent)?;
                 Ok(!terminates)
             }
             TStmtKind::Unsupported => Err(vec![Diagnostic::new(
@@ -5015,6 +5514,11 @@ impl<'a> CGenerator<'a> {
                     } else {
                         self.emit_value_copy(&cname, value_expr, ty, indent);
                     }
+                    if self.type_is_affine(ty) {
+                        self.emit_resource_zero_expr(ty, value_expr, indent);
+                        let local_value = self.local_value_expr(*local_id, name);
+                        self.push_resource_cleanup_defer(ty, &local_value);
+                    }
                     return Ok(());
                 }
                 if self.local_is_heap(*local_id) {
@@ -5031,6 +5535,11 @@ impl<'a> CGenerator<'a> {
                 } else {
                     self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
                     self.emit_value_copy(&cname, value_expr, ty, indent);
+                }
+                if self.type_is_affine(ty) {
+                    self.emit_resource_zero_expr(ty, value_expr, indent);
+                    let local_value = self.local_value_expr(*local_id, name);
+                    self.push_resource_cleanup_defer(ty, &local_value);
                 }
             }
             TPattern::Variant {
@@ -5075,6 +5584,10 @@ impl<'a> CGenerator<'a> {
                         temp
                     };
                     self.emit_pattern_bindings(payload_pattern, &child, indent)?;
+                    if source_ty != payload_pattern.ty() && self.type_is_affine(source_ty) {
+                        let source_child = format!("{value_expr}.as.{variant_name}._{idx}");
+                        self.emit_resource_zero_expr(source_ty, &source_child, indent);
+                    }
                 }
             }
         }
@@ -5161,6 +5674,32 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn for_stmt_needs_resource_lowering(
+        &self,
+        init: Option<&TForInit>,
+        cond: Option<&TExpr>,
+        step: Option<&TForInit>,
+    ) -> bool {
+        init.is_some_and(|clause| self.for_clause_needs_resource_lowering(clause))
+            || cond.is_some_and(|expr| self.type_is_affine(&expr.ty))
+            || step.is_some_and(|clause| self.for_clause_needs_resource_lowering(clause))
+    }
+
+    fn for_clause_needs_resource_lowering(&self, clause: &TForInit) -> bool {
+        match clause {
+            TForInit::VarDecl { ty, init, .. } => {
+                self.type_is_affine(ty)
+                    || init
+                        .as_ref()
+                        .is_some_and(|expr| self.type_is_affine(&expr.ty))
+            }
+            TForInit::Assign { target, value } => {
+                self.type_is_affine(&target.ty) || self.type_is_affine(&value.ty)
+            }
+            TForInit::Expr(expr) => self.type_is_affine(&expr.ty),
+        }
+    }
+
     fn gen_lowered_for_stmt(
         &mut self,
         init: Option<&TForInit>,
@@ -5170,6 +5709,7 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<bool> {
         self.line_indent(indent, "{");
+        self.defer_stack.push(Vec::new());
         if let Some(init) = init {
             self.gen_for_init_stmt(init, indent + 1)?;
         }
@@ -5181,15 +5721,19 @@ impl<'a> CGenerator<'a> {
         }
         let step_label = self.next_temp("for_step");
         self.loop_defer_starts.push(self.defer_stack.len());
+        self.break_defer_starts.push(self.defer_stack.len());
         self.continue_targets.push(Some(step_label.clone()));
         self.gen_block(body, indent + 2)?;
         self.continue_targets.pop();
+        self.break_defer_starts.pop();
         self.loop_defer_starts.pop();
         self.line_indent(indent + 2, &format!("{step_label}:;"));
         if let Some(step) = step {
             self.gen_for_init_stmt(step, indent + 2)?;
         }
         self.line_indent(indent + 1, "}");
+        self.emit_current_defers(indent + 1);
+        self.defer_stack.pop();
         self.line_indent(indent, "}");
         Ok(true)
     }
@@ -5221,9 +5765,13 @@ impl<'a> CGenerator<'a> {
                 }
                 if let Some(init) = init {
                     self.emit_local_decl_with_init(ty, &cname, init, indent)?;
+                } else if self.type_is_affine(ty) {
+                    self.line_indent(indent, &format!("{} = {{0}};", self.c_decl(ty, &cname)));
                 } else {
                     self.line_indent(indent, &format!("{};", self.c_decl(ty, &cname)));
                 }
+                let local_value = self.local_value_expr(*local_id, name);
+                self.push_resource_cleanup_defer(ty, &local_value);
                 Ok(())
             }
             TForInit::Assign { target, value } => {
@@ -5234,13 +5782,11 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(indent, &format!("(void)({value});"));
                     return Ok(());
                 }
-                let target = self.gen_expr_in_stmt(target, indent)?;
-                self.emit_expr_store(&target, value, indent)?;
+                self.emit_assignment(target, value, indent)?;
                 Ok(())
             }
             TForInit::Expr(expr) => {
-                let value = self.gen_expr_in_stmt(expr, indent)?;
-                self.line_indent(indent, &format!("(void)({value});"));
+                self.emit_expr_statement(expr, indent)?;
                 Ok(())
             }
         }
@@ -5265,12 +5811,17 @@ impl<'a> CGenerator<'a> {
                         self.c_object_alloc_expr(ty)
                     ),
                 );
+                if self.type_is_affine(ty) {
+                    self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
+                }
                 if let Some(init) = init {
                     self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
                 }
             } else if let Some(init) = init {
                 self.emit_expr_store(&cname, init, indent)?;
             }
+            let local_value = self.local_value_expr(local_id, name);
+            self.push_resource_cleanup_defer(ty, &local_value);
             return Ok(());
         }
         self.line_indent(
@@ -5282,9 +5833,14 @@ impl<'a> CGenerator<'a> {
                 self.c_object_alloc_expr(ty)
             ),
         );
+        if self.type_is_affine(ty) {
+            self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
+        }
         if let Some(init) = init {
             self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
         }
+        let local_value = self.local_value_expr(local_id, name);
+        self.push_resource_cleanup_defer(ty, &local_value);
         Ok(())
     }
 
@@ -5351,6 +5907,25 @@ impl<'a> CGenerator<'a> {
                         cname
                     }
                 }
+            }
+            TExprKind::Move(inner) => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "resource move needs statement lowering",
+                    )]);
+                };
+                if inner.ty.is_erased_value() {
+                    let value = self.gen_expr_in_stmt(inner, indent)?;
+                    self.line_indent(indent, &format!("(void)({value});"));
+                    return Ok("((void)0)".to_string());
+                }
+                let source = self.gen_expr_in_stmt(inner, indent)?;
+                let temp = self.next_temp("resource_move");
+                self.line_indent(indent, &format!("{};", self.c_decl(&inner.ty, &temp)));
+                self.emit_value_copy(&temp, &source, &inner.ty, indent);
+                self.emit_resource_zero_expr(&inner.ty, &source, indent);
+                temp
             }
             TExprKind::Function(def_id, name) => self
                 .plan
@@ -5589,6 +6164,9 @@ impl<'a> CGenerator<'a> {
                 }
             }
             TExprKind::Cast { expr, ty } => {
+                if expr.ty == *ty && !matches!(expr.kind, TExprKind::ArrayLiteral(_)) {
+                    return self.gen_expr_with_lowering(expr, stmt_indent);
+                }
                 format!(
                     "(({}){})",
                     self.c_type(ty),
@@ -5596,6 +6174,15 @@ impl<'a> CGenerator<'a> {
                 )
             }
             TExprKind::Call { callee, args, .. } => {
+                if self.std_resource_transfer_before_owner_close_call(callee) {
+                    let Some(indent) = stmt_indent else {
+                        return Err(vec![Diagnostic::new(
+                            expr.span,
+                            "resource owner transfer hook needs statement lowering",
+                        )]);
+                    };
+                    return self.emit_resource_transfer_before_owner_close_call(expr, args, indent);
+                }
                 if matches!(&callee.kind, TExprKind::Function(_, name) if name == "ciel_panic")
                     && args.len() == 2
                 {
@@ -5612,6 +6199,18 @@ impl<'a> CGenerator<'a> {
                 if matches!(callee.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. }) {
                     let call = self.emit_closure_call(callee, args, stmt_indent)?;
                     return self.emit_array_call_value(expr, call, stmt_indent);
+                }
+                if let Some(scoped) = self.std_resource_scoped_call(callee)
+                    && result_args(&self.program.checked.resolved, &expr.ty)
+                        .is_some_and(|(ok_ty, _)| self.type_is_affine(ok_ty))
+                {
+                    let Some(indent) = stmt_indent else {
+                        return Err(vec![Diagnostic::new(
+                            expr.span,
+                            "resource scoped call needs statement lowering",
+                        )]);
+                    };
+                    return self.emit_resource_scoped_call(expr, args, scoped, indent);
                 }
                 let callee = self.gen_expr_with_lowering(callee, stmt_indent)?;
                 let args = self.gen_call_args(args, stmt_indent)?.join(", ");
@@ -5723,6 +6322,21 @@ impl<'a> CGenerator<'a> {
                     stmt_indent,
                 )?;
                 self.emit_array_call_value(expr, call, stmt_indent)?
+            }
+            TExprKind::CloneMessage { value, message_ty } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "clone_message needs statement lowering",
+                    )]);
+                };
+                let source_ptr = self.gen_expr_with_lowering(value, Some(indent))?;
+                self.emit_task_boundary_clone_result_from_ptr(
+                    message_ty,
+                    &source_ptr,
+                    indent,
+                    expr.span,
+                )?
             }
             TExprKind::Field { base, field } => {
                 if expr.ty.is_erased_value() {
@@ -6266,10 +6880,139 @@ impl<'a> CGenerator<'a> {
         {
             return Ok(value);
         }
+        if let Some(value) =
+            self.storage_equivalent_value_initializer(source_ty, target_ty, source_expr, span)?
+        {
+            return Ok(value);
+        }
         Err(vec![Diagnostic::new(
             span,
             format!("internal error: cannot adapt value `{source_ty}` to `{target_ty}`"),
         )])
+    }
+
+    fn storage_types_equivalent(&self, left: &Ty, right: &Ty) -> bool {
+        if left == right || self.c_type(left) == self.c_type(right) {
+            return true;
+        }
+        match (left, right) {
+            (
+                Ty::Named {
+                    name: left_name,
+                    args: left_args,
+                },
+                Ty::Named {
+                    name: right_name,
+                    args: right_args,
+                },
+            ) => {
+                left_name == right_name
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| self.storage_types_equivalent(left, right))
+            }
+            (
+                Ty::Array {
+                    len: left_len,
+                    elem: left_elem,
+                },
+                Ty::Array {
+                    len: right_len,
+                    elem: right_elem,
+                },
+            ) => left_len == right_len && self.storage_types_equivalent(left_elem, right_elem),
+            (
+                Ty::Pointer {
+                    nullable: left_nullable,
+                    mutability: left_mutability,
+                    inner: left_inner,
+                },
+                Ty::Pointer {
+                    nullable: right_nullable,
+                    mutability: right_mutability,
+                    inner: right_inner,
+                },
+            ) => {
+                left_nullable == right_nullable
+                    && left_mutability == right_mutability
+                    && self.storage_types_equivalent(left_inner, right_inner)
+            }
+            _ => false,
+        }
+    }
+
+    fn storage_equivalent_value_initializer(
+        &mut self,
+        source_ty: &Ty,
+        target_ty: &Ty,
+        source_expr: &str,
+        span: Option<crate::span::Span>,
+    ) -> DiagResult<Option<String>> {
+        if !self.storage_types_equivalent(source_ty, target_ty) {
+            return Ok(None);
+        }
+        if source_ty == target_ty || self.c_type(source_ty) == self.c_type(target_ty) {
+            return Ok(Some(
+                self.value_or_initializer_from_expr(target_ty, source_expr),
+            ));
+        }
+        let (
+            Ty::Named {
+                name: source_name, ..
+            },
+            Ty::Named {
+                name: target_name, ..
+            },
+        ) = (source_ty, target_ty)
+        else {
+            return Ok(None);
+        };
+        if source_name != target_name {
+            return Ok(None);
+        }
+        let fallback_span =
+            span.unwrap_or_else(|| crate::span::Span::new(crate::span::FileId(0), 0, 0));
+        let source_fields = match self.struct_fields_for_ty(fallback_span, source_ty) {
+            Ok(fields) => fields,
+            Err(_) => return Ok(None),
+        };
+        let target_fields = match self.struct_fields_for_ty(fallback_span, target_ty) {
+            Ok(fields) => fields,
+            Err(_) => return Ok(None),
+        };
+        if source_fields.len() != target_fields.len() {
+            return Ok(None);
+        }
+        let mut fields = Vec::new();
+        for ((source_field, source_field_ty), (target_field, target_field_ty)) in
+            source_fields.iter().zip(target_fields.iter())
+        {
+            if source_field != target_field {
+                return Ok(None);
+            }
+            if target_field_ty.is_erased_value() {
+                continue;
+            }
+            if source_field_ty.is_erased_value() {
+                return Ok(None);
+            }
+            let source_field_expr = format!("({source_expr}).{source_field}");
+            let value = self.value_initializer_for_type(
+                source_field_ty,
+                target_field_ty,
+                &source_field_expr,
+                span,
+            )?;
+            fields.push(format!(".{target_field} = {value}"));
+        }
+        let c_type = self.c_type(target_ty);
+        Ok(Some(if fields.is_empty() {
+            format!("({c_type}){{0}}")
+        } else {
+            format!("({c_type}){{ {} }}", fields.join(", "))
+        }))
     }
 
     fn policy_leaf_value_initializer(
@@ -6366,6 +7109,41 @@ impl<'a> CGenerator<'a> {
         }
         let source = self.gen_expr_in_stmt(value, indent)?;
         self.emit_value_copy(target, &source, &value.ty, indent);
+        Ok(())
+    }
+
+    fn emit_assignment(&mut self, target: &TExpr, value: &TExpr, indent: usize) -> DiagResult<()> {
+        if self.type_is_affine(&target.ty) {
+            let source = self.emit_temp_value("resource_assign", value, indent)?;
+            let target_code = self.gen_expr_in_stmt(target, indent)?;
+            let cleanup = self.resource_cleanup_call(&target.ty, &target_code);
+            self.line_indent(indent, &format!("{cleanup};"));
+            self.emit_value_copy(&target_code, &source, &target.ty, indent);
+            return Ok(());
+        }
+        let target_code = self.gen_expr_in_stmt(target, indent)?;
+        self.emit_expr_store(&target_code, value, indent)
+    }
+
+    fn emit_expr_statement(&mut self, expr: &TExpr, indent: usize) -> DiagResult<()> {
+        if self.type_is_affine(&expr.ty) {
+            let value = match &expr.kind {
+                TExprKind::Move(_)
+                | TExprKind::Local(..)
+                | TExprKind::Field { .. }
+                | TExprKind::Arrow { .. }
+                | TExprKind::Index { .. }
+                | TExprKind::Unary {
+                    op: UnaryOp::Deref, ..
+                } => self.gen_expr_in_stmt(expr, indent)?,
+                _ => self.emit_temp_value("resource_expr", expr, indent)?,
+            };
+            let cleanup = self.resource_cleanup_call(&expr.ty, &value);
+            self.line_indent(indent, &format!("{cleanup};"));
+            return Ok(());
+        }
+        let value = self.gen_expr_in_stmt(expr, indent)?;
+        self.line_indent(indent, &format!("(void)({value});"));
         Ok(())
     }
 
@@ -6731,6 +7509,51 @@ impl<'a> CGenerator<'a> {
                 .collect::<Vec<_>>(),
             "Field",
         ))
+    }
+
+    fn meta_borrowed_repr_ty(&self, span: crate::span::Span, ty: &Ty) -> DiagResult<Ty> {
+        match ty {
+            Ty::Array { len, elem } => Ok(meta_ref_array_repr_ty(*len, elem)),
+            Ty::Named { .. } => {
+                if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
+                    return Ok(meta_product_ty(
+                        fields
+                            .iter()
+                            .map(|(_, field_ty)| meta_repr_borrowed_array_leaf_ty(field_ty))
+                            .collect::<Vec<_>>(),
+                        "FieldRef",
+                    ));
+                }
+                if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
+                    let variant_tys = variants
+                        .iter()
+                        .map(|variant| {
+                            variant
+                                .payload
+                                .iter()
+                                .map(meta_repr_borrowed_array_leaf_ty)
+                                .collect::<Vec<_>>()
+                        })
+                        .collect::<Vec<_>>();
+                    return Ok(meta_sum_ty(variant_tys, true));
+                }
+                Err(vec![Diagnostic::new(
+                    span,
+                    format!("internal error: unsupported borrowed meta leaf `{ty}`"),
+                )])
+            }
+            Ty::ClosureInstance { .. } => {
+                let captures = self.meta_capture_fields_for_ty(span, ty)?;
+                Ok(meta_product_ty(
+                    captures
+                        .iter()
+                        .map(|capture| meta_repr_borrowed_array_leaf_ty(&capture.ty))
+                        .collect::<Vec<_>>(),
+                    "FieldRef",
+                ))
+            }
+            other => Ok(other.clone()),
+        }
     }
 
     fn meta_array_repr_item_expr(
@@ -7667,6 +8490,13 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, "}");
         if expr.ty.is_erased_value() || !inner_layout.ok_has_payload {
             Ok("((void)0)".to_string())
+        } else if self.type_is_affine(&expr.ty) {
+            let ok_source = format!("{temp}.as.{}._0", inner_layout.ok_name);
+            let ok_temp = self.next_temp("try_ok_move");
+            self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &ok_temp)));
+            self.emit_value_copy(&ok_temp, &ok_source, &expr.ty, indent);
+            self.emit_resource_zero_expr(&expr.ty, &ok_source, indent);
+            Ok(ok_temp)
         } else {
             Ok(format!("{temp}.as.{}._0", inner_layout.ok_name))
         }
@@ -8045,6 +8875,10 @@ impl<'a> CGenerator<'a> {
             &arm.future_output_ty,
             indent,
         );
+        if self.type_is_affine(&arm.future_output_ty) {
+            self.emit_resource_zero_expr(&arm.future_output_ty, &format!("*{value_ptr}"), indent);
+        }
+        self.push_resource_cleanup_defer(&arm.future_output_ty, &binding_expr);
         if let Some(task_output_ty) = self.task_output_ty_for_codegen(&arm.future.ty) {
             self.emit_task_await_output_clone(
                 &binding_expr,
@@ -8147,6 +8981,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("switch ({select_out}.index) {{"));
         for (index, arm) in arms.iter().enumerate() {
             self.line_indent(indent + 1, &format!("case {index}: {{"));
+            self.defer_stack.push(Vec::new());
             self.emit_select_arm_binding(arm, &set, index, &rc, indent + 2, expr.span)?;
             if let Some(result_temp) = result_temp.as_ref() {
                 self.emit_expr_store(result_temp, &arm.body, indent + 2)?;
@@ -8154,6 +8989,8 @@ impl<'a> CGenerator<'a> {
                 let value = self.gen_expr_in_stmt(&arm.body, indent + 2)?;
                 self.line_indent(indent + 2, &format!("(void)({value});"));
             }
+            self.emit_current_defers(indent + 2);
+            self.defer_stack.pop();
             self.line_indent(indent + 2, "break;");
             self.line_indent(indent + 1, "}");
         }
@@ -8967,6 +9804,56 @@ impl<'a> CGenerator<'a> {
         {
             return self.emit_clone_message_result_from_ptr(message_ty, source_ptr, indent, span);
         }
+        if let Ty::Named { name, args } = message_ty
+            && matches!(meta_repr_marker_name(name), Some(false))
+            && let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args)
+        {
+            let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
+            let result_layout = self.result_layout(&result_ty, span)?;
+            let result_temp = self.next_temp("task_boundary_repr_clone");
+            self.line_indent(
+                indent,
+                &format!("{};", self.c_decl(&result_ty, &result_temp)),
+            );
+
+            let repr_source_ptr = format!("(const {} *)({source_ptr})", self.c_type(&repr_ty));
+            let repr_clone =
+                self.emit_clone_message_result_from_ptr(&repr_ty, &repr_source_ptr, indent, span)?;
+            let repr_result_ty = std_result_ty(repr_ty.clone(), std_error_ty());
+            let repr_layout = self.result_layout(&repr_result_ty, span)?;
+            self.line_indent(
+                indent,
+                &format!("if ({repr_clone}.tag == {}) {{", repr_layout.err_index),
+            );
+            self.line_indent(
+                indent + 1,
+                &format!(
+                    "{result_temp} = {};",
+                    self.result_err_literal(&result_layout, &repr_layout, &repr_clone)
+                ),
+            );
+            self.line_indent(indent, "} else {");
+            if result_layout.ok_has_payload {
+                let ok_payload = format!("{repr_clone}.as.{}._0", repr_layout.ok_name);
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{result_temp} = {};",
+                        self.result_ok_literal(&result_layout, Some(&ok_payload))
+                    ),
+                );
+            } else {
+                self.line_indent(
+                    indent + 1,
+                    &format!(
+                        "{result_temp} = {};",
+                        self.result_ok_literal(&result_layout, None)
+                    ),
+                );
+            }
+            self.line_indent(indent, "}");
+            return Ok(result_temp);
+        }
         if !matches!(
             message_ty,
             Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
@@ -9140,7 +10027,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
 
         let state_src = self.emit_temp_value("actor_state_src", initial_state, indent)?;
-        let state_clone = self.emit_clone_message_result_from_ptr(
+        let state_clone = self.emit_task_boundary_clone_result_from_ptr(
             state_ty,
             &format!("&{state_src}"),
             indent,
@@ -9479,7 +10366,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
 
         let value_src = self.emit_temp_value("actor_msg_src", value, indent)?;
-        let clone_result = self.emit_clone_message_result_from_ptr(
+        let clone_result = self.emit_task_boundary_clone_result_from_ptr(
             message_ty,
             &format!("&{value_src}"),
             indent,
@@ -9600,6 +10487,234 @@ impl<'a> CGenerator<'a> {
     fn emit_actor_handle(&mut self, actor: &TExpr, indent: usize) -> DiagResult<String> {
         let actor_temp = self.emit_temp_value("actor_ref", actor, indent)?;
         Ok(format!("(CielActor *)({actor_temp}->handle)"))
+    }
+
+    fn std_resource_scoped_call(&self, callee: &TExpr) -> Option<ResourceScopedCall> {
+        let TExprKind::Function(def_id, _) = &callee.kind else {
+            return None;
+        };
+        let origin = self.program.generic_origins.get(def_id)?;
+        let def = self.program.checked.resolved.def(origin.template_def);
+        if std_id::is_std_resource_function(
+            &self.program.checked.resolved,
+            def.module,
+            &origin.template_name,
+            "scoped",
+        ) {
+            return Some(ResourceScopedCall::Default);
+        }
+        if std_id::is_std_resource_function(
+            &self.program.checked.resolved,
+            def.module,
+            &origin.template_name,
+            "scoped_with_limits",
+        ) {
+            return Some(ResourceScopedCall::WithLimits);
+        }
+        None
+    }
+
+    fn std_resource_transfer_before_owner_close_call(&self, callee: &TExpr) -> bool {
+        let TExprKind::Function(def_id, _) = &callee.kind else {
+            return false;
+        };
+        let Some(origin) = self.program.generic_origins.get(def_id) else {
+            return false;
+        };
+        let def = self.program.checked.resolved.def(origin.template_def);
+        std_id::is_std_resource_function(
+            &self.program.checked.resolved,
+            def.module,
+            &origin.template_name,
+            "transfer_to_parent_before_owner_close",
+        )
+    }
+
+    fn emit_resource_transfer_before_owner_close_call(
+        &mut self,
+        expr: &TExpr,
+        args: &[TExpr],
+        indent: usize,
+    ) -> DiagResult<String> {
+        if args.len() != 1 {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                "internal error: resource owner transfer hook has wrong arity",
+            )]);
+        }
+        let layout = self.result_layout(&expr.ty, expr.span)?;
+        let Ty::Pointer { inner, .. } = &args[0].ty else {
+            return Err(vec![Diagnostic::new(
+                args[0].span,
+                "internal error: resource owner transfer hook expects pointer argument",
+            )]);
+        };
+        let value_ty = inner.as_ref().clone();
+        let value = self.gen_expr_in_stmt(&args[0], indent)?;
+        let result = self.next_temp("resource_owner_transfer_result");
+        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result)));
+        self.line_indent(
+            indent,
+            &format!("{result} = {};", self.result_ok_literal(&layout, None)),
+        );
+        if self.type_is_affine(&value_ty) {
+            let transfer_rc = self.next_temp("resource_owner_transfer_rc");
+            let helper = self.resource_transfer_to_parent_name(&value_ty);
+            let value = format!("(({})({value}))", self.c_pointer_type(&value_ty));
+            self.line_indent(
+                indent,
+                &format!("int32_t {transfer_rc} = {helper}({value});"),
+            );
+            self.line_indent(indent, &format!("if ({transfer_rc} != 0) {{"));
+            self.line_indent(
+                indent + 1,
+                &format!(
+                    "{result} = {};",
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.error_code_literal(&transfer_rc)
+                    )
+                ),
+            );
+            self.line_indent(indent, "}");
+        } else {
+            self.line_indent(indent, &format!("(void)({value});"));
+        }
+        Ok(result)
+    }
+
+    fn emit_resource_scoped_call(
+        &mut self,
+        expr: &TExpr,
+        args: &[TExpr],
+        scoped: ResourceScopedCall,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let Some((ok_ty, _)) = result_args(&self.program.checked.resolved, &expr.ty) else {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                "internal error: resource scoped call must return Result",
+            )]);
+        };
+        let layout = self.result_layout(&expr.ty, expr.span)?;
+        let (limits_arg, body_arg) = match scoped {
+            ResourceScopedCall::Default => {
+                let Some(body) = args.first() else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: scoped call missing body",
+                    )]);
+                };
+                (None, body)
+            }
+            ResourceScopedCall::WithLimits => {
+                if args.len() != 2 {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: scoped_with_limits call has wrong arity",
+                    )]);
+                }
+                (Some(&args[0]), &args[1])
+            }
+        };
+
+        let result = self.next_temp("resource_scoped_result");
+        let body_result = self.next_temp("resource_scoped_body");
+        let push_rc = self.next_temp("resource_scoped_push_rc");
+        let close_rc = self.next_temp("resource_scoped_close_rc");
+        let transfer_rc = self.next_temp("resource_scoped_transfer_rc");
+        let done = self.next_temp("resource_scoped_done");
+        let body = self.emit_temp_value("resource_scoped_body_fn", body_arg, indent)?;
+        let limits = if let Some(limits_arg) = limits_arg {
+            Some(self.emit_temp_value("resource_scoped_limits", limits_arg, indent)?)
+        } else {
+            None
+        };
+
+        self.line_indent(
+            indent,
+            &format!("{} = {{0}};", self.c_decl(&expr.ty, &result)),
+        );
+        self.line_indent(
+            indent,
+            &format!("{} = {{0}};", self.c_decl(&expr.ty, &body_result)),
+        );
+        match limits {
+            Some(limits) => self.line_indent(
+                indent,
+                &format!(
+                    "int32_t {push_rc} = ciel_resource_scope_push_limits_raw({limits}.max_resources, {limits}.max_child_owners, {limits}.max_pending_ops, {limits}.max_descriptors);"
+                ),
+            ),
+            None => self.line_indent(
+                indent,
+                &format!("int32_t {push_rc} = ciel_resource_scope_push_default();"),
+            ),
+        }
+        self.line_indent(indent, &format!("if ({push_rc} != 0) {{"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result} = {};",
+                self.result_err_from_error_literal(&layout, &self.error_code_literal(&push_rc))
+            ),
+        );
+        self.line_indent(indent + 1, &format!("goto {done};"));
+        self.line_indent(indent, "}");
+
+        let body_call = self.callable_call_expr(&body_arg.ty, &body, &[])?;
+        self.line_indent(indent, &format!("{body_result} = {body_call};"));
+        self.line_indent(
+            indent,
+            &format!("if ({body_result}.tag == {}) {{", layout.ok_index),
+        );
+        let ok_value = format!("{body_result}.as.{}._0", layout.ok_name);
+        let transfer_helper = self.resource_transfer_to_parent_name(ok_ty);
+        self.line_indent(
+            indent + 1,
+            &format!("int32_t {transfer_rc} = {transfer_helper}(&{ok_value});"),
+        );
+        self.line_indent(
+            indent + 1,
+            &format!("int32_t {close_rc} = ciel_resource_scope_close_current();"),
+        );
+        self.line_indent(indent + 1, &format!("if ({transfer_rc} != 0) {{"));
+        let cleanup = self.resource_cleanup_call(ok_ty, &ok_value);
+        self.line_indent(indent + 2, &format!("{cleanup};"));
+        self.line_indent(
+            indent + 2,
+            &format!(
+                "{result} = {};",
+                self.result_err_from_error_literal(&layout, &self.error_code_literal(&transfer_rc))
+            ),
+        );
+        self.line_indent(indent + 2, &format!("goto {done};"));
+        self.line_indent(indent + 1, "}");
+        self.line_indent(indent + 1, &format!("if ({close_rc} != 0) {{"));
+        let cleanup = self.resource_cleanup_call(ok_ty, &ok_value);
+        self.line_indent(indent + 2, &format!("{cleanup};"));
+        self.line_indent(
+            indent + 2,
+            &format!(
+                "{result} = {};",
+                self.result_err_from_error_literal(&layout, &self.error_code_literal(&close_rc))
+            ),
+        );
+        self.line_indent(indent + 2, &format!("goto {done};"));
+        self.line_indent(indent + 1, "}");
+        self.line_indent(indent + 1, &format!("{result} = {body_result};"));
+        self.line_indent(indent + 1, &format!("goto {done};"));
+        self.line_indent(indent, "} else {");
+        self.line_indent(
+            indent + 1,
+            &format!("int32_t {close_rc} = ciel_resource_scope_close_current();"),
+        );
+        self.line_indent(indent + 1, &format!("(void){close_rc};"));
+        self.line_indent(indent + 1, &format!("{result} = {body_result};"));
+        self.line_indent(indent + 1, &format!("goto {done};"));
+        self.line_indent(indent, "}");
+        self.line_indent(indent, &format!("{done}:;"));
+        Ok(result)
     }
 
     fn gen_defer_call(&mut self, expr: &TExpr, indent: usize) -> DiagResult<String> {
@@ -9995,6 +11110,9 @@ impl<'a> CGenerator<'a> {
                 };
                 let value = self.gen_expr_in_stmt(&value, indent)?;
                 self.emit_value_copy(&format!("{temp}->cap{idx}"), &value, &capture.ty, indent);
+                if self.type_is_affine(&capture.ty) {
+                    self.emit_resource_zero_expr(&capture.ty, &value, indent);
+                }
             }
             format!("(void *){temp}")
         };
@@ -11251,14 +12369,14 @@ impl<'a> CGenerator<'a> {
         self.line(&format!("{} {{", self.closure_thunk_decl(closure)));
 
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, ret.clone());
-        let previous_heap_locals = std::mem::replace(
-            &mut self.current_heap_locals,
-            self.escapes
-                .functions
-                .get(&closure.owner)
-                .map(|escape| escape.heap_locals.clone())
-                .unwrap_or_default(),
-        );
+        let closure_heap_locals = self
+            .escapes
+            .functions
+            .get(&closure.owner)
+            .map(|escape| escape.heap_locals.clone())
+            .unwrap_or_default();
+        let previous_heap_locals =
+            std::mem::replace(&mut self.current_heap_locals, closure_heap_locals.clone());
         let previous_param_locals = std::mem::replace(
             &mut self.current_param_locals,
             closure
@@ -11266,13 +12384,44 @@ impl<'a> CGenerator<'a> {
                 .iter()
                 .filter(|(_, _, ty)| !ty.is_erased_value())
                 .enumerate()
-                .map(|(idx, (local_id, _, _))| (*local_id, format!("arg{idx}")))
+                .map(|(idx, (local_id, name, _))| {
+                    let cname = if closure_heap_locals.contains(local_id) {
+                        format!("{name}__{}", local_id.0)
+                    } else {
+                        format!("arg{idx}")
+                    };
+                    (*local_id, cname)
+                })
                 .collect(),
+        );
+        let closure_resource_roots = closure
+            .captures
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, capture)| {
+                self.type_is_affine(&capture.ty)
+                    .then(|| (capture.ty.clone(), format!("env->cap{idx}")))
+            })
+            .chain(
+                closure
+                    .params
+                    .iter()
+                    .filter(|(_, _, ty)| !ty.is_erased_value())
+                    .filter_map(|(local_id, name, ty)| {
+                        self.type_is_affine(ty)
+                            .then(|| (ty.clone(), self.local_value_expr(*local_id, name)))
+                    }),
+            )
+            .collect();
+        let previous_owned_resource_roots = std::mem::replace(
+            &mut self.current_owned_resource_roots,
+            closure_resource_roots,
         );
         let previous_capture_locals = std::mem::take(&mut self.current_capture_locals);
         let previous_closure_owner = self.current_closure_owner.replace(closure.owner);
         self.defer_stack.clear();
         self.loop_defer_starts.clear();
+        self.break_defer_starts.clear();
 
         if matches!(closure.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. })
             && !closure.captures.is_empty()
@@ -11287,16 +12436,40 @@ impl<'a> CGenerator<'a> {
                 .collect();
         }
 
+        for (idx, (local_id, name, ty)) in closure
+            .params
+            .iter()
+            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .enumerate()
+        {
+            if !self.local_is_heap(*local_id) {
+                continue;
+            }
+            let cname = self.local_c_name(*local_id, name);
+            self.line_indent(
+                1,
+                &format!(
+                    "{} = ({}){};",
+                    self.c_pointer_decl(ty, &cname),
+                    self.c_pointer_type(ty),
+                    self.c_object_alloc_expr(ty)
+                ),
+            );
+            if self.type_is_affine(ty) {
+                self.line_indent(1, &format!("memset({cname}, 0, sizeof(*{cname}));"));
+            }
+            self.emit_value_copy(&format!("(*{cname})"), &format!("arg{idx}"), ty, 1);
+            if self.type_is_affine(ty) {
+                self.line_indent(1, &format!("memset(&arg{idx}, 0, sizeof(arg{idx}));"));
+            }
+        }
+
         match &closure.body {
             TClosureBody::Expr(expr) => {
-                let value = self.gen_expr_in_stmt(expr, 1)?;
-                if ret.is_erased_value() {
-                    self.line_indent(1, &format!("(void)({value});"));
-                    self.line_indent(1, "return;");
-                } else {
-                    let value = self.emit_return_value(&ret, &value, 1);
-                    self.line_indent(1, &format!("return {value};"));
-                }
+                self.push_owned_resource_root_scope();
+                let result = self.emit_sync_closure_expr_return(expr, &ret, 1);
+                self.defer_stack.pop();
+                result?;
             }
             TClosureBody::Block(block) => {
                 let falls_through = self.gen_block_inner(block, 1)?;
@@ -11312,11 +12485,32 @@ impl<'a> CGenerator<'a> {
         self.current_return_ty = previous_return_ty;
         self.current_heap_locals = previous_heap_locals;
         self.current_param_locals = previous_param_locals;
+        self.current_owned_resource_roots = previous_owned_resource_roots;
         self.current_capture_locals = previous_capture_locals;
         self.current_closure_owner = previous_closure_owner;
         self.defer_stack.clear();
         self.loop_defer_starts.clear();
+        self.break_defer_starts.clear();
         self.line("}");
+        Ok(())
+    }
+
+    fn emit_sync_closure_expr_return(
+        &mut self,
+        expr: &TExpr,
+        ret: &Ty,
+        indent: usize,
+    ) -> DiagResult<()> {
+        let value = self.gen_expr_in_stmt(expr, indent)?;
+        if ret.is_erased_value() {
+            self.line_indent(indent, &format!("(void)({value});"));
+            self.emit_current_defers(indent);
+            self.line_indent(indent, "return;");
+        } else {
+            let value = self.emit_return_value(ret, &value, indent);
+            self.emit_current_defers(indent);
+            self.line_indent(indent, &format!("return {value};"));
+        }
         Ok(())
     }
 
@@ -11529,6 +12723,7 @@ impl<'a> CGenerator<'a> {
         ));
         self.defer_stack.clear();
         self.loop_defer_starts.clear();
+        self.break_defer_starts.clear();
         self.current_return_ty = output_ty.clone();
         self.current_async_output = Some("out_raw".to_string());
         self.current_async_context = Some("ctx".to_string());
@@ -11571,6 +12766,26 @@ impl<'a> CGenerator<'a> {
             .enumerate()
             .map(|(idx, capture)| (capture.local_id, format!("ctx->cap{idx}")))
             .collect();
+        self.current_owned_resource_roots = closure
+            .captures
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, capture)| {
+                self.type_is_affine(&capture.ty)
+                    .then(|| (capture.ty.clone(), format!("ctx->cap{idx}")))
+            })
+            .chain(
+                closure
+                    .params
+                    .iter()
+                    .filter(|(_, _, ty)| !ty.is_erased_value())
+                    .enumerate()
+                    .filter_map(|(idx, (_, _, ty))| {
+                        self.type_is_affine(ty)
+                            .then(|| (ty.clone(), format!("ctx->arg{idx}")))
+                    }),
+            )
+            .collect();
         self.current_closure_owner = Some(closure.owner);
         self.line_indent(
             1,
@@ -11587,14 +12802,10 @@ impl<'a> CGenerator<'a> {
         }
         let falls_through = match &closure.body {
             TClosureBody::Expr(expr) => {
-                if output_ty.is_erased_value() {
-                    let value = self.gen_expr_in_stmt(expr, 1)?;
-                    self.line_indent(1, &format!("(void)({value});"));
-                } else {
-                    let temp = self.emit_temp_value("async_closure_return", expr, 1)?;
-                    self.emit_async_output_store(output_ty, "out_raw", &temp, 1);
-                }
-                self.line_indent(1, "return 0;");
+                self.push_owned_resource_root_scope();
+                let result = self.emit_async_closure_expr_return(expr, output_ty, 1);
+                self.defer_stack.pop();
+                result?;
                 false
             }
             TClosureBody::Block(block) => self.gen_block_inner(block, 1)?,
@@ -11609,8 +12820,10 @@ impl<'a> CGenerator<'a> {
             self.line_indent(1, "return 0;");
         }
         let cleanup_cases = self.current_async_cleanup_cases.clone();
+        let owned_resource_roots = self.current_owned_resource_roots.clone();
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
+        self.current_owned_resource_roots.clear();
         self.current_capture_locals.clear();
         self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
@@ -11622,7 +12835,25 @@ impl<'a> CGenerator<'a> {
         self.current_async_defer_arg_index = 0;
         self.current_async_cleanup_cases.clear();
         self.line("}");
-        self.emit_async_cleanup_function(&names, &cleanup_cases);
+        self.emit_async_cleanup_function(&names, &cleanup_cases, &owned_resource_roots);
+        Ok(())
+    }
+
+    fn emit_async_closure_expr_return(
+        &mut self,
+        expr: &TExpr,
+        output_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<()> {
+        if output_ty.is_erased_value() {
+            let value = self.gen_expr_in_stmt(expr, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+        } else {
+            let temp = self.emit_temp_value("async_closure_return", expr, indent)?;
+            self.emit_async_output_store(output_ty, "out_raw", &temp, indent);
+        }
+        self.emit_current_defers(indent);
+        self.line_indent(indent, "return 0;");
         Ok(())
     }
 
@@ -11987,11 +13218,16 @@ impl<'a> CGenerator<'a> {
 
     fn function_call_return_ty(&self, function: &CheckedFunction) -> Ty {
         if function.is_async {
-            generated_future_ty(
+            let affine_state = function
+                .params
+                .iter()
+                .any(|(_, _, ty)| self.type_is_affine(ty));
+            generated_future_ty_with_affine_state(
                 format!("fn_{}", function.def_id.0),
                 function.ret.clone(),
                 false,
                 true,
+                affine_state,
             )
         } else {
             function.ret.clone()
@@ -12334,6 +13570,457 @@ impl<'a> CGenerator<'a> {
         format!("{allocator}(sizeof({}))", self.c_sizeof_type(ty))
     }
 
+    fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named { name, args } if args.is_empty()
+            && std_id::is_std_resource_handle_type_name(&self.program.checked.resolved, name))
+    }
+
+    fn type_is_affine(&self, ty: &Ty) -> bool {
+        let mut visiting = HashSet::new();
+        self.type_is_affine_inner(ty, &mut visiting)
+    }
+
+    fn type_is_affine_inner(&self, ty: &Ty, visiting: &mut HashSet<Ty>) -> bool {
+        if self.type_is_resource_handle_leaf(ty) {
+            return true;
+        }
+        match ty {
+            Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
+            Ty::ClosureInstance { captures, .. } => captures
+                .iter()
+                .any(|capture| self.type_is_affine_inner(capture, visiting)),
+            Ty::GeneratedFuture {
+                output,
+                affine_state,
+                ..
+            } => *affine_state || self.type_is_affine_inner(output, visiting),
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if let Some(output_ty) =
+                    std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                        .cloned()
+                {
+                    return self.type_is_affine_inner(&output_ty, visiting);
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if !visiting.insert(ty.clone()) {
+                    return false;
+                }
+                if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                {
+                    if strukt.is_resource {
+                        visiting.remove(ty);
+                        return true;
+                    }
+                    let affine = strukt
+                        .fields
+                        .iter()
+                        .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
+                    visiting.remove(ty);
+                    return affine;
+                }
+                if let Some(enm) = self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                {
+                    let affine = enm.variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
+                    });
+                    visiting.remove(ty);
+                    return affine;
+                }
+                visiting.remove(ty);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    fn resource_cleanup_name(&self, ty: &Ty) -> String {
+        format!("CielResourceCleanup_{}", mangle_ty_fragment(ty))
+    }
+
+    fn resource_transfer_to_parent_name(&self, ty: &Ty) -> String {
+        format!("CielResourceTransferToParent_{}", mangle_ty_fragment(ty))
+    }
+
+    fn resource_cleanup_call(&self, ty: &Ty, value: &str) -> String {
+        format!("{}(&{value})", self.resource_cleanup_name(ty))
+    }
+
+    fn push_resource_cleanup_defer(&mut self, ty: &Ty, value: &str) {
+        if !self.type_is_affine(ty) {
+            return;
+        }
+        let call = self.resource_cleanup_call(ty, value);
+        self.defer_stack
+            .last_mut()
+            .expect("defer stack is not empty")
+            .push(call);
+    }
+
+    fn resource_cleanup_arg_decl(&self, ty: &Ty, name: &str) -> String {
+        match ty {
+            Ty::Array { len, elem } => format!("{} (*{name})[{len}]", self.c_type(elem)),
+            _ => self.c_decl(&Ty::pointer_to(ty.clone()), name),
+        }
+    }
+
+    fn emit_resource_cleanup_helpers(&mut self) {
+        let helpers = self
+            .plan
+            .resource_cleanup_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        if helpers.is_empty() {
+            return;
+        }
+        for ty in &helpers {
+            let name = self.resource_cleanup_name(ty);
+            let arg = self.resource_cleanup_arg_decl(ty, "value");
+            self.line(&format!("static void {name}({arg});"));
+        }
+        self.line("");
+        for ty in helpers {
+            let name = self.resource_cleanup_name(&ty);
+            let arg = self.resource_cleanup_arg_decl(&ty, "value");
+            self.line(&format!("static void {name}({arg}) {{"));
+            self.emit_resource_cleanup_body(&ty, "value", 1);
+            self.line("}");
+            self.line("");
+        }
+    }
+
+    fn emit_resource_transfer_helpers(&mut self) {
+        let helpers = self
+            .plan
+            .resource_cleanup_tys
+            .values()
+            .filter(|ty| self.type_is_affine(ty))
+            .cloned()
+            .collect::<Vec<_>>();
+        if helpers.is_empty() {
+            return;
+        }
+        for ty in &helpers {
+            let name = self.resource_transfer_to_parent_name(ty);
+            let arg = self.resource_cleanup_arg_decl(ty, "value");
+            self.line(&format!("static int32_t {name}({arg});"));
+        }
+        self.line("");
+        for ty in helpers {
+            let name = self.resource_transfer_to_parent_name(&ty);
+            let arg = self.resource_cleanup_arg_decl(&ty, "value");
+            self.line(&format!("static int32_t {name}({arg}) {{"));
+            self.emit_resource_transfer_to_parent_body(&ty, "value", 1);
+            self.line("}");
+            self.line("");
+        }
+    }
+
+    fn emit_resource_cleanup_body(&mut self, ty: &Ty, value: &str, indent: usize) {
+        if self.type_is_resource_handle_leaf(ty) {
+            self.line_indent(
+                indent,
+                &format!("if ({value} != NULL && {value}->owner_id != 0) {{"),
+            );
+            self.line_indent(
+                indent + 1,
+                &format!(
+                    "(void)ciel_resource_close_handle({value}->owner_id, {value}->resource_id, {value}->generation);"
+                ),
+            );
+            self.line_indent(indent + 1, &format!("{value}->owner_id = 0;"));
+            self.line_indent(indent + 1, &format!("{value}->resource_id = 0;"));
+            self.line_indent(indent + 1, &format!("{value}->generation = 0;"));
+            self.line_indent(indent, "}");
+            return;
+        }
+        match ty {
+            Ty::GeneratedFuture { .. } => {
+                self.line_indent(
+                    indent,
+                    &format!("if ({value} != NULL && {value}->handle != NULL) {{"),
+                );
+                self.line_indent(
+                    indent + 1,
+                    &format!("(void)ciel_future_abort(ciel_future_from_handle({value}->handle));"),
+                );
+                self.line_indent(indent + 1, &format!("{value}->handle = NULL;"));
+                self.line_indent(indent, "}");
+            }
+            Ty::Array { len, elem } if self.type_is_affine(elem) => {
+                let index = self.next_temp("resource_cleanup_i");
+                self.line_indent(
+                    indent,
+                    &format!("for (size_t {index} = {len}; {index} > 0; {index}--) {{"),
+                );
+                let helper = self.resource_cleanup_name(elem);
+                self.line_indent(indent + 1, &format!("{helper}(&(*{value})[{index} - 1]);"));
+                self.line_indent(indent, "}");
+            }
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                    .is_some()
+                {
+                    self.line_indent(
+                        indent,
+                        &format!("if ({value} != NULL && {value}->handle != NULL) {{"),
+                    );
+                    self.line_indent(
+                        indent + 1,
+                        &format!(
+                            "(void)ciel_future_abort(ciel_future_from_handle({value}->handle));"
+                        ),
+                    );
+                    self.line_indent(indent + 1, &format!("{value}->handle = NULL;"));
+                    self.line_indent(indent, "}");
+                    return;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .cloned()
+                {
+                    for (field_name, field_ty) in strukt.fields.iter().rev() {
+                        if self.type_is_affine(field_ty) {
+                            let helper = self.resource_cleanup_name(field_ty);
+                            self.line_indent(indent, &format!("{helper}(&{value}->{field_name});"));
+                        }
+                    }
+                } else if let Some(enm) = self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+                {
+                    self.line_indent(indent, &format!("if ({value} != NULL) {{"));
+                    self.line_indent(indent + 1, &format!("switch ({value}->tag) {{"));
+                    for (variant_index, variant) in enm.variants.iter().enumerate() {
+                        let affine_payload = variant
+                            .payload
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ty)| self.type_is_affine(ty))
+                            .collect::<Vec<_>>();
+                        if affine_payload.is_empty() {
+                            continue;
+                        }
+                        self.line_indent(indent + 2, &format!("case {variant_index}:"));
+                        for (payload_index, payload_ty) in affine_payload.into_iter().rev() {
+                            let helper = self.resource_cleanup_name(payload_ty);
+                            self.line_indent(
+                                indent + 3,
+                                &format!(
+                                    "{helper}(&{value}->as.{}._{payload_index});",
+                                    variant.name
+                                ),
+                            );
+                        }
+                        self.line_indent(indent + 3, "break;");
+                    }
+                    self.line_indent(indent + 2, "default:");
+                    self.line_indent(indent + 3, "break;");
+                    self.line_indent(indent + 1, "}");
+                    self.line_indent(indent, "}");
+                }
+            }
+            _ => {}
+        }
+    }
+
+    fn emit_resource_transfer_to_parent_body(&mut self, ty: &Ty, value: &str, indent: usize) {
+        if self.type_is_resource_handle_leaf(ty) {
+            self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
+            self.line_indent(indent, "uint64_t owner_id = 0;");
+            self.line_indent(indent, "uint64_t resource_id = 0;");
+            self.line_indent(indent, "uint64_t generation = 0;");
+            self.line_indent(
+                indent,
+                &format!(
+                    "int32_t rc = ciel_resource_reattach_to_parent_handle({value}->owner_id, {value}->resource_id, {value}->generation, &owner_id, &resource_id, &generation);"
+                ),
+            );
+            self.line_indent(indent, "if (rc != 0) return rc;");
+            self.line_indent(indent, &format!("{value}->owner_id = owner_id;"));
+            self.line_indent(indent, &format!("{value}->resource_id = resource_id;"));
+            self.line_indent(indent, &format!("{value}->generation = generation;"));
+            self.line_indent(indent, "return 0;");
+            return;
+        }
+        match ty {
+            Ty::Array { len, elem } if self.type_is_affine(elem) => {
+                let index = self.next_temp("resource_transfer_i");
+                let helper = self.resource_transfer_to_parent_name(elem);
+                self.line_indent(indent, "int32_t rc = 0;");
+                self.line_indent(
+                    indent,
+                    &format!("for (size_t {index} = 0; {index} < {len}; {index}++) {{"),
+                );
+                self.line_indent(indent + 1, &format!("rc = {helper}(&(*{value})[{index}]);"));
+                self.line_indent(indent + 1, "if (rc != 0) return rc;");
+                self.line_indent(indent, "}");
+                self.line_indent(indent, "return 0;");
+            }
+            Ty::Named { name, args } => {
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .cloned()
+                {
+                    self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
+                    self.line_indent(indent, "int32_t rc = 0;");
+                    for (field_name, field_ty) in &strukt.fields {
+                        if self.type_is_affine(field_ty) {
+                            let helper = self.resource_transfer_to_parent_name(field_ty);
+                            self.line_indent(
+                                indent,
+                                &format!("rc = {helper}(&{value}->{field_name});"),
+                            );
+                            self.line_indent(indent, "if (rc != 0) return rc;");
+                        }
+                    }
+                    self.line_indent(indent, "return 0;");
+                } else if let Some(enm) = self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+                {
+                    self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
+                    self.line_indent(indent, "int32_t rc = 0;");
+                    self.line_indent(indent, &format!("switch ({value}->tag) {{"));
+                    for (variant_index, variant) in enm.variants.iter().enumerate() {
+                        let affine_payload = variant
+                            .payload
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, ty)| self.type_is_affine(ty))
+                            .collect::<Vec<_>>();
+                        if affine_payload.is_empty() {
+                            continue;
+                        }
+                        self.line_indent(indent + 1, &format!("case {variant_index}:"));
+                        for (payload_index, payload_ty) in affine_payload {
+                            let helper = self.resource_transfer_to_parent_name(payload_ty);
+                            self.line_indent(
+                                indent + 2,
+                                &format!(
+                                    "rc = {helper}(&{value}->as.{}._{payload_index});",
+                                    variant.name
+                                ),
+                            );
+                            self.line_indent(indent + 2, "if (rc != 0) return rc;");
+                        }
+                        self.line_indent(indent + 2, "break;");
+                    }
+                    self.line_indent(indent + 1, "default:");
+                    self.line_indent(indent + 2, "break;");
+                    self.line_indent(indent, "}");
+                    self.line_indent(indent, "return 0;");
+                } else {
+                    self.line_indent(indent, "(void)value;");
+                    self.line_indent(indent, "return 0;");
+                }
+            }
+            _ => {
+                self.line_indent(indent, "(void)value;");
+                self.line_indent(indent, "return 0;");
+            }
+        }
+    }
+
+    fn emit_resource_zero_expr(&mut self, ty: &Ty, value: &str, indent: usize) {
+        if self.type_is_resource_handle_leaf(ty) {
+            self.line_indent(indent, &format!("({value}).owner_id = 0;"));
+            self.line_indent(indent, &format!("({value}).resource_id = 0;"));
+            self.line_indent(indent, &format!("({value}).generation = 0;"));
+            return;
+        }
+        match ty {
+            Ty::Array { len, elem } if self.type_is_affine(elem) => {
+                let index = self.next_temp("resource_zero_i");
+                self.line_indent(
+                    indent,
+                    &format!("for (size_t {index} = 0; {index} < {len}; {index}++) {{"),
+                );
+                self.emit_resource_zero_expr(elem, &format!("({value})[{index}]"), indent + 1);
+                self.line_indent(indent, "}");
+            }
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                    .is_some()
+                {
+                    self.line_indent(indent, &format!("({value}).handle = NULL;"));
+                    return;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .cloned()
+                {
+                    for (field_name, field_ty) in &strukt.fields {
+                        if self.type_is_affine(field_ty) {
+                            self.emit_resource_zero_expr(
+                                field_ty,
+                                &format!("({value}).{field_name}"),
+                                indent,
+                            );
+                        }
+                    }
+                } else if self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .any(|enm| enm.name == instance_name)
+                {
+                    self.line_indent(indent, &format!("memset(&{value}, 0, sizeof({value}));"));
+                }
+            }
+            _ => {}
+        }
+    }
+
     fn ty_can_carry_gc_pointer(&self, ty: &Ty) -> bool {
         match ty {
             Ty::Pointer { .. }
@@ -12373,19 +14060,16 @@ impl<'a> CGenerator<'a> {
         if args.len() != 1 {
             return Some(Ty::Unknown);
         }
+        let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
         if borrowed {
-            return Some(match source {
-                Ty::Array { len, elem } => meta_ref_array_repr_ty(*len, elem),
-                other => other.clone(),
-            });
+            return Some(
+                self.meta_borrowed_repr_ty(span, source)
+                    .unwrap_or(Ty::Unknown),
+            );
         }
         Some(
-            self.meta_owned_leaf_repr_ty(
-                crate::span::Span::new(crate::span::FileId(0), 0, 0),
-                source,
-                source,
-            )
-            .unwrap_or(Ty::Unknown),
+            self.meta_owned_leaf_repr_ty(span, source, source)
+                .unwrap_or(Ty::Unknown),
         )
     }
 
@@ -12782,6 +14466,16 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    fn emit_break_defers(&mut self, indent: usize) {
+        let start = self.break_defer_starts.last().copied().unwrap_or(0);
+        let frames = self.defer_stack.clone();
+        for frame in frames.iter().skip(start).rev() {
+            for call in frame.iter().rev() {
+                self.line_indent(indent, &format!("{call};"));
+            }
+        }
+    }
+
     fn next_temp(&mut self, prefix: &str) -> String {
         let id = self.temp_counter;
         self.temp_counter += 1;
@@ -12802,6 +14496,15 @@ impl<'a> CGenerator<'a> {
             .cloned()
             .or_else(|| self.current_async_frame_locals.get(&id).cloned())
             .unwrap_or_else(|| format!("{source_name}__{}", id.0))
+    }
+
+    fn local_value_expr(&self, id: LocalId, source_name: &str) -> String {
+        let cname = self.local_c_name(id, source_name);
+        if self.local_is_heap(id) {
+            format!("(*{cname})")
+        } else {
+            cname
+        }
     }
 
     fn emit_line_directive(&mut self, span: crate::span::Span) {
@@ -12934,6 +14637,7 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
     match &expr.kind {
         TExprKind::Try { .. }
         | TExprKind::Slice { .. }
+        | TExprKind::Move(_)
         | TExprKind::MakeDynamicInterface { .. }
         | TExprKind::MetaAsRefRepr { .. }
         | TExprKind::MetaIntoRepr { .. }
@@ -12957,6 +14661,7 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::AsyncChannelReserve { .. }
         | TExprKind::AsyncChannelPermitSend { .. }
         | TExprKind::AsyncChannelRecv { .. }
+        | TExprKind::CloneMessage { .. }
         | TExprKind::UnsafeBlock { .. } => true,
         TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {
             expr_needs_stmt_lowering(expr)

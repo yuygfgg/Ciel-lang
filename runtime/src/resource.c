@@ -961,6 +961,54 @@ int32_t ciel_resource_transfer_to_parent_handle(uint64_t owner_id,
     return 0;
 }
 
+int32_t ciel_resource_reattach_to_parent_handle(uint64_t owner_id,
+                                                uint64_t resource_id,
+                                                uint64_t generation,
+                                                uint64_t *out_owner_id,
+                                                uint64_t *out_resource_id,
+                                                uint64_t *out_generation) {
+    if (out_owner_id == NULL || out_resource_id == NULL ||
+        out_generation == NULL)
+        return EINVAL;
+    CielResourceOwner *current = ciel_resource_current_owner_or_root();
+    if (current == NULL || current == ciel_resource_root_owner ||
+        current->parent == NULL)
+        return EINVAL;
+
+    CielResourceHandle handle;
+    handle.owner_id = owner_id;
+    handle.resource_id = resource_id;
+    handle.generation = generation;
+
+    pthread_mutex_lock(&ciel_resource_mutex);
+    CielResourceOwner *owner = NULL;
+    CielResourceEntry *entry = NULL;
+    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
+    if (rc == 0 && (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN ||
+                    owner == NULL)) {
+        rc = EBADF;
+    }
+    if (rc == 0 && owner == current) {
+        CielResourceHandle fresh;
+        rc = ciel_resource_transfer_to_owner_locked(handle, current->parent,
+                                                    &fresh, NULL);
+        if (rc == 0) {
+            *out_owner_id = fresh.owner_id;
+            *out_resource_id = fresh.resource_id;
+            *out_generation = fresh.generation;
+        }
+    } else if (rc == 0 &&
+               ciel_resource_owner_is_ancestor_locked(owner, current->parent)) {
+        *out_owner_id = handle.owner_id;
+        *out_resource_id = handle.resource_id;
+        *out_generation = handle.generation;
+    } else if (rc == 0) {
+        rc = EPERM;
+    }
+    pthread_mutex_unlock(&ciel_resource_mutex);
+    return rc;
+}
+
 int32_t ciel_resource_transfer_to_current_handle(uint64_t owner_id,
                                                  uint64_t resource_id,
                                                  uint64_t generation,

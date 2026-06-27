@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: use of moved resource `future`
+
+import /std/io as io;
+import /std/result;
+
+async Result<void, Error> close_later(io::File @file) {
+    io::close(file)?;
+    return Ok;
+}
+
+async Result<void, Error> bad([]const char path) {
+    io::File file = io::open_read(path)?;
+    _ future = close_later(file);
+    Result<void, Error> picked = await select {
+        case first = future: first;
+        case second = future: second;
+    };
+    picked?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

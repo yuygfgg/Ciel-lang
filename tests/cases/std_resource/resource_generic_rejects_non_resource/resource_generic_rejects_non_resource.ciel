@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied: `i64` is not a resource-affine type
+
+import /std/result;
+
+Result<void, Error> consume_resource<resource T>(T value) {
+    return Ok;
+}
+
+i32 main() {
+    must(consume_resource<i64>(1));
+    return 0;
+}

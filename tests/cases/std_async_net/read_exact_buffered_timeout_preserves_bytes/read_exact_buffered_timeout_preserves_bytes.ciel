@@ -25,13 +25,13 @@ bool same_bytes([]u8 got, []const u8 want) {
 }
 
 async Result<void, Error> write_delayed_chunks(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [2]u8 first = [1 as u8, 2 as u8];
     [4]u8 second = [3 as u8, 4 as u8, 5 as u8, 6 as u8];
-    await anet::write_all(server, anet::bytes_copy(first[..])?)?;
+    server = await anet::write_all(server, anet::bytes_copy(first[..])?)?;
     await async_time::sleep_ms(80)?;
-    await anet::write_all(server, anet::bytes_copy(second[..])?)?;
-    anet::shutdown_write(server)?;
+    server = await anet::write_all(server, anet::bytes_copy(second[..])?)?;
+    anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok;
 }
@@ -39,16 +39,15 @@ async Result<void, Error> write_delayed_chunks(anet::AsyncTcpListener listener) 
 async Result<usize, Error> drive() {
     net::SocketAddr addr = net::parse_addr("127.0.0.1:0")?;
     anet::AsyncTcpListener listener = anet::listen_async(addr)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<void> server = async::spawn<void>(write_delayed_chunks(listener))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
-    anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 2)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 2)?;
     await async_time::sleep_ms(20)?;
 
     Result<Result<anet::Bytes, Error>, Error> timed =
-        await async::timeout(anet::read_exact_buffered(reader, 6), 20);
+        await async::timeout(anet::read_exact_buffered(&reader, 6), 20);
     switch (timed) {
         case Err(_):
             {}
@@ -56,7 +55,7 @@ async Result<usize, Error> drive() {
             return Err(code_error(90));
     }
 
-    anet::Bytes exact = await anet::read_exact_buffered(reader, 6)?;
+    anet::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
     [6]u8 @got = [0;];
     usize copied = anet::bytes_copy_to(exact, got[..])?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
@@ -65,9 +64,7 @@ async Result<usize, Error> drive() {
     }
 
     anet::AsyncTcpReadHalf half = anet::into_read_half(reader)?;
-    anet::shutdown_read_half(half)?;
-    anet::close_stream(client)?;
-    anet::close_listener(listener)?;
+    anet::shutdown_read_half(&half)?;
     await server?;
     return Ok(copied);
 }

@@ -332,6 +332,7 @@ struct CielAsyncFd {
     dispatch_io_t channel;
     pthread_mutex_t mutex;
     int closed;
+    size_t refs;
 };
 
 int32_t ciel_async_close(CielAsyncFd *fd);
@@ -594,6 +595,7 @@ static CielAsyncFd *ciel_async_fd_new(int fd) {
     CielAsyncFd *async_fd = (CielAsyncFd *)ciel_alloc(sizeof(CielAsyncFd));
     async_fd->fd = fd;
     async_fd->closed = 0;
+    async_fd->refs = 1;
     async_fd->channel = NULL;
     int rc = pthread_mutex_init(&async_fd->mutex, NULL);
     if (rc != 0) {
@@ -627,6 +629,7 @@ static CielAsyncFd *ciel_async_tcp_stream_new(int fd) {
     CielAsyncFd *async_fd = (CielAsyncFd *)ciel_alloc(sizeof(CielAsyncFd));
     async_fd->fd = fd;
     async_fd->closed = 0;
+    async_fd->refs = 1;
     async_fd->channel = NULL;
     int rc = pthread_mutex_init(&async_fd->mutex, NULL);
     if (rc != 0) {
@@ -710,11 +713,29 @@ CielAsyncFd *ciel_async_from_raw_fd(int32_t raw) {
     return ciel_async_fd_new(raw);
 }
 
+int32_t ciel_async_fd_retain(CielAsyncFd *fd) {
+    if (fd == NULL)
+        return EINVAL;
+    pthread_mutex_lock(&fd->mutex);
+    if (fd->closed) {
+        pthread_mutex_unlock(&fd->mutex);
+        return EBADF;
+    }
+    fd->refs++;
+    pthread_mutex_unlock(&fd->mutex);
+    return 0;
+}
+
 int32_t ciel_async_close(CielAsyncFd *fd) {
     if (fd == NULL)
         return EINVAL;
     pthread_mutex_lock(&fd->mutex);
     if (fd->closed) {
+        pthread_mutex_unlock(&fd->mutex);
+        return 0;
+    }
+    if (fd->refs > 1) {
+        fd->refs--;
         pthread_mutex_unlock(&fd->mutex);
         return 0;
     }

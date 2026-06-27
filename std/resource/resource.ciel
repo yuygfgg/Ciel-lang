@@ -44,17 +44,16 @@ unsafe extern "C" {
     );
 }
 
-// Revocable runtime resource token. Copying a Handle does not copy ownership.
-export unsafe struct Handle {
+// Revocable runtime resource token.
+export resource unsafe struct Handle {
     u64 owner_id;
     u64 resource_id;
     u64 generation;
 }
 
-// Message-safe token for a resource handle already transferred out of the
-// source owner. Safe code can pass this token across concurrency boundaries,
-// but must claim it before reconstructing a live typed resource handle.
-export unsafe struct TransferToken {
+// Move-only token for a resource handle already transferred out of the source
+// owner. Safe code must claim it before reconstructing a live typed resource.
+export resource unsafe struct TransferToken {
     Handle handle;
 }
 
@@ -71,21 +70,6 @@ struct OwnerScope {
     u64 previous_owner_id;
 }
 
-// Marks values that do not contain resource handles.
-export unsafe interface<T> bool resource_free_marker(*const T value);
-
-// Marks values that are revocable resource handle tokens.
-export unsafe interface<T> bool resource_handle_marker(*const T value);
-
-// Internal alias for resource-free values.
-export interface ResourceFreeInternal = resource_free_marker;
-
-// Internal alias for resource handle values.
-export interface ResourceHandleInternal = resource_handle_marker;
-
-// Values that can leave a closing resource owner.
-export interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
-
 // Transfers a resource-bearing value to the parent owner and returns a fresh token.
 export interface<T> Result<T, Error> transfer_to_parent(*const T value);
 
@@ -94,14 +78,6 @@ export interface<T> Result<T, Error> transfer_to_parent(*const T value);
 // owner. If the resource is already owned by the current owner, the runtime
 // validates the handle and returns it unchanged.
 export interface<T> Result<T, Error> transfer_to_current(*const T value);
-
-unsafe impl clone_message(*const TransferToken value) {
-    return Ok(unsafe { { handle: unsafe { value->handle } } });
-}
-
-unsafe impl resource_free_marker(*const TransferToken value) {
-    return true;
-}
 
 Error resource_error(c::c_int code) {
     if ((code as i64) != 0) {
@@ -115,36 +91,99 @@ export Limits default_limits() {
     return { max_resources: 4096, max_child_owners: 1024, max_pending_ops: 8192, max_descriptors: 4096 };
 }
 
-// Closes the resource entry referenced by handle and revokes existing copies.
-export Result<void, Error> close(Handle handle) {
+unsafe void clear_handle(*Handle handle) {
+    unsafe { handle->owner_id = 0; };
+    unsafe { handle->resource_id = 0; };
+    unsafe { handle->generation = 0; };
+}
+
+// Unsafe hole: moves a raw resource handle out of a containing resource
+// wrapper without closing it. Standard-library wrapper internals must zero the
+// source slot exactly once and rebuild an owning wrapper from the returned
+// handle.
+export unsafe Handle take_handle_in_place(*Handle handle) {
+    Handle moved = unsafe { *handle };
+    unsafe { clear_handle(handle) };
+    return moved;
+}
+
+// Unsafe hole: closes the resource entry referenced by handle, revokes
+// existing copies, and clears the source slot. Callers must pass the unique
+// owning slot for a live handle.
+export unsafe Result<void, Error> close_handle_in_place(*Handle handle) {
     c::c_int rc = unsafe {
         ciel_resource_close_handle(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation }
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation }
         )
     };
+    unsafe { clear_handle(handle) };
     if ((rc as i64) != 0) {
         return Err(resource_error(rc));
     }
     return Ok;
 }
 
-// Transfers a raw resource handle to the parent owner.
-export Result<Handle, Error> transfer_handle_to_parent(Handle handle) {
+// Closes the resource entry referenced by handle and revokes existing copies.
+export Result<void, Error> close(Handle @handle) {
+    return unsafe { close_handle_in_place(&handle) };
+}
+
+// Unsafe hole: transfers a raw resource handle to the parent owner and clears
+// the source slot on success. Callers must pass the unique owning slot for a
+// live handle, not an arbitrary copied Handle value.
+export unsafe Result<Handle, Error> transfer_handle_to_parent_in_place(*Handle handle) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe {
         ciel_resource_transfer_to_parent_handle(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation },
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation },
             &owner_id,
             &resource_id,
             &generation
         )
     };
+    if ((rc as i64) == 0) {
+        unsafe { clear_handle(handle) };
+    }
+    if ((rc as i64) != 0) {
+        return Err(resource_error(rc));
+    }
+    return Ok(unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } });
+}
+
+// Transfers a raw resource handle to the parent owner.
+export Result<Handle, Error> transfer_handle_to_parent(Handle @handle) {
+    return unsafe { transfer_handle_to_parent_in_place(&handle) };
+}
+
+// Unsafe hole: transfers a raw resource handle from an ancestor owner to the
+// current owner and clears the source slot on success. Callers must pass the
+// unique owning slot for a live handle, not an arbitrary copied Handle value.
+// Transfer fails for stale handles or handles owned by a non-ancestor owner.
+// If the handle is already owned by the current owner, this validates and
+// returns it unchanged.
+export unsafe Result<Handle, Error> transfer_handle_to_current_in_place(*Handle handle) {
+    u64 @owner_id = 0;
+    u64 @resource_id = 0;
+    u64 @generation = 0;
+    c::c_int rc = unsafe {
+        ciel_resource_transfer_to_current_handle(
+            unsafe { handle->owner_id },
+            unsafe { handle->resource_id },
+            unsafe { handle->generation },
+            &owner_id,
+            &resource_id,
+            &generation
+        )
+    };
+    if ((rc as i64) == 0) {
+        unsafe { clear_handle(handle) };
+    }
     if ((rc as i64) != 0) {
         return Err(resource_error(rc));
     }
@@ -152,49 +191,36 @@ export Result<Handle, Error> transfer_handle_to_parent(Handle handle) {
 }
 
 // Transfers a raw resource handle from an ancestor owner to the current owner.
-// Transfer fails for stale handles or handles owned by a non-ancestor owner.
-// If the handle is already owned by the current owner, this validates and
-// returns it unchanged.
-export Result<Handle, Error> transfer_handle_to_current(Handle handle) {
-    u64 @owner_id = 0;
-    u64 @resource_id = 0;
-    u64 @generation = 0;
-    c::c_int rc = unsafe {
-        ciel_resource_transfer_to_current_handle(
-            unsafe { handle.owner_id },
-            unsafe { handle.resource_id },
-            unsafe { handle.generation },
-            &owner_id,
-            &resource_id,
-            &generation
-        )
-    };
-    if ((rc as i64) != 0) {
-        return Err(resource_error(rc));
-    }
-    return Ok(unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } });
+export Result<Handle, Error> transfer_handle_to_current(Handle @handle) {
+    return unsafe { transfer_handle_to_current_in_place(&handle) };
 }
 
 // Transfers a raw resource handle to the parent owner and wraps the fresh
-// parent-owned handle in a Message-safe transfer token.
+// parent-owned handle in an affine transfer token.
 export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle) {
     Handle moved = transfer_handle_to_parent(handle)?;
     return Ok(unsafe { { handle: moved } });
 }
 
-// Claims a transfer token into the current resource owner. This validates the
-// token through the runtime and returns an ordinary raw handle for typed stdlib
-// wrappers to rebuild their resource value. Stale tokens return Error.
-export Result<Handle, Error> claim_transfer_token(TransferToken token) {
-    return transfer_handle_to_current(unsafe { token.handle });
+// Unsafe hole: claims a transfer token into the current resource owner through
+// the token's in-place handle slot. Callers must consume the affine token and
+// rebuild exactly one typed owner from the returned raw handle. Stale tokens
+// return Error.
+export unsafe Result<Handle, Error> claim_transfer_token_in_place(*TransferToken token) {
+    return unsafe { transfer_handle_to_current_in_place(&token->handle) };
+}
+
+// Claims a transfer token into the current resource owner.
+export Result<Handle, Error> claim_transfer_token(TransferToken @token) {
+    return unsafe { claim_transfer_token_in_place(&token) };
 }
 
 impl transfer_to_parent(*const Handle value) {
-    return transfer_handle_to_parent(*value);
+    return transfer_handle_to_parent(unsafe { *value });
 }
 
 impl transfer_to_current(*const Handle value) {
-    return transfer_handle_to_current(*value);
+    return transfer_handle_to_current(unsafe { *value });
 }
 
 Result<OwnerScope, Error> enter_child_owner(Limits limits) {
@@ -236,8 +262,17 @@ void close_owner_best_effort(u64 owner_id) {
     unsafe { ciel_resource_owner_close_id(owner_id) };
 }
 
+// Compiler hook hole for scoped async owner teardown.
+// Source fallback is a no-op by design. Codegen rewrites this private call for
+// affine T into a structural transfer of every live resource handle to the
+// parent owner before the child owner is closed. scoped_async calls this on its
+// whole Result<R, Error> so Result<void, Error> remains a valid no-op.
+Result<void, Error> transfer_to_parent_before_owner_close<T>(*const T value) {
+    return Ok;
+}
+
 // Runs body under a child resource owner and closes that owner on return.
-export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body) = .scoped {
+export Result<R, Error> scoped<R>(Result<R, Error> |()| body) = .scoped {
     c::c_int push_rc = unsafe { ciel_resource_scope_push_default() };
     if ((push_rc as i64) != 0) {
         return Err(resource_error(push_rc));
@@ -256,7 +291,7 @@ export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body) = .s
 }
 
 // Runs an async body under a child resource owner and closes that owner on completion or cancellation.
-export async Result<R, Error> scoped_async<R: ResourceFree>(
+export async Result<R, Error> scoped_async<R>(
     async_core::Future<Result<R, Error>> |()| body
 ) {
     OwnerScope scope = enter_child_owner(default_limits())?;
@@ -264,18 +299,23 @@ export async Result<R, Error> scoped_async<R: ResourceFree>(
     async_core::Future<Result<R, Error>> @future = body();
     restore_owner(scope.previous_owner_id)?;
     Result<R, Error> @result = await future;
-    Result<void, Error> @close_result = close_owner(scope.owner_id);
+    restore_owner(scope.owner_id)?;
+    Result<void, Error> @transfer_result =
+        transfer_to_parent_before_owner_close(&result);
+    restore_owner(scope.previous_owner_id)?;
+    transfer_result?;
     switch (result) {
         case Ok(value):
-            close_result?;
+            close_owner(scope.owner_id)?;
             return Ok(value);
         case Err(error):
+            close_owner(scope.owner_id);
             return Err(error);
     }
 }
 
 // Runs an async body under a child resource owner with explicit quota limits.
-export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
+export async Result<R, Error> scoped_async_with_limits<R>(
     Limits limits,
     async_core::Future<Result<R, Error>> |()| body
 ) {
@@ -285,18 +325,23 @@ export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
     restore_owner(scope.previous_owner_id)?;
 
     Result<R, Error> @result = await future;
-    Result<void, Error> @close_result = close_owner(scope.owner_id);
+    restore_owner(scope.owner_id)?;
+    Result<void, Error> @transfer_result =
+        transfer_to_parent_before_owner_close(&result);
+    restore_owner(scope.previous_owner_id)?;
+    transfer_result?;
     switch (result) {
         case Ok(value):
-            close_result?;
+            close_owner(scope.owner_id)?;
             return Ok(value);
         case Err(error):
+            close_owner(scope.owner_id);
             return Err(error);
     }
 }
 
 // Runs body under a child resource owner with explicit quota limits.
-export Result<R, Error> scoped_with_limits<R: ResourceFree>(
+export Result<R, Error> scoped_with_limits<R>(
     Limits limits,
     Result<R, Error> |()| body
 ) = .scoped_with_limits {
@@ -322,180 +367,4 @@ export Result<R, Error> scoped_with_limits<R: ResourceFree>(
         case Err(error):
             return Err(error);
     }
-}
-
-unsafe impl resource_handle_marker(*const Handle value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const void value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const bool value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const char value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const i8 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const i16 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const i32 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const i64 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const u8 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const u16 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const u32 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const u64 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const usize value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const f32 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const f64 value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const Error value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree, E: ResourceFree> resource_free_marker(*const Result<T, E> value) {
-    return true;
-}
-
-unsafe impl<F: meta::CielFnValue> resource_free_marker(*const F value) {
-    return true;
-}
-
-unsafe impl<C: meta::ClosureValue> resource_free_marker(*const C value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const meta::HNil value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::Field<T> value) {
-    return true;
-}
-
-unsafe impl<Head: ResourceFree, Tail: ResourceFree> resource_free_marker(*const meta::HCons<Head, Tail> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::Payload<T> value) {
-    return true;
-}
-
-unsafe impl<P: ResourceFree> resource_free_marker(*const meta::Variant<P> value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const meta::CoNil value) {
-    return true;
-}
-
-unsafe impl<Head: ResourceFree, Tail: ResourceFree> resource_free_marker(*const meta::Coproduct<Head, Tail> value) {
-    return true;
-}
-
-unsafe impl resource_free_marker(*const meta::ArrayNil value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk1<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk2<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk3<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk4<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk5<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk6<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk7<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk8<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk9<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk10<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk11<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk12<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk13<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk14<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk15<T> value) {
-    return true;
-}
-
-unsafe impl<T: ResourceFree> resource_free_marker(*const meta::ArrayChunk16<T> value) {
-    return true;
-}
-
-unsafe impl<L: ResourceFree, R: ResourceFree> resource_free_marker(*const meta::ArrayCat<L, R> value) {
-    return true;
 }

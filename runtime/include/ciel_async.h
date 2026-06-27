@@ -61,6 +61,7 @@ int32_t ciel_future_await_channel_recv(CielFuture* future,
 
 CielAsyncFd* ciel_async_open(int32_t mode, const char* path);
 CielAsyncFd* ciel_async_from_raw_fd(int32_t raw);
+int32_t ciel_async_fd_retain(CielAsyncFd* fd);
 int32_t ciel_async_close(CielAsyncFd* fd);
 CielAsyncOp* ciel_async_read_bytes(CielAsyncFd* fd, size_t max_len);
 CielAsyncOp* ciel_async_write_bytes(CielAsyncFd* fd, CielBytes* bytes);

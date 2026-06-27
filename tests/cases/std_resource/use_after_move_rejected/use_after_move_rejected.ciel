@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: use of moved resource `file`
+
+import /std/io as io;
+import /std/result;
+
+Result<void, Error> drive([]const char path) {
+    io::File file = io::open_read(path)?;
+    io::File moved = file;
+    [8]u8 @buffer = [0;];
+    io::read(&file, buffer[..])?;
+    io::close(moved)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

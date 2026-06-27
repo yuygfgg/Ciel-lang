@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_noop_cast_moves_resource.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "cast-move")?;
+        return Ok;
+    }));
+
+    io::File file = must(io::open_read(path));
+    io::File moved = file as io::File;
+    [16]u8 @buffer = [0;];
+    usize n = must(io::read(&moved, buffer[..]));
+    if (n != 9) {
+        return 1;
+    }
+    must(io::close(moved));
+    return 0;
+}

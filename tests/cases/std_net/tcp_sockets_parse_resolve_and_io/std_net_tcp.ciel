@@ -86,18 +86,18 @@ i32 test_parse_and_resolve() {
 
 i32 test_tcp_io() {
     net::TcpListener listener = must(net::tcp_listen(must(net::parse_addr("127.0.0.1:0"))));
-    net::SocketAddr bound = must(net::listener_addr(listener));
+    net::SocketAddr bound = must(net::listener_addr(&listener));
     if (must(net::addr_port(bound)) == (0 as u16)) {
         return 10;
     }
 
     net::TcpStream client = must(net::tcp_connect(bound));
-    net::TcpStream server = must(net::tcp_accept(listener));
+    net::TcpStream server = must(net::tcp_accept(&listener));
 
     [5]u8 payload = [104 as u8, 101 as u8, 108 as u8, 108 as u8, 111 as u8];
-    must(net::tcp_write_all(client, payload[..]));
+    must(net::tcp_write_all(&client, payload[..]));
     [8]u8 @buffer = [0;];
-    usize @n = must(net::tcp_read(server, buffer[..]));
+    usize @n = must(net::tcp_read(&server, buffer[..]));
     if (n != 5) {
         return 11;
     }
@@ -106,15 +106,15 @@ i32 test_tcp_io() {
     }
 
     [4]u8 reply = [112 as u8, 111 as u8, 110 as u8, 103 as u8];
-    must(net::tcp_write_all(server, reply[..]));
+    must(net::tcp_write_all(&server, reply[..]));
     [4]u8 @reply_in = [0;];
-    n = must(net::tcp_read(client, reply_in[..]));
+    n = must(net::tcp_read(&client, reply_in[..]));
     if (n != 4 || reply_in[0] != reply[0] || reply_in[1] != reply[1] || reply_in[2] != reply[2] || reply_in[3] != reply[3]) {
         return 13;
     }
 
-    must(net::tcp_shutdown_write(client));
-    n = must(net::tcp_read(server, buffer[..]));
+    must(net::tcp_shutdown_write(&client));
+    n = must(net::tcp_read(&server, buffer[..]));
     if (n != 0) {
         return 14;
     }
@@ -126,19 +126,19 @@ i32 test_tcp_io() {
 }
 
 Result<i32, Error> with_api_body(net::TcpListener listener) {
-    u16 port = net::addr_port(net::listener_addr(listener)?)?;
-    return net::with_tcp_connect_host<i32>("127.0.0.1", port, |client| {
-        net::TcpStream server = net::tcp_accept(listener)?;
-        defer net::tcp_close(server);
-        [1]u8 one = [42 as u8];
-        net::tcp_write_all(client, one[..])?;
-        [1]u8 @got = [0;];
-        usize n = net::tcp_read(server, got[..])?;
-        if (n != 1 || got[0] != (42 as u8)) {
-            return Ok(15);
-        }
-        return Ok(0);
-    });
+    u16 port = net::addr_port(net::listener_addr(&listener)?)?;
+    net::TcpStream client = net::tcp_connect_host("127.0.0.1", port)?;
+    net::TcpStream server = net::tcp_accept(&listener)?;
+    [1]u8 one = [42 as u8];
+    net::tcp_write_all(&client, one[..])?;
+    [1]u8 @got = [0;];
+    usize n = net::tcp_read(&server, got[..])?;
+    net::tcp_close(client)?;
+    net::tcp_close(server)?;
+    if (n != 1 || got[0] != (42 as u8)) {
+        return Ok(15);
+    }
+    return Ok(0);
 }
 
 i32 test_with_apis() {

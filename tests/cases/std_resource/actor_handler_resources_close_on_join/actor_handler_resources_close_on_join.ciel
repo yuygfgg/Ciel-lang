@@ -60,7 +60,7 @@ Result<Channel<HandleParts>, Error> handle(Channel<HandleParts> out, Command com
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "actor-handler")?;
+        io::write_text(&file, "actor-handler")?;
         return Ok;
     }));
 
@@ -73,7 +73,7 @@ i32 main() {
 
     io::File stale = file_from_parts(parts);
     [1]u8 @buffer = [0;];
-    switch (io::read(stale, buffer[..])) {
+    switch (io::read(&stale, buffer[..])) {
         case Ok(_):
             return 1;
         case Err(_):

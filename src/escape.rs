@@ -192,7 +192,9 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.scan_stmt(stmt);
                 }
             }
-            TStmtKind::Defer(expr) | TStmtKind::Expr(expr) => self.scan_expr(expr),
+            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
+                self.scan_expr(expr);
+            }
             TStmtKind::Return(Some(expr)) => {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
@@ -254,7 +256,9 @@ impl<'a> FunctionAnalyzer<'a> {
 
     fn scan_expr(&mut self, expr: &TExpr) {
         match &expr.kind {
-            TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => self.scan_expr(expr),
+            TExprKind::Move(expr)
+            | TExprKind::Unary { expr, .. }
+            | TExprKind::Cast { expr, .. } => self.scan_expr(expr),
             TExprKind::Try { expr, .. } => self.scan_expr(expr),
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.scan_expr(future)
@@ -327,6 +331,10 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.scan_expr(arg);
                     self.escape_sources(arg);
                 }
+            }
+            TExprKind::CloneMessage { value, .. } => {
+                self.scan_expr(value);
+                self.escape_sources(value);
             }
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.scan_expr(base);
@@ -476,7 +484,9 @@ impl<'a> FunctionAnalyzer<'a> {
                     self.collect_storage_sources(inner, out);
                 }
             }
-            TExprKind::SliceToConst(inner) => self.collect_storage_sources(inner, out),
+            TExprKind::Move(inner) | TExprKind::SliceToConst(inner) => {
+                self.collect_storage_sources(inner, out)
+            }
             TExprKind::Slice { base, .. } => {
                 if matches!(base.ty, Ty::Array { .. })
                     && let TExprKind::Local(local_id, _) = &base.kind
@@ -595,6 +605,7 @@ impl<'a> FunctionAnalyzer<'a> {
             | TExprKind::MakeDynamicInterface { .. }
             | TExprKind::DynamicInterfaceCall { .. }
             | TExprKind::RetainedClosureInterfaceCall { .. }
+            | TExprKind::CloneMessage { .. }
             | TExprKind::Field { .. }
             | TExprKind::Arrow { .. }
             | TExprKind::Index { .. }

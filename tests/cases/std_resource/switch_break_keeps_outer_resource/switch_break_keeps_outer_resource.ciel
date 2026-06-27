@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_switch_break_keeps_outer_resource.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+
+enum Choice {
+    Stop,
+    Other,
+}
+
+Result<usize, Error> read_after_switch_break([]const char path) {
+    io::File file = io::open_read(path)?;
+    Choice choice = Stop;
+    switch (choice) {
+        case Stop:
+            break;
+        case Other:
+            return Err(code_error(91));
+    }
+    [8]u8 @buffer = [0;];
+    usize n = io::read(&file, buffer[..])?;
+    io::close(file)?;
+    return Ok(n);
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "switch")?;
+        return Ok;
+    }));
+
+    usize n = must(read_after_switch_break(path));
+    if (n != 6) {
+        return 1;
+    }
+    return 0;
+}

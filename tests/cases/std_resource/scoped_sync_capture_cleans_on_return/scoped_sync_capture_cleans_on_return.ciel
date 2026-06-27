@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_scoped_sync_capture_cleans.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "capture")?;
+        return Ok;
+    }));
+
+    resource::Limits limits = {
+        max_resources: 8,
+        max_child_owners: 16,
+        max_pending_ops: 16,
+        max_descriptors: 1,
+    };
+
+    must(resource::scoped_with_limits<void>(limits, || {
+        io::File file = io::open_read(path)?;
+        resource::scoped<void>(|| {
+            if (false) {
+                io::close(file)?;
+            }
+            return Ok;
+        })?;
+        io::File again = io::open_read(path)?;
+        io::close(again)?;
+        return Ok;
+    }));
+    return 0;
+}

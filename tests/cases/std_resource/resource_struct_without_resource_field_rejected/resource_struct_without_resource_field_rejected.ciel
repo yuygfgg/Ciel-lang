@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: resource struct `FakeResource` must contain an owning resource field
+
+resource struct FakeResource {
+    i64 value;
+}
+
+i32 main() {
+    return 0;
+}

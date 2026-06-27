@@ -59,6 +59,7 @@ pub enum TypeAliasTarget {
 
 #[derive(Clone, Debug)]
 pub struct StructDecl {
+    pub is_resource: bool,
     pub is_unsafe: bool,
     pub name: Ident,
     pub generics: Vec<GenericParam>,
@@ -171,6 +172,7 @@ pub enum ExternItem {
 
 #[derive(Clone, Debug)]
 pub struct GenericParam {
+    pub is_resource: bool,
     pub name: Ident,
     pub constraint: Option<ConstraintExpr>,
 }

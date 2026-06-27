@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: resource handle type `AsyncFd` cannot implement `clone_message`
+// expect-error: resource type `AsyncFd` cannot implement `clone_message`
 
 import /std/async_io as aio;
 import /std/message;

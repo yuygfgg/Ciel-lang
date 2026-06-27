@@ -11,15 +11,15 @@ import /std/result;
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     anet::AsyncTcpStream client = await anet::connect(bound)?;
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream server = await anet::accept(&listener)?;
     anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 4)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
     Result<anet::Bytes, Error> picked = await select {
-        case first = anet::read_buffered(reader, 1): first;
-        case second = anet::read_buffered(reader, 1): second;
+        case first = anet::read_buffered(&reader, 1): first;
+        case second = anet::read_buffered(&reader, 1): second;
     };
     anet::close_stream(server)?;
     anet::close_listener(listener)?;

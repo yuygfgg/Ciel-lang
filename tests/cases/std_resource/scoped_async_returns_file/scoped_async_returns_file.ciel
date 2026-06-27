@@ -1,0 +1,36 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_scoped_async_returns_file.txt
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+async Result<io::File, Error> open_in_child_owner() {
+    return await resource::scoped_async<io::File>(async || {
+        await async_time::sleep_ms(0)?;
+        []const char path = env::arg(1)?;
+        io::File file = io::open_read(path)?;
+        return Ok(file);
+    });
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "async-scoped")?;
+        return Ok;
+    }));
+
+    io::File file = must(async::block_on(open_in_child_owner()));
+    [16]u8 @buffer = [0;];
+    usize n = must(io::read(&file, buffer[..]));
+    if (n != 12) {
+        return 1;
+    }
+    must(io::close(file));
+    return 0;
+}

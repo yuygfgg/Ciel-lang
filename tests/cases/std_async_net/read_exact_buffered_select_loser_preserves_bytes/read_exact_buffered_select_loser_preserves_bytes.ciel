@@ -36,10 +36,10 @@ Result<usize, Error> read_loser(Result<anet::Bytes, Error> value) {
 }
 
 async Result<void, Error> write_once(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [6]u8 data = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
-    await anet::write_all(server, anet::bytes_copy(data[..])?)?;
-    anet::shutdown_write(server)?;
+    server = await anet::write_all(server, anet::bytes_copy(data[..])?)?;
+    anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok;
 }
@@ -47,23 +47,22 @@ async Result<void, Error> write_once(anet::AsyncTcpListener listener) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<void> server = async::spawn<void>(write_once(listener))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
-    anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 6)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 6)?;
     await async_time::sleep_ms(20)?;
 
     Result<usize, Error> picked = await biased select {
         case slept = async_time::sleep_ms(0): sleep_winner(slept);
-        case bytes = anet::read_exact_buffered(reader, 6): read_loser(bytes);
+        case bytes = anet::read_exact_buffered(&reader, 6): read_loser(bytes);
     };
     if (picked? != 1) {
         return Err(code_error(90));
     }
 
-    anet::Bytes exact = await anet::read_exact_buffered(reader, 6)?;
+    anet::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
     [6]u8 @got = [0;];
     usize copied = anet::bytes_copy_to(exact, got[..])?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
@@ -72,9 +71,7 @@ async Result<usize, Error> drive() {
     }
 
     anet::AsyncTcpReadHalf half = anet::into_read_half(reader)?;
-    anet::shutdown_read_half(half)?;
-    anet::close_stream(client)?;
-    anet::close_listener(listener)?;
+    anet::shutdown_read_half(&half)?;
     await server?;
     return Ok(copied);
 }

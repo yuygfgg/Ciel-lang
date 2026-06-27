@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_loop_return_result_resource_constructor.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/result;
+
+Result<io::File, Error> return_from_loop([]const char path) {
+    io::File file = io::open_read(path)?;
+    while (true) {
+        return Ok(file);
+    }
+    return Err(text_error("unreachable"));
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "loop-return")?;
+        return Ok;
+    }));
+
+    io::File file = must(return_from_loop(path));
+    [16]u8 @buffer = [0;];
+    usize n = must(io::read(&file, buffer[..]));
+    if (n != 11) {
+        return 1;
+    }
+    must(io::close(file));
+    return 0;
+}

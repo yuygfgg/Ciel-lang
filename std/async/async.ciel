@@ -29,7 +29,7 @@ void close_task_group_on_exit<T>(TaskGroup<T> group) {
 }
 
 // Creates a task group for body and closes it after body returns or is cancelled.
-export async Result<R, Error> with_task_group<T: Message, R: resource::ResourceFree>(
+export async Result<R, Error> with_task_group<T: Message, R>(
     Future<Result<R, Error>> |(*const TaskGroup<T>)| body
 ) = .with_task_group {
     TaskGroup<T> group = task_group<T>()?;

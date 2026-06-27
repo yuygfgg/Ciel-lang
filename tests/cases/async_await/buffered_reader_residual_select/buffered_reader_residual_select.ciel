@@ -20,11 +20,12 @@ Result<usize, Error> timeout_tag(Result<void, Error> result) {
 }
 
 async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream @server = await anet::accept(&listener)?;
+    anet::close_listener(listener)?;
     [4]u8 payload = [97 as u8, 98 as u8, 99 as u8, 100 as u8];
     anet::Bytes out = anet::bytes_copy(payload[..])?;
-    await anet::write_all(server, out)?;
-    anet::shutdown_write(server)?;
+    server = await anet::write_all(server, out)?;
+    anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok(4);
 }
@@ -32,20 +33,20 @@ async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<usize> server = async::spawn<usize>(write_payload(listener))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader(halves.read, 4)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
-    anet::Bytes first = await anet::read_buffered(reader, 2)?;
+    anet::Bytes first = await anet::read_buffered(&reader, 2)?;
     if (anet::bytes_len(first) != 2) {
         return Err(code_error(80));
     }
 
     Result<usize, Error> picked = await select {
-        case bytes = anet::read_buffered(reader, 2): bytes_len_result(bytes);
+        case bytes = anet::read_buffered(&reader, 2): bytes_len_result(bytes);
         case slept = async_time::sleep_ms(20): timeout_tag(slept);
     };
     usize second_len = picked?;
@@ -53,13 +54,12 @@ async Result<usize, Error> drive() {
         return Err(code_error(81));
     }
 
-    anet::Bytes eof = await anet::read_buffered(reader, 2)?;
+    anet::Bytes eof = await anet::read_buffered(&reader, 2)?;
     if (anet::bytes_len(eof) != 0) {
         return Err(code_error(82));
     }
     anet::AsyncTcpReadHalf half = anet::into_read_half(reader)?;
-    anet::shutdown_read_half(half)?;
-    anet::close_listener(listener)?;
+    anet::shutdown_read_half(&half)?;
     usize written = await server?;
     return Ok(anet::bytes_len(first) + second_len + (written - 4));
 }

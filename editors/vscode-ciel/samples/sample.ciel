@@ -1,16 +1,34 @@
 import /std/async as async;
 import /std/async_time;
 import /std/io;
+import /std/meta as meta;
 import /std/result;
+import /std/resource as resource;
 
 struct Packet<T> {
     T value;
     usize count;
 }
 
+resource struct OwnedFile {
+    io::File file;
+}
+
+resource unsafe struct NativeHandle {
+    resource::Handle handle;
+}
+
+struct ResourceBox<resource T> {
+    T value;
+}
+
 enum Event {
     Data(Packet<usize>),
     Timeout,
+}
+
+struct RoutedEvent {
+    meta::Repr<Event> message;
 }
 
 interface<T> usize measure(*const T value) = .measure;

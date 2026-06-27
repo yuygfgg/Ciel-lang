@@ -37,7 +37,7 @@ io::File file_from_parts(HandleParts parts) {
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "async-scope")?;
+        io::write_text(&file, "async-scope")?;
         return Ok;
     }));
 
@@ -49,7 +49,7 @@ i32 main() {
 
     io::File stale = file_from_parts(parts);
     [1]u8 @buffer = [0;];
-    switch (io::read(stale, buffer[..])) {
+    switch (io::read(&stale, buffer[..])) {
         case Ok(_):
             return 1;
         case Err(_):

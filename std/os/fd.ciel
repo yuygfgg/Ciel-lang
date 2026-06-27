@@ -10,12 +10,16 @@ unsafe impl thread_local_marker(*const RawFd value) {
     return true;
 }
 
-// Unsafely adopts an integer as a RawFd.
+// Unsafe hole: adopts an integer as a RawFd. The caller must guarantee the
+// integer is a valid descriptor for the intended platform operation and that
+// later ownership transfer will not double-close it.
 export unsafe RawFd from_raw_fd(c::c_int raw) {
     return unsafe { { raw: raw } };
 }
 
-// Unsafely extracts the integer descriptor from a RawFd.
+// Unsafe hole: extracts the integer descriptor from a RawFd. The caller is
+// responsible for preserving the descriptor ownership protocol after it leaves
+// this typed wrapper.
 export unsafe c::c_int raw_fd(RawFd fd) {
     return unsafe { fd.raw };
 }

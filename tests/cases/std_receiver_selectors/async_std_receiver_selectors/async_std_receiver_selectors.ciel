@@ -3,46 +3,63 @@
 import /std/lib;
 
 Result<void, Error> use_async_io_tokens(
-    AsyncRead read_op,
-    AsyncWrite write_op,
+    AsyncRead read_notify,
+    AsyncRead read_finish,
+    AsyncRead read_cancel,
+    AsyncWrite write_notify,
+    AsyncWrite write_finish,
+    AsyncWrite write_cancel,
     Actor<i64> actor
 ) {
-    read_op.notify_done(&actor, 1)?;
-    write_op.notify_done(&actor, 2)?;
-    read_op.finish()?;
-    write_op.finish()?;
-    read_op.cancel()?;
-    write_op.cancel()?;
+    read_notify.notify_done(&actor, 1)?;
+    write_notify.notify_done(&actor, 2)?;
+    read_finish.finish()?;
+    write_finish.finish()?;
+    read_cancel.cancel()?;
+    write_cancel.cancel()?;
     return Ok;
 }
 
-Result<void, Error> use_sleep_token(AsyncSleep sleep, Actor<i64> actor) {
-    sleep.notify_done(&actor, 3)?;
-    sleep.finish()?;
-    sleep.cancel()?;
+Result<void, Error> use_sleep_token(
+    AsyncSleep sleep_notify,
+    AsyncSleep sleep_finish,
+    AsyncSleep sleep_cancel,
+    Actor<i64> actor
+) {
+    sleep_notify.notify_done(&actor, 3)?;
+    sleep_finish.finish()?;
+    sleep_cancel.cancel()?;
     return Ok;
 }
 
 Result<void, Error> use_async_net_tokens(
-    AsyncAccept accept_op,
-    AsyncConnect connect_op,
-    AsyncTcpRead read_op,
-    AsyncTcpWrite write_op,
+    AsyncAccept accept_notify,
+    AsyncAccept accept_finish,
+    AsyncAccept accept_cancel,
+    AsyncConnect connect_notify,
+    AsyncConnect connect_finish,
+    AsyncConnect connect_cancel,
+    AsyncTcpRead read_notify,
+    AsyncTcpRead read_finish,
+    AsyncTcpRead read_cancel,
+    AsyncTcpWrite write_notify,
+    AsyncTcpWrite write_finish,
+    AsyncTcpWrite write_cancel,
     AsyncBufferedRead buffered_op,
     Actor<i64> actor
 ) {
-    accept_op.notify_done(&actor, 4)?;
-    connect_op.notify_done(&actor, 5)?;
-    read_op.notify_done(&actor, 6)?;
-    write_op.notify_done(&actor, 7)?;
-    accept_op.finish()?;
-    connect_op.finish()?;
-    read_op.finish()?;
-    write_op.finish()?;
-    accept_op.cancel()?;
-    connect_op.cancel()?;
-    read_op.cancel()?;
-    write_op.cancel()?;
+    accept_notify.notify_done(&actor, 4)?;
+    connect_notify.notify_done(&actor, 5)?;
+    read_notify.notify_done(&actor, 6)?;
+    write_notify.notify_done(&actor, 7)?;
+    accept_finish.finish()?;
+    connect_finish.finish()?;
+    read_finish.finish()?;
+    write_finish.finish()?;
+    accept_cancel.cancel()?;
+    connect_cancel.cancel()?;
+    read_cancel.cancel()?;
+    write_cancel.cancel()?;
     buffered_op.cancel()?;
     return Ok;
 }
@@ -63,9 +80,11 @@ async Result<void, Error> use_async_fd(AsyncFd fd, Bytes data) {
 async Result<void, Error> use_async_tcp(
     SocketAddr addr,
     AsyncTcpListener listener,
-    AsyncTcpStream stream,
+    AsyncTcpStream @stream,
+    AsyncTcpStream stream_for_split,
     AsyncTcpReadHalf read_half,
-    AsyncTcpWriteHalf write_half,
+    AsyncTcpReadHalf read_half_for_buffer,
+    AsyncTcpWriteHalf @write_half,
     BufferedStreamReader reader,
     Bytes data
 ) {
@@ -79,15 +98,12 @@ async Result<void, Error> use_async_tcp(
     listener.addr()?;
     AsyncAccept accept_op = listener.accept_async()?;
     accept_op.cancel()?;
-    AsyncTcpStream accepted = await listener.accept()?;
-    accepted.close()?;
     listener.close()?;
 
     stream.local_addr()?;
     stream.peer_addr()?;
-    AsyncTcpSplit split = stream.split()?;
-    split.read.shutdown_read()?;
-    split.write.shutdown_write()?;
+    AsyncTcpSplit split = stream_for_split.split()?;
+    BufferedStreamReader owned_reader = split.buffered_reader(4096)?;
     AsyncTcpRead read_op = stream.read_async(64)?;
     read_op.cancel()?;
     AsyncTcpRead read_into_op = stream.read_into_async(data)?;
@@ -97,7 +113,7 @@ async Result<void, Error> use_async_tcp(
     Bytes got = await stream.read(64)?;
     ReadIntoResult into_result = await stream.read_into(data)?;
     usize written = await stream.write(data)?;
-    await stream.write_all(data)?;
+    stream = await stream.write_all(data)?;
     if (got.len() + into_result.read + written > data.len()) {
         stream.shutdown_read()?;
     }
@@ -105,11 +121,12 @@ async Result<void, Error> use_async_tcp(
     stream.close()?;
 
     read_half.shutdown_read()?;
-    BufferedStreamReader owned_reader = read_half.buffered_reader(4096)?;
     AsyncBufferedRead buffered = owned_reader.read_async(64)?;
     buffered.cancel()?;
     AsyncBufferedRead exact = owned_reader.read_exact_async(4)?;
     exact.cancel()?;
+    BufferedStreamReader owned_reader2 = read_half_for_buffer.buffered_reader(4096)?;
+    owned_reader2.into_read_half()?;
     Bytes buffered_bytes = await reader.read(64)?;
     Bytes exact_bytes = await reader.read_exact(4)?;
     if (buffered_bytes.len() + exact_bytes.len() > data.len()) {
@@ -119,7 +136,7 @@ async Result<void, Error> use_async_tcp(
     AsyncTcpWrite half_write = write_half.write_async(data)?;
     half_write.cancel()?;
     await write_half.write(data)?;
-    await write_half.write_all(data)?;
+    write_half = await write_half.write_all(data)?;
     write_half.shutdown_write()?;
     return Ok;
 }

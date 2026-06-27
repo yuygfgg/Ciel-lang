@@ -1,0 +1,18 @@
+// ciel-test: compile
+
+import /std/io as io;
+import /std/result;
+
+Result<void, Error> consume_resource<resource T>(T value) {
+    return Ok;
+}
+
+Result<void, Error> drive([]const char path) {
+    io::File file = io::open_read(path)?;
+    consume_resource<io::File>(file)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

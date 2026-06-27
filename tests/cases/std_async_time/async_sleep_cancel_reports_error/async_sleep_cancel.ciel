@@ -2,7 +2,36 @@
 // expect-exit: 0
 
 import /std/async_time as atime;
+import /std/resource as resource;
 import /std/result;
+
+struct HandleParts {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+HandleParts parts_from_handle(*const resource::Handle handle) {
+    return {
+        owner_id: unsafe { handle->owner_id },
+        resource_id: unsafe { handle->resource_id },
+        generation: unsafe { handle->generation },
+    };
+}
+
+resource::Handle handle_from_parts(HandleParts parts) {
+    return unsafe {
+        {
+            owner_id: parts.owner_id,
+            resource_id: parts.resource_id,
+            generation: parts.generation,
+        }
+    };
+}
+
+atime::AsyncSleep sleep_from_parts(HandleParts parts) {
+    return unsafe { { handle: handle_from_parts(parts) } };
+}
 
 bool is_err(Result<void, Error> value) {
     switch (value) {
@@ -15,8 +44,9 @@ bool is_err(Result<void, Error> value) {
 
 i32 main() {
     atime::AsyncSleep op = must(atime::sleep_ms_async(1000));
+    HandleParts stale_parts = parts_from_handle(unsafe { &op.handle });
     must(atime::cancel_sleep(op));
-    if (!is_err(atime::finish_sleep(op))) {
+    if (!is_err(atime::finish_sleep(sleep_from_parts(stale_parts)))) {
         return 1;
     }
     return 0;

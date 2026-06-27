@@ -44,19 +44,23 @@ export struct Future<T> {
     *void handle;
 }
 
-// Unsafe adapter from an awaitable value to its runtime future handle.
+// Unsafe interface hole: adapts an awaitable value to its runtime future
+// handle. Implementations must return a valid runtime future for the lifetime
+// of the await operation.
 export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
 
 // Constraint alias for values that can be awaited for output Out.
 export interface Awaitable<Out> = awaitable_future<Out>;
 
-// Marker for futures whose cancellation preserves their protocol state.
+// Unsafe policy marker: futures may implement this only when losing select or
+// timeout cancellation preserves their protocol state.
 export unsafe interface<F> bool cancel_safe_marker(*const F future);
 
 // Constraint alias for cancel-safe futures.
 export interface CancelSafe = cancel_safe_marker;
 
-// Aborts a future or task so pending runtime operations can be released.
+// Unsafe interface hole: aborts a future or task so pending runtime operations
+// can be released. Implementations must make repeated abort/close paths safe.
 export unsafe interface<F> Result<void, Error> abort_future(*F future);
 
 // Constraint alias for abortable futures.

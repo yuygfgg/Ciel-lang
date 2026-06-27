@@ -10,7 +10,7 @@ import /std/resource as resource;
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "quota")?;
+        io::write_text(&file, "quota")?;
         return Ok;
     }));
 

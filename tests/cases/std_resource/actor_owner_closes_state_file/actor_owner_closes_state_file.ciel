@@ -28,7 +28,7 @@ unsafe impl clone_message(*const Command value) {
     return Ok(*value);
 }
 
-struct OwnedState {
+resource struct OwnedState {
     io::File file;
     Channel<HandleParts> out;
 }
@@ -72,7 +72,7 @@ Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command comma
 i32 main() {
     []const char path = must(env::arg(1));
     must(io::with_create<void>(path, |file| {
-        io::write_text(file, "actor-owned")?;
+        io::write_text(&file, "actor-owned")?;
         return Ok;
     }));
 
@@ -88,7 +88,7 @@ i32 main() {
 
     io::File stale = file_from_parts(parts);
     [1]u8 @buffer = [0;];
-    switch (io::read(stale, buffer[..])) {
+    switch (io::read(&stale, buffer[..])) {
         case Ok(_):
             return 1;
         case Err(_):

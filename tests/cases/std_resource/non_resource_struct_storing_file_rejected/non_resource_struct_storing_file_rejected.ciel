@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: non-resource struct `BadSession` cannot store a resource field
+
+import /std/io as io;
+
+struct BadSession {
+    io::File file;
+}
+
+i32 main() {
+    return 0;
+}

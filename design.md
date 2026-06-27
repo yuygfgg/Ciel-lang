@@ -104,6 +104,9 @@ function-pointer type suffix.
 recognized only in async function declarations, async closure expressions,
 await expressions, and select expressions. They remain ordinary identifiers in
 module paths and other positions, so `/std/async` is a valid import path.
+`resource` is also contextual syntax. It is recognized as a modifier before
+`struct` declarations and before generic parameter names; elsewhere it remains
+an ordinary identifier.
 
 Primitive type names are also reserved:
 
@@ -577,7 +580,8 @@ TypeAliasDecl       ::= [ AbiSpec ] "type" Identifier [ GenericParamList ]
                         "=" Type ";"
 CSpellingTypeDecl   ::= [ AbiSpec ] "type" Identifier "=" StringLiteral ";"
 
-StructDecl          ::= [ "unsafe" ] "struct" Identifier [ GenericParamList ] StructBody
+StructDecl          ::= [ "resource" ] [ "unsafe" ] "struct" Identifier
+                        [ GenericParamList ] StructBody
 StructBody          ::= "{" { FieldDecl } "}"
 FieldDecl           ::= Type Identifier ";"
 
@@ -603,7 +607,7 @@ FunctionSignature   ::= Type Identifier [ GenericParamList ]
 ReceiverSelector    ::= "=" ( "." Identifier | Identifier "." Identifier )
 
 GenericParamList    ::= "<" GenericParam { "," GenericParam } [ "," ] ">"
-GenericParam        ::= Identifier [ ":" ConstraintExpr ]
+GenericParam        ::= [ "resource" ] Identifier [ ":" ConstraintExpr ]
 ConstraintExpr      ::= ConstraintTerm { ( "+" | "-" ) ConstraintTerm }
 ConstraintTerm      ::= [ "!" ] Identifier [ TypeArgList ]
 
@@ -644,11 +648,24 @@ cursor = next; // ok: the pointer binding is mutable
 Local declarations may use `_` type holes only when they have an initializer.
 There is no assignment-based `auto`.
 
-Struct and enum assignment is shallow field-wise copy. Fixed-size array
-assignment is element-wise copy. Slice assignment copies only the slice view.
-Assignment evaluates the right-hand side first, then stores into the
-left-hand-side lvalue. Returning a struct, enum, or array value uses the same
-value semantics at the Ciel level; backend lowering may avoid physical copies.
+Struct and enum assignment is shallow field-wise copy for non-affine concrete
+types. Fixed-size array assignment is element-wise copy when the element type is
+non-affine. Slice assignment copies only the slice view. Assignment evaluates
+the right-hand side first, then stores into the left-hand-side lvalue.
+Returning a struct, enum, or array value uses the same value semantics at the
+Ciel level; backend lowering may avoid physical copies.
+
+A concrete type is resource-affine when it is declared `resource struct`, when
+it is `/std/resource::Handle`, or when it structurally contains a
+resource-affine field, enum payload, array element, closure capture, or
+generated future output. Resource-affine values are move-only. Moving a whole
+local, parameter, enum payload, result payload, selected future output, or
+returned value consumes the source slot; later reads are rejected and the
+backend clears the moved-from resource handles so cleanup does not close the
+moved value. Safe code cannot copy a resource-affine value, repeat it in an
+array literal, move only a resource subfield out of an aggregate, or replace a
+resource subfield in place. Unsafe code can still manipulate raw handles, but
+standard-library unsafe holes must document their ownership contract.
 
 A local declaration without an initializer creates an uninitialized binding,
 unless its type contains a hole. Declarations with type holes require an
@@ -714,6 +731,20 @@ function return, or by C interop according to the declared ABI.
 An `unsafe struct` is still copied and passed like an ordinary struct, but
 constructing it with a struct literal or projecting one of its fields requires
 `unsafe { ... }`.
+
+A `resource struct` declares an owning resource wrapper. It is resource-affine
+and is automatically cleaned up when the live value goes out of scope or its
+resource owner closes. A concrete `resource struct` must contain an owning
+resource field, unless it is the canonical `/std/resource::Handle` leaf. A
+concrete non-resource struct cannot store a resource-affine field. The
+`unsafe` modifier is independent: `resource unsafe struct` is used when the
+wrapper representation itself has unsafe invariants, such as a raw runtime
+handle field.
+
+Generic parameters may be written as `resource T` to require a resource-affine
+type argument. Ordinary `T` parameters can still be instantiated with resources
+when the generic body is affine-correct; the `resource` marker is for APIs that
+must expose a resource-only operation boundary in their signature.
 
 At most one function body may exist for a given fully qualified name. A
 non-`extern` function declaration ending in `;` is a prototype and must match
@@ -2153,9 +2184,10 @@ interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInt
 
 `clone_message` constructs the value that will be owned by the receiver. It may
 copy fields, allocate fresh backing storage, serialize and decode, duplicate a
-resource handle, intern immutable data, or report an error. Implementing it is a
-safety contract, so each implementation uses `unsafe impl`. Calling safe APIs
-that require `T: Message` does not require an unsafe block.
+shareable synchronized handle, intern immutable data, or report an error. It
+must not duplicate affine resources. Implementing it is a safety contract, so
+each implementation uses `unsafe impl`. Calling safe APIs that require
+`T: Message` does not require an unsafe block.
 
 Cross-domain standard-library APIs are ordinary functions that require
 `Message` and call `clone_message` explicitly:
@@ -2633,13 +2665,13 @@ export type const_c_string = *const char;
 export import /std/result;
 import /std/async/core as async_core;
 
-export unsafe struct Handle {
+export resource unsafe struct Handle {
     u64 owner_id;
     u64 resource_id;
     u64 generation;
 }
 
-export unsafe struct TransferToken {
+export resource unsafe struct TransferToken {
     Handle handle;
 }
 
@@ -2650,31 +2682,29 @@ export struct Limits {
     usize max_descriptors;
 }
 
-export unsafe interface<T> bool resource_free_marker(*const T value);
-export unsafe interface<T> bool resource_handle_marker(*const T value);
-
-export interface ResourceFreeInternal = resource_free_marker;
-export interface ResourceHandleInternal = resource_handle_marker;
-export interface ResourceFree = ResourceFreeInternal + !ResourceHandleInternal;
-
 export interface<T> Result<T, Error> transfer_to_parent(*const T value);
 export interface<T> Result<T, Error> transfer_to_current(*const T value);
 
 export Limits default_limits();
-export Result<void, Error> close(Handle handle);
-export Result<Handle, Error> transfer_handle_to_parent(Handle handle);
-export Result<Handle, Error> transfer_handle_to_current(Handle handle);
+export unsafe Handle take_handle_in_place(*Handle handle);
+export unsafe Result<void, Error> close_handle_in_place(*Handle handle);
+export Result<void, Error> close(Handle @handle);
+export unsafe Result<Handle, Error> transfer_handle_to_parent_in_place(*Handle handle);
+export Result<Handle, Error> transfer_handle_to_parent(Handle @handle);
+export unsafe Result<Handle, Error> transfer_handle_to_current_in_place(*Handle handle);
+export Result<Handle, Error> transfer_handle_to_current(Handle @handle);
 export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle);
-export Result<Handle, Error> claim_transfer_token(TransferToken token);
-export Result<R, Error> scoped<R: ResourceFree>(Result<R, Error> |()| body) = .scoped;
-export Result<R, Error> scoped_with_limits<R: ResourceFree>(
+export unsafe Result<Handle, Error> claim_transfer_token_in_place(*TransferToken token);
+export Result<Handle, Error> claim_transfer_token(TransferToken @token);
+export Result<R, Error> scoped<R>(Result<R, Error> |()| body) = .scoped;
+export Result<R, Error> scoped_with_limits<R>(
     Limits limits,
     Result<R, Error> |()| body
 ) = .scoped_with_limits;
-export async Result<R, Error> scoped_async<R: ResourceFree>(
+export async Result<R, Error> scoped_async<R>(
     async_core::Future<Result<R, Error>> |()| body
 );
-export async Result<R, Error> scoped_async_with_limits<R: ResourceFree>(
+export async Result<R, Error> scoped_async_with_limits<R>(
     Limits limits,
     async_core::Future<Result<R, Error>> |()| body
 );
@@ -2688,15 +2718,18 @@ not copy or extend ownership; closing an owner or entry revokes all token
 copies, and later operations on stale tokens return a stable `Error`.
 
 `resource::scoped` creates a child owner, installs it as the current owner for
-the body, and closes it on normal return or `Err` return. `scoped_async` accepts
-the same callable shape returning `async_core::Future<Result<R, Error>>`; an
-`async || { ... }` closure matches that API and the scoped owner is preserved
-across `await`. The result type is constrained as `R: ResourceFree`, so values
-containing resource handles cannot leave the closing owner through the ordinary
-result path. `ResourceFree` is a standard capability over visible structs,
-enums, arrays, concrete closure captures, and owned `/std/meta` representation
-nodes. Resource handle types implement `resource_handle_marker` and are not
-`ResourceFree`.
+the body, and closes it on normal return or `Err` return. Values that remain
+live in the child owner are closed. A resource-affine value returned from the
+body is an ordinary move-out; the compiler reattaches the moved resource
+handles to the caller's owner before closing the child owner.
+
+`scoped_async` accepts the same callable shape returning
+`async_core::Future<Result<R, Error>>`; an `async || { ... }` closure matches
+that API and the scoped owner is preserved across `await`. Its source
+implementation uses a private compiler hook. The source hook is a deliberate
+no-op fallback, and code generation rewrites it for affine `R` into a
+structural transfer of all live returned handles to the parent owner before the
+child owner closes.
 
 `transfer_to_parent` is the explicit lifetime-extension operation. It moves the
 underlying registry entry to the parent owner, returns a fresh token, and
@@ -2710,14 +2743,19 @@ handles, closed entries, quota failures, or handles whose source owner is not an
 ancestor of the current owner. If the entry is already owned by the current
 owner, the runtime validates the handle and returns it unchanged.
 
-`TransferToken` is a `Message`-safe wrapper for a handle that has already been
-transferred out of its source owner. Safe code passes tokens across task, actor,
-or channel boundaries and then calls `claim_transfer_token`, which validates the
-token and adopts it through `transfer_handle_to_current`. A transfer token is a
-revocable capability, not a static linear value; stale token copies fail through
-ordinary generation validation.
+`TransferToken` is an affine wrapper for a handle that has already been
+transferred out of its source owner. It is not `Message` and cannot cross
+clone-based task, actor, or channel boundaries. Safe code can move the token
+through ordinary lexical returns and then call `claim_transfer_token`, which
+validates the token and adopts it through `transfer_handle_to_current`. Stale
+tokens fail through ordinary generation validation.
 
-The compiler recognizes canonical `/std/resource` capability interfaces through
+The `*_in_place` helpers are unsafe standard-library holes. They require the
+caller to pass the unique live owner slot and clear that slot exactly once.
+They exist so resource wrapper internals can move or close raw handles without
+exposing raw resource invariants to ordinary user code.
+
+The compiler recognizes canonical `/std/resource` owner hooks through
 standard-library identity metadata, not by source path or by trusting a user
 interface with the same spelling.
 
@@ -2732,7 +2770,7 @@ export enum OpenMode {
     Append,
 }
 
-export unsafe struct File {
+export resource unsafe struct File {
     resource::Handle handle;
 }
 
@@ -2743,34 +2781,34 @@ export Error last_error();
 export Result<File, Error> open_read([]const char path);
 export Result<File, Error> create([]const char path);
 export Result<File, Error> append([]const char path);
-export Result<void, Error> close(File file);
+export Result<void, Error> close(File @file);
 
-export Result<R, Error> with_open<R: resource::ResourceFree>(
+export Result<R, Error> with_open<R>(
     []const char path,
     OpenMode mode,
     Result<R, Error> |(File)| body
 ) = .with_open;
 
-export Result<R, Error> with_open_read<R: resource::ResourceFree>(
+export Result<R, Error> with_open_read<R>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_open_read;
 
-export Result<R, Error> with_create<R: resource::ResourceFree>(
+export Result<R, Error> with_create<R>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_create;
 
-export Result<R, Error> with_append<R: resource::ResourceFree>(
+export Result<R, Error> with_append<R>(
     []const char path,
     Result<R, Error> |(File)| body
 ) = .with_append;
 
-export Result<usize, Error> read(File file, []u8 out) = .read;
-export Result<usize, Error> write(File file, []const u8 data) = .write;
-export Result<usize, Error> write_text_once(File file, []const char text) = .write_text_once;
-export Result<void, Error> write_all(File file, []const u8 data) = .write_all;
-export Result<void, Error> write_text(File file, []const char text) = .write_text;
+export Result<usize, Error> read(*const File file, []u8 out) = .read;
+export Result<usize, Error> write(*const File file, []const u8 data) = .write;
+export Result<usize, Error> write_text_once(*const File file, []const char text) = .write_text_once;
+export Result<void, Error> write_all(*const File file, []const u8 data) = .write_all;
+export Result<void, Error> write_text(*const File file, []const char text) = .write_text;
 
 export []const char f32_to_string(f32 value);
 export []const char f64_to_string(f64 value);
@@ -2791,8 +2829,8 @@ export Result<void, Error> eprintln([]const char fmt, []printable values);
 `create`, and `append` register the real descriptor in that owner and return a
 revocable `File` token. `close` closes the registry entry early and revokes all
 token copies. The scoped helpers use `resource::scoped`, so resources opened
-deep in the callback are closed when the helper returns, and the result type is
-constrained as `R: ResourceFree`.
+deep in the callback are closed when the helper returns unless they are moved
+out through the helper result.
 
 Every blocking I/O operation validates the file token through the common
 resource registry before touching the OS descriptor. This prevents stale tokens
@@ -3449,6 +3487,7 @@ later use of the cleared value returns an error.
 ```ciel
 // /std/net
 import /std/result;
+import /std/resource as resource;
 
 export enum AddressFamily {
     Ip4,
@@ -3459,14 +3498,12 @@ export unsafe struct SocketAddr {
     *void handle;
 }
 
-export unsafe struct TcpListener {
-    u32 slot;
-    u32 generation;
+export resource unsafe struct TcpListener {
+    resource::Handle handle;
 }
 
-export unsafe struct TcpStream {
-    u32 slot;
-    u32 generation;
+export resource unsafe struct TcpStream {
+    resource::Handle handle;
 }
 
 export Result<SocketAddr, Error> parse_addr([]const char text) = .parse_addr;
@@ -3480,30 +3517,30 @@ export Result<TcpListener, Error> tcp_listen(SocketAddr addr) = .listen;
 export Result<TcpStream, Error> tcp_accept(TcpListener listener) = .accept;
 export Result<TcpStream, Error> tcp_connect(SocketAddr addr) = .connect;
 export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port);
-export Result<usize, Error> tcp_read(TcpStream stream, []u8 out) = .read;
-export Result<usize, Error> tcp_write(TcpStream stream, []const u8 data) = .write;
-export Result<void, Error> tcp_write_all(TcpStream stream, []const u8 data) = .write_all;
-export Result<void, Error> tcp_shutdown_read(TcpStream stream) = .shutdown_read;
-export Result<void, Error> tcp_shutdown_write(TcpStream stream) = .shutdown_write;
-export Result<void, Error> tcp_shutdown(TcpStream stream) = .shutdown;
+export Result<usize, Error> tcp_read(*const TcpStream stream, []u8 out) = .read;
+export Result<usize, Error> tcp_write(*const TcpStream stream, []const u8 data) = .write;
+export Result<void, Error> tcp_write_all(*const TcpStream stream, []const u8 data) = .write_all;
+export Result<void, Error> tcp_shutdown_read(*const TcpStream stream) = .shutdown_read;
+export Result<void, Error> tcp_shutdown_write(*const TcpStream stream) = .shutdown_write;
+export Result<void, Error> tcp_shutdown(*const TcpStream stream) = .shutdown;
 export Result<void, Error> tcp_close(TcpStream stream) = .close;
 export Result<void, Error> listener_close(TcpListener listener) = .close;
-export Result<SocketAddr, Error> listener_addr(TcpListener listener) = .addr;
-export Result<SocketAddr, Error> stream_local_addr(TcpStream stream) = .local_addr;
-export Result<SocketAddr, Error> stream_peer_addr(TcpStream stream) = .peer_addr;
+export Result<SocketAddr, Error> listener_addr(*const TcpListener listener) = .addr;
+export Result<SocketAddr, Error> stream_local_addr(*const TcpStream stream) = .local_addr;
+export Result<SocketAddr, Error> stream_peer_addr(*const TcpStream stream) = .peer_addr;
 
-export Result<R, Error> with_tcp_connect<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_connect<R>(
     SocketAddr addr,
     Result<R, Error> |(TcpStream)| body
 ) = .with_connect;
 
-export Result<R, Error> with_tcp_connect_host<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_connect_host<R>(
     []const char host,
     u16 port,
     Result<R, Error> |(TcpStream)| body
 ) = .with_tcp_connect;
 
-export Result<R, Error> with_tcp_listen<R: resource::ResourceFree>(
+export Result<R, Error> with_tcp_listen<R>(
     SocketAddr addr,
     Result<R, Error> |(TcpListener)| body
 ) = .with_listen;
@@ -3522,8 +3559,8 @@ runtime-backed resource handles and are actor-local blocking resources. The
 runtime stores real descriptors in the common resource registry, so stale
 copies of a closed or transferred listener or stream cannot accidentally
 operate on a reused descriptor. The scoped `with_tcp_*` helpers follow the
-`/std/io` pattern, use `R: ResourceFree`, and close the opened owner on normal
-and error returns from the body.
+`/std/io` pattern and close resources that remain in the helper's child owner
+on normal and error returns from the body.
 
 ```ciel
 // /std/async/bytes
@@ -3659,7 +3696,7 @@ export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task)
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next;
 export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
 export Result<void, Error> group_close<T>(*const TaskGroup<T> group) = .close;
-export async Result<R, Error> with_task_group<T: Message, R: resource::ResourceFree>(
+export async Result<R, Error> with_task_group<T: Message, R>(
     Future<Result<R, Error>> |(*const TaskGroup<T>)| body
 ) = .with_task_group;
 
@@ -3719,7 +3756,7 @@ export interface<Op, M> Result<void, Error> notify_done(
 
 export interface<Op, Out> Result<Out, Error> finish(Op op);
 export unsafe interface<Op> ?*void raw_operation(*const Op op);
-export unsafe interface<Op, Out> c::c_int poll_done(Op op, *Out out);
+export unsafe interface<Op, Out> c::c_int poll_done(*Op op, *Out out);
 ```
 
 The internal adapter namespace describes runtime operation tokens. `notify_done`
@@ -3741,15 +3778,15 @@ import /std/message;
 import /std/os/fd as os_fd;
 import /std/resource as resource;
 
-export struct AsyncFd {
+export resource unsafe struct AsyncFd {
     resource::Handle handle;
 }
 
-export struct AsyncRead {
+export resource unsafe struct AsyncRead {
     resource::Handle handle;
 }
 
-export struct AsyncWrite {
+export resource unsafe struct AsyncWrite {
     resource::Handle handle;
 }
 
@@ -3758,12 +3795,12 @@ export Result<AsyncFd, Error> open_async_read([]const char path) = .open_async_r
 export Result<AsyncFd, Error> create_async([]const char path) = .create_async;
 export Result<AsyncFd, Error> append_async([]const char path) = .append_async;
 export unsafe Result<AsyncFd, Error> async_from_raw_fd(os_fd::RawFd fd);
-export Result<void, Error> close_async(AsyncFd fd) = .close;
+export Result<void, Error> close_async(AsyncFd @fd) = .close;
 
-export Result<AsyncRead, Error> read_bytes_async(AsyncFd fd, usize max_len) = .read_async;
-export Result<AsyncWrite, Error> write_bytes_async(AsyncFd fd, Bytes data) = .write_async;
-export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len) = .read;
-export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data) = .write;
+export Result<AsyncRead, Error> read_bytes_async(*const AsyncFd fd, usize max_len) = .read_async;
+export Result<AsyncWrite, Error> write_bytes_async(*const AsyncFd fd, Bytes data) = .write_async;
+export async Result<Bytes, Error> read_bytes(*const AsyncFd fd, usize max_len) = .read;
+export async Result<usize, Error> write_bytes(*const AsyncFd fd, Bytes data) = .write;
 
 export Result<void, Error> notify_read_done<M: Message>(
     *const AsyncRead op,
@@ -3801,53 +3838,54 @@ import /std/message;
 import /std/net;
 import /std/resource as resource;
 
-export struct AsyncTcpListener {
+export resource unsafe struct AsyncTcpListener {
     resource::Handle handle;
 }
 
-export struct AsyncTcpStream {
+export resource unsafe struct AsyncTcpStream {
     resource::Handle handle;
 }
 
-export unsafe struct AsyncTcpStreamTransfer {
-    resource::TransferToken token;
-}
-
-export struct AsyncTcpReadHalf {
+export resource unsafe struct AsyncTcpReadHalf {
     resource::Handle handle;
 }
 
-export struct AsyncTcpWriteHalf {
+export resource unsafe struct AsyncTcpWriteHalf {
     resource::Handle handle;
 }
 
-export struct AsyncTcpSplit {
+export resource unsafe struct AsyncTcpSplit {
     AsyncTcpReadHalf read;
     AsyncTcpWriteHalf write;
 }
 
-export struct BufferedStreamReader {
+export resource unsafe struct BufferedStreamReader {
     *void handle;
     resource::Handle fd_handle;
 }
 
-export struct AsyncAccept {
+export resource unsafe struct AsyncTcpBufferedSplit {
+    BufferedStreamReader reader;
+    AsyncTcpWriteHalf write;
+}
+
+export resource unsafe struct AsyncAccept {
     resource::Handle handle;
 }
 
-export struct AsyncConnect {
+export resource unsafe struct AsyncConnect {
     resource::Handle handle;
 }
 
-export struct AsyncTcpRead {
+export resource unsafe struct AsyncTcpRead {
     resource::Handle handle;
 }
 
-export struct AsyncTcpWrite {
+export resource unsafe struct AsyncTcpWrite {
     resource::Handle handle;
 }
 
-export struct AsyncBufferedRead {
+export resource unsafe struct AsyncBufferedRead {
     resource::Handle handle;
 }
 
@@ -3857,57 +3895,71 @@ export struct ReadIntoResult {
 }
 
 export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) = .listen_async;
-export Result<net::SocketAddr, Error> listener_addr(AsyncTcpListener listener) = .addr;
-export Result<void, Error> close_listener(AsyncTcpListener listener) = .close;
-export Result<AsyncAccept, Error> accept_async(AsyncTcpListener listener) = .accept_async;
+export Result<net::SocketAddr, Error> listener_addr(*const AsyncTcpListener listener) = .addr;
+export Result<void, Error> close_listener(AsyncTcpListener @listener) = .close;
+export Result<AsyncAccept, Error> accept_async(*const AsyncTcpListener listener) = .accept_async;
 export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connect_async;
-export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener) = .accept;
+export async Result<AsyncTcpStream, Error> accept(*const AsyncTcpListener listener) = .accept;
 export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
 export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout;
-export Result<AsyncTcpStreamTransfer, Error> transfer_stream_to_parent_token(
-    *const AsyncTcpStream stream
-);
-export Result<AsyncTcpStream, Error> claim_stream_transfer(AsyncTcpStreamTransfer token);
 
-export Result<void, Error> close_stream(AsyncTcpStream stream) = .close;
-export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream) = .split;
-export Result<void, Error> shutdown_read(AsyncTcpStream stream) = .shutdown_read;
-export Result<void, Error> shutdown_read_half(AsyncTcpReadHalf half) = .shutdown_read;
-export Result<void, Error> shutdown_write(AsyncTcpStream stream) = .shutdown_write;
-export Result<void, Error> shutdown_write_half(AsyncTcpWriteHalf half) = .shutdown_write;
-export Result<net::SocketAddr, Error> stream_local_addr(AsyncTcpStream stream) = .local_addr;
-export Result<net::SocketAddr, Error> stream_peer_addr(AsyncTcpStream stream) = .peer_addr;
+export Result<void, Error> close_stream(AsyncTcpStream @stream) = .close;
+export Result<AsyncTcpSplit, Error> split(AsyncTcpStream @stream) = .split;
+export Result<AsyncTcpBufferedSplit, Error> buffered_split(
+    AsyncTcpStream @stream,
+    usize capacity
+) = .buffered_split;
+export Result<void, Error> shutdown_read(*const AsyncTcpStream stream) = .shutdown_read;
+export Result<void, Error> shutdown_read_half(*const AsyncTcpReadHalf half) = .shutdown_read;
+export Result<void, Error> shutdown_write(*const AsyncTcpStream stream) = .shutdown_write;
+export Result<void, Error> shutdown_write_half(*const AsyncTcpWriteHalf half) = .shutdown_write;
+export Result<net::SocketAddr, Error> stream_local_addr(*const AsyncTcpStream stream) = .local_addr;
+export Result<net::SocketAddr, Error> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr;
 
-export Result<AsyncTcpRead, Error> read_bytes(AsyncTcpStream stream, usize max_len) = .read_async;
-export Result<AsyncTcpRead, Error> read_into_async(AsyncTcpStream stream, Bytes buffer) = .read_into_async;
-export Result<AsyncTcpWrite, Error> write_bytes(AsyncTcpStream stream, Bytes data) = .write_async;
-export Result<AsyncTcpWrite, Error> write_half_bytes(AsyncTcpWriteHalf half, Bytes data) = .write_async;
-export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len) = .read;
-export async Result<ReadIntoResult, Error> read_into(AsyncTcpStream stream, Bytes buffer) = .read_into;
-export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data) = .write;
-export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data) = .write;
-export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data) = .write_all;
-export async Result<void, Error> write_all_half(AsyncTcpWriteHalf half, Bytes data) = .write_all;
+export Result<AsyncTcpRead, Error> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async;
+export Result<AsyncTcpRead, Error> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
+export Result<AsyncTcpWrite, Error> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async;
+export Result<AsyncTcpWrite, Error> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async;
+export async Result<Bytes, Error> read(*const AsyncTcpStream stream, usize max_len) = .read;
+export async Result<ReadIntoResult, Error> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into;
+export async Result<usize, Error> write(*const AsyncTcpStream stream, Bytes data) = .write;
+export async Result<usize, Error> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write;
+export async Result<AsyncTcpStream, Error> write_all(AsyncTcpStream @stream, Bytes data) = .write_all;
+export async Result<AsyncTcpWriteHalf, Error> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all;
 
 export Result<BufferedStreamReader, Error> buffered_reader(
-    AsyncTcpReadHalf half,
+    AsyncTcpReadHalf @half,
     usize capacity
 ) = .buffered_reader;
-export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader reader) = .into_read_half;
+export Result<BufferedStreamReader, Error> buffered_reader_from_split(
+    AsyncTcpSplit @split,
+    usize capacity
+) = .buffered_reader;
+export Result<BufferedStreamReader, Error> buffered_reader_from_stream(
+    AsyncTcpStream @stream,
+    usize capacity
+) = .buffered_reader;
+export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader @reader) = .into_read_half;
+export Result<BufferedStreamReader, Error> take_buffered_split_reader(
+    *AsyncTcpBufferedSplit split_value
+);
+export Result<AsyncTcpWriteHalf, Error> take_buffered_split_write(
+    *AsyncTcpBufferedSplit split_value
+);
 export Result<AsyncBufferedRead, Error> read_buffered_async(
-    BufferedStreamReader reader,
+    *const BufferedStreamReader reader,
     usize max_len
 ) = .read_async;
 export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
-    BufferedStreamReader reader,
+    *const BufferedStreamReader reader,
     usize len
 ) = .read_exact_async;
 export async Result<Bytes, Error> read_buffered(
-    BufferedStreamReader reader,
+    *const BufferedStreamReader reader,
     usize max_len
 ) = .read;
 export async Result<Bytes, Error> read_exact_buffered(
-    BufferedStreamReader reader,
+    *const BufferedStreamReader reader,
     usize len
 ) = .read_exact;
 
@@ -3953,10 +4005,13 @@ owned `Bytes` buffer into the future and returns the same owned buffer with the
 number of bytes read so hot loops can reuse capacity without keeping a mutable
 slice live across await.
 
-`AsyncTcpStreamTransfer` is the Message-safe token form for moving stream
-ownership across task, actor, or channel boundaries. It is produced by
-`transfer_stream_to_parent_token` and claimed with `claim_stream_transfer`,
-which validates and adopts the stream into the current resource owner.
+`/std/async_net` no longer exposes a Message-safe stream transfer wrapper.
+`AsyncTcpStream` and its split/read/write operation tokens are resource-affine
+values. They move through ordinary lexical returns, `resource::scoped`, and
+`resource::scoped_async`; clone-based task, actor, and channel APIs reject them.
+The lower-level `resource::TransferToken` remains an affine registry fallback
+for standard-library internals and explicit resource tests, not a stream
+message API.
 
 Raw TCP `read`, `read_into`, `write`, and `write_all` are `Abortable` but not
 `CancelSafe`; they are rejected by `SelectableFuture` bounds. Task abort may
@@ -3988,7 +4043,7 @@ import /std/actor as actor;
 import /std/message;
 import /std/resource as resource;
 
-export struct AsyncSleep {
+export resource unsafe struct AsyncSleep {
     resource::Handle handle;
 }
 

@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: cannot replace resource subvalue of type `File`
+
+import /std/io as io;
+import /std/result;
+
+resource struct Holder {
+    io::File file;
+}
+
+Result<void, Error> drive([]const char path) {
+    Holder @holder = { file: io::open_read(path)? };
+    holder.file = io::open_read(path)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

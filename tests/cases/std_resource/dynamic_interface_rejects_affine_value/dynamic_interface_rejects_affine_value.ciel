@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: cannot erase resource-affine type `File` into dynamic interface `consume`
+
+import /std/io as io;
+import /std/result;
+
+interface<T> Result<void, Error> consume(T value);
+
+impl consume(io::File file) {
+    return io::close(file);
+}
+
+Result<void, Error> drive([]const char path) {
+    io::File file = io::open_read(path)?;
+    consume erased = file;
+    return consume(erased);
+}
+
+i32 main() {
+    return 0;
+}

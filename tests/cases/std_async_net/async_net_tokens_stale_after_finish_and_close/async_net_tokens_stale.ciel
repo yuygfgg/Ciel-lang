@@ -5,9 +5,55 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/io as io;
+import /std/message;
 import /std/net as net;
 import /std/panic;
+import /std/resource as resource;
 import /std/result;
+
+struct HandleParts {
+    u64 owner_id;
+    u64 resource_id;
+    u64 generation;
+}
+
+unsafe impl clone_message(*const HandleParts value) {
+    return Ok(*value);
+}
+
+HandleParts parts_from_handle(*const resource::Handle handle) {
+    return {
+        owner_id: unsafe { handle->owner_id },
+        resource_id: unsafe { handle->resource_id },
+        generation: unsafe { handle->generation },
+    };
+}
+
+HandleParts parts_from_connect(*const anet::AsyncConnect op) {
+    return parts_from_handle(unsafe { &op->handle });
+}
+
+HandleParts parts_from_stream(*const anet::AsyncTcpStream stream) {
+    return parts_from_handle(unsafe { &stream->handle });
+}
+
+resource::Handle handle_from_parts(HandleParts parts) {
+    return unsafe {
+        {
+            owner_id: parts.owner_id,
+            resource_id: parts.resource_id,
+            generation: parts.generation,
+        }
+    };
+}
+
+anet::AsyncConnect connect_from_parts(HandleParts parts) {
+    return unsafe { { handle: handle_from_parts(parts) } };
+}
+
+anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
+    return unsafe { { handle: handle_from_parts(parts) } };
+}
 
 bool connect_finish_is_err(Result<anet::AsyncTcpStream, Error> value) {
     switch (value) {
@@ -29,7 +75,7 @@ bool addr_is_err(Result<net::SocketAddr, Error> value) {
 }
 
 async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
-    anet::AsyncTcpStream server = await anet::accept(listener)?;
+    anet::AsyncTcpStream server = await anet::accept(&listener)?;
     anet::close_stream(server)?;
     return Ok;
 }
@@ -37,25 +83,26 @@ async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
 async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
-    net::SocketAddr bound = anet::listener_addr(listener)?;
+    net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<void> server = async::spawn<void>(accept_once(listener))?;
 
     anet::AsyncConnect op = anet::connect_async(bound)?;
-    anet::AsyncConnect old_op = op;
+    HandleParts op_parts = parts_from_connect(&op);
     anet::AsyncTcpStream client =
         await async::future_from_op<anet::AsyncConnect, anet::AsyncTcpStream>(op)?;
+    anet::AsyncConnect old_op = connect_from_parts(op_parts);
     if (!connect_finish_is_err(anet::finish_connect(old_op))) {
         return Err(code_error(91));
     }
 
-    anet::AsyncTcpStream old_client = client;
+    HandleParts client_parts = parts_from_stream(&client);
     anet::close_stream(client)?;
-    if (!addr_is_err(anet::stream_peer_addr(old_client))) {
+    anet::AsyncTcpStream old_client = stream_from_parts(client_parts);
+    if (!addr_is_err(anet::stream_peer_addr(&old_client))) {
         return Err(code_error(92));
     }
 
     await server?;
-    anet::close_listener(listener)?;
     return Ok(1);
 }
 

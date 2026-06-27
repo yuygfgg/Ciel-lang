@@ -19,12 +19,20 @@ unsafe impl clone_message(*const HandleParts value) {
     return Ok(*value);
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(*const resource::Handle handle) {
     return {
-        owner_id: unsafe { handle.owner_id },
-        resource_id: unsafe { handle.resource_id },
-        generation: unsafe { handle.generation },
+        owner_id: unsafe { handle->owner_id },
+        resource_id: unsafe { handle->resource_id },
+        generation: unsafe { handle->generation },
     };
+}
+
+HandleParts parts_from_connection(*const sqlite::Connection connection) {
+    return parts_from_handle(unsafe { &connection->handle });
+}
+
+HandleParts parts_from_statement(*const sqlite::Statement statement) {
+    return parts_from_handle(unsafe { &statement->handle });
 }
 
 resource::Handle handle_from_parts(HandleParts parts) {
@@ -66,22 +74,22 @@ Result<void, Error> expect_step_error(Result<sqlite::Step, Error> result) {
 }
 
 i32 main() {
-    HandleParts connection_parts = must(resource::scoped<HandleParts>(|| {
-        sqlite::Connection db = sqlite::open_memory()?;
-        sqlite::exec(db, "CREATE TABLE t (id INTEGER)")?;
-        return Ok(parts_from_handle(unsafe { db.handle }));
-    }));
+    sqlite::Connection scoped_db = must(sqlite::open_memory());
+    must(sqlite::exec(&scoped_db, "CREATE TABLE t (id INTEGER)"));
+    HandleParts connection_parts = parts_from_connection(&scoped_db);
+    sqlite::Connection scoped_db_to_close = connection_from_parts(connection_parts);
+    must(sqlite::close(scoped_db_to_close));
     sqlite::Connection stale_connection = connection_from_parts(connection_parts);
-    must(expect_void_error(sqlite::exec(stale_connection, "SELECT 1")));
+    must(expect_void_error(sqlite::exec(&stale_connection, "SELECT 1")));
 
     sqlite::Connection db = must(sqlite::open_memory());
-    must(sqlite::exec(db, "CREATE TABLE t (id INTEGER)"));
-    HandleParts statement_parts = must(resource::scoped<HandleParts>(|| {
-        sqlite::Statement statement = sqlite::prepare(db, "SELECT 1")?;
-        return Ok(parts_from_handle(unsafe { statement.handle }));
-    }));
+    must(sqlite::exec(&db, "CREATE TABLE t (id INTEGER)"));
+    sqlite::Statement statement = must(sqlite::prepare(&db, "SELECT 1"));
+    HandleParts statement_parts = parts_from_statement(&statement);
+    sqlite::Statement statement_to_finalize = statement_from_parts(statement_parts);
+    must(sqlite::finalize(statement_to_finalize));
     sqlite::Statement stale_statement = statement_from_parts(statement_parts);
-    must(expect_step_error(sqlite::step(stale_statement)));
+    must(expect_step_error(sqlite::step(&stale_statement)));
     must(sqlite::close(db));
     return 0;
 }

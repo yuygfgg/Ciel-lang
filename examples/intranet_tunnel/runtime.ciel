@@ -138,7 +138,7 @@ export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
     return bytes::bytes_to_slice(bytes);
 }
 
-Result<anet::Bytes, Error> map_exact_frame_read(
+export Result<anet::Bytes, Error> map_exact_frame_read(
     Result<anet::Bytes, Error> read
 ) {
     switch (read) {
@@ -179,19 +179,6 @@ export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
     anet::Bytes payload = anet::bytes_copy(input[frame::header_len()..total_len])?;
     reader->buffer.buf::discard_prefix(total_len)?;
     return Ok(FrameReady({ kind: header.kind, stream_id: header.stream_id, payload: payload }));
-}
-
-export async Result<AsyncFrame, Error> read_frame(anet::BufferedStreamReader reader) {
-    anet::Bytes header_exact = map_exact_frame_read(
-        await reader.anet::read_exact(frame::header_len())
-    )?;
-    []u8 header_bytes = bytes_to_slice(header_exact)?;
-    frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
-    usize payload_len = header.length as usize;
-    anet::Bytes payload = map_exact_frame_read(
-        await reader.anet::read_exact(payload_len)
-    )?;
-    return Ok({ kind: header.kind, stream_id: header.stream_id, payload: payload });
 }
 
 export Result<anet::Bytes, Error> empty_bytes() {
@@ -297,10 +284,6 @@ export async Result<void, Error> send_close_stream_text(
 }
 
 
-export StreamEvent stream_event_from_message(meta::Repr<StreamEvent> message) {
-    return meta::from_repr<StreamEvent>(message);
-}
-
 export async Result<void, Error> send_stream_event(
     async::Sender<meta::Repr<StreamEvent>> events,
     StreamEvent event
@@ -342,12 +325,12 @@ export Result<void, Error> notify_stream_local_failed(
 
 export async Result<void, Error> local_stream_reader(
     u32 stream_id,
-    anet::AsyncTcpStream stream,
+    anet::BufferedStreamReader reader,
     async::Sender<anet::Bytes> control,
     async::Sender<meta::Repr<StreamEvent>> events
 ) {
     while (true) {
-        _ read = await anet::read(stream, 16384);
+        _ read = await anet::read_buffered(&reader, 16384);
         switch (read) {
             case Ok(bytes):
                 usize len = anet::bytes_len(bytes);
@@ -373,11 +356,15 @@ export async Result<void, Error> local_stream_reader(
 
 export Result<async::Task<void>, Error> spawn_local_reader(
     u32 stream_id,
-    anet::AsyncTcpStream stream,
+    anet::BufferedStreamReader reader,
     async::Sender<anet::Bytes> control,
     async::Sender<meta::Repr<StreamEvent>> events
 ) {
-    return async::spawn<void>(local_stream_reader(stream_id, stream, control, events));
+    return async::spawn<void>(local_stream_reader(stream_id, reader, control, events));
+}
+
+export StreamEvent stream_event_from_message(meta::Repr<StreamEvent> message) {
+    return meta::from_repr<StreamEvent>(message);
 }
 
 export bool kind_is(frame::FrameKind left, frame::FrameKind right) {

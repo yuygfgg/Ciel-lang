@@ -153,6 +153,7 @@ module.exports = grammar({
         ),
 
         struct_declaration: $ => seq(
+            optional('resource'),
             optional('unsafe'),
             'struct',
             field('name', $.identifier),
@@ -306,9 +307,16 @@ module.exports = grammar({
             '>',
         ),
 
-        generic_parameter: $ => seq(
-            field('name', $.identifier),
-            optional(seq(':', $.constraint_expr)),
+        generic_parameter: $ => choice(
+            seq(
+                'resource',
+                field('name', $.identifier),
+                optional(seq(':', $.constraint_expr)),
+            ),
+            seq(
+                field('name', $.identifier),
+                optional(seq(':', $.constraint_expr)),
+            ),
         ),
 
         constraint_expr: $ => prec.left(seq(
@@ -881,6 +889,7 @@ module.exports = grammar({
             'biased',
             'select',
             'fn',
+            'resource',
         ),
     },
 });

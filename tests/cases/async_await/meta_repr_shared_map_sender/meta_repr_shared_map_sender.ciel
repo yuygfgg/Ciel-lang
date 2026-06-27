@@ -1,0 +1,63 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 23
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/map as map;
+import /std/meta as meta;
+import /std/panic;
+import /std/result;
+import /std/shared_map as shared_map;
+
+enum Event {
+    Value(usize),
+}
+
+async Result<void, Error> dispatch_after_yield(
+    shared_map::SharedMap<u32, async::Sender<meta::Repr<Event>>> registry,
+    u32 key,
+    usize value
+) {
+    await async_time::sleep_ms(0)?;
+    _ found = shared_map::shared_map_get(registry, key)?;
+    switch (found) {
+        case shared_map::SharedMapGet::Found(sender):
+            Event event = Value(value);
+            await async::send<meta::Repr<Event>>(sender, meta::into_repr(&event))?;
+        case shared_map::SharedMapGet::Missing:
+            return Err(text_error("missing shared map entry"));
+    }
+    return Ok;
+}
+
+async Result<usize, Error> drive() {
+    shared_map::SharedMap<u32, async::Sender<meta::Repr<Event>>> registry =
+        shared_map::shared_map_new<u32, async::Sender<meta::Repr<Event>>>()?;
+    async::ChannelPair<meta::Repr<Event>> pair =
+        async::channel<meta::Repr<Event>>(1)?;
+    _ inserted = shared_map::shared_map_insert(registry, 7, pair.sender)?;
+    switch (inserted) {
+        case map::InsertResult::Inserted:
+            {}
+        case map::InsertResult::Replaced(_):
+            return Err(text_error("unexpected replacement"));
+    }
+
+    _ task = async::spawn<void>(dispatch_after_yield(registry, 7, 23))?;
+    meta::Repr<Event> message =
+        await async::recv<meta::Repr<Event>>(pair.receiver)?;
+    await task?;
+
+    Event event = meta::from_repr<Event>(message);
+    switch (event) {
+        case Value(value):
+            return Ok(value);
+    }
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

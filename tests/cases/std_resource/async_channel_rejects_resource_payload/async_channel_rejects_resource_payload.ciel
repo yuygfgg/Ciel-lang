@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: async channel payload type `Payload` does not implement `Message`
+
+import /std/async as async;
+import /std/io as io;
+import /std/result;
+
+resource struct Payload {
+    io::File file;
+}
+
+Result<void, Error> drive([]const char path) {
+    async::ChannelPair<Payload> pair = async::channel<Payload>(1)?;
+    Payload payload = { file: io::open_read(path)? };
+    async::try_send<Payload>(pair.sender, payload)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: field access on unsafe struct `AsyncTcpBufferedSplit` requires unsafe block
+
+import /std/async_net as anet;
+
+void inspect(anet::AsyncTcpBufferedSplit split) {
+    _ reader = split.reader;
+}
+
+i32 main() {
+    return 0;
+}

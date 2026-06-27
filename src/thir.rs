@@ -31,6 +31,7 @@ pub struct CheckedOpaqueStruct {
 #[derive(Clone, Debug)]
 pub struct CheckedStruct {
     pub name: String,
+    pub is_resource: bool,
     pub fields: Vec<(String, Ty)>,
 }
 
@@ -112,6 +113,7 @@ pub struct CheckedGenericFunction {
 #[derive(Clone, Debug)]
 pub struct CheckedGenericParam {
     pub name: String,
+    pub is_resource: bool,
     pub constraint: Option<ConstraintExpr>,
 }
 
@@ -164,6 +166,7 @@ pub enum TStmtKind {
         can_fallthrough: bool,
     },
     Defer(TExpr),
+    ResourceCleanup(TExpr),
     Return(Option<TExpr>),
     Break,
     Continue,
@@ -275,6 +278,7 @@ pub struct TSelectArm {
 #[derive(Clone, Debug)]
 pub enum TExprKind {
     Local(LocalId, String),
+    Move(Box<TExpr>),
     Function(DefId, String),
     GenericFunction {
         def_id: DefId,
@@ -346,6 +350,10 @@ pub enum TExprKind {
         interface_args: Vec<Ty>,
         receiver: Box<TExpr>,
         args: Vec<TExpr>,
+    },
+    CloneMessage {
+        value: Box<TExpr>,
+        message_ty: Ty,
     },
     Field {
         base: Box<TExpr>,
@@ -576,7 +584,10 @@ pub fn walk_stmt<V: ThirVisitor + ?Sized>(visitor: &mut V, stmt: &TStmt) {
                 visitor.visit_stmt(stmt);
             }
         }
-        TStmtKind::Defer(expr) | TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+        TStmtKind::Defer(expr)
+        | TStmtKind::ResourceCleanup(expr)
+        | TStmtKind::Return(Some(expr))
+        | TStmtKind::Expr(expr) => {
             visitor.visit_expr(expr);
         }
         TStmtKind::Return(None)
@@ -644,7 +655,8 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         }
         TExprKind::ArrayRepeat { element, .. } => visitor.visit_expr(element),
         TExprKind::Closure { body, .. } => visitor.visit_closure_body(body),
-        TExprKind::FunctionToClosure(inner)
+        TExprKind::Move(inner)
+        | TExprKind::FunctionToClosure(inner)
         | TExprKind::RetainClosure { expr: inner, .. }
         | TExprKind::Unary { expr: inner, .. }
         | TExprKind::Cast { expr: inner, .. }
@@ -702,6 +714,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
                 visitor.visit_expr(arg);
             }
         }
+        TExprKind::CloneMessage { value, .. } => visitor.visit_expr(value),
         TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
             visitor.visit_expr(base);
         }

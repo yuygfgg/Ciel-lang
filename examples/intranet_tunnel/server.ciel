@@ -12,8 +12,8 @@ import ./protocol/frame as frame;
 import ./runtime as rt;
 
 enum ServerEvent {
-    ServerControlAccepted(anet::AsyncTcpStreamTransfer),
-    ServerPublicAccepted(anet::AsyncTcpStreamTransfer),
+    ServerControlAccepted(anet::AsyncTcpStream),
+    ServerPublicAccepted(anet::AsyncTcpStream),
     ServerControlClosed(u32),
 }
 
@@ -34,14 +34,6 @@ enum ServerHelloResult {
 }
 
 
-async Result<void, Error> send_server_event(
-    async::Sender<meta::Repr<ServerEvent>> events,
-    ServerEvent event
-) {
-    await async::send<meta::Repr<ServerEvent>>(events, meta::into_repr(&event))?;
-    return Ok;
-}
-
 u32 next_server_stream_id(u32 stream_id) {
     u32 next = stream_id + (1 as u32);
     if (next == (0 as u32)) {
@@ -50,56 +42,24 @@ u32 next_server_stream_id(u32 stream_id) {
     return next;
 }
 
-async Result<void, Error> server_control_accept_loop(
-    anet::AsyncTcpListener listener,
-    async::Sender<meta::Repr<ServerEvent>> events
-) {
-    while (true) {
-        anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        anet::AsyncTcpStreamTransfer token =
-            anet::transfer_stream_to_parent_token(&stream)?;
-        await send_server_event(
-            events,
-            ServerControlAccepted(token)
-        )?;
-    }
-    return Ok;
-}
-
-async Result<void, Error> server_public_accept_loop(
-    anet::AsyncTcpListener listener,
-    async::Sender<meta::Repr<ServerEvent>> events
-) {
-    while (true) {
-        anet::AsyncTcpStream stream = await listener.anet::accept()?;
-        anet::AsyncTcpStreamTransfer token =
-            anet::transfer_stream_to_parent_token(&stream)?;
-        await send_server_event(
-            events,
-            ServerPublicAccepted(token)
-        )?;
-    }
-    return Ok;
-}
-
 async Result<void, Error> server_control_writer(
-    anet::AsyncTcpStream stream,
+    anet::AsyncTcpWriteHalf write,
     async::Receiver<anet::Bytes> receiver
 ) {
     while (true) {
         _ next = await async::recv<anet::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
-                _ wrote = await stream.anet::write_all(bytes);
+                _ wrote = await anet::write_half(&write, bytes);
                 switch (wrote) {
-                    case Ok:
-                        {}
+                    case Ok(written):
+                        if (written == 0) {
+                            return Err(text_error("tcp write returned zero"));
+                        }
                     case Err(error):
-                        rt::close_stream_silent(stream);
                         return Err(error);
                 }
             case Err(_):
-                rt::close_stream_silent(stream);
                 return Ok;
         }
     }
@@ -141,12 +101,11 @@ Result<ServerHelloResult, Error> prepare_server_hello(
     }
 }
 
-async Result<void, Error> handle_server_handshake(
-    anet::BufferedStreamReader reader,
+async Result<void, Error> handle_server_handshake_frame(
+    rt::AsyncFrame incoming,
     async::Sender<anet::Bytes> writer,
     rt::AuthConfig auth_config
 ) {
-    rt::AsyncFrame incoming = await rt::read_frame(reader)?;
     if (!rt::kind_is(incoming.kind, frame::Hello)) {
         return Err(text_error("protocol error: expected Hello"));
     }
@@ -164,12 +123,33 @@ async Result<void, Error> handle_server_handshake(
 async Result<void, Error> server_control_reader(
     anet::BufferedStreamReader reader,
     ServerControlState control,
-    async::Sender<meta::Repr<ServerEvent>> events
+    async::Sender<u32> control_closed
 ) {
     while (true) {
-        Result<rt::AsyncFrame, Error> read = await rt::read_frame(reader);
-        switch (read) {
-            case Ok(incoming):
+        Result<anet::Bytes, Error> header_read =
+            rt::map_exact_frame_read(await reader.anet::read_exact(frame::header_len()));
+        switch (header_read) {
+            case Ok(header_exact):
+                []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
+                frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
+                Result<anet::Bytes, Error> payload_read = rt::map_exact_frame_read(
+                    await reader.anet::read_exact(header.length as usize)
+                );
+                anet::Bytes payload;
+                switch (payload_read) {
+                    case Ok(value):
+                        payload = value;
+                    case Err(error):
+                        io::eprintln("tunnel-server: control read error: {}", [error])?;
+                        async::close<anet::Bytes>(control.writer)?;
+                        await async::send<u32>(control_closed, control.epoch)?;
+                        return Ok;
+                }
+                rt::AsyncFrame incoming = {
+                    kind: header.kind,
+                    stream_id: header.stream_id,
+                    payload: payload
+                };
                 if (
                     rt::kind_is(incoming.kind, frame::OpenResult) ||
                     rt::kind_is(incoming.kind, frame::Data) ||
@@ -193,13 +173,13 @@ async Result<void, Error> server_control_reader(
                         "tunnel-server: protocol error: illegal control frame"
                     )?;
                     async::close<anet::Bytes>(control.writer)?;
-                    await send_server_event(events, ServerControlClosed(control.epoch))?;
+                    await async::send<u32>(control_closed, control.epoch)?;
                     return Ok;
                 }
             case Err(error):
                 io::eprintln("tunnel-server: control read error: {}", [error])?;
                 async::close<anet::Bytes>(control.writer)?;
-                await send_server_event(events, ServerControlClosed(control.epoch))?;
+                await async::send<u32>(control_closed, control.epoch)?;
                 return Ok;
         }
     }
@@ -210,15 +190,34 @@ async Result<ServerControlState, Error> accept_server_control(
     anet::AsyncTcpStream stream,
     rt::AuthConfig auth_config,
     u32 epoch,
-    async::Sender<meta::Repr<ServerEvent>> events
+    async::Sender<u32> control_closed
 ) {
-    anet::AsyncTcpSplit split = stream.anet::split()?;
+    anet::AsyncTcpBufferedSplit @split = stream.anet::buffered_split(frame::max_payload_len())?;
     anet::BufferedStreamReader reader =
-        split.read.anet::buffered_reader(frame::max_payload_len())?;
+        anet::take_buffered_split_reader(&split)?;
+    anet::AsyncTcpWriteHalf write =
+        anet::take_buffered_split_write(&split)?;
     async::ChannelPair<anet::Bytes> writer_channel = async::channel<anet::Bytes>(128)?;
-    _ control_writer = async::spawn<void>(server_control_writer(stream, writer_channel.receiver))?;
+    _ control_writer = async::spawn<void>(server_control_writer(write, writer_channel.receiver))?;
 
-    _ handshaken = await handle_server_handshake(reader, writer_channel.sender, auth_config);
+    anet::Bytes header_exact = rt::map_exact_frame_read(
+        await reader.anet::read_exact(frame::header_len())
+    )?;
+    []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
+    frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
+    anet::Bytes payload = rt::map_exact_frame_read(
+        await reader.anet::read_exact(header.length as usize)
+    )?;
+    rt::AsyncFrame incoming = {
+        kind: header.kind,
+        stream_id: header.stream_id,
+        payload: payload
+    };
+    _ handshaken = await handle_server_handshake_frame(
+        incoming,
+        writer_channel.sender,
+        auth_config
+    );
     switch (handshaken) {
         case Ok:
             {}
@@ -232,7 +231,7 @@ async Result<ServerControlState, Error> accept_server_control(
         writer: writer_channel.sender,
         streams: rt::stream_registry_new()?
     };
-    _ control_reader = async::spawn<void>(server_control_reader(reader, control, events))?;
+    _ control_reader = async::spawn<void>(server_control_reader(reader, control, control_closed))?;
     return Ok(control);
 }
 
@@ -245,7 +244,8 @@ void server_stream_cleanup(
 
 async Result<void, Error> server_stream_worker(
     u32 stream_id,
-    anet::AsyncTcpStream client,
+    anet::BufferedStreamReader reader,
+    anet::AsyncTcpWriteHalf write,
     ServerControlState control,
     async::Receiver<meta::Repr<rt::StreamEvent>> receiver,
     async::Sender<meta::Repr<rt::StreamEvent>> local_events
@@ -254,7 +254,58 @@ async Result<void, Error> server_stream_worker(
 
     bool @remote_write_closed = false;
     bool @local_write_closed = false;
-    bool @reader_started = false;
+
+    _ opened_event = await async::recv<meta::Repr<rt::StreamEvent>>(receiver);
+    switch (opened_event) {
+        case Ok(opened_message):
+            rt::StreamEvent opened = rt::stream_event_from_message(opened_message);
+            switch (opened) {
+                case rt::StreamFrame(incoming):
+                    if (!rt::kind_is(incoming.kind, frame::OpenResult)) {
+                        return Ok;
+                    }
+                    _ payload_result = rt::bytes_to_slice(incoming.payload);
+                    []u8 payload;
+                    switch (payload_result) {
+                        case Ok(value):
+                            payload = value;
+                        case Err(error):
+                            io::eprintln(
+                                "tunnel-server: stream {} open result copy failed: {}",
+                                [stream_id, error]
+                            )?;
+                            return Ok;
+                    }
+                    _ decoded = tunnel_codec::decode_open_result(payload);
+                    tunnel_codec::OpenResultPayload result;
+                    switch (decoded) {
+                        case Ok(value):
+                            result = value;
+                        case Err(error):
+                            io::eprintln(
+                                "tunnel-server: stream {} open result decode failed: {}",
+                                [stream_id, error]
+                            )?;
+                            return Ok;
+                    }
+                    if (!result.ok) {
+                        write.anet::shutdown_write();
+                        return Ok;
+                    }
+                    _ reader_task = rt::spawn_local_reader(
+                        stream_id,
+                        reader,
+                        control.writer,
+                        local_events
+                    )?;
+                case rt::StreamLocalFailed(_):
+                    return Ok;
+                case rt::StreamLocalClosed:
+                    return Ok;
+            }
+        case Err(_):
+            return Ok;
+    }
 
     while (true) {
         _ next = await async::recv<meta::Repr<rt::StreamEvent>>(receiver);
@@ -277,50 +328,19 @@ async Result<void, Error> server_stream_worker(
                             return Ok;
                         }
                     case rt::StreamFrame(incoming):
-                        if (rt::kind_is(incoming.kind, frame::OpenResult)) {
-                            if (reader_started) {
-                                return Ok;
-                            }
-                            _ payload_result = rt::bytes_to_slice(incoming.payload);
-                            []u8 payload;
-                            switch (payload_result) {
-                                case Ok(value):
-                                    payload = value;
-                                case Err(error):
-                                    io::eprintln(
-                                        "tunnel-server: stream {} open result copy failed: {}",
-                                        [stream_id, error]
-                                    )?;
-                                    return Ok;
-                            }
-                            _ decoded = tunnel_codec::decode_open_result(payload);
-                            tunnel_codec::OpenResultPayload result;
-                            switch (decoded) {
-                                case Ok(value):
-                                    result = value;
-                                case Err(error):
-                                    io::eprintln(
-                                        "tunnel-server: stream {} open result decode failed: {}",
-                                        [stream_id, error]
-                                    )?;
-                                    return Ok;
-                            }
-                            if (!result.ok) {
-                                client.anet::shutdown_write();
-                                return Ok;
-                            }
-                            reader_started = true;
-                            _ reader = rt::spawn_local_reader(
-                                stream_id,
-                                client,
-                                control.writer,
-                                local_events
-                            )?;
-                        } else if (rt::kind_is(incoming.kind, frame::Data)) {
-                            _ wrote = await client.anet::write_all(incoming.payload);
+                        if (rt::kind_is(incoming.kind, frame::Data)) {
+                            _ wrote = await anet::write_half(&write, incoming.payload);
                             switch (wrote) {
-                                case Ok:
-                                    {}
+                                case Ok(written):
+                                    if (written == 0) {
+                                        await rt::send_close_stream(
+                                            control.writer,
+                                            stream_id,
+                                            2 as u16,
+                                            "client write failed"
+                                        )?;
+                                        return Ok;
+                                    }
                                 case Err(_):
                                     await rt::send_close_stream(
                                         control.writer,
@@ -332,7 +352,7 @@ async Result<void, Error> server_stream_worker(
                             }
                         } else if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
                             remote_write_closed = true;
-                            client.anet::shutdown_write();
+                            write.anet::shutdown_write();
                             if (local_write_closed) {
                                 return Ok;
                             }
@@ -355,6 +375,12 @@ async Result<void, Error> start_server_stream(
     anet::AsyncTcpStream client
 ) {
     anet::AsyncTcpStream owned_client = resource::transfer_to_current(&client)?;
+    anet::AsyncTcpBufferedSplit @split =
+        owned_client.anet::buffered_split(frame::max_payload_len())?;
+    anet::BufferedStreamReader reader =
+        anet::take_buffered_split_reader(&split)?;
+    anet::AsyncTcpWriteHalf write =
+        anet::take_buffered_split_write(&split)?;
     _ events = async::channel<meta::Repr<rt::StreamEvent>>(64)?;
     rt::stream_registry_insert(control.streams, stream_id, events.sender)?;
 
@@ -369,7 +395,8 @@ async Result<void, Error> start_server_stream(
 
     return await server_stream_worker(
         stream_id,
-        owned_client,
+        reader,
+        write,
         control,
         events.receiver,
         events.sender
@@ -399,11 +426,7 @@ async Result<void, Error> run_server_async(
 ) {
     anet::AsyncTcpListener control_listener = anet::listen_async(control_addr)?;
     anet::AsyncTcpListener public_listener = anet::listen_async(public_addr)?;
-    _ event_channel = async::channel<meta::Repr<ServerEvent>>(8192)?;
-    _ control_accept =
-        async::spawn<void>(server_control_accept_loop(control_listener, event_channel.sender))?;
-    _ public_accept =
-        async::spawn<void>(server_public_accept_loop(public_listener, event_channel.sender))?;
+    _ control_closed = async::channel<u32>(8192)?;
 
     ServerActiveControl @active = ServerNoControl;
     u32 @next_stream_id_value = 1 as u32;
@@ -411,11 +434,14 @@ async Result<void, Error> run_server_async(
 
     io::eprintln_value("tunnel-server: ready")?;
     while (true) {
-        meta::Repr<ServerEvent> event_message = await async::recv<meta::Repr<ServerEvent>>(event_channel.receiver)?;
-        ServerEvent event = meta::from_repr<ServerEvent>(event_message);
+        Result<ServerEvent, Error> selected = await select {
+            case accepted = anet::accept(&control_listener): Ok(ServerControlAccepted(accepted?));
+            case accepted = anet::accept(&public_listener): Ok(ServerPublicAccepted(accepted?));
+            case closed = async::recv<u32>(control_closed.receiver): Ok(ServerControlClosed(closed?));
+        };
+        ServerEvent event = selected?;
         switch (event) {
-            case ServerControlAccepted(token):
-                anet::AsyncTcpStream stream = anet::claim_stream_transfer(token)?;
+            case ServerControlAccepted(stream):
                 switch (active) {
                     case ServerNoControl:
                         u32 epoch = next_epoch;
@@ -425,7 +451,7 @@ async Result<void, Error> run_server_async(
                                 stream,
                                 auth_config,
                                 epoch,
-                                event_channel.sender
+                                control_closed.sender
                             );
                         switch (accepted) {
                             case Ok(control):
@@ -434,13 +460,12 @@ async Result<void, Error> run_server_async(
                                     "tunnel-server: control connection accepted"
                                 )?;
                             case Err(_):
-                                rt::close_stream_silent(stream);
+                                {}
                         }
                     case ServerHasControl(_):
                         rt::close_stream_silent(stream);
                 }
-            case ServerPublicAccepted(token):
-                anet::AsyncTcpStream client = anet::claim_stream_transfer(token)?;
+            case ServerPublicAccepted(client):
                 switch (active) {
                     case ServerNoControl:
                         rt::close_stream_silent(client);

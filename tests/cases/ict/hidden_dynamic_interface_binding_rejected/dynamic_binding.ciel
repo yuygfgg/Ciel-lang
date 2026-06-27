@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: named constraint bindings are allowed only inside capability constraints
+
+interface<I -> Item> bool next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+void bad(Iterator<Item = _> iter) {
+    return;
+}
+
+i64 main() {
+    return 0;
+}

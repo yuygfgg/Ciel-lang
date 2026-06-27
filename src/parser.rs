@@ -271,12 +271,13 @@ impl Parser {
             }));
         }
 
-        let generics = self.parse_generic_param_list()?;
+        let (generics, determined_start) = self.parse_interface_generic_param_list()?;
         let signature = self.parse_function_signature()?;
         self.expect(TokenKind::Semi, "expected `;` after interface declaration")?;
         Ok(ItemKind::Interface(InterfaceDecl {
             is_unsafe,
             generics,
+            determined_start,
             signature,
         }))
     }
@@ -305,7 +306,7 @@ impl Parser {
             ));
         }
         let name = self.parse_qualified_ident_path("expected interface name")?;
-        let args = self.parse_type_arg_list_opt()?;
+        let args = self.parse_interface_type_arg_list_opt()?;
         Ok(InterfaceTerm {
             negated,
             name,
@@ -425,7 +426,7 @@ impl Parser {
     }
 
     fn parse_function_signature(&mut self) -> Result<FunctionSignature, Diagnostic> {
-        let ret = self.parse_type()?;
+        let ret = self.parse_function_return_type()?;
         let name = self.expect_ident("expected function name")?;
         let generics = self.parse_generic_param_list_opt()?;
         self.expect(TokenKind::LParen, "expected `(` after function name")?;
@@ -438,6 +439,25 @@ impl Parser {
             params,
             receiver_selector,
         })
+    }
+
+    fn parse_function_return_type(&mut self) -> Result<FunctionReturnType, Diagnostic> {
+        if self.at(TokenKind::Ident)
+            && self.peek().lexeme == "_"
+            && self.peek_next().kind == TokenKind::Colon
+        {
+            let marker = self.advance().span;
+            self.expect(
+                TokenKind::Colon,
+                "expected `:` after `_` in opaque return type",
+            )?;
+            let constraint = self.parse_constraint_expr()?;
+            return Ok(FunctionReturnType::OpaqueConstraint {
+                marker_span: marker,
+                constraint,
+            });
+        }
+        self.parse_type().map(FunctionReturnType::Type)
     }
 
     fn parse_receiver_selector_opt(&mut self) -> Result<Option<ReceiverSelector>, Diagnostic> {
@@ -515,25 +535,7 @@ impl Parser {
             return Ok(params);
         }
         loop {
-            let is_resource = if self.at_ident_named("resource")
-                && matches!(self.peek_next().kind, TokenKind::Ident)
-            {
-                self.advance();
-                true
-            } else {
-                false
-            };
-            let name = self.expect_ident("expected generic parameter name")?;
-            let constraint = if self.eat(TokenKind::Colon).is_some() {
-                Some(self.parse_constraint_expr()?)
-            } else {
-                None
-            };
-            params.push(GenericParam {
-                is_resource,
-                name,
-                constraint,
-            });
+            params.push(self.parse_generic_param()?);
             if self.eat(TokenKind::Comma).is_some() {
                 if self.eat_type_gt().is_some() {
                     break;
@@ -544,6 +546,88 @@ impl Parser {
             }
         }
         Ok(params)
+    }
+
+    fn parse_interface_generic_param_list(
+        &mut self,
+    ) -> Result<(Vec<GenericParam>, Option<usize>), Diagnostic> {
+        self.expect(TokenKind::Lt, "expected `<`")?;
+        let mut params = Vec::new();
+        let mut determined_start = None;
+        if self.eat_type_gt().is_some() {
+            return Ok((params, determined_start));
+        }
+        loop {
+            if self.eat(TokenKind::Arrow).is_some() {
+                if determined_start.is_some() {
+                    return Err(Diagnostic::new(
+                        self.previous().span,
+                        "interface generic parameter list can contain only one `->`",
+                    ));
+                }
+                if params.is_empty() {
+                    return Err(Diagnostic::new(
+                        self.previous().span,
+                        "`->` in an interface generic parameter list requires determinant parameters",
+                    ));
+                }
+                determined_start = Some(params.len());
+            }
+            params.push(self.parse_generic_param()?);
+            if self.eat(TokenKind::Arrow).is_some() {
+                if determined_start.is_some() {
+                    return Err(Diagnostic::new(
+                        self.previous().span,
+                        "interface generic parameter list can contain only one `->`",
+                    ));
+                }
+                determined_start = Some(params.len());
+                if self.at_type_gt() {
+                    return Err(Diagnostic::new(
+                        self.peek().span,
+                        "`->` in an interface generic parameter list requires determined parameters",
+                    ));
+                }
+                continue;
+            }
+            if self.eat(TokenKind::Comma).is_some() {
+                if self.eat_type_gt().is_some() {
+                    break;
+                }
+            } else {
+                self.expect_type_gt("expected `>` after interface generic parameter list")?;
+                break;
+            }
+        }
+        if determined_start == Some(params.len()) {
+            return Err(Diagnostic::new(
+                self.previous().span,
+                "`->` in an interface generic parameter list requires determined parameters",
+            ));
+        }
+        Ok((params, determined_start))
+    }
+
+    fn parse_generic_param(&mut self) -> Result<GenericParam, Diagnostic> {
+        let is_resource = if self.at_ident_named("resource")
+            && matches!(self.peek_next().kind, TokenKind::Ident)
+        {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let name = self.expect_ident("expected generic parameter name")?;
+        let constraint = if self.eat(TokenKind::Colon).is_some() {
+            Some(self.parse_constraint_expr()?)
+        } else {
+            None
+        };
+        Ok(GenericParam {
+            is_resource,
+            name,
+            constraint,
+        })
     }
 
     fn parse_constraint_expr(&mut self) -> Result<ConstraintExpr, Diagnostic> {
@@ -569,7 +653,7 @@ impl Parser {
             ));
         }
         let name = self.parse_qualified_ident_path("expected capability name")?;
-        let args = self.parse_type_arg_list_opt()?;
+        let args = self.parse_constraint_arg_list_opt()?;
         Ok(ConstraintTerm {
             negated,
             removed,
@@ -578,10 +662,68 @@ impl Parser {
         })
     }
 
+    fn parse_constraint_arg_list_opt(&mut self) -> Result<Vec<ConstraintArg>, Diagnostic> {
+        if self.at(TokenKind::Lt) {
+            self.expect(TokenKind::Lt, "expected `<`")?;
+            let list = self.parse_constraint_arg_list()?;
+            self.expect_type_gt("expected `>` after capability arguments")?;
+            Ok(list)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
+    fn parse_constraint_arg_list(&mut self) -> Result<Vec<ConstraintArg>, Diagnostic> {
+        let mut list = Vec::new();
+        loop {
+            list.push(self.parse_constraint_arg()?);
+            if self.eat(TokenKind::Comma).is_some() {
+                if self.at_type_gt() || self.at(TokenKind::RParen) {
+                    break;
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(list)
+    }
+
+    fn parse_constraint_arg(&mut self) -> Result<ConstraintArg, Diagnostic> {
+        if self.at(TokenKind::Ident)
+            && matches!(self.peek_next().kind, TokenKind::Eq)
+            && self.peek().lexeme != "_"
+        {
+            let name = self.expect_ident("expected inferred capability type binding name")?;
+            self.expect(
+                TokenKind::Eq,
+                "expected `=` in inferred capability type binding",
+            )?;
+            let hole = self.expect_ident("expected `_` in inferred capability type binding")?;
+            if hole.name != "_" {
+                return Err(Diagnostic::new(
+                    hole.span,
+                    "inferred capability type binding must use `_`",
+                ));
+            }
+            let constraint = if self.eat(TokenKind::Colon).is_some() {
+                Some(self.parse_constraint_expr()?)
+            } else {
+                None
+            };
+            let span = name.span.merge(hole.span);
+            return Ok(ConstraintArg::Binding {
+                name,
+                constraint,
+                span,
+            });
+        }
+        self.parse_type().map(ConstraintArg::Type)
+    }
+
     fn parse_type_arg_list_opt(&mut self) -> Result<Vec<Type>, Diagnostic> {
         if self.at(TokenKind::Lt) {
             self.expect(TokenKind::Lt, "expected `<`")?;
-            let list = self.parse_type_list()?;
+            let list = self.parse_type_list_with_binding_context(None)?;
             self.expect_type_gt("expected `>` after type arguments")?;
             Ok(list)
         } else {
@@ -589,9 +731,43 @@ impl Parser {
         }
     }
 
+    fn parse_interface_type_arg_list_opt(&mut self) -> Result<Vec<Type>, Diagnostic> {
+        if self.at(TokenKind::Lt) {
+            self.expect(TokenKind::Lt, "expected `<`")?;
+            let list =
+                self.parse_type_list_with_binding_context(Some("interface alias declarations"))?;
+            self.expect_type_gt("expected `>` after interface arguments")?;
+            Ok(list)
+        } else {
+            Ok(Vec::new())
+        }
+    }
+
     fn parse_type_list(&mut self) -> Result<Vec<Type>, Diagnostic> {
+        self.parse_type_list_with_binding_context(None)
+    }
+
+    fn parse_type_list_with_binding_context(
+        &mut self,
+        binding_context: Option<&'static str>,
+    ) -> Result<Vec<Type>, Diagnostic> {
         let mut list = Vec::new();
         loop {
+            if self.at(TokenKind::Ident)
+                && matches!(self.peek_next().kind, TokenKind::Eq)
+                && self.peek().lexeme != "_"
+            {
+                let message = if let Some(context) = binding_context {
+                    format!(
+                        "named constraint binding `{} = _` is not allowed in {context}",
+                        self.peek().lexeme
+                    )
+                } else {
+                    "named constraint bindings are allowed only inside capability constraints"
+                        .to_string()
+                };
+                return Err(Diagnostic::new(self.peek().span, message));
+            }
             list.push(self.parse_type()?);
             if self.eat(TokenKind::Comma).is_some() {
                 if self.at_type_gt() || self.at(TokenKind::RParen) {

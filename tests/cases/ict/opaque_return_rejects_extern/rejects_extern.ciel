@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: opaque return type cannot be used on an extern function
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+extern "C" _: Iterator<i64> c_iter();
+
+i64 main() {
+    return 0;
+}

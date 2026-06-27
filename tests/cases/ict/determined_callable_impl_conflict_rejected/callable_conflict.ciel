@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: conflicting determined parameters
+
+interface<F -> Item> Item produce(F f);
+
+impl<T> produce<T>(T fn() f) {
+    return f();
+}
+
+impl produce<u8>(i64 fn() f) {
+    return 1 as u8;
+}
+
+u8 make_u8() {
+    return 7 as u8;
+}
+
+i64 main() {
+    return produce(make_u8);
+}

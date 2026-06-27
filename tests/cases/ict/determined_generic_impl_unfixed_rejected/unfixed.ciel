@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: not fixed by determinant parameters
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+
+struct Range {
+    i64 value;
+}
+
+impl<T> next<T>(*Range iter) {
+    return Done;
+}
+
+i64 main() {
+    return 0;
+}

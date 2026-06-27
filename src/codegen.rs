@@ -19,16 +19,16 @@ use crate::{
     source::SourceMap,
     std_id,
     thir::{
-        ActorSpawnMode, CheckedFunction, CheckedImpl, CheckedInterfaceRef, CheckedVariant, TBlock,
-        TClosureBody, TClosureCapture, TExpr, TExprKind, TForInit, TPattern, TSelectArm, TStmt,
-        TStmtKind, ThirVisitor, TryPropagation, walk_expr,
+        ActorSpawnMode, AsyncFacts, AsyncFrameLocal, CheckedFunction, CheckedImpl,
+        CheckedInterfaceRef, CheckedVariant, TBlock, TClosureBody, TClosureCapture, TExpr,
+        TExprKind, TForInit, TPattern, TSelectArm, TStmt, TStmtKind, TryPropagation,
     },
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
         STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, clone_message_capability,
         generated_future_output_ty, generated_future_ty_with_affine_state,
-        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment,
+        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment, map_ty_children,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
@@ -77,59 +77,10 @@ struct CGenerator<'a> {
     thread_local_templates: Vec<Ty>,
 }
 
-#[derive(Clone, Debug)]
-struct AsyncFrameLocal {
-    id: LocalId,
-    ty: Ty,
-    field: String,
-    heap: bool,
-}
-
-#[derive(Clone, Debug)]
-struct AsyncDeferArg {
-    ty: Ty,
-    field: String,
-}
-
-struct AsyncLocalUseCollector {
-    locals: HashSet<LocalId>,
-}
-
 #[derive(Clone, Copy, Debug)]
 enum ResourceScopedCall {
     Default,
     WithLimits,
-}
-
-impl ThirVisitor for AsyncLocalUseCollector {
-    fn visit_expr(&mut self, expr: &TExpr) {
-        match &expr.kind {
-            TExprKind::Local(local_id, _) => {
-                self.locals.insert(*local_id);
-            }
-            TExprKind::Closure { captures, .. } => {
-                for capture in captures {
-                    self.locals.insert(capture.local_id);
-                }
-            }
-            _ => walk_expr(self, expr),
-        }
-    }
-}
-
-struct ExprChildVisitor<'a, F: FnMut(&TExpr)> {
-    visit: &'a mut F,
-}
-
-impl<F: FnMut(&TExpr)> ThirVisitor for ExprChildVisitor<'_, F> {
-    fn visit_expr(&mut self, expr: &TExpr) {
-        (self.visit)(expr);
-    }
-}
-
-fn walk_typed_expr<F: FnMut(&TExpr)>(expr: &TExpr, visit: &mut F) {
-    let mut visitor = ExprChildVisitor { visit };
-    walk_expr(&mut visitor, expr);
 }
 
 #[derive(Clone, Debug, Default)]
@@ -174,6 +125,7 @@ struct ClosureDef {
     owner: DefId,
     ty: Ty,
     is_async: bool,
+    async_facts: Option<AsyncFacts>,
     params: Vec<(LocalId, String, Ty)>,
     captures: Vec<TClosureCapture>,
     body: TClosureBody,
@@ -1768,6 +1720,7 @@ impl<'a> CGenerator<'a> {
                 params,
                 captures,
                 body,
+                async_facts,
                 ..
             } => {
                 self.plan
@@ -1778,6 +1731,7 @@ impl<'a> CGenerator<'a> {
                         owner,
                         ty: expr.ty.clone(),
                         is_async: *is_async,
+                        async_facts: async_facts.clone(),
                         params: params.clone(),
                         captures: captures.clone(),
                         body: body.clone(),
@@ -3319,753 +3273,60 @@ impl<'a> CGenerator<'a> {
         }
     }
 
-    fn async_frame_locals_for_function(&self, function: &CheckedFunction) -> Vec<AsyncFrameLocal> {
-        let mut locals = Vec::<(LocalId, Ty)>::new();
-        let mut seen = HashSet::<LocalId>::new();
-        let mut live_across_await = HashSet::<LocalId>::new();
-        if let Some(body) = &function.body {
-            self.collect_async_frame_locals_block(body, &mut locals, &mut seen);
-            self.async_live_frame_locals_before_block(body, HashSet::new(), &mut live_across_await);
-        }
+    fn async_facts_for_function<'b>(&self, function: &'b CheckedFunction) -> &'b AsyncFacts {
+        function
+            .async_facts
+            .as_ref()
+            .expect("async function facts are populated by typeck")
+    }
+
+    fn async_facts_for_closure<'b>(&self, closure: &'b ClosureDef) -> &'b AsyncFacts {
+        closure
+            .async_facts
+            .as_ref()
+            .expect("async closure facts are populated by typeck")
+    }
+
+    fn async_frame_locals_with_escape_info_for_function(
+        &self,
+        function: &CheckedFunction,
+    ) -> Vec<AsyncFrameLocal> {
         let heap_locals = self
             .escapes
             .functions
             .get(&function.def_id)
             .map(|escape| escape.heap_locals.clone())
             .unwrap_or_default();
-        locals
-            .into_iter()
-            .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
-            .map(|(id, ty)| AsyncFrameLocal {
-                id,
-                ty,
-                field: format!("local{}", id.0),
-                heap: heap_locals.contains(&id),
+        self.async_facts_for_function(function)
+            .frame_locals
+            .iter()
+            .cloned()
+            .map(|mut local| {
+                local.heap = heap_locals.contains(&local.id);
+                local
             })
             .collect()
     }
 
-    fn async_frame_locals_for_closure(&self, closure: &ClosureDef) -> Vec<AsyncFrameLocal> {
-        let mut locals = Vec::<(LocalId, Ty)>::new();
-        let mut seen = HashSet::<LocalId>::new();
-        let mut live_across_await = HashSet::<LocalId>::new();
-        match &closure.body {
-            TClosureBody::Block(block) => {
-                self.collect_async_frame_locals_block(block, &mut locals, &mut seen);
-                self.async_live_frame_locals_before_block(
-                    block,
-                    HashSet::new(),
-                    &mut live_across_await,
-                );
-            }
-            TClosureBody::Expr(expr) => {
-                self.collect_async_frame_locals_expr(expr, &mut locals, &mut seen);
-                self.async_collect_live_awaits_in_expr(
-                    expr,
-                    &HashSet::new(),
-                    &mut live_across_await,
-                );
-            }
-        }
+    fn async_frame_locals_with_escape_info_for_closure(
+        &self,
+        closure: &ClosureDef,
+    ) -> Vec<AsyncFrameLocal> {
         let heap_locals = self
             .escapes
             .functions
             .get(&closure.owner)
             .map(|escape| escape.heap_locals.clone())
             .unwrap_or_default();
-        locals
-            .into_iter()
-            .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
-            .map(|(id, ty)| AsyncFrameLocal {
-                id,
-                ty,
-                field: format!("local{}", id.0),
-                heap: heap_locals.contains(&id),
+        self.async_facts_for_closure(closure)
+            .frame_locals
+            .iter()
+            .cloned()
+            .map(|mut local| {
+                local.heap = heap_locals.contains(&local.id);
+                local
             })
             .collect()
-    }
-
-    fn collect_async_frame_locals_block(
-        &self,
-        block: &TBlock,
-        out: &mut Vec<(LocalId, Ty)>,
-        seen: &mut HashSet<LocalId>,
-    ) {
-        for stmt in &block.statements {
-            self.collect_async_frame_locals_stmt(stmt, out, seen);
-        }
-    }
-
-    fn collect_async_frame_locals_stmt(
-        &self,
-        stmt: &TStmt,
-        out: &mut Vec<(LocalId, Ty)>,
-        seen: &mut HashSet<LocalId>,
-    ) {
-        match &stmt.kind {
-            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
-                self.collect_async_frame_locals_block(block, out, seen);
-            }
-            TStmtKind::VarDecl {
-                ty, local_id, init, ..
-            } => {
-                if !ty.is_erased_value() && seen.insert(*local_id) {
-                    out.push((*local_id, ty.clone()));
-                }
-                if let Some(init) = init {
-                    self.collect_async_frame_locals_expr(init, out, seen);
-                }
-            }
-            TStmtKind::Assign { target, value } => {
-                self.collect_async_frame_locals_expr(target, out, seen);
-                self.collect_async_frame_locals_expr(value, out, seen);
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                self.collect_async_frame_locals_expr(cond, out, seen);
-                self.collect_async_frame_locals_block(then_block, out, seen);
-                if let Some(else_branch) = else_branch {
-                    self.collect_async_frame_locals_stmt(else_branch, out, seen);
-                }
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    self.collect_async_frame_locals_for_init(init, out, seen);
-                }
-                if let Some(cond) = cond {
-                    self.collect_async_frame_locals_expr(cond, out, seen);
-                }
-                if let Some(step) = step {
-                    self.collect_async_frame_locals_for_init(step, out, seen);
-                }
-                self.collect_async_frame_locals_block(body, out, seen);
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                self.collect_async_frame_locals_expr(expr, out, seen);
-                for case in cases {
-                    let mut bindings = Vec::new();
-                    case.pattern.collect_bindings(&mut bindings);
-                    for (local_id, _, _, ty) in bindings {
-                        if !ty.is_erased_value() && seen.insert(*local_id) {
-                            out.push((*local_id, ty.clone()));
-                        }
-                    }
-                    for stmt in &case.statements {
-                        self.collect_async_frame_locals_stmt(stmt, out, seen);
-                    }
-                }
-                for stmt in default {
-                    self.collect_async_frame_locals_stmt(stmt, out, seen);
-                }
-            }
-            TStmtKind::Defer(expr)
-            | TStmtKind::ResourceCleanup(expr)
-            | TStmtKind::Return(Some(expr))
-            | TStmtKind::Expr(expr) => {
-                self.collect_async_frame_locals_expr(expr, out, seen);
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => {}
-        }
-    }
-
-    fn collect_async_frame_locals_for_init(
-        &self,
-        init: &TForInit,
-        out: &mut Vec<(LocalId, Ty)>,
-        seen: &mut HashSet<LocalId>,
-    ) {
-        match init {
-            TForInit::VarDecl {
-                ty, local_id, init, ..
-            } => {
-                if !ty.is_erased_value() && seen.insert(*local_id) {
-                    out.push((*local_id, ty.clone()));
-                }
-                if let Some(init) = init {
-                    self.collect_async_frame_locals_expr(init, out, seen);
-                }
-            }
-            TForInit::Assign { target, value } => {
-                self.collect_async_frame_locals_expr(target, out, seen);
-                self.collect_async_frame_locals_expr(value, out, seen);
-            }
-            TForInit::Expr(expr) => self.collect_async_frame_locals_expr(expr, out, seen),
-        }
-    }
-
-    fn collect_async_frame_locals_expr(
-        &self,
-        expr: &TExpr,
-        out: &mut Vec<(LocalId, Ty)>,
-        seen: &mut HashSet<LocalId>,
-    ) {
-        match &expr.kind {
-            TExprKind::UnsafeBlock { statements, value } => {
-                for stmt in statements {
-                    self.collect_async_frame_locals_stmt(stmt, out, seen);
-                }
-                if let Some(value) = value {
-                    self.collect_async_frame_locals_expr(value, out, seen);
-                }
-            }
-            TExprKind::Closure { .. } => {}
-            _ => walk_typed_expr(expr, &mut |child| {
-                self.collect_async_frame_locals_expr(child, out, seen);
-            }),
-        }
-    }
-
-    fn async_live_frame_locals_before_block(
-        &self,
-        block: &TBlock,
-        mut live: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        for stmt in block.statements.iter().rev() {
-            live = self.async_live_frame_locals_before_stmt(stmt, live, out);
-        }
-        live
-    }
-
-    fn async_live_frame_locals_before_stmt(
-        &self,
-        stmt: &TStmt,
-        live_after: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        match &stmt.kind {
-            TStmtKind::Block(block) => {
-                self.async_live_frame_locals_before_block(block, live_after, out)
-            }
-            TStmtKind::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_collect_live_awaits_in_expr(init, &live, out);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TStmtKind::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(value, &live, out);
-                self.async_collect_live_awaits_in_expr(target, &live, out);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                let then_live =
-                    self.async_live_frame_locals_before_block(then_block, live_after.clone(), out);
-                let else_live = else_branch
-                    .as_ref()
-                    .map(|stmt| {
-                        self.async_live_frame_locals_before_stmt(stmt, live_after.clone(), out)
-                    })
-                    .unwrap_or_else(|| live_after.clone());
-                let mut live = then_live;
-                live.extend(else_live);
-                self.async_collect_live_awaits_in_expr(cond, &live, out);
-                live.extend(Self::async_expr_used_locals(cond));
-                live
-            }
-            TStmtKind::While { cond, body } => {
-                let mut loop_live = live_after.clone();
-                loop_live.extend(Self::async_expr_used_locals(cond));
-                for _ in 0..2 {
-                    let body_live =
-                        self.async_live_frame_locals_before_block(body, loop_live.clone(), out);
-                    let old_len = loop_live.len();
-                    loop_live.extend(body_live);
-                    loop_live.extend(Self::async_expr_used_locals(cond));
-                    if loop_live.len() == old_len {
-                        break;
-                    }
-                }
-                self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
-                loop_live
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                let mut live = live_after;
-                if let Some(step) = step {
-                    live = self.async_live_frame_locals_before_for_init(step, live, out);
-                }
-                if let Some(cond) = cond {
-                    self.async_collect_live_awaits_in_expr(cond, &live, out);
-                    live.extend(Self::async_expr_used_locals(cond));
-                }
-                live = self.async_live_frame_locals_before_block(body, live, out);
-                if let Some(init) = init {
-                    live = self.async_live_frame_locals_before_for_init(init, live, out);
-                }
-                live
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                let mut live = HashSet::new();
-                for case in cases {
-                    let mut case_live = live_after.clone();
-                    for stmt in case.statements.iter().rev() {
-                        case_live = self.async_live_frame_locals_before_stmt(stmt, case_live, out);
-                    }
-                    let mut bindings = Vec::new();
-                    case.pattern.collect_bindings(&mut bindings);
-                    for (local_id, _, _, _) in bindings {
-                        case_live.remove(local_id);
-                    }
-                    live.extend(case_live);
-                }
-                let mut default_live = live_after;
-                for stmt in default.iter().rev() {
-                    default_live =
-                        self.async_live_frame_locals_before_stmt(stmt, default_live, out);
-                }
-                live.extend(default_live);
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Return(Some(expr)) => {
-                let live = HashSet::new();
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                Self::async_expr_used_locals(expr)
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => HashSet::new(),
-        }
-    }
-
-    fn async_live_frame_locals_before_for_init(
-        &self,
-        init: &TForInit,
-        live_after: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        match init {
-            TForInit::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_collect_live_awaits_in_expr(init, &live, out);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TForInit::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(value, &live, out);
-                self.async_collect_live_awaits_in_expr(target, &live, out);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TForInit::Expr(expr) => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-        }
-    }
-
-    fn async_collect_live_awaits_in_expr(
-        &self,
-        expr: &TExpr,
-        live_after: &HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) {
-        let mut live_after = live_after.clone();
-        live_after.extend(Self::async_expr_used_locals(expr));
-        self.async_collect_live_awaits_in_expr_inner(expr, &live_after, out);
-    }
-
-    fn async_collect_live_awaits_in_expr_inner(
-        &self,
-        expr: &TExpr,
-        live_after: &HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) {
-        match &expr.kind {
-            TExprKind::Await { future } => {
-                let mut live = live_after.clone();
-                live.extend(Self::async_expr_used_locals(future));
-                out.extend(live);
-                self.async_collect_live_awaits_in_expr_inner(future, live_after, out);
-            }
-            TExprKind::AsyncSelect { arms, .. } => {
-                let mut live = live_after.clone();
-                for arm in arms {
-                    live.extend(Self::async_expr_used_locals(&arm.future));
-                    let mut body_live = Self::async_expr_used_locals(&arm.body);
-                    body_live.remove(&arm.binding_local);
-                    live.extend(body_live);
-                }
-                out.extend(live);
-                for arm in arms {
-                    self.async_collect_live_awaits_in_expr_inner(&arm.future, live_after, out);
-                    self.async_collect_live_awaits_in_expr_inner(&arm.body, live_after, out);
-                }
-            }
-            TExprKind::Closure { .. } => {}
-            TExprKind::UnsafeBlock { statements, value } => {
-                let mut live = live_after.clone();
-                if let Some(value) = value {
-                    self.async_collect_live_awaits_in_expr_inner(value, &live, out);
-                    live.extend(Self::async_expr_used_locals(value));
-                }
-                for stmt in statements.iter().rev() {
-                    live = self.async_live_frame_locals_before_stmt(stmt, live, out);
-                }
-            }
-            _ => walk_typed_expr(expr, &mut |child| {
-                self.async_collect_live_awaits_in_expr_inner(child, live_after, out);
-            }),
-        }
-    }
-
-    fn async_expr_used_locals(expr: &TExpr) -> HashSet<LocalId> {
-        let mut collector = AsyncLocalUseCollector {
-            locals: HashSet::new(),
-        };
-        collector.visit_expr(expr);
-        collector.locals
-    }
-
-    fn async_await_output_tys_for_block(&self, block: &TBlock) -> Vec<Ty> {
-        let mut out = Vec::new();
-        self.collect_async_await_output_tys_block(block, &mut out);
-        out
-    }
-
-    fn async_await_output_tys_for_closure(&self, closure: &ClosureDef) -> Vec<Ty> {
-        let mut out = Vec::new();
-        match &closure.body {
-            TClosureBody::Block(block) => {
-                self.collect_async_await_output_tys_block(block, &mut out)
-            }
-            TClosureBody::Expr(expr) => self.collect_async_await_output_tys_expr(expr, &mut out),
-        }
-        out
-    }
-
-    fn async_defer_args_for_function(&self, function: &CheckedFunction) -> Vec<AsyncDeferArg> {
-        let mut out = Vec::new();
-        if let Some(body) = &function.body {
-            self.collect_async_defer_args_block(body, &mut out);
-        }
-        out.into_iter()
-            .enumerate()
-            .map(|(idx, ty)| AsyncDeferArg {
-                ty,
-                field: format!("defer_arg{}", idx + 1),
-            })
-            .collect()
-    }
-
-    fn async_defer_args_for_closure(&self, closure: &ClosureDef) -> Vec<AsyncDeferArg> {
-        let mut out = Vec::new();
-        match &closure.body {
-            TClosureBody::Block(block) => self.collect_async_defer_args_block(block, &mut out),
-            TClosureBody::Expr(expr) => self.collect_async_defer_args_expr(expr, &mut out),
-        }
-        out.into_iter()
-            .enumerate()
-            .map(|(idx, ty)| AsyncDeferArg {
-                ty,
-                field: format!("defer_arg{}", idx + 1),
-            })
-            .collect()
-    }
-
-    fn collect_async_defer_args_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
-        for stmt in &block.statements {
-            self.collect_async_defer_args_stmt(stmt, out);
-        }
-    }
-
-    fn collect_async_defer_args_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
-        match &stmt.kind {
-            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
-                self.collect_async_defer_args_block(block, out);
-            }
-            TStmtKind::VarDecl { init, .. } => {
-                if let Some(init) = init {
-                    self.collect_async_defer_args_expr(init, out);
-                }
-            }
-            TStmtKind::Assign { target, value } => {
-                self.collect_async_defer_args_expr(target, out);
-                self.collect_async_defer_args_expr(value, out);
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                self.collect_async_defer_args_expr(cond, out);
-                self.collect_async_defer_args_block(then_block, out);
-                if let Some(else_branch) = else_branch {
-                    self.collect_async_defer_args_stmt(else_branch, out);
-                }
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    self.collect_async_defer_args_for_init(init, out);
-                }
-                if let Some(cond) = cond {
-                    self.collect_async_defer_args_expr(cond, out);
-                }
-                if let Some(step) = step {
-                    self.collect_async_defer_args_for_init(step, out);
-                }
-                self.collect_async_defer_args_block(body, out);
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                self.collect_async_defer_args_expr(expr, out);
-                let mut grouped = BTreeMap::<usize, Vec<&crate::thir::TCase>>::new();
-                for case in cases {
-                    grouped.entry(case.variant_index).or_default().push(case);
-                }
-                for (_, cases) in grouped {
-                    for case in cases {
-                        for stmt in &case.statements {
-                            self.collect_async_defer_args_stmt(stmt, out);
-                        }
-                    }
-                }
-                for stmt in default {
-                    self.collect_async_defer_args_stmt(stmt, out);
-                }
-            }
-            TStmtKind::Defer(expr) => {
-                if let TExprKind::Call { callee, args, .. } = &expr.kind {
-                    self.collect_async_defer_args_expr(callee, out);
-                    for arg in args {
-                        self.collect_async_defer_args_expr(arg, out);
-                        if !arg.ty.is_erased_value() {
-                            out.push(arg.ty.clone());
-                        }
-                    }
-                } else {
-                    self.collect_async_defer_args_expr(expr, out);
-                }
-            }
-            TStmtKind::ResourceCleanup(expr) => {
-                self.collect_async_defer_args_expr(expr, out);
-            }
-            TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
-                self.collect_async_defer_args_expr(expr, out);
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => {}
-        }
-    }
-
-    fn collect_async_defer_args_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
-        match init {
-            TForInit::VarDecl { init, .. } => {
-                if let Some(init) = init {
-                    self.collect_async_defer_args_expr(init, out);
-                }
-            }
-            TForInit::Assign { target, value } => {
-                self.collect_async_defer_args_expr(target, out);
-                self.collect_async_defer_args_expr(value, out);
-            }
-            TForInit::Expr(expr) => self.collect_async_defer_args_expr(expr, out),
-        }
-    }
-
-    fn collect_async_defer_args_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
-        match &expr.kind {
-            TExprKind::Closure { .. } => {}
-            TExprKind::UnsafeBlock { statements, value } => {
-                for stmt in statements {
-                    self.collect_async_defer_args_stmt(stmt, out);
-                }
-                if let Some(value) = value {
-                    self.collect_async_defer_args_expr(value, out);
-                }
-            }
-            _ => walk_typed_expr(expr, &mut |child| {
-                self.collect_async_defer_args_expr(child, out);
-            }),
-        }
-    }
-
-    fn collect_async_await_output_tys_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
-        for stmt in &block.statements {
-            self.collect_async_await_output_tys_stmt(stmt, out);
-        }
-    }
-
-    fn collect_async_await_output_tys_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
-        match &stmt.kind {
-            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
-                self.collect_async_await_output_tys_block(block, out);
-            }
-            TStmtKind::VarDecl { init, .. } => {
-                if let Some(init) = init {
-                    self.collect_async_await_output_tys_expr(init, out);
-                }
-            }
-            TStmtKind::Assign { target, value } => {
-                self.collect_async_await_output_tys_expr(target, out);
-                self.collect_async_await_output_tys_expr(value, out);
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                self.collect_async_await_output_tys_expr(cond, out);
-                self.collect_async_await_output_tys_block(then_block, out);
-                if let Some(else_branch) = else_branch {
-                    self.collect_async_await_output_tys_stmt(else_branch, out);
-                }
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                if let Some(init) = init {
-                    self.collect_async_await_output_tys_for_init(init, out);
-                }
-                if let Some(cond) = cond {
-                    self.collect_async_await_output_tys_expr(cond, out);
-                }
-                self.collect_async_await_output_tys_block(body, out);
-                if let Some(step) = step {
-                    self.collect_async_await_output_tys_for_init(step, out);
-                }
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                self.collect_async_await_output_tys_expr(expr, out);
-                let mut grouped = BTreeMap::<usize, Vec<&crate::thir::TCase>>::new();
-                for case in cases {
-                    grouped.entry(case.variant_index).or_default().push(case);
-                }
-                for (_, cases) in grouped {
-                    for case in cases {
-                        for stmt in &case.statements {
-                            self.collect_async_await_output_tys_stmt(stmt, out);
-                        }
-                    }
-                }
-                for stmt in default {
-                    self.collect_async_await_output_tys_stmt(stmt, out);
-                }
-            }
-            TStmtKind::Defer(expr)
-            | TStmtKind::ResourceCleanup(expr)
-            | TStmtKind::Return(Some(expr))
-            | TStmtKind::Expr(expr) => {
-                self.collect_async_await_output_tys_expr(expr, out);
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => {}
-        }
-    }
-
-    fn collect_async_await_output_tys_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
-        match init {
-            TForInit::VarDecl { init, .. } => {
-                if let Some(init) = init {
-                    self.collect_async_await_output_tys_expr(init, out);
-                }
-            }
-            TForInit::Assign { target, value } => {
-                self.collect_async_await_output_tys_expr(target, out);
-                self.collect_async_await_output_tys_expr(value, out);
-            }
-            TForInit::Expr(expr) => self.collect_async_await_output_tys_expr(expr, out),
-        }
-    }
-
-    fn collect_async_await_output_tys_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
-        match &expr.kind {
-            TExprKind::Await { future } => {
-                self.collect_async_await_output_tys_expr(future, out);
-                out.push(expr.ty.clone());
-            }
-            TExprKind::AsyncSelect { arms, .. } => {
-                for arm in arms {
-                    self.collect_async_await_output_tys_expr(&arm.future, out);
-                    self.collect_async_await_output_tys_expr(&arm.body, out);
-                }
-                out.push(Ty::Void);
-            }
-            TExprKind::Closure { .. } => {}
-            TExprKind::UnsafeBlock { statements, value } => {
-                for stmt in statements {
-                    self.collect_async_await_output_tys_stmt(stmt, out);
-                }
-                if let Some(value) = value {
-                    self.collect_async_await_output_tys_expr(value, out);
-                }
-            }
-            _ => walk_typed_expr(expr, &mut |child| {
-                self.collect_async_await_output_tys_expr(child, out);
-            }),
-        }
     }
 
     fn emit_async_function_contexts(&mut self) {
@@ -4089,7 +3350,7 @@ impl<'a> CGenerator<'a> {
                 self.line(&format!("    {};", self.c_decl(ty, &format!("arg{idx}"))));
                 emitted = true;
             }
-            for local in self.async_frame_locals_for_function(function) {
+            for local in self.async_frame_locals_with_escape_info_for_function(function) {
                 if local.heap {
                     self.line(&format!(
                         "    {};",
@@ -4100,13 +3361,8 @@ impl<'a> CGenerator<'a> {
                 }
                 emitted = true;
             }
-            for (idx, output_ty) in self
-                .async_await_output_tys_for_block(
-                    function.body.as_ref().expect("async body exists"),
-                )
-                .into_iter()
-                .enumerate()
-            {
+            let facts = self.async_facts_for_function(function);
+            for (idx, output_ty) in facts.await_output_tys.iter().enumerate() {
                 if output_ty.is_erased_value() {
                     continue;
                 }
@@ -4116,7 +3372,7 @@ impl<'a> CGenerator<'a> {
                 ));
                 emitted = true;
             }
-            for arg in self.async_defer_args_for_function(function) {
+            for arg in &facts.defer_args {
                 self.line(&format!("    {};", self.c_decl(&arg.ty, &arg.field)));
                 emitted = true;
             }
@@ -4165,7 +3421,7 @@ impl<'a> CGenerator<'a> {
                 self.line(&format!("    {};", self.c_decl(ty, &format!("arg{idx}"))));
                 emitted = true;
             }
-            for local in self.async_frame_locals_for_closure(closure) {
+            for local in self.async_frame_locals_with_escape_info_for_closure(closure) {
                 if local.heap {
                     self.line(&format!(
                         "    {};",
@@ -4176,11 +3432,8 @@ impl<'a> CGenerator<'a> {
                 }
                 emitted = true;
             }
-            for (idx, output_ty) in self
-                .async_await_output_tys_for_closure(closure)
-                .into_iter()
-                .enumerate()
-            {
+            let facts = self.async_facts_for_closure(closure);
+            for (idx, output_ty) in facts.await_output_tys.iter().enumerate() {
                 if output_ty.is_erased_value() {
                     continue;
                 }
@@ -4190,7 +3443,7 @@ impl<'a> CGenerator<'a> {
                 ));
                 emitted = true;
             }
-            for arg in self.async_defer_args_for_closure(closure) {
+            for arg in &facts.defer_args {
                 self.line(&format!("    {};", self.c_decl(&arg.ty, &arg.field)));
                 emitted = true;
             }
@@ -4933,12 +4186,15 @@ impl<'a> CGenerator<'a> {
         self.current_async_context = Some("ctx".to_string());
         self.current_async_await_index = 0;
         self.current_async_frame_locals = self
-            .async_frame_locals_for_function(function)
+            .async_frame_locals_with_escape_info_for_function(function)
             .into_iter()
             .map(|local| (local.id, format!("ctx->{}", local.field)))
             .collect();
         self.current_async_await_outputs = self
-            .async_await_output_tys_for_block(body)
+            .async_facts_for_function(function)
+            .await_output_tys
+            .iter()
+            .cloned()
             .into_iter()
             .enumerate()
             .map(|(idx, ty)| {
@@ -12760,12 +12016,15 @@ impl<'a> CGenerator<'a> {
         self.current_async_context = Some("ctx".to_string());
         self.current_async_await_index = 0;
         self.current_async_frame_locals = self
-            .async_frame_locals_for_closure(closure)
+            .async_frame_locals_with_escape_info_for_closure(closure)
             .into_iter()
             .map(|local| (local.id, format!("ctx->{}", local.field)))
             .collect();
         self.current_async_await_outputs = self
-            .async_await_output_tys_for_closure(closure)
+            .async_facts_for_closure(closure)
+            .await_output_tys
+            .iter()
+            .cloned()
             .into_iter()
             .enumerate()
             .map(|(idx, ty)| {
@@ -13478,7 +12737,25 @@ impl<'a> CGenerator<'a> {
         self.c_decl_qualified(ty, name, false)
     }
 
+    fn lower_opaque_returns_in_ty(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::OpaqueReturn { key, .. } => {
+                let Some(concrete) = self.program.checked.opaque_returns.get(key) else {
+                    return ty.clone();
+                };
+                self.lower_opaque_returns_in_ty(concrete)
+            }
+            _ => map_ty_children(ty, |child| self.lower_opaque_returns_in_ty(child)),
+        }
+    }
+
     fn c_decl_qualified(&self, ty: &Ty, name: &str, top_const: bool) -> String {
+        if matches!(ty, Ty::OpaqueReturn { .. }) {
+            let concrete = self.lower_opaque_returns_in_ty(ty);
+            if &concrete != ty {
+                return self.c_decl_qualified(&concrete, name, top_const);
+            }
+        }
         match ty {
             Ty::Never => c_base_decl(&c_qualified_base("void", top_const), name),
             Ty::Void => c_base_decl(&c_qualified_base("void", top_const), name),
@@ -13526,6 +12803,7 @@ impl<'a> CGenerator<'a> {
             Ty::GeneratedFuture { output, .. } => {
                 self.c_decl_qualified(&std_future_ty((**output).clone()), name, top_const)
             }
+            Ty::OpaqueReturn { .. } => c_base_decl(&c_qualified_base("void", top_const), name),
             Ty::DynamicInterface { .. } => c_base_decl(
                 &c_qualified_base(&self.dynamic_type_name(ty), top_const),
                 name,
@@ -14102,6 +13380,12 @@ impl<'a> CGenerator<'a> {
     }
 
     fn ty_can_carry_gc_pointer(&self, ty: &Ty) -> bool {
+        if matches!(ty, Ty::OpaqueReturn { .. }) {
+            let concrete = self.lower_opaque_returns_in_ty(ty);
+            if &concrete != ty {
+                return self.ty_can_carry_gc_pointer(&concrete);
+            }
+        }
         match ty {
             Ty::Pointer { .. }
             | Ty::Slice { .. }
@@ -14112,6 +13396,7 @@ impl<'a> CGenerator<'a> {
             | Ty::GeneratedFuture { .. } => true,
             Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer(elem),
             Ty::Named { .. }
+            | Ty::OpaqueReturn { .. }
             | Ty::CSpelling { .. }
             | Ty::Generic(_)
             | Ty::Hole(_)
@@ -14186,6 +13471,12 @@ impl<'a> CGenerator<'a> {
     }
 
     fn zero_value(&self, ty: &Ty) -> String {
+        if matches!(ty, Ty::OpaqueReturn { .. }) {
+            let concrete = self.lower_opaque_returns_in_ty(ty);
+            if &concrete != ty {
+                return self.zero_value(&concrete);
+            }
+        }
         if ty.is_erased_value() {
             return String::new();
         }
@@ -14212,6 +13503,7 @@ impl<'a> CGenerator<'a> {
             | Ty::Named { .. }
             | Ty::GeneratedFuture { .. }
             | Ty::DynamicInterface { .. }
+            | Ty::OpaqueReturn { .. }
             | Ty::Closure { .. }
             | Ty::ClosureInstance { .. }
             | Ty::Hole(_)

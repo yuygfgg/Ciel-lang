@@ -3,7 +3,10 @@ use std::{
     fmt,
 };
 
-use crate::ast::{PrimitiveType, Type, TypeKind, ViewMutability};
+use crate::{
+    ast::{PrimitiveType, Type, TypeKind, ViewMutability},
+    resolve::DefId,
+};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ConstraintBounds {
@@ -14,6 +17,12 @@ pub struct ConstraintBounds {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstraintRef {
     pub name: String,
+    pub args: Vec<Ty>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct OpaqueReturnKey {
+    pub def_id: DefId,
     pub args: Vec<Ty>,
 }
 
@@ -101,6 +110,10 @@ pub enum Ty {
     DynamicInterface {
         name: String,
         args: Vec<Ty>,
+    },
+    OpaqueReturn {
+        key: OpaqueReturnKey,
+        bounds: ConstraintBounds,
     },
     Function {
         is_unsafe: bool,
@@ -434,6 +447,17 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
         },
+        Ty::OpaqueReturn { key, bounds } => Ty::OpaqueReturn {
+            key: OpaqueReturnKey {
+                def_id: key.def_id,
+                args: key
+                    .args
+                    .iter()
+                    .map(|arg| substitute_ty(arg, subst))
+                    .collect(),
+            },
+            bounds: substitute_constraint_bounds(bounds, subst),
+        },
         Ty::Function {
             is_unsafe,
             abi,
@@ -586,6 +610,16 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             } if name == actual_name && args.len() == actual_args.len() => args
                 .iter()
                 .zip(actual_args.iter())
+                .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
+            _ => false,
+        },
+        Ty::OpaqueReturn { key, .. } => match actual {
+            Ty::OpaqueReturn {
+                key: actual_key, ..
+            } if key.def_id == actual_key.def_id && key.args.len() == actual_key.args.len() => key
+                .args
+                .iter()
+                .zip(actual_key.args.iter())
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
             _ => false,
         },
@@ -775,6 +809,12 @@ pub fn contains_generic(ty: &Ty) -> bool {
             Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
                 stack.extend(args.iter());
             }
+            Ty::OpaqueReturn { key, bounds } => {
+                stack.extend(key.args.iter());
+                for entry in bounds.positive.iter().chain(bounds.negative.iter()) {
+                    stack.extend(entry.args.iter());
+                }
+            }
             Ty::GeneratedFuture { output, .. } => stack.push(output),
             Ty::Function { ret, params, .. } => {
                 stack.push(ret);
@@ -829,6 +869,12 @@ pub fn contains_type_hole(ty: &Ty) -> bool {
             Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
                 stack.extend(args.iter());
             }
+            Ty::OpaqueReturn { key, bounds } => {
+                stack.extend(key.args.iter());
+                for entry in bounds.positive.iter().chain(bounds.negative.iter()) {
+                    stack.extend(entry.args.iter());
+                }
+            }
             Ty::GeneratedFuture { output, .. } => stack.push(output),
             Ty::Function { ret, params, .. } => {
                 stack.push(ret);
@@ -880,6 +926,12 @@ pub fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_any_generic_name(elem, names),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| contains_any_generic_name(arg, names))
+        }
+        Ty::OpaqueReturn { key, bounds } => {
+            key.args
+                .iter()
+                .any(|arg| contains_any_generic_name(arg, names))
+                || constraint_bounds_contains_any_generic_name(bounds, names)
         }
         Ty::GeneratedFuture { output, .. } => contains_any_generic_name(output, names),
         Ty::Function { ret, params, .. } => {
@@ -939,6 +991,10 @@ pub fn type_complexity(ty: &Ty) -> usize {
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => 1 + type_complexity(elem),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             1 + args.iter().map(type_complexity).sum::<usize>()
+        }
+        Ty::OpaqueReturn { key, bounds } => {
+            1 + key.args.iter().map(type_complexity).sum::<usize>()
+                + constraint_bounds_complexity(bounds)
         }
         Ty::GeneratedFuture { output, .. } => 1 + type_complexity(output),
         Ty::Function { ret, params, .. } => {
@@ -1003,6 +1059,10 @@ pub fn ty_contains(container: &Ty, needle: &Ty) -> bool {
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => ty_contains(elem, needle),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(|arg| ty_contains(arg, needle))
+        }
+        Ty::OpaqueReturn { key, bounds } => {
+            key.args.iter().any(|arg| ty_contains(arg, needle))
+                || constraint_bounds_contains_ty(bounds, needle)
         }
         Ty::GeneratedFuture { output, .. } => ty_contains(output, needle),
         Ty::Function { ret, params, .. } => {
@@ -1393,6 +1453,14 @@ pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
         Ty::Pointer { inner, .. } => contains_meta_repr_marker(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_repr_marker(elem),
         Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_repr_marker),
+        Ty::OpaqueReturn { key, bounds } => {
+            key.args.iter().any(contains_meta_repr_marker)
+                || bounds
+                    .positive
+                    .iter()
+                    .chain(bounds.negative.iter())
+                    .any(|entry| entry.args.iter().any(contains_meta_repr_marker))
+        }
         Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
             contains_meta_repr_marker(ret) || params.iter().any(contains_meta_repr_marker)
         }
@@ -1452,6 +1520,30 @@ where
         Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
             name: name.clone(),
             args: args.iter().map(map_child).collect(),
+        },
+        Ty::OpaqueReturn { key, bounds } => Ty::OpaqueReturn {
+            key: OpaqueReturnKey {
+                def_id: key.def_id,
+                args: key.args.iter().map(&mut map_child).collect(),
+            },
+            bounds: ConstraintBounds {
+                positive: bounds
+                    .positive
+                    .iter()
+                    .map(|entry| ConstraintRef {
+                        name: entry.name.clone(),
+                        args: entry.args.iter().map(&mut map_child).collect(),
+                    })
+                    .collect(),
+                negative: bounds
+                    .negative
+                    .iter()
+                    .map(|entry| ConstraintRef {
+                        name: entry.name.clone(),
+                        args: entry.args.iter().map(&mut map_child).collect(),
+                    })
+                    .collect(),
+            },
         },
         Ty::Function {
             is_unsafe,
@@ -1605,6 +1697,23 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
                         .join("_")
                 )
             }
+        }
+        Ty::OpaqueReturn { key, bounds } => {
+            let args = if key.args.is_empty() {
+                "void".to_string()
+            } else {
+                key.args
+                    .iter()
+                    .map(mangle_ty_fragment)
+                    .collect::<Vec<_>>()
+                    .join("_")
+            };
+            format!(
+                "opaque_ret_def{}_args_{}_caps_{}",
+                key.def_id.0,
+                args,
+                mangle_constraint_bounds(bounds)
+            )
         }
         Ty::Function {
             is_unsafe,
@@ -1834,6 +1943,9 @@ impl fmt::Display for Ty {
                     )
                 }
             }
+            Ty::OpaqueReturn { bounds, .. } => {
+                write!(f, "_: {}", display_constraint_bounds(bounds))
+            }
             Ty::Function {
                 is_unsafe,
                 abi,
@@ -1898,6 +2010,10 @@ fn closure_constraint_suffix(constraints: &ConstraintBounds) -> String {
     if constraints.is_empty() {
         return String::new();
     }
+    format!(": {}", display_constraint_bounds(constraints))
+}
+
+fn display_constraint_bounds(constraints: &ConstraintBounds) -> String {
     let mut parts = constraints
         .positive
         .iter()
@@ -1909,7 +2025,7 @@ fn closure_constraint_suffix(constraints: &ConstraintBounds) -> String {
             .iter()
             .map(|capability| format!("!{}", display_constraint_ref(capability))),
     );
-    format!(": {}", parts.join(" + "))
+    parts.join(" + ")
 }
 
 fn display_constraint_ref(capability: &ConstraintRef) -> String {

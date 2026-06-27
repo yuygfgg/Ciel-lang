@@ -589,10 +589,11 @@ EnumDecl            ::= "enum" Identifier [ GenericParamList ] EnumBody
 EnumBody            ::= "{" [ VariantDecl { "," VariantDecl } [ "," ] ] "}"
 VariantDecl         ::= Identifier [ "(" TypeList ")" ]
 
-InterfaceDecl       ::= [ "unsafe" ] "interface" GenericParamList
+InterfaceDecl       ::= [ "unsafe" ] "interface" InterfaceGenericParamList
                         InterfaceSignature [ ReceiverSelector ] ";"
-InterfaceSignature  ::= Type Identifier "(" [ ParamList ] ")"
-InterfaceAliasDecl  ::= "interface" Identifier "=" InterfaceExpr ";"
+InterfaceSignature  ::= FunctionReturnType Identifier "(" [ ParamList ] ")"
+InterfaceAliasDecl  ::= "interface" Identifier [ GenericParamList ]
+                        "=" InterfaceExpr ";"
 
 InterfaceExpr       ::= InterfaceTerm { ( "+" | "-" ) InterfaceTerm }
 InterfaceTerm       ::= [ "!" ] Identifier [ TypeArgList ]
@@ -602,14 +603,23 @@ ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ Ty
 
 FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] [ "async" ] FunctionSignature
                         [ ReceiverSelector ] ( Block | ";" )
-FunctionSignature   ::= Type Identifier [ GenericParamList ]
+FunctionSignature   ::= FunctionReturnType Identifier [ GenericParamList ]
                         "(" [ ParamList ] ")"
+FunctionReturnType  ::= Type | OpaqueReturnType
+OpaqueReturnType    ::= "_" ":" ConstraintExpr
 ReceiverSelector    ::= "=" ( "." Identifier | Identifier "." Identifier )
 
 GenericParamList    ::= "<" GenericParam { "," GenericParam } [ "," ] ">"
+InterfaceGenericParamList
+                    ::= "<" GenericParam { "," GenericParam }
+                        [ "->" GenericParam { "," GenericParam } ]
+                        [ "," ] ">"
 GenericParam        ::= [ "resource" ] Identifier [ ":" ConstraintExpr ]
 ConstraintExpr      ::= ConstraintTerm { ( "+" | "-" ) ConstraintTerm }
-ConstraintTerm      ::= [ "!" ] Identifier [ TypeArgList ]
+ConstraintTerm      ::= [ "!" ] Identifier [ ConstraintArgList ]
+ConstraintArgList   ::= "<" ConstraintArg { "," ConstraintArg } [ "," ] ">"
+ConstraintArg       ::= Type
+                     | Identifier "=" "_" [ ":" ConstraintExpr ]
 
 ParamList           ::= Param { "," Param } [ "," ]
 Param               ::= Type BindingName
@@ -725,6 +735,10 @@ _ value;                // error
 _ @value;               // error
 ```
 
+This is local type-hole syntax. The same `_` token also appears in inferred
+capability bindings and opaque return types, but those forms are legal only in
+their own grammar positions and have declaration-level scope.
+
 Struct declarations do not define default field values. A struct value is
 created by a named-field struct literal, by copying another value, by a
 function return, or by C interop according to the declared ABI.
@@ -745,6 +759,72 @@ Generic parameters may be written as `resource T` to require a resource-affine
 type argument. Ordinary `T` parameters can still be instantiated with resources
 when the generic body is affine-correct; the `resource` marker is for APIs that
 must expose a resource-only operation boundary in their signature.
+
+A generic parameter bound may bind an inferred capability type with
+`Name = _`. The identifier before `=` is the new hidden generic parameter name
+introduced in the surrounding declaration. It is not a named argument for the
+interface or alias being constrained. Constraint argument lists are positional:
+`Iterator<Cached = _>` places the hidden type `Cached` in the same argument slot
+that `Iterator<Item>` would occupy. The interface parameter name, such as
+`Item` in `interface Iterator<Item>`, describes that slot but does not have to
+be repeated at use sites. The binding creates a hidden generic parameter that is
+in scope for the rest of the declaration, including fields, enum payloads, type
+alias targets, function signatures, impl bodies, and ordinary type references:
+
+```ciel
+struct Peekable<I: Iterator<Item = _>> {
+    I inner;
+    Item cached;
+}
+```
+
+Hidden parameters are not part of source-level arity. `Peekable<Range>` is the
+source spelling; the compiler's canonical instance includes the solved hidden
+arguments so layout and monomorphization remain concrete. When two constraints
+should infer independent types from the same interface slot, they use distinct
+hidden names:
+
+```ciel
+struct Zip<A: Iterator<AItem = _>, B: Iterator<BItem = _>> {
+    A iter_a;
+    B iter_b;
+    AItem a_val;
+    BItem b_val;
+}
+```
+
+When two constraints must share one inferred type, the first constraint binds
+the hidden name and later constraints refer to that name as an ordinary type:
+
+```ciel
+struct SameItemZip<A: Iterator<Item = _>, B: Iterator<Item>> {
+    A iter_a;
+    B iter_b;
+    Item cached;
+}
+```
+
+A binding may carry an additional constraint on the hidden type:
+
+```ciel
+struct Flatten<I: Iterator<Inner = _: Iterator<Item = _>>> {
+    I inner;
+    Inner current;
+}
+```
+
+The hidden name introduced by each binding must be unique in the declaration and
+must not duplicate an explicit generic parameter. Repeating the same hidden
+binding, such as `A: Iterator<Item = _>, B: Iterator<Item = _>`, is an error
+because it would introduce the hidden parameter `Item` twice. Later uses write
+`Item` as an ordinary type name. Hidden bindings are allowed only in positive
+static capability constraints that introduce or check a generic environment.
+They are rejected in negative or removed constraint terms, dynamic interface
+types, interface alias declarations, impl target argument lists, explicit call
+or type argument lists, retained closure types, casts, opaque return
+constraints, and other ordinary type contexts. Opaque return constraints may
+refer to hidden names that were already bound by the function's generic
+parameter list; they may not introduce new bindings.
 
 At most one function body may exist for a given fully qualified name. A
 non-`extern` function declaration ending in `;` is a prototype and must match
@@ -768,6 +848,35 @@ compiler-generated and opaque. That generated type implements the standard
 Async functions may be declared or prototyped like ordinary Ciel functions, but
 they cannot use a C ABI; exporting or importing an async `extern "C"` function
 is rejected.
+
+A Ciel function may hide its concrete source return type by writing
+`_: ConstraintExpr` as the return type:
+
+```ciel
+_: Iterator<i64> range(i64 start, i64 end) {
+    return Range{ start: start, end: end };
+}
+```
+
+This is an opaque static return, not a dynamic interface value. The function
+body chooses one concrete return type for each concrete generic instance, and
+every normal return path must return that same concrete type. The concrete type
+must satisfy the written positive and negative capability bounds after generic
+substitution. Callers see only the opaque source type and the written bounds;
+code generation lowers the value to the selected concrete type.
+
+The opaque identity is keyed by the defining function and the concrete explicit
+and hidden generic arguments. Two calls to the same opaque-returning function
+with the same canonical arguments have the same source type. Opaque returns from
+different functions are distinct even if their bodies return the same concrete
+type. A value of opaque return type can satisfy static constraints proven by its
+written bounds and can be coerced to an expected dynamic interface value through
+the ordinary dynamic erasure path.
+
+Opaque return types are rejected on `extern "C"` and exported C ABI functions,
+interface declarations, and impl declarations. They cannot be named from outside
+the defining function, and a bare `_` return type without a constraint remains
+invalid.
 
 `unsafe` on a function makes calls to that function require an unsafe block.
 The function body is still ordinary checked code; unsafe operations inside it
@@ -1436,6 +1545,40 @@ the implementation site.
 Type arguments written on an `impl` also bind only non-receiver generic
 parameters.
 
+An interface generic parameter list may contain one `->`. Parameters before the
+arrow determine parameters after the arrow:
+
+```ciel
+interface<I -> Item> Next<Item> next(*I iter) = .next;
+interface Iterator<Item> = next<Item>;
+```
+
+The arrow does not change the receiver rule: the first generic parameter is
+still the receiver type, and written type arguments on impls, constraints,
+aliases, and dynamic interface types still bind only the non-receiver
+parameters. Determination is a uniqueness rule over the whole program. For a
+concrete determinant tuple, there may be at most one concrete tuple of
+determined parameters. These impls conflict:
+
+```ciel
+impl next<i64>(*Range iter) { ... }
+impl next<u8>(*Range iter) { ... } // error
+```
+
+The determinant side may contain more than the receiver:
+
+```ciel
+interface<F, In -> Out> Out map_call(*F f, In value);
+interface Mapper<In, Out> = map_call<In, Out>;
+```
+
+Generic impls are checked conservatively. If two generic impls may overlap on
+the determinant side and could produce different determined parameters, the
+program is rejected unless the existing coherence machinery can prove the
+determinant sets are disjoint. Duplicate impls with the same determined
+parameters are still rejected by the ordinary duplicate-impl rule; determined
+parameters are not overloads.
+
 An `impl` may have its own generic parameter list. Those parameters are inferred
 from the receiver and other interface arguments, then monomorphized like a
 generic function:
@@ -1469,6 +1612,10 @@ Dynamic interface use is valid only under these rules:
 When an interface name is used as a dynamic type or as a constraint, written
 type arguments bind only the non-receiver generic parameters. The receiver is
 provided by the concrete constrained type or erased dynamic value.
+
+Dynamic interface types require fixed non-receiver arguments and cannot contain
+`Name = _` hidden bindings. Hidden bindings are compile-time generic
+parameters, not dynamic interface payload.
 
 Examples:
 
@@ -1521,6 +1668,37 @@ Semantic analysis is whole-program:
 program, all of its impls participate in coherence and constraint checks.
 
 If any imported file implements `seek` for `T`, then `T: !seek` fails.
+
+Named constraint bindings are solved only from positive determined capability
+facts. During declaration checking, each hidden parameter must be derivable from
+explicit parameters and already-derived hidden parameters by applying
+determined interfaces. During instantiation, the compiler solves the hidden
+canonical arguments from concrete explicit arguments, the current generic
+constraint environment, opaque return bounds when relevant, and the complete
+impl table. If a hidden parameter is unsolved or ambiguous, instantiation is
+rejected.
+
+```ciel
+struct MapIter<I: Iterator<In = _>, F: Mapper<In, Out = _>> {
+    I inner;
+    F f;
+    Out cached;
+}
+```
+
+Here `In` is determined from `I: Iterator<In>`, and `Out` is determined from
+`F, In: Mapper<In, Out>`. The names `In` and `Out` are hidden type names local
+to `MapIter`; they are not required to match the generic parameter names written
+by `Iterator` or `Mapper`. A constraint on an interface without determined
+parameters cannot bind a hidden type:
+
+```ciel
+interface<T, U> bool related(*T value, U other);
+
+struct Bad<T: related<U = _>> { // error
+    U value;
+}
+```
 
 ## 11. Structural Metaprogramming
 
@@ -4216,7 +4394,8 @@ The Ciel internal ABI may lower large returns and arguments using hidden
 pointers. Any declaration marked `extern "C"` or `export extern "C"` must obey
 the target platform C ABI as written. By-value `void` parameters are invalid in
 `extern "C"` declarations; an empty C parameter list is written by omitting
-parameters.
+parameters. Opaque constrained returns are also invalid for C ABI declarations
+because the C signature must expose a concrete source return type.
 
 Generated Ciel libraries expose a small host ABI:
 

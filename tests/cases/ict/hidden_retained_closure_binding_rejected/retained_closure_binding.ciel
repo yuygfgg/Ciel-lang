@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: named constraint binding `Item = _` is not allowed in retained closure types
+
+interface<F -> Item> bool marker(*F value);
+
+void bad(i64 |(): marker<Item = _>| callback) {
+    return;
+}
+
+i64 main() {
+    return 0;
+}

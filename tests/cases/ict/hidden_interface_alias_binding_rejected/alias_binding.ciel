@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: named constraint binding `Item = _` is not allowed in interface alias declarations
+
+interface<I -> Item> bool next(*I iter);
+
+interface Bad<Item> = next<Item = _>;
+
+i64 main() {
+    return 0;
+}

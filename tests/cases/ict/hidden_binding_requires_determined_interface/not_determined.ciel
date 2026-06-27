@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: hidden parameter `U` in `Bad` is not determined by explicit parameters
+
+interface<T, U> bool related(*T value, U other);
+
+struct Bad<T: related<U = _>> {
+    U value;
+}
+
+i64 main() {
+    return 0;
+}

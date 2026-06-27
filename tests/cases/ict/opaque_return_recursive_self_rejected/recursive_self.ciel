@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: cannot use an opaque return type that resolves back to itself
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+_: Iterator<i64> loop_iter() {
+    return loop_iter();
+}
+
+i64 main() {
+    return 0;
+}

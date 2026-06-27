@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     capture::collect_closure_capture_ids,
@@ -9,7 +9,7 @@ use crate::{
     std_id,
     thir::*,
     types::{
-        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET,
+        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, OpaqueReturnKey,
         STD_ASYNC_ABORT_FUTURE_INTERFACE, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
@@ -24,6 +24,16 @@ use crate::{
         std_task_ty, substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
+
+#[path = "typeck/capability.rs"]
+pub mod capability;
+#[path = "typeck/capability_solve.rs"]
+pub mod capability_solve;
+#[path = "typeck/env.rs"]
+pub mod env;
+
+use capability::CapabilityTable;
+use env::{TyCtx, TyCtxBuilder};
 
 #[derive(Clone, Debug)]
 struct FunctionSig {
@@ -72,6 +82,7 @@ struct SubstitutedTy {
 struct GenericInfo {
     name: String,
     is_resource: bool,
+    is_hidden: bool,
     constraint: Option<ConstraintExpr>,
 }
 
@@ -85,7 +96,7 @@ struct StructTemplate {
 
 #[derive(Clone, Debug)]
 struct EnumTemplate {
-    generics: Vec<String>,
+    generics: Vec<GenericInfo>,
     variants: Vec<EnumVariantTemplate>,
 }
 
@@ -97,7 +108,7 @@ struct EnumVariantTemplate {
 
 #[derive(Clone, Debug)]
 struct TypeAliasTemplate {
-    generics: Vec<String>,
+    generics: Vec<GenericInfo>,
     target: TypeAliasTarget,
 }
 
@@ -114,6 +125,7 @@ struct InterfaceSig {
     name: String,
     is_unsafe: bool,
     generics: Vec<String>,
+    determined_start: Option<usize>,
     ret: Type,
     params: Vec<Param>,
 }
@@ -148,6 +160,7 @@ struct GenericImplTemplate {
     item_span: crate::span::Span,
     interface_name: String,
     generics: Vec<GenericInfo>,
+    generic_constraints: Vec<GenericConstraintBounds>,
     interface_args: Vec<Ty>,
     receiver_ty: Option<Ty>,
     ret: Ty,
@@ -156,9 +169,17 @@ struct GenericImplTemplate {
 }
 
 #[derive(Clone, Debug)]
+struct GenericConstraintBounds {
+    name: String,
+    is_resource: bool,
+    bounds: ConstraintBounds,
+}
+
+#[derive(Clone, Debug)]
 struct ImplAnalysis {
     interface_name: String,
     generics: Vec<GenericInfo>,
+    generic_constraints: Vec<GenericConstraintBounds>,
     interface_args: Vec<Ty>,
     receiver_ty: Option<Ty>,
     ret: Ty,
@@ -216,6 +237,18 @@ struct CheckedLocalInit {
     assigned: bool,
 }
 
+struct CheckedFunctionBody {
+    block: TBlock,
+    async_facts: Option<AsyncFacts>,
+}
+
+#[derive(Clone, Debug)]
+struct OpaqueReturnState {
+    opaque_ty: Ty,
+    concrete_ty: Option<Ty>,
+    saw_recursive_concrete_ty: bool,
+}
+
 #[derive(Clone, Debug)]
 struct AsyncLocalInfo {
     name: String,
@@ -264,6 +297,21 @@ impl ThirVisitor for AsyncLocalUseCollector {
             _ => walk_expr(self, expr),
         }
     }
+}
+
+struct ExprChildVisitor<'a, F: FnMut(&TExpr)> {
+    visit: &'a mut F,
+}
+
+impl<F: FnMut(&TExpr)> ThirVisitor for ExprChildVisitor<'_, F> {
+    fn visit_expr(&mut self, expr: &TExpr) {
+        (self.visit)(expr);
+    }
+}
+
+fn walk_typed_expr<F: FnMut(&TExpr)>(expr: &TExpr, visit: &mut F) {
+    let mut visitor = ExprChildVisitor { visit };
+    walk_expr(&mut visitor, expr);
 }
 
 struct AsyncAwaitValidator<'a, 'b> {
@@ -643,13 +691,14 @@ impl ThirVisitor for AsyncSuspensionCapabilityVisitor<'_> {
 }
 
 pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
-    TypeChecker::new(hir).check()
+    TypeChecker::for_program(hir).check()
 }
 
 pub struct CheckedGenericInstance {
     pub function: CheckedFunction,
     pub generated_functions: Vec<CheckedFunction>,
     pub impls: Vec<CheckedImpl>,
+    pub opaque_returns: HashMap<OpaqueReturnKey, Ty>,
 }
 
 fn lower_ast_type_static(ty: &Type, subst: &HashMap<String, Ty>, resolved: &ResolvedProgram) -> Ty {
@@ -805,24 +854,11 @@ pub fn type_check_generic_instance(
     instance_name: String,
     next_synthetic_def: usize,
 ) -> DiagResult<CheckedGenericInstance> {
-    let mut checker = TypeChecker::new(HirProgram {
-        resolved: checked.resolved.clone(),
-        modules: checked.hir_modules.clone(),
-        locals: checked.hir_locals.clone(),
-    });
-    checker.collect_interfaces();
-    checker.collect_type_aliases_and_opaque_structs();
-    checker.collect_structs();
-    checker.collect_enums();
-    checker.collect_functions();
-    checker.merge_existing_impls(&checked.impls);
-    checker.collect_impls(false);
-    checker.normalize_function_sigs();
-    checker.collect_receiver_selectors();
-    checker.validate_receiver_selector_conflicts();
-    checker.next_synthetic_def = checker.next_synthetic_def.max(next_synthetic_def);
+    let mut checker =
+        TypeChecker::for_generic_instance(&checked.ty_ctx, &checked.impls, next_synthetic_def);
+    checker.opaque_returns = checked.opaque_returns.clone();
     let base_generated = checker.generated_functions.len();
-    let base_impls = checker.impls.len();
+    let base_impls = checker.ctx.impls.len();
     let function = checker.instantiate_generic_template_for_mono(
         template,
         instance_args,
@@ -839,26 +875,28 @@ pub fn type_check_generic_instance(
         })?;
         let generated_functions = checker
             .generated_functions
-            .into_iter()
-            .skip(base_generated)
-            .collect::<Vec<_>>();
+            .drain(base_generated..)
+            .collect();
         let impls = checker
+            .ctx
             .impls
-            .into_iter()
+            .iter()
             .skip(base_impls)
             .map(|implementation| CheckedImpl {
-                interface_name: implementation.interface_name,
-                interface_args: implementation.interface_args,
-                receiver_ty: implementation.receiver_ty,
+                interface_name: implementation.interface_name.clone(),
+                interface_args: implementation.interface_args.clone(),
+                receiver_ty: implementation.receiver_ty.clone(),
                 function_def: implementation.function_def,
-                ret: implementation.ret,
-                params: implementation.params,
+                ret: implementation.ret.clone(),
+                params: implementation.params.clone(),
             })
             .collect::<Vec<_>>();
+        let opaque_returns = checker.opaque_returns;
         Ok(CheckedGenericInstance {
             function,
             generated_functions,
             impls,
+            opaque_returns,
         })
     } else {
         Err(checker.diagnostics)
@@ -866,46 +904,25 @@ pub fn type_check_generic_instance(
 }
 
 struct TypeChecker {
-    resolved: ResolvedProgram,
-    hir_modules: Vec<Module>,
-    hir_locals: Vec<Local>,
+    ctx: TyCtx,
     diagnostics: Vec<Diagnostic>,
-    functions_by_def: HashMap<DefId, FunctionSig>,
-    functions_by_name: HashMap<String, Vec<DefId>>,
-    receiver_selectors: Vec<ReceiverSelectorSig>,
-    type_aliases: HashMap<DefId, TypeAliasTemplate>,
-    opaque_structs: HashSet<String>,
-    unsafe_structs: HashSet<String>,
-    resource_structs: HashSet<String>,
-    structs: HashMap<String, Vec<(String, Ty)>>,
     visiting_structs: HashSet<String>,
-    struct_templates: HashMap<String, StructTemplate>,
-    enum_templates: HashMap<String, EnumTemplate>,
-    nominal_type_defs: HashMap<String, DefId>,
     visiting_enums: HashSet<String>,
-    variants: HashMap<DefId, VariantSig>,
-    interfaces: HashMap<DefId, InterfaceSig>,
-    interface_names: HashMap<String, DefId>,
-    interface_aliases: HashMap<DefId, InterfaceAliasTemplate>,
-    interface_alias_names: HashMap<String, DefId>,
-    impls: Vec<ImplSig>,
-    generic_impls: Vec<GenericImplTemplate>,
-    generic_functions: HashMap<DefId, GenericFunctionTemplate>,
-    async_function_cancel_safety: HashMap<DefId, bool>,
-    async_function_abortability: HashMap<DefId, bool>,
     generated_functions: Vec<CheckedFunction>,
     pending_impl_bodies: Vec<QueuedImplBody>,
     capability_resolution_stack: HashSet<CapabilityResolutionKey>,
     fatal_impl_coherence_error: bool,
     type_subst_stack: Vec<HashMap<String, Ty>>,
+    generic_env_stack: Vec<Vec<GenericInfo>>,
+    opaque_returns: HashMap<OpaqueReturnKey, Ty>,
+    current_opaque_return: Option<OpaqueReturnState>,
+    opaque_return_probe_stack: HashSet<OpaqueReturnKey>,
     resource_generic_stack: Vec<HashSet<String>>,
     alias_expansion_stack: Vec<DefId>,
-    checked_enums: HashMap<String, CheckedEnum>,
     current_module: ModuleId,
     current_return_ty: Ty,
     current_async_depth: usize,
     control_contexts: Vec<ControlContext>,
-    next_synthetic_def: usize,
     next_closure_id: usize,
     next_type_hole_id: usize,
     type_hole_solutions: HashMap<usize, Ty>,
@@ -917,49 +934,39 @@ struct TypeChecker {
 }
 
 impl TypeChecker {
-    fn new(hir: HirProgram) -> Self {
-        let next_synthetic_def = hir.resolved.defs.len();
+    fn for_program(hir: HirProgram) -> Self {
+        Self::with_ctx(TyCtxBuilder::from_hir(hir).finish())
+    }
+
+    fn for_generic_instance(
+        ctx: &TyCtx,
+        existing_impls: &[CheckedImpl],
+        next_synthetic_def: usize,
+    ) -> Self {
+        Self::with_ctx(ctx.clone_for_generic_instance(existing_impls, next_synthetic_def))
+    }
+
+    fn with_ctx(ctx: TyCtx) -> Self {
         Self {
-            resolved: hir.resolved,
-            hir_modules: hir.modules,
-            hir_locals: hir.locals,
+            ctx,
             diagnostics: Vec::new(),
-            functions_by_def: HashMap::new(),
-            functions_by_name: HashMap::new(),
-            receiver_selectors: Vec::new(),
-            type_aliases: HashMap::new(),
-            opaque_structs: HashSet::new(),
-            unsafe_structs: HashSet::new(),
-            resource_structs: HashSet::new(),
-            structs: HashMap::new(),
             visiting_structs: HashSet::new(),
-            struct_templates: HashMap::new(),
-            enum_templates: HashMap::new(),
-            nominal_type_defs: HashMap::new(),
             visiting_enums: HashSet::new(),
-            variants: HashMap::new(),
-            interfaces: HashMap::new(),
-            interface_names: HashMap::new(),
-            interface_aliases: HashMap::new(),
-            interface_alias_names: HashMap::new(),
-            impls: Vec::new(),
-            generic_impls: Vec::new(),
-            generic_functions: HashMap::new(),
-            async_function_cancel_safety: HashMap::new(),
-            async_function_abortability: HashMap::new(),
             generated_functions: Vec::new(),
             pending_impl_bodies: Vec::new(),
             capability_resolution_stack: HashSet::new(),
             fatal_impl_coherence_error: false,
             type_subst_stack: Vec::new(),
+            generic_env_stack: Vec::new(),
+            opaque_returns: HashMap::new(),
+            current_opaque_return: None,
+            opaque_return_probe_stack: HashSet::new(),
             resource_generic_stack: Vec::new(),
             alias_expansion_stack: Vec::new(),
-            checked_enums: HashMap::new(),
             current_module: ModuleId(0),
             current_return_ty: Ty::Void,
             current_async_depth: 0,
             control_contexts: Vec::new(),
-            next_synthetic_def,
             next_closure_id: 0,
             next_type_hole_id: 0,
             type_hole_solutions: HashMap::new(),
@@ -976,8 +983,13 @@ impl TypeChecker {
         self.collect_type_aliases_and_opaque_structs();
         self.collect_structs();
         self.collect_enums();
+        self.collect_impl_signatures();
+        self.diagnostics
+            .extend(capability_solve::check_determined_coherence(
+                &CapabilityTable::new(&self.ctx),
+            ));
+        self.instantiate_declared_aggregate_instances();
         self.collect_functions();
-        self.collect_impls(true);
         self.normalize_function_sigs();
         self.collect_receiver_selectors();
         self.validate_receiver_selector_conflicts();
@@ -989,22 +1001,40 @@ impl TypeChecker {
 
         let mut checked_functions = Vec::new();
 
-        let mut modules = self.hir_modules.clone();
+        let mut modules = self.ctx.hir_modules.clone();
         modules.sort_by_key(|module| {
             (
-                !std_id::is_std_module(&self.resolved, module.id),
+                !std_id::is_std_module(&self.ctx.resolved, module.id),
                 module.id.0,
             )
         });
+        let mut checked_function_defs = HashSet::new();
+        for opaque_pass in [true, false] {
+            for module in &modules {
+                for item in &module.items {
+                    let ItemKind::Function(function) = &item.kind else {
+                        continue;
+                    };
+                    let is_opaque = matches!(
+                        function.signature.ret,
+                        FunctionReturnType::OpaqueConstraint { .. }
+                    );
+                    if opaque_pass != (is_opaque && function.signature.generics.is_empty()) {
+                        continue;
+                    }
+                    self.current_module = module.id;
+                    if let Some(checked) = self.check_function_item(function, item.export)
+                        && checked_function_defs.insert(checked.def_id)
+                    {
+                        checked_functions.push(checked);
+                    }
+                }
+            }
+        }
         for module in &modules {
             for item in &module.items {
                 match &item.kind {
-                    ItemKind::Function(function) => {
-                        self.current_module = module.id;
-                        if let Some(checked) = self.check_function_item(function, item.export) {
-                            checked_functions.push(checked);
-                        }
-                    }
+                    ItemKind::Function(_) => {}
                     ItemKind::ExternBlock(block) => {
                         for extern_item in &block.items {
                             if let ExternItem::Function {
@@ -1012,7 +1042,10 @@ impl TypeChecker {
                                 signature,
                             } = extern_item
                             {
-                                let ret = self.lower_type(&signature.ret);
+                                let FunctionReturnType::Type(ret_ty) = &signature.ret else {
+                                    continue;
+                                };
+                                let ret = self.lower_type(ret_ty);
                                 let params = signature
                                     .params
                                     .iter()
@@ -1028,6 +1061,7 @@ impl TypeChecker {
                                         name: signature.name.name.clone(),
                                         is_unsafe: sig.is_unsafe,
                                         is_async: sig.is_async,
+                                        async_facts: None,
                                         abi: Some(block.abi.clone()),
                                         noescape: *noescape,
                                         exported: item.export,
@@ -1053,25 +1087,28 @@ impl TypeChecker {
 
         if self.diagnostics.is_empty() {
             let mut checked_structs = self
+                .ctx
                 .structs
                 .iter()
                 .map(|(name, fields)| CheckedStruct {
                     name: name.clone(),
-                    is_resource: self.resource_structs.contains(name),
+                    is_resource: self.ctx.resource_structs.contains(name),
                     fields: fields.clone(),
                 })
                 .collect::<Vec<_>>();
             checked_structs.sort_by(|a, b| a.name.cmp(&b.name));
             let mut checked_opaque_structs = self
+                .ctx
                 .opaque_structs
                 .iter()
                 .cloned()
                 .map(|name| CheckedOpaqueStruct { name })
                 .collect::<Vec<_>>();
             checked_opaque_structs.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut checked_enums = self.checked_enums.values().cloned().collect::<Vec<_>>();
+            let mut checked_enums = self.ctx.checked_enums.values().cloned().collect::<Vec<_>>();
             checked_enums.sort_by(|a, b| a.name.cmp(&b.name));
             let mut checked_impls = self
+                .ctx
                 .impls
                 .iter()
                 .map(|implementation| CheckedImpl {
@@ -1089,6 +1126,7 @@ impl TypeChecker {
                     .then_with(|| a.function_def.0.cmp(&b.function_def.0))
             });
             let interface_values = self
+                .ctx
                 .interfaces
                 .iter()
                 .map(|(def_id, interface)| (*def_id, interface.clone()))
@@ -1097,7 +1135,7 @@ impl TypeChecker {
                 .iter()
                 .map(|interface| {
                     let (def_id, interface) = interface;
-                    self.current_module = self.resolved.def(*def_id).module;
+                    self.current_module = self.ctx.resolved.def(*def_id).module;
                     let generics = interface.generics.clone();
                     let subst = generics
                         .iter()
@@ -1121,13 +1159,18 @@ impl TypeChecker {
                 })
                 .collect::<Vec<_>>();
             checked_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
-            let alias_def_ids = self.interface_aliases.keys().copied().collect::<Vec<_>>();
+            let alias_def_ids = self
+                .ctx
+                .interface_aliases
+                .keys()
+                .copied()
+                .collect::<Vec<_>>();
             let mut checked_aliases = alias_def_ids
                 .iter()
                 .filter_map(|def_id| {
-                    let name = self.resolved.def(*def_id).name.clone();
-                    let alias = self.interface_aliases.get(def_id).cloned()?;
-                    self.current_module = self.resolved.def(*def_id).module;
+                    let name = self.ctx.resolved.def(*def_id).name.clone();
+                    let alias = self.ctx.interface_aliases.get(def_id).cloned()?;
+                    self.current_module = self.ctx.resolved.def(*def_id).module;
                     let generics = alias
                         .generics
                         .iter()
@@ -1163,10 +1206,11 @@ impl TypeChecker {
                 .collect::<Vec<_>>();
             checked_aliases.sort_by(|a, b| a.name.cmp(&b.name));
             let mut checked_generic_functions = self
+                .ctx
                 .generic_functions
                 .iter()
                 .filter_map(|(def_id, template)| {
-                    let sig = self.functions_by_def.get(def_id)?;
+                    let sig = self.ctx.functions_by_def.get(def_id)?;
                     Some(CheckedGenericFunction {
                         def_id: *def_id,
                         module: sig.module,
@@ -1182,6 +1226,7 @@ impl TypeChecker {
                             .map(|param| CheckedGenericParam {
                                 name: param.name.clone(),
                                 is_resource: param.is_resource,
+                                is_hidden: param.is_hidden,
                                 constraint: param.constraint.clone(),
                             })
                             .collect(),
@@ -1193,19 +1238,21 @@ impl TypeChecker {
                 .collect::<Vec<_>>();
             checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
             let share_handle_templates = collect_policy_marker_templates(
-                &self.hir_modules,
-                &self.resolved,
+                &self.ctx.hir_modules,
+                &self.ctx.resolved,
                 STD_MESSAGE_SHARE_HANDLE_INTERFACE,
             );
             let thread_local_templates = collect_policy_marker_templates(
-                &self.hir_modules,
-                &self.resolved,
+                &self.ctx.hir_modules,
+                &self.ctx.resolved,
                 STD_MESSAGE_THREAD_LOCAL_INTERFACE,
             );
+            let ty_ctx = self.ctx.clone();
             Ok(CheckedProgram {
-                resolved: self.resolved,
-                hir_modules: self.hir_modules,
-                hir_locals: self.hir_locals,
+                ty_ctx,
+                resolved: self.ctx.resolved.clone(),
+                hir_modules: self.ctx.hir_modules.clone(),
+                hir_locals: self.ctx.hir_locals.clone(),
                 share_handle_templates,
                 thread_local_templates,
                 opaque_structs: checked_opaque_structs,
@@ -1216,6 +1263,7 @@ impl TypeChecker {
                 impls: checked_impls,
                 functions: checked_functions,
                 generic_functions: checked_generic_functions,
+                opaque_returns: self.opaque_returns.clone(),
             })
         } else {
             Err(self.diagnostics)
@@ -1223,39 +1271,59 @@ impl TypeChecker {
     }
 
     fn collect_interfaces(&mut self) {
-        let modules = self.hir_modules.clone();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             self.current_module = module.id;
             for item in &module.items {
                 match &item.kind {
                     ItemKind::Interface(decl) => {
-                        let Some(def_id) = self.resolved.local_def(
+                        let Some(def_id) = self.ctx.resolved.local_def(
                             module.id,
                             &decl.signature.name.name,
                             &[DefKind::Interface],
                         ) else {
                             continue;
                         };
+                        for generic in &decl.generics {
+                            if let Some(constraint) = &generic.constraint {
+                                self.validate_constraint_bindings_forbidden(
+                                    constraint,
+                                    "interface declarations",
+                                );
+                            }
+                        }
                         let generics = decl
                             .generics
                             .iter()
                             .map(|param| param.name.name.clone())
                             .collect::<Vec<_>>();
-                        self.interfaces.insert(
+                        let ret = match &decl.signature.ret {
+                            FunctionReturnType::Type(ty) => ty.clone(),
+                            FunctionReturnType::OpaqueConstraint { marker_span, .. } => {
+                                self.diagnostics.push(Diagnostic::new(
+                                    *marker_span,
+                                    "opaque return type cannot be used in interface declarations",
+                                ));
+                                continue;
+                            }
+                        };
+                        self.ctx.interfaces.insert(
                             def_id,
                             InterfaceSig {
                                 name: decl.signature.name.name.clone(),
                                 is_unsafe: decl.is_unsafe,
                                 generics,
-                                ret: decl.signature.ret.clone(),
+                                determined_start: decl.determined_start,
+                                ret,
                                 params: decl.signature.params.clone(),
                             },
                         );
-                        self.interface_names
+                        self.ctx
+                            .interface_names
                             .insert(decl.signature.name.name.clone(), def_id);
                     }
                     ItemKind::InterfaceAlias(decl) => {
-                        let Some(def_id) = self.resolved.local_def(
+                        let Some(def_id) = self.ctx.resolved.local_def(
                             module.id,
                             &decl.name.name,
                             &[DefKind::InterfaceAlias],
@@ -1276,17 +1344,19 @@ impl TypeChecker {
                             .map(|param| GenericInfo {
                                 name: param.name.name.clone(),
                                 is_resource: param.is_resource,
+                                is_hidden: param.is_hidden,
                                 constraint: param.constraint.clone(),
                             })
                             .collect::<Vec<_>>();
-                        self.interface_aliases.insert(
+                        self.ctx.interface_aliases.insert(
                             def_id,
                             InterfaceAliasTemplate {
                                 generics,
                                 expr: decl.expr.clone(),
                             },
                         );
-                        self.interface_alias_names
+                        self.ctx
+                            .interface_alias_names
                             .insert(decl.name.name.clone(), def_id);
                     }
                     _ => {}
@@ -1296,13 +1366,13 @@ impl TypeChecker {
     }
 
     fn collect_type_aliases_and_opaque_structs(&mut self) {
-        let modules = self.hir_modules.clone();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             self.current_module = module.id;
             for item in &module.items {
                 match &item.kind {
                     ItemKind::TypeAlias(decl) => {
-                        let Some(def_id) = self.resolved.local_def(
+                        let Some(def_id) = self.ctx.resolved.local_def(
                             module.id,
                             &decl.name.name,
                             &[DefKind::TypeAlias],
@@ -1312,9 +1382,15 @@ impl TypeChecker {
                         let generics = decl
                             .generics
                             .iter()
-                            .map(|param| param.name.name.clone())
+                            .map(|param| GenericInfo {
+                                name: param.name.name.clone(),
+                                is_resource: param.is_resource,
+                                is_hidden: param.is_hidden,
+                                constraint: param.constraint.clone(),
+                            })
                             .collect::<Vec<_>>();
-                        self.type_aliases.insert(
+                        self.validate_generic_bindings(&decl.name.name, &generics);
+                        self.ctx.type_aliases.insert(
                             def_id,
                             TypeAliasTemplate {
                                 generics,
@@ -1326,19 +1402,22 @@ impl TypeChecker {
                         for extern_item in &block.items {
                             match extern_item {
                                 ExternItem::OpaqueStruct(name) => {
-                                    let Some(def_id) = self.resolved.local_def(
+                                    let Some(def_id) = self.ctx.resolved.local_def(
                                         module.id,
                                         &name.name,
                                         &[DefKind::OpaqueStruct],
                                     ) else {
                                         continue;
                                     };
-                                    let nominal_name = nominal_type_name(&self.resolved, def_id);
-                                    self.nominal_type_defs.insert(nominal_name.clone(), def_id);
-                                    self.opaque_structs.insert(nominal_name);
+                                    let nominal_name =
+                                        nominal_type_name(&self.ctx.resolved, def_id);
+                                    self.ctx
+                                        .nominal_type_defs
+                                        .insert(nominal_name.clone(), def_id);
+                                    self.ctx.opaque_structs.insert(nominal_name);
                                 }
                                 ExternItem::TypeAlias(decl) => {
-                                    let Some(def_id) = self.resolved.local_def(
+                                    let Some(def_id) = self.ctx.resolved.local_def(
                                         module.id,
                                         &decl.name.name,
                                         &[DefKind::TypeAlias],
@@ -1348,9 +1427,15 @@ impl TypeChecker {
                                     let generics = decl
                                         .generics
                                         .iter()
-                                        .map(|param| param.name.name.clone())
+                                        .map(|param| GenericInfo {
+                                            name: param.name.name.clone(),
+                                            is_resource: param.is_resource,
+                                            is_hidden: param.is_hidden,
+                                            constraint: param.constraint.clone(),
+                                        })
                                         .collect::<Vec<_>>();
-                                    self.type_aliases.insert(
+                                    self.validate_generic_bindings(&decl.name.name, &generics);
+                                    self.ctx.type_aliases.insert(
                                         def_id,
                                         TypeAliasTemplate {
                                             generics,
@@ -1370,39 +1455,43 @@ impl TypeChecker {
 
     fn check_by_value_layout_cycles(&mut self) {
         let structs = self
+            .ctx
             .structs
             .iter()
             .map(|(name, fields)| CheckedStruct {
                 name: name.clone(),
-                is_resource: self.resource_structs.contains(name),
+                is_resource: self.ctx.resource_structs.contains(name),
                 fields: fields.clone(),
             })
             .collect::<Vec<_>>();
-        let enums = self.checked_enums.values().cloned().collect::<Vec<_>>();
+        let enums = self.ctx.checked_enums.values().cloned().collect::<Vec<_>>();
         self.diagnostics
             .extend(check_checked_aggregate_layouts(&structs, &enums));
     }
 
     fn collect_structs(&mut self) {
-        let modules = self.hir_modules.clone();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             self.current_module = module.id;
             for item in &module.items {
                 if let ItemKind::Struct(decl) = &item.kind {
                     let Some(def_id) =
-                        self.resolved
+                        self.ctx
+                            .resolved
                             .local_def(module.id, &decl.name.name, &[DefKind::Struct])
                     else {
                         continue;
                     };
-                    let nominal_name = nominal_type_name(&self.resolved, def_id);
-                    self.nominal_type_defs.insert(nominal_name.clone(), def_id);
+                    let nominal_name = nominal_type_name(&self.ctx.resolved, def_id);
+                    self.ctx
+                        .nominal_type_defs
+                        .insert(nominal_name.clone(), def_id);
                     if decl.generics.is_empty() {
                         if decl.is_resource {
-                            self.resource_structs.insert(nominal_name.clone());
+                            self.ctx.resource_structs.insert(nominal_name.clone());
                         }
                         if decl.is_unsafe {
-                            self.unsafe_structs.insert(nominal_name.clone());
+                            self.ctx.unsafe_structs.insert(nominal_name.clone());
                         }
                     }
                 }
@@ -1413,52 +1502,25 @@ impl TypeChecker {
             for item in &module.items {
                 if let ItemKind::Struct(decl) = &item.kind {
                     let Some(def_id) =
-                        self.resolved
+                        self.ctx
+                            .resolved
                             .local_def(module.id, &decl.name.name, &[DefKind::Struct])
                     else {
                         continue;
                     };
-                    let nominal_name = nominal_type_name(&self.resolved, def_id);
-                    if decl.generics.is_empty() {
-                        let previous_defer_meta_repr_expansion =
-                            std::mem::replace(&mut self.defer_meta_repr_expansion, true);
-                        let fields = decl
-                            .fields
-                            .iter()
-                            .map(|field| {
-                                let ty = self.lower_type(&field.ty);
-                                self.reject_invalid_plain_value_type(
-                                    &ty,
-                                    field.ty.span,
-                                    "struct field",
-                                );
-                                (field.name.name.clone(), ty)
-                            })
-                            .collect::<Vec<_>>();
-                        self.defer_meta_repr_expansion = previous_defer_meta_repr_expansion;
-                        let instance_ty = Ty::Named {
-                            name: nominal_name.clone(),
-                            args: Vec::new(),
-                        };
-                        self.validate_resource_struct_fields(
-                            &instance_ty,
-                            decl.is_resource,
-                            &fields,
-                            decl.name.span,
-                        );
-                        self.structs.insert(nominal_name.clone(), fields);
-                        continue;
-                    }
+                    let nominal_name = nominal_type_name(&self.ctx.resolved, def_id);
                     let generics = decl
                         .generics
                         .iter()
                         .map(|param| GenericInfo {
                             name: param.name.name.clone(),
                             is_resource: param.is_resource,
+                            is_hidden: param.is_hidden,
                             constraint: param.constraint.clone(),
                         })
                         .collect::<Vec<_>>();
-                    self.struct_templates.insert(
+                    self.validate_generic_bindings(&decl.name.name, &generics);
+                    self.ctx.struct_templates.insert(
                         nominal_name,
                         StructTemplate {
                             is_resource: decl.is_resource,
@@ -1473,24 +1535,36 @@ impl TypeChecker {
     }
 
     fn collect_enums(&mut self) {
-        let modules = self.hir_modules.clone();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             self.current_module = module.id;
             for item in &module.items {
                 if let ItemKind::Enum(decl) = &item.kind {
                     let Some(enum_def_id) =
-                        self.resolved
+                        self.ctx
+                            .resolved
                             .local_def(module.id, &decl.name.name, &[DefKind::Enum])
                     else {
                         continue;
                     };
-                    let enum_name = nominal_type_name(&self.resolved, enum_def_id);
-                    self.nominal_type_defs
+                    let enum_name = nominal_type_name(&self.ctx.resolved, enum_def_id);
+                    self.ctx
+                        .nominal_type_defs
                         .insert(enum_name.clone(), enum_def_id);
                     let generics = decl
                         .generics
                         .iter()
-                        .map(|param| param.name.name.clone())
+                        .map(|param| GenericInfo {
+                            name: param.name.name.clone(),
+                            is_resource: param.is_resource,
+                            is_hidden: param.is_hidden,
+                            constraint: param.constraint.clone(),
+                        })
+                        .collect::<Vec<_>>();
+                    self.validate_generic_bindings(&decl.name.name, &generics);
+                    let generic_names = generics
+                        .iter()
+                        .map(|generic| generic.name.clone())
                         .collect::<Vec<_>>();
                     let variants = decl
                         .variants
@@ -1501,34 +1575,60 @@ impl TypeChecker {
                         })
                         .collect::<Vec<_>>();
                     for (variant_index, variant) in decl.variants.iter().enumerate() {
-                        let Some(def_id) = self.resolved.local_enum_variant_def(
+                        let Some(def_id) = self.ctx.resolved.local_enum_variant_def(
                             module.id,
                             enum_def_id,
                             &variant.name.name,
                         ) else {
                             continue;
                         };
-                        self.variants.insert(
+                        self.ctx.variants.insert(
                             def_id,
                             VariantSig {
                                 enum_name: enum_name.clone(),
-                                enum_generics: generics.clone(),
+                                enum_generics: generic_names.clone(),
                                 variant_index,
                                 payload: variant.payload.clone(),
                             },
                         );
                     }
-                    self.enum_templates
+                    self.ctx
+                        .enum_templates
                         .insert(enum_name.clone(), EnumTemplate { generics, variants });
-                    if decl.generics.is_empty() {
-                        self.ensure_enum_instance(&Ty::Named {
-                            name: enum_name,
-                            args: Vec::new(),
-                        });
-                    }
                 }
             }
         }
+    }
+
+    fn instantiate_declared_aggregate_instances(&mut self) {
+        let structs = Self::zero_arg_aggregate_instances(&self.ctx.struct_templates, |template| {
+            &template.generics
+        });
+        for ty in structs {
+            self.ensure_struct_instance(&ty);
+        }
+
+        let enums = Self::zero_arg_aggregate_instances(&self.ctx.enum_templates, |template| {
+            &template.generics
+        });
+        for ty in enums {
+            self.ensure_enum_instance(&ty);
+        }
+    }
+
+    fn zero_arg_aggregate_instances<T>(
+        templates: &HashMap<String, T>,
+        generics: impl Fn(&T) -> &[GenericInfo],
+    ) -> Vec<Ty> {
+        templates
+            .iter()
+            .filter_map(|(name, template)| {
+                generics(template).is_empty().then(|| Ty::Named {
+                    name: name.clone(),
+                    args: Vec::new(),
+                })
+            })
+            .collect()
     }
 
     fn lower_type(&mut self, ty: &Type) -> Ty {
@@ -1559,6 +1659,340 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
     ) -> Ty {
         self.lower_type_with_subst_inner(ty, subst, true)
+    }
+
+    fn lower_function_return_type(
+        &mut self,
+        def_id: DefId,
+        ret: &FunctionReturnType,
+        generics: &[GenericInfo],
+        subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        match ret {
+            FunctionReturnType::Type(ty) => self.lower_type_with_subst(ty, subst),
+            FunctionReturnType::OpaqueConstraint { constraint, .. } => {
+                let bounds = self.constraint_bounds(constraint, subst);
+                let args = generics
+                    .iter()
+                    .map(|generic| {
+                        subst
+                            .get(&generic.name)
+                            .cloned()
+                            .unwrap_or_else(|| Ty::Generic(generic.name.clone()))
+                    })
+                    .collect();
+                Ty::OpaqueReturn {
+                    key: OpaqueReturnKey { def_id, args },
+                    bounds,
+                }
+            }
+        }
+    }
+
+    fn lower_source_generic_args(
+        &mut self,
+        kind: &str,
+        name: &str,
+        generics: &[GenericInfo],
+        args: &[Type],
+        outer_subst: &HashMap<String, Ty>,
+        allow_holes: bool,
+        span: crate::span::Span,
+    ) -> Option<Vec<Ty>> {
+        let explicit_count = Self::explicit_generic_count(generics);
+        if args.len() != explicit_count {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "{kind} `{name}` expects {explicit_count} type arguments, got {}",
+                    args.len()
+                ),
+            ));
+            return None;
+        }
+
+        let mut subst = outer_subst.clone();
+        for (generic, arg) in generics
+            .iter()
+            .filter(|generic| !generic.is_hidden)
+            .zip(args.iter())
+        {
+            let concrete = self.lower_type_with_subst_inner(arg, outer_subst, allow_holes);
+            subst.insert(generic.name.clone(), concrete);
+        }
+        if !self.solve_hidden_generics(name, generics, &mut subst, span) {
+            return None;
+        }
+        let result = generics
+            .iter()
+            .map(|generic| {
+                subst
+                    .get(&generic.name)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Generic(generic.name.clone()))
+            })
+            .collect();
+        Some(result)
+    }
+
+    fn solve_hidden_generics(
+        &mut self,
+        owner_name: &str,
+        generics: &[GenericInfo],
+        subst: &mut HashMap<String, Ty>,
+        span: crate::span::Span,
+    ) -> bool {
+        let hidden_names = generics
+            .iter()
+            .filter(|generic| generic.is_hidden)
+            .map(|generic| generic.name.clone())
+            .collect::<HashSet<_>>();
+        if hidden_names.is_empty() {
+            return true;
+        }
+
+        for _ in 0..=hidden_names.len() {
+            let before = subst.clone();
+            for generic in generics {
+                let Some(receiver_ty) = subst.get(&generic.name).cloned() else {
+                    continue;
+                };
+                let Some(constraint) = &generic.constraint else {
+                    continue;
+                };
+                let bounds = self.constraint_bounds(constraint, subst);
+                for capability in bounds.positive {
+                    self.solve_hidden_from_capability(
+                        &receiver_ty,
+                        &capability,
+                        &hidden_names,
+                        subst,
+                    );
+                }
+            }
+            if *subst == before {
+                break;
+            }
+        }
+
+        let mut ok = true;
+        for generic in generics.iter().filter(|generic| generic.is_hidden) {
+            if !subst.contains_key(&generic.name) {
+                ok = false;
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "cannot instantiate `{owner_name}`: could not infer hidden parameter `{}`",
+                        generic.name
+                    ),
+                ));
+            }
+        }
+        ok
+    }
+
+    fn solve_hidden_from_capability(
+        &mut self,
+        receiver_ty: &Ty,
+        capability: &ConstraintRef,
+        hidden_names: &HashSet<String>,
+        subst: &mut HashMap<String, Ty>,
+    ) {
+        let assumptions = self.hidden_solver_assumptions(receiver_ty);
+        match capability_solve::solve_hidden_from_capability(
+            &self.ctx,
+            receiver_ty,
+            capability,
+            hidden_names,
+            &assumptions,
+        ) {
+            capability_solve::HiddenSolveResult::Unique(bindings) => {
+                for (name, ty) in bindings {
+                    if hidden_names.contains(&name) {
+                        subst.insert(name, ty);
+                    }
+                }
+            }
+            capability_solve::HiddenSolveResult::Ambiguous => {
+                self.diagnostics.push(Diagnostic::new(
+                    None,
+                    format!(
+                        "ambiguous hidden parameter inference for capability `{}`",
+                        capability.name
+                    ),
+                ));
+            }
+            capability_solve::HiddenSolveResult::NoSolution => {}
+        }
+    }
+
+    fn hidden_solver_assumptions(
+        &mut self,
+        receiver_ty: &Ty,
+    ) -> Vec<capability_solve::HiddenConstraint> {
+        let mut assumptions = Vec::new();
+        if let Ty::OpaqueReturn { bounds, .. } = receiver_ty {
+            assumptions.extend(bounds.positive.iter().cloned().map(|capability| {
+                capability_solve::HiddenConstraint {
+                    receiver: receiver_ty.clone(),
+                    capability,
+                }
+            }));
+        }
+        let envs = self.generic_env_stack.clone();
+        for env in envs {
+            let env_subst = Self::initial_generic_subst(&env);
+            for generic in &env {
+                let Some(constraint) = &generic.constraint else {
+                    continue;
+                };
+                let bounds = self.constraint_bounds(constraint, &env_subst);
+                for capability in bounds.positive {
+                    assumptions.push(capability_solve::HiddenConstraint {
+                        receiver: Ty::Generic(generic.name.clone()),
+                        capability,
+                    });
+                }
+            }
+        }
+        assumptions
+    }
+
+    fn validate_generic_bindings(&mut self, owner: &str, generics: &[GenericInfo]) {
+        for generic in generics {
+            if let Some(constraint) = &generic.constraint {
+                self.validate_constraint_bindings_in_positive_terms(constraint);
+            }
+        }
+        self.validate_hidden_derivability(owner, generics);
+    }
+
+    fn validate_constraint_bindings_in_positive_terms(&mut self, constraint: &ConstraintExpr) {
+        for term in &constraint.terms {
+            for arg in &term.args {
+                self.validate_constraint_arg_binding_position(arg, term.negated || term.removed);
+            }
+        }
+    }
+
+    fn validate_constraint_arg_binding_position(&mut self, arg: &ConstraintArg, forbidden: bool) {
+        match arg {
+            ConstraintArg::Binding {
+                name, constraint, ..
+            } => {
+                if forbidden {
+                    self.diagnostics.push(Diagnostic::new(
+                        name.span,
+                        format!(
+                            "named constraint binding `{} = _` is not allowed in negative or removed capability constraints",
+                            name.name
+                        ),
+                    ));
+                }
+                if let Some(constraint) = constraint {
+                    self.validate_constraint_bindings_in_positive_terms(constraint);
+                }
+            }
+            ConstraintArg::Type(_) => {}
+        }
+    }
+
+    fn validate_constraint_bindings_forbidden(
+        &mut self,
+        constraint: &ConstraintExpr,
+        context: &str,
+    ) {
+        for term in &constraint.terms {
+            for arg in &term.args {
+                self.validate_constraint_arg_bindings_forbidden(arg, context);
+            }
+        }
+    }
+
+    fn validate_constraint_arg_bindings_forbidden(&mut self, arg: &ConstraintArg, context: &str) {
+        match arg {
+            ConstraintArg::Binding {
+                name, constraint, ..
+            } => {
+                self.diagnostics.push(Diagnostic::new(
+                    name.span,
+                    format!(
+                        "named constraint binding `{} = _` is not allowed in {context}",
+                        name.name
+                    ),
+                ));
+                if let Some(constraint) = constraint {
+                    self.validate_constraint_bindings_forbidden(constraint, context);
+                }
+            }
+            ConstraintArg::Type(_) => {}
+        }
+    }
+
+    fn validate_hidden_derivability(&mut self, owner: &str, generics: &[GenericInfo]) {
+        let hidden_names = generics
+            .iter()
+            .filter(|generic| generic.is_hidden)
+            .map(|generic| generic.name.clone())
+            .collect::<HashSet<_>>();
+        if hidden_names.is_empty() {
+            return;
+        }
+        let mut known = generics
+            .iter()
+            .filter(|generic| !generic.is_hidden)
+            .map(|generic| generic.name.clone())
+            .collect::<HashSet<_>>();
+        let subst = Self::initial_generic_subst(generics);
+        for _ in 0..=hidden_names.len() {
+            let before = known.clone();
+            for generic in generics {
+                if !known.contains(&generic.name) {
+                    continue;
+                }
+                let Some(constraint) = &generic.constraint else {
+                    continue;
+                };
+                let bounds = self.constraint_bounds(constraint, &subst);
+                for capability in bounds.positive {
+                    let Some(interface) = self.interface_sig_by_name(&capability.name) else {
+                        continue;
+                    };
+                    let Some(determined_start) = interface.determined_start else {
+                        continue;
+                    };
+                    let full_args = std::iter::once(Ty::Generic(generic.name.clone()))
+                        .chain(capability.args.into_iter())
+                        .collect::<Vec<_>>();
+                    if full_args.len() != interface.generics.len() {
+                        continue;
+                    }
+                    if !full_args
+                        .iter()
+                        .take(determined_start)
+                        .all(|ty| ty_generic_names(ty).is_subset(&known))
+                    {
+                        continue;
+                    }
+                    for ty in full_args.iter().skip(determined_start) {
+                        known.extend(
+                            ty_generic_names(ty)
+                                .into_iter()
+                                .filter(|name| hidden_names.contains(name)),
+                        );
+                    }
+                }
+            }
+            if known == before {
+                break;
+            }
+        }
+        for hidden in hidden_names.difference(&known) {
+            self.diagnostics.push(Diagnostic::new(
+                None,
+                format!("hidden parameter `{hidden}` in `{owner}` is not determined by explicit parameters"),
+            ));
+        }
     }
 
     fn lower_type_with_subst_inner(
@@ -1598,14 +2032,14 @@ impl TypeChecker {
                     return replacement;
                 } else if let TypeNameKind::Def(def_id) = &name.kind {
                     let def_id = *def_id;
-                    let def = self.resolved.def(def_id).clone();
+                    let def = self.ctx.resolved.def(def_id).clone();
                     if let Some(normalized) =
                         self.lower_std_meta_repr_type(ty.span, def_id, args, subst, allow_holes)
                     {
                         normalized
                     } else if def.kind == DefKind::TypeAlias {
                         self.expand_type_alias(ty.span, def_id, args, subst, allow_holes)
-                    } else if let Some(interface) = self.interfaces.get(&def_id).cloned() {
+                    } else if let Some(interface) = self.ctx.interfaces.get(&def_id).cloned() {
                         let required_args = interface.generics.len().saturating_sub(1);
                         if args.len() != required_args {
                             self.diagnostics.push(Diagnostic::new(
@@ -1634,7 +2068,7 @@ impl TypeChecker {
                                 })
                                 .collect(),
                         }
-                    } else if self.interface_aliases.contains_key(&def_id) {
+                    } else if self.ctx.interface_aliases.contains_key(&def_id) {
                         let alias_args = args
                             .iter()
                             .map(|arg| self.lower_type_with_subst_inner(arg, subst, allow_holes))
@@ -1670,15 +2104,43 @@ impl TypeChecker {
                             args: alias_args,
                         }
                     } else {
-                        let nominal_name = nominal_type_name(&self.resolved, def_id);
+                        let nominal_name = nominal_type_name(&self.ctx.resolved, def_id);
+                        let canonical_args = if let Some(template) =
+                            self.ctx.struct_templates.get(&nominal_name).cloned()
+                        {
+                            self.lower_source_generic_args(
+                                "struct",
+                                &nominal_name,
+                                &template.generics,
+                                args,
+                                subst,
+                                allow_holes,
+                                ty.span,
+                            )
+                        } else if let Some(template) =
+                            self.ctx.enum_templates.get(&nominal_name).cloned()
+                        {
+                            self.lower_source_generic_args(
+                                "enum",
+                                &nominal_name,
+                                &template.generics,
+                                args,
+                                subst,
+                                allow_holes,
+                                ty.span,
+                            )
+                        } else {
+                            Some(
+                                args.iter()
+                                    .map(|arg| {
+                                        self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                    })
+                                    .collect(),
+                            )
+                        };
                         Ty::Named {
                             name: nominal_name,
-                            args: args
-                                .iter()
-                                .map(|arg| {
-                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
-                                })
-                                .collect(),
+                            args: canonical_args.unwrap_or_default(),
                         }
                     }
                 } else if args.is_empty()
@@ -1728,17 +2190,25 @@ impl TypeChecker {
                 ret,
                 params,
                 constraint,
-            } => Ty::Closure {
-                ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
-                params: params
-                    .iter()
-                    .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
-                    .collect(),
-                constraints: constraint
-                    .as_ref()
-                    .map(|constraint| self.constraint_bounds(constraint, subst))
-                    .unwrap_or_default(),
-            },
+            } => {
+                if let Some(constraint) = constraint {
+                    self.validate_constraint_bindings_forbidden(
+                        constraint,
+                        "retained closure types",
+                    );
+                }
+                Ty::Closure {
+                    ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
+                    params: params
+                        .iter()
+                        .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
+                        .collect(),
+                    constraints: constraint
+                        .as_ref()
+                        .map(|constraint| self.constraint_bounds(constraint, subst))
+                        .unwrap_or_default(),
+                }
+            }
         };
         let lowered = self.normalize_meta_repr_markers(&lowered, ty.span);
         if !contains_type_hole(&lowered) {
@@ -1750,6 +2220,28 @@ impl TypeChecker {
 
     fn current_type_subst(&self) -> HashMap<String, Ty> {
         self.type_subst_stack.last().cloned().unwrap_or_default()
+    }
+
+    fn explicit_generic_count(generics: &[GenericInfo]) -> usize {
+        generics.iter().filter(|generic| !generic.is_hidden).count()
+    }
+
+    fn initial_generic_subst(generics: &[GenericInfo]) -> HashMap<String, Ty> {
+        generics
+            .iter()
+            .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
+            .collect()
+    }
+
+    fn with_generic_env<T>(
+        &mut self,
+        generics: &[GenericInfo],
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.generic_env_stack.push(generics.to_vec());
+        let result = f(self);
+        self.generic_env_stack.pop();
+        result
     }
 
     fn resolve_type_holes(&self, ty: &Ty) -> Ty {
@@ -2088,7 +2580,7 @@ impl TypeChecker {
                     .zip(actual_args.iter())
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
                 Ty::GeneratedFuture { .. } => std_id::unify_std_async_future_with_generated(
-                    &self.resolved,
+                    &self.ctx.resolved,
                     &pattern,
                     &actual,
                     subst,
@@ -2290,7 +2782,7 @@ impl TypeChecker {
                 init.and_then(|expr| self.check_consumed_expr(scopes, expr, Some(&ty), false))
             };
             let preserve_generated_future = init.as_ref().is_some_and(|init| {
-                std_id::std_async_future_accepts_generated(&self.resolved, &ty, &init.ty)
+                std_id::std_async_future_accepts_generated(&self.ctx.resolved, &ty, &init.ty)
             });
             if let Some(init) = &init
                 && !preserve_generated_future
@@ -2382,37 +2874,36 @@ impl TypeChecker {
         allow_holes: bool,
     ) -> Ty {
         if self.alias_expansion_stack.contains(&def_id) {
-            let name = self.resolved.def(def_id).name.clone();
+            let name = self.ctx.resolved.def(def_id).name.clone();
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("recursive type alias `{name}`"),
             ));
             return Ty::Unknown;
         }
-        let Some(template) = self.type_aliases.get(&def_id).cloned() else {
-            let name = self.resolved.def(def_id).name.clone();
+        let Some(template) = self.ctx.type_aliases.get(&def_id).cloned() else {
+            let name = self.ctx.resolved.def(def_id).name.clone();
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("unknown type alias `{name}`"),
             ));
             return Ty::Unknown;
         };
-        if template.generics.len() != args.len() {
-            let name = self.resolved.def(def_id).name.clone();
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!(
-                    "type alias `{name}` expects {} type arguments, got {}",
-                    template.generics.len(),
-                    args.len()
-                ),
-            ));
+        let name = self.ctx.resolved.def(def_id).name.clone();
+        let Some(canonical_args) = self.lower_source_generic_args(
+            "type alias",
+            &name,
+            &template.generics,
+            args,
+            outer_subst,
+            allow_holes,
+            span,
+        ) else {
             return Ty::Unknown;
-        }
+        };
         let mut subst = outer_subst.clone();
-        for (generic, arg) in template.generics.iter().zip(args.iter()) {
-            let concrete = self.lower_type_with_subst_inner(arg, outer_subst, allow_holes);
-            subst.insert(generic.clone(), concrete);
+        for (generic, arg) in template.generics.iter().zip(canonical_args) {
+            subst.insert(generic.name.clone(), arg);
         }
         self.alias_expansion_stack.push(def_id);
         let ty = match &template.target {
@@ -2434,9 +2925,9 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         allow_holes: bool,
     ) -> Option<Ty> {
-        let borrowed = if std_id::is_std_meta_type(&self.resolved, def_id, "RefRepr") {
+        let borrowed = if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "RefRepr") {
             true
-        } else if std_id::is_std_meta_type(&self.resolved, def_id, "Repr") {
+        } else if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "Repr") {
             false
         } else {
             return None;
@@ -2471,23 +2962,23 @@ impl TypeChecker {
     fn meta_repr_source_visible_from_current_module(&self, source_ty: &Ty) -> bool {
         match source_ty {
             Ty::Named { name, args: _ } => {
-                let Some(def_id) = self.nominal_type_defs.get(name) else {
+                let Some(def_id) = self.ctx.nominal_type_defs.get(name) else {
                     return false;
                 };
-                let def = self.resolved.def(*def_id);
+                let def = self.ctx.resolved.def(*def_id);
                 if !matches!(def.kind, DefKind::Struct | DefKind::Enum) {
                     return true;
                 }
                 if def.module == self.current_module {
                     return true;
                 }
-                if std_id::is_std_module(&self.resolved, def.module)
-                    && std_id::is_std_module(&self.resolved, self.current_module)
+                if std_id::is_std_module(&self.ctx.resolved, def.module)
+                    && std_id::is_std_module(&self.ctx.resolved, self.current_module)
                 {
                     return true;
                 }
                 matches!(
-                    self.resolved
+                    self.ctx.resolved
                         .lookup_bare(self.current_module, &def.name, std::slice::from_ref(&def.kind)),
                     Ok(Some(visible_def_id)) if visible_def_id == *def_id
                 )
@@ -3302,7 +3793,7 @@ impl TypeChecker {
                 let instance_name = enum_instance_name(name, args);
                 self.deferred_meta_repr_roots.push(instance_ty.clone());
                 self.ensure_struct_instance(&instance_ty);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     let mut field_tys = Vec::new();
                     for (_, ty) in fields {
                         let Some(field_ty) = self.meta_repr_field_ty(
@@ -3327,7 +3818,7 @@ impl TypeChecker {
                     ));
                 }
                 self.ensure_enum_instance(&instance_ty);
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     let mut variants = Vec::new();
                     for variant in enm.variants {
                         let mut payloads = Vec::new();
@@ -3599,15 +4090,13 @@ impl TypeChecker {
     }
 
     fn alloc_synthetic_def(&mut self) -> DefId {
-        let id = DefId(self.next_synthetic_def);
-        self.next_synthetic_def += 1;
-        id
+        self.ctx.alloc_synthetic_def()
     }
 
     fn ensure_enum_instance(&mut self, ty: &Ty) {
         match ty {
             Ty::Named { name, args } => {
-                let Some(template) = self.enum_templates.get(name).cloned() else {
+                let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
                     return;
                 };
                 if args.iter().any(contains_generic) {
@@ -3625,7 +4114,7 @@ impl TypeChecker {
                     return;
                 }
                 let instance_name = enum_instance_name(name, args);
-                if self.checked_enums.contains_key(&instance_name)
+                if self.ctx.checked_enums.contains_key(&instance_name)
                     || self.visiting_enums.contains(&instance_name)
                 {
                     return;
@@ -3633,7 +4122,7 @@ impl TypeChecker {
                 let subst = template
                     .generics
                     .iter()
-                    .cloned()
+                    .map(|generic| generic.name.clone())
                     .zip(args.iter().cloned())
                     .collect::<HashMap<_, _>>();
                 self.visiting_enums.insert(instance_name.clone());
@@ -3653,7 +4142,7 @@ impl TypeChecker {
                     })
                     .collect::<Vec<_>>();
                 self.visiting_enums.remove(&instance_name);
-                self.checked_enums.insert(
+                self.ctx.checked_enums.insert(
                     instance_name.clone(),
                     CheckedEnum {
                         name: instance_name,
@@ -3687,7 +4176,7 @@ impl TypeChecker {
     fn ensure_struct_instance(&mut self, ty: &Ty) {
         match ty {
             Ty::Named { name, args } => {
-                let Some(template) = self.struct_templates.get(name).cloned() else {
+                let Some(template) = self.ctx.struct_templates.get(name).cloned() else {
                     return;
                 };
                 if args.iter().any(contains_generic) {
@@ -3705,7 +4194,7 @@ impl TypeChecker {
                     return;
                 }
                 let instance_name = enum_instance_name(name, args);
-                if self.structs.contains_key(&instance_name)
+                if self.ctx.structs.contains_key(&instance_name)
                     || self.visiting_structs.contains(&instance_name)
                 {
                     return;
@@ -3733,19 +4222,21 @@ impl TypeChecker {
                     args: args.clone(),
                 };
                 if template.is_resource {
-                    self.validate_resource_struct_fields(
-                        &instance_ty,
-                        template.is_resource,
-                        &fields,
-                        None,
-                    );
+                    self.ctx.resource_structs.insert(instance_name.clone());
                 }
-                self.structs.insert(instance_name.clone(), fields);
-                if template.is_resource {
-                    self.resource_structs.insert(instance_name.clone());
-                }
+                self.ctx
+                    .structs
+                    .insert(instance_name.clone(), fields.clone());
+                self.validate_resource_struct_fields(
+                    &instance_ty,
+                    template.is_resource,
+                    &fields,
+                    None,
+                );
                 if template.is_unsafe {
-                    self.unsafe_structs.insert(enum_instance_name(name, args));
+                    self.ctx
+                        .unsafe_structs
+                        .insert(enum_instance_name(name, args));
                 }
             }
             Ty::Pointer { inner, .. } => self.ensure_struct_instance(inner),
@@ -3772,9 +4263,9 @@ impl TypeChecker {
     }
 
     fn function_sig_for(&self, module: ModuleId, name: &str) -> Option<&FunctionSig> {
-        self.functions_by_name.get(name).and_then(|defs| {
+        self.ctx.functions_by_name.get(name).and_then(|defs| {
             defs.iter().find_map(|def_id| {
-                let sig = self.functions_by_def.get(def_id)?;
+                let sig = self.ctx.functions_by_def.get(def_id)?;
                 (sig.module == module).then_some(sig)
             })
         })
@@ -3786,7 +4277,7 @@ impl TypeChecker {
             &[DefKind::Function, DefKind::ExternFunction],
             "function",
         )?;
-        self.functions_by_def.get(&def_id).cloned()
+        self.ctx.functions_by_def.get(&def_id).cloned()
     }
 
     fn lookup_variant_name(
@@ -3795,8 +4286,10 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<(DefId, VariantSig)> {
         match &name.kind {
-            NameRefKind::Def(def_id) if self.resolved.def(*def_id).kind == DefKind::EnumVariant => {
-                let sig = self.variants.get(def_id)?.clone();
+            NameRefKind::Def(def_id)
+                if self.ctx.resolved.def(*def_id).kind == DefKind::EnumVariant =>
+            {
+                let sig = self.ctx.variants.get(def_id)?.clone();
                 Some((*def_id, sig))
             }
             NameRefKind::VariantCandidates(candidates) => {
@@ -3815,7 +4308,13 @@ impl TypeChecker {
     ) -> Option<(DefId, VariantSig)> {
         let candidates = candidates
             .iter()
-            .filter_map(|def_id| self.variants.get(def_id).cloned().map(|sig| (*def_id, sig)))
+            .filter_map(|def_id| {
+                self.ctx
+                    .variants
+                    .get(def_id)
+                    .cloned()
+                    .map(|sig| (*def_id, sig))
+            })
             .collect::<Vec<_>>();
         if let Some(Ty::Named { name, .. }) = expected {
             let matching = candidates
@@ -3886,7 +4385,7 @@ impl TypeChecker {
         let NameRefKind::Def(def_id) = name.kind else {
             return None;
         };
-        let def = self.resolved.def(def_id);
+        let def = self.ctx.resolved.def(def_id);
         if kinds.iter().any(|kind| *kind == def.kind) {
             Some(def_id)
         } else {
@@ -3902,26 +4401,27 @@ impl TypeChecker {
     }
 
     fn interface_sig_by_name(&self, name: &str) -> Option<&InterfaceSig> {
-        self.interface_names
+        self.ctx
+            .interface_names
             .get(name)
-            .and_then(|def_id| self.interfaces.get(def_id))
+            .and_then(|def_id| self.ctx.interfaces.get(def_id))
     }
 
     fn collect_functions(&mut self) {
-        let modules = self.hir_modules.clone();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             self.current_module = module.id;
             for item in &module.items {
                 match &item.kind {
                     ItemKind::Function(function) => {
                         let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
-                            let def = self.resolved.def(*def_id);
+                            let def = self.ctx.resolved.def(*def_id);
                             def.name == function.signature.name.name
                                 && matches!(def.kind, DefKind::Function | DefKind::ExternFunction)
                         }) else {
                             continue;
                         };
-                        let exported = self.resolved.def(def_id).exported;
+                        let exported = self.ctx.resolved.def(def_id).exported;
                         let is_generic = !function.signature.generics.is_empty();
                         self.insert_function_sig(
                             def_id,
@@ -3935,7 +4435,7 @@ impl TypeChecker {
                             exported,
                         );
                         if is_generic {
-                            self.generic_functions.insert(
+                            self.ctx.generic_functions.insert(
                                 def_id,
                                 GenericFunctionTemplate {
                                     function: function.clone(),
@@ -3952,13 +4452,13 @@ impl TypeChecker {
                             } = extern_item
                             {
                                 let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
-                                    let def = self.resolved.def(*def_id);
+                                    let def = self.ctx.resolved.def(*def_id);
                                     def.name == signature.name.name
                                         && def.kind == DefKind::ExternFunction
                                 }) else {
                                     continue;
                                 };
-                                let exported = self.resolved.def(def_id).exported;
+                                let exported = self.ctx.resolved.def(def_id).exported;
                                 self.insert_function_sig(
                                     def_id,
                                     module.id,
@@ -3980,8 +4480,8 @@ impl TypeChecker {
     }
 
     fn collect_receiver_selectors(&mut self) {
-        self.receiver_selectors.clear();
-        let modules = self.hir_modules.clone();
+        self.ctx.receiver_selectors.clear();
+        let modules = self.ctx.hir_modules.clone();
         for module in &modules {
             for item in &module.items {
                 match &item.kind {
@@ -3989,14 +4489,14 @@ impl TypeChecker {
                         let Some(selector) = decl.signature.receiver_selector.as_ref() else {
                             continue;
                         };
-                        let Some(def_id) = self.resolved.local_def(
+                        let Some(def_id) = self.ctx.resolved.local_def(
                             module.id,
                             &decl.signature.name.name,
                             &[DefKind::Interface],
                         ) else {
                             continue;
                         };
-                        let exported = self.resolved.def(def_id).exported;
+                        let exported = self.ctx.resolved.def(def_id).exported;
                         self.collect_receiver_selector_for_signature(
                             module.id,
                             &decl.signature,
@@ -4010,7 +4510,7 @@ impl TypeChecker {
                             continue;
                         };
                         let Some(def_id) = item.def_ids.iter().copied().find(|def_id| {
-                            let def = self.resolved.def(*def_id);
+                            let def = self.ctx.resolved.def(*def_id);
                             def.name == function.signature.name.name
                                 && matches!(def.kind, DefKind::Function | DefKind::ExternFunction)
                         }) else {
@@ -4023,7 +4523,7 @@ impl TypeChecker {
                             ));
                             continue;
                         }
-                        let exported = self.resolved.def(def_id).exported;
+                        let exported = self.ctx.resolved.def(def_id).exported;
                         self.collect_receiver_selector_for_signature(
                             module.id,
                             &function.signature,
@@ -4088,7 +4588,7 @@ impl TypeChecker {
         } else {
             0
         };
-        self.receiver_selectors.push(ReceiverSelectorSig {
+        self.ctx.receiver_selectors.push(ReceiverSelectorSig {
             selector: selector.name.name.clone(),
             module,
             exported,
@@ -4099,7 +4599,7 @@ impl TypeChecker {
     }
 
     fn validate_receiver_selector_conflicts(&mut self) {
-        let selectors = self.receiver_selectors.clone();
+        let selectors = self.ctx.receiver_selectors.clone();
         for (idx, left) in selectors.iter().enumerate() {
             for right in selectors.iter().skip(idx + 1) {
                 if left.module != right.module || left.selector != right.selector {
@@ -4146,11 +4646,12 @@ impl TypeChecker {
     fn receiver_selector_pattern_ty(&mut self, selector: &ReceiverSelectorSig) -> Option<Ty> {
         match selector.callable {
             ReceiverSelectorCallable::Function(def_id) => self
+                .ctx
                 .functions_by_def
                 .get(&def_id)
                 .and_then(|sig| sig.params.get(selector.receiver_index).cloned()),
             ReceiverSelectorCallable::Interface(def_id) => {
-                let interface = self.interfaces.get(&def_id).cloned()?;
+                let interface = self.ctx.interfaces.get(&def_id).cloned()?;
                 let subst = interface
                     .generics
                     .iter()
@@ -4165,15 +4666,14 @@ impl TypeChecker {
         }
     }
 
-    fn collect_impls(&mut self, check_concrete_bodies: bool) {
-        let mut modules = self.hir_modules.clone();
+    fn collect_impl_signatures(&mut self) {
+        let mut modules = self.ctx.hir_modules.clone();
         modules.sort_by_key(|module| {
             (
-                !std_id::is_std_module(&self.resolved, module.id),
+                !std_id::is_std_module(&self.ctx.resolved, module.id),
                 module.id.0,
             )
         });
-        let mut pending_bodies = Vec::new();
         for module in &modules {
             for item in &module.items {
                 let ItemKind::Impl(decl) = &item.kind else {
@@ -4189,7 +4689,7 @@ impl TypeChecker {
                     ));
                     continue;
                 };
-                let Some(interface) = self.interfaces.get(&interface_def).cloned() else {
+                let Some(interface) = self.ctx.interfaces.get(&interface_def).cloned() else {
                     continue;
                 };
                 if interface.is_unsafe && !decl.is_unsafe {
@@ -4227,20 +4727,13 @@ impl TypeChecker {
                 else {
                     continue;
                 };
-                if check_concrete_bodies
-                    && self.resource_handle_message_impl_forbidden(decl.name.span, &analysis)
-                {
+                if self.resource_handle_message_impl_forbidden(decl.name.span, &analysis) {
                     continue;
                 }
-                if check_concrete_bodies
-                    && self.generic_marker_impl_overlaps_existing(item.span, &analysis)
-                {
+                if self.generic_marker_impl_overlaps_existing(item.span, &analysis) {
                     continue;
                 }
                 if analysis.generics.is_empty() {
-                    if !check_concrete_bodies {
-                        continue;
-                    }
                     if self
                         .find_impl_by_full_args(
                             &analysis.interface_name,
@@ -4267,14 +4760,15 @@ impl TypeChecker {
                         analysis.ret,
                         analysis.params,
                     ) {
-                        pending_bodies.push(pending);
+                        self.queue_impl_body(pending, HashMap::new());
                     }
                 } else {
-                    self.generic_impls.push(GenericImplTemplate {
+                    self.ctx.generic_impls.push(GenericImplTemplate {
                         module: module.id,
                         item_span: item.span,
                         interface_name: analysis.interface_name,
                         generics: analysis.generics,
+                        generic_constraints: analysis.generic_constraints,
                         interface_args: analysis.interface_args,
                         receiver_ty: analysis.receiver_ty,
                         ret: analysis.ret,
@@ -4283,9 +4777,6 @@ impl TypeChecker {
                     });
                 }
             }
-        }
-        for pending in &pending_bodies {
-            self.check_registered_impl_body(pending, &HashMap::new());
         }
     }
 
@@ -4301,14 +4792,14 @@ impl TypeChecker {
         }
         let current_domain =
             self.compiler_marker_domain_for_impl(&analysis.generics, analysis.receiver_ty.as_ref());
-        let templates = self.generic_impls.clone();
+        let templates = self.ctx.generic_impls.clone();
         for template in &templates {
             if template.interface_name != analysis.interface_name {
                 continue;
             }
             let template_domain = self
                 .compiler_marker_domain_for_impl(&template.generics, template.receiver_ty.as_ref());
-            if marker_impl_domains_disjoint(
+            if capability::marker_impl_domains_disjoint(
                 current_domain,
                 analysis.receiver_ty.as_ref(),
                 template_domain,
@@ -4316,7 +4807,7 @@ impl TypeChecker {
             ) {
                 continue;
             }
-            if marker_impl_patterns_overlap(
+            if capability::marker_impl_patterns_overlap(
                 &template.interface_args,
                 template.receiver_ty.as_ref(),
                 &analysis.interface_args,
@@ -4333,11 +4824,11 @@ impl TypeChecker {
                 return true;
             }
         }
-        for existing in &self.impls {
+        for existing in &self.ctx.impls {
             if existing.interface_name != analysis.interface_name {
                 continue;
             }
-            if marker_impl_domains_disjoint(
+            if capability::marker_impl_domains_disjoint(
                 current_domain,
                 analysis.receiver_ty.as_ref(),
                 None,
@@ -4345,7 +4836,7 @@ impl TypeChecker {
             ) {
                 continue;
             }
-            if marker_impl_patterns_overlap(
+            if capability::marker_impl_patterns_overlap(
                 &existing.interface_args,
                 existing.receiver_ty.as_ref(),
                 &analysis.interface_args,
@@ -4463,9 +4954,23 @@ impl TypeChecker {
             .map(|param| GenericInfo {
                 name: param.name.name.clone(),
                 is_resource: param.is_resource,
+                is_hidden: param.is_hidden,
                 constraint: param.constraint.clone(),
             })
             .collect::<Vec<_>>();
+        self.validate_generic_bindings(&format!("impl {}", interface.name), &generics);
+        self.with_generic_env(&generics, |checker| {
+            checker.analyze_impl_signature_with_generics(span, decl, interface, generics.clone())
+        })
+    }
+
+    fn analyze_impl_signature_with_generics(
+        &mut self,
+        span: crate::span::Span,
+        decl: &ImplDecl,
+        interface: &InterfaceSig,
+        generics: Vec<GenericInfo>,
+    ) -> Option<ImplAnalysis> {
         let impl_subst = generics
             .iter()
             .map(|param| (param.name.clone(), Ty::Generic(param.name.clone())))
@@ -4571,9 +5076,22 @@ impl TypeChecker {
             let placeholder = interface_placeholders.get(name)?;
             inferred.get(placeholder).cloned()
         });
+        let generic_constraints = generics
+            .iter()
+            .map(|generic| GenericConstraintBounds {
+                name: generic.name.clone(),
+                is_resource: generic.is_resource,
+                bounds: generic
+                    .constraint
+                    .as_ref()
+                    .map(|constraint| self.constraint_bounds(constraint, &impl_subst))
+                    .unwrap_or_default(),
+            })
+            .collect();
         Some(ImplAnalysis {
             interface_name: interface.name.clone(),
             generics,
+            generic_constraints,
             interface_args,
             receiver_ty,
             ret,
@@ -4652,7 +5170,7 @@ impl TypeChecker {
             generics: Vec::new(),
             exported: false,
         };
-        self.functions_by_def.insert(function_def, sig.clone());
+        self.ctx.functions_by_def.insert(function_def, sig.clone());
         self.ensure_struct_instance(&ret);
         self.ensure_enum_instance(&ret);
         for param in &params_ty {
@@ -4667,7 +5185,7 @@ impl TypeChecker {
             ret,
             params: params_ty,
         };
-        self.impls.push(implementation.clone());
+        self.ctx.impls.push(implementation.clone());
         Some(PendingImplBody {
             decl: decl.clone(),
             module,
@@ -4718,12 +5236,13 @@ impl TypeChecker {
                 name: pending.function_name.clone(),
                 is_unsafe: false,
                 is_async: false,
+                async_facts: body.async_facts,
                 abi: None,
                 noescape: false,
                 exported: false,
                 ret: pending.function_sig.ret.clone(),
                 params,
-                body: Some(body),
+                body: Some(body.block),
             });
         }
     }
@@ -4775,16 +5294,43 @@ impl TypeChecker {
             .map(|param| GenericInfo {
                 name: param.name.name.clone(),
                 is_resource: param.is_resource,
+                is_hidden: param.is_hidden,
                 constraint: param.constraint.clone(),
             })
             .collect::<Vec<_>>();
+        self.validate_generic_bindings(&signature.name.name, &generics);
+        if let FunctionReturnType::OpaqueConstraint {
+            marker_span,
+            constraint,
+        } = &signature.ret
+        {
+            self.validate_constraint_bindings_forbidden(constraint, "opaque return constraints");
+            if !has_body {
+                self.diagnostics.push(Diagnostic::new(
+                    *marker_span,
+                    "opaque return type requires a function body",
+                ));
+            }
+            if abi.is_some() {
+                self.diagnostics.push(Diagnostic::new(
+                    *marker_span,
+                    "opaque return type cannot be used on an extern function",
+                ));
+            }
+            if exported && abi.as_deref() == Some("C") {
+                self.diagnostics.push(Diagnostic::new(
+                    *marker_span,
+                    "opaque return type cannot be used on an exported C ABI function",
+                ));
+            }
+        }
         let subst = generics
             .iter()
             .map(|param| (param.name.clone(), Ty::Generic(param.name.clone())))
             .collect::<HashMap<_, _>>();
         let previous_defer_meta_repr_expansion =
             std::mem::replace(&mut self.defer_meta_repr_expansion, true);
-        let sig = FunctionSig {
+        let sig = self.with_generic_env(&generics, |checker| FunctionSig {
             def_id,
             module,
             name: signature.name.name.clone(),
@@ -4793,37 +5339,43 @@ impl TypeChecker {
             abi,
             noescape,
             has_body,
-            ret: self.lower_type_with_subst(&signature.ret, &subst),
+            ret: checker.lower_function_return_type(def_id, &signature.ret, &generics, &subst),
             params: signature
                 .params
                 .iter()
                 .map(|param| {
-                    let ty = self.lower_type_with_subst(&param.ty, &subst);
-                    self.reject_invalid_plain_value_type(&ty, param.ty.span, "function parameter");
+                    let ty = checker.lower_type_with_subst(&param.ty, &subst);
+                    checker.reject_invalid_plain_value_type(
+                        &ty,
+                        param.ty.span,
+                        "function parameter",
+                    );
                     ty
                 })
                 .collect(),
             generics: generics.clone(),
             exported,
-        };
+        });
         self.defer_meta_repr_expansion = previous_defer_meta_repr_expansion;
-        self.reject_invalid_return_type(&sig.ret, signature.ret.span);
-        self.functions_by_name
+        self.reject_invalid_return_type(&sig.ret, signature.ret.span());
+        self.ctx
+            .functions_by_name
             .entry(signature.name.name.clone())
             .or_default()
             .push(def_id);
-        self.functions_by_def.insert(def_id, sig);
+        self.ctx.functions_by_def.insert(def_id, sig);
     }
 
     fn normalize_function_sigs(&mut self) {
         let mut normalized = HashMap::new();
         let sigs = self
+            .ctx
             .functions_by_def
             .iter()
             .map(|(def_id, sig)| (*def_id, sig.clone()))
             .collect::<Vec<_>>();
         for (def_id, mut sig) in sigs {
-            let span = self.resolved.defs.get(def_id.0).map(|def| def.span);
+            let span = self.ctx.resolved.defs.get(def_id.0).map(|def| def.span);
             sig.ret = self.normalize_meta_repr_markers(&sig.ret, span);
             sig.params = sig
                 .params
@@ -4832,48 +5384,54 @@ impl TypeChecker {
                 .collect();
             normalized.insert(def_id, sig);
         }
-        self.functions_by_def = normalized;
+        self.ctx.functions_by_def = normalized;
     }
 
     fn validate_c_abi_functions(&mut self) {
         let mut by_symbol: HashMap<String, Vec<FunctionSig>> = HashMap::new();
-        for sig in self.functions_by_def.values() {
+        let sigs = self
+            .ctx
+            .functions_by_def
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for sig in &sigs {
             if sig.abi.as_deref() != Some("C") {
                 continue;
             }
             if !sig.has_body && !sig.is_unsafe {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "imported C function declarations must be in `unsafe extern \"C\"` blocks",
                 ));
             }
             if sig.is_async {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "`extern \"C\"` functions cannot be async",
                 ));
             }
             if sig.has_body && !sig.exported {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "`extern \"C\"` function bodies must be declared with `export`",
                 ));
             }
             if !sig.generics.is_empty() {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "`extern \"C\"` functions cannot be generic",
                 ));
             }
             if type_contains_closure(&sig.ret) || sig.params.iter().any(type_contains_closure) {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "closure types are not allowed in extern C declarations",
                 ));
             }
             if sig.params.iter().any(Ty::is_erased_value) {
                 self.diagnostics.push(Diagnostic::new(
-                    self.resolved.def(sig.def_id).span,
+                    self.ctx.resolved.def(sig.def_id).span,
                     "`extern \"C\"` parameters cannot have type `void` by value",
                 ));
             }
@@ -4891,7 +5449,7 @@ impl TypeChecker {
             for sig in sigs.iter().skip(1) {
                 if sig.ret != first.ret || sig.params != first.params {
                     self.diagnostics.push(Diagnostic::new(
-                        self.resolved.def(sig.def_id).span,
+                        self.ctx.resolved.def(sig.def_id).span,
                         format!("conflicting `extern \"C\"` declarations for symbol `{symbol}`"),
                     ));
                 }
@@ -4900,7 +5458,7 @@ impl TypeChecker {
             if definitions.len() > 1 {
                 for sig in definitions.iter().skip(1) {
                     self.diagnostics.push(Diagnostic::new(
-                        self.resolved.def(sig.def_id).span,
+                        self.ctx.resolved.def(sig.def_id).span,
                         format!("multiple definitions of C ABI symbol `{symbol}`"),
                     ));
                 }
@@ -4944,16 +5502,20 @@ impl TypeChecker {
                 })
             })
             .collect::<Vec<_>>();
-        let body = function
+        let checked_body = function
             .body
             .as_ref()
             .and_then(|body| self.check_function_body(&sig, &body_params, body));
+        let (body, async_facts) = checked_body
+            .map(|checked| (Some(checked.block), checked.async_facts))
+            .unwrap_or((None, None));
 
         Some(CheckedFunction {
             def_id: sig.def_id,
             name: sig.name,
             is_unsafe: sig.is_unsafe,
             is_async: sig.is_async,
+            async_facts,
             abi: sig.abi,
             noescape: sig.noescape,
             exported,
@@ -4968,8 +5530,16 @@ impl TypeChecker {
         sig: &FunctionSig,
         params: &[(LocalId, String, Ty, BindingMutability)],
         body: &Block,
-    ) -> Option<TBlock> {
+    ) -> Option<CheckedFunctionBody> {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
+        let previous_opaque_return = std::mem::replace(
+            &mut self.current_opaque_return,
+            matches!(sig.ret, Ty::OpaqueReturn { .. }).then(|| OpaqueReturnState {
+                opaque_ty: sig.ret.clone(),
+                concrete_ty: None,
+                saw_recursive_concrete_ty: false,
+            }),
+        );
         let previous_control_contexts = std::mem::take(&mut self.control_contexts);
         let previous_unsafe_depth = std::mem::replace(&mut self.unsafe_depth, 0);
         let previous_async_depth = std::mem::replace(
@@ -5025,22 +5595,52 @@ impl TypeChecker {
                 ),
             ));
         }
+        if matches!(sig.ret, Ty::OpaqueReturn { .. })
+            && self.current_opaque_return.as_ref().is_some_and(|state| {
+                state.concrete_ty.is_none() && !state.saw_recursive_concrete_ty
+            })
+            && checked
+                .as_ref()
+                .is_some_and(|checked| !checked.flow.can_fallthrough)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                body.span,
+                format!(
+                    "opaque return function `{}` does not return a concrete value",
+                    sig.name
+                ),
+            ));
+        }
+        if let Some(state) = self.current_opaque_return.as_ref()
+            && let Some(concrete_ty) = &state.concrete_ty
+            && let Ty::OpaqueReturn { key, .. } = &state.opaque_ty
+        {
+            self.opaque_returns.insert(key.clone(), concrete_ty.clone());
+        }
+        let mut async_facts = None;
         if sig.is_async
             && let Some(checked) = checked.as_ref()
         {
             self.check_async_frame_safety(&checked.block, params);
+            async_facts = Some(self.async_facts_for_block(&checked.block));
             let (cancel_safe, abortable) = self.async_block_capabilities(&checked.block);
-            self.async_function_cancel_safety
+            self.ctx
+                .async_function_cancel_safety
                 .insert(sig.def_id, cancel_safe);
-            self.async_function_abortability
+            self.ctx
+                .async_function_abortability
                 .insert(sig.def_id, abortable);
         }
         self.current_return_ty = previous_return_ty;
+        self.current_opaque_return = previous_opaque_return;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
         self.current_async_depth = previous_async_depth;
         self.resource_generic_stack.pop();
-        checked.map(|checked| checked.block)
+        checked.map(|checked| CheckedFunctionBody {
+            block: checked.block,
+            async_facts,
+        })
     }
 
     fn async_block_capabilities(&mut self, block: &TBlock) -> (bool, bool) {
@@ -5213,6 +5813,716 @@ impl TypeChecker {
                 let live_after = HashSet::new();
                 self.async_validate_awaits_in_expr(expr, &live_after, &infos);
             }
+        }
+    }
+
+    fn async_facts_for_block(&mut self, block: &TBlock) -> AsyncFacts {
+        let mut locals = Vec::<(LocalId, Ty)>::new();
+        let mut seen = HashSet::<LocalId>::new();
+        let mut live_across_await = HashSet::<LocalId>::new();
+        self.collect_async_frame_locals_block(block, &mut locals, &mut seen);
+        self.async_live_frame_locals_before_block(block, HashSet::new(), &mut live_across_await);
+        let frame_locals = locals
+            .into_iter()
+            .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
+            .map(|(id, ty)| AsyncFrameLocal {
+                id,
+                ty,
+                field: format!("local{}", id.0),
+                heap: false,
+            })
+            .collect();
+        let mut await_output_tys = Vec::new();
+        self.collect_async_await_output_tys_block(block, &mut await_output_tys);
+        let mut defer_arg_tys = Vec::new();
+        self.collect_async_defer_args_block(block, &mut defer_arg_tys);
+        let defer_args = defer_arg_tys
+            .into_iter()
+            .enumerate()
+            .map(|(idx, ty)| AsyncDeferArg {
+                ty,
+                field: format!("defer_arg{}", idx + 1),
+            })
+            .collect();
+        AsyncFacts {
+            frame_locals,
+            live_across_await,
+            await_output_tys,
+            defer_args,
+        }
+    }
+
+    fn async_facts_for_closure_body(&mut self, body: &TClosureBody) -> AsyncFacts {
+        match body {
+            TClosureBody::Block(block) => self.async_facts_for_block(block),
+            TClosureBody::Expr(expr) => {
+                let mut locals = Vec::<(LocalId, Ty)>::new();
+                let mut seen = HashSet::<LocalId>::new();
+                let mut live_across_await = HashSet::<LocalId>::new();
+                self.collect_async_frame_locals_expr(expr, &mut locals, &mut seen);
+                self.async_collect_live_awaits_in_expr(
+                    expr,
+                    &HashSet::new(),
+                    &mut live_across_await,
+                );
+                let frame_locals = locals
+                    .into_iter()
+                    .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
+                    .map(|(id, ty)| AsyncFrameLocal {
+                        id,
+                        ty,
+                        field: format!("local{}", id.0),
+                        heap: false,
+                    })
+                    .collect();
+                let mut await_output_tys = Vec::new();
+                self.collect_async_await_output_tys_expr(expr, &mut await_output_tys);
+                let mut defer_arg_tys = Vec::new();
+                self.collect_async_defer_args_expr(expr, &mut defer_arg_tys);
+                let defer_args = defer_arg_tys
+                    .into_iter()
+                    .enumerate()
+                    .map(|(idx, ty)| AsyncDeferArg {
+                        ty,
+                        field: format!("defer_arg{}", idx + 1),
+                    })
+                    .collect();
+                AsyncFacts {
+                    frame_locals,
+                    live_across_await,
+                    await_output_tys,
+                    defer_args,
+                }
+            }
+        }
+    }
+
+    fn collect_async_frame_locals_block(
+        &self,
+        block: &TBlock,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        for stmt in &block.statements {
+            self.collect_async_frame_locals_stmt(stmt, out, seen);
+        }
+    }
+
+    fn collect_async_frame_locals_stmt(
+        &self,
+        stmt: &TStmt,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_frame_locals_block(block, out, seen);
+            }
+            TStmtKind::VarDecl {
+                ty, local_id, init, ..
+            } => {
+                if !ty.is_erased_value() && seen.insert(*local_id) {
+                    out.push((*local_id, ty.clone()));
+                }
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_expr(init, out, seen);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_frame_locals_expr(target, out, seen);
+                self.collect_async_frame_locals_expr(value, out, seen);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_frame_locals_expr(cond, out, seen);
+                self.collect_async_frame_locals_block(then_block, out, seen);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_frame_locals_stmt(else_branch, out, seen);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_for_init(init, out, seen);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_frame_locals_expr(cond, out, seen);
+                }
+                if let Some(step) = step {
+                    self.collect_async_frame_locals_for_init(step, out, seen);
+                }
+                self.collect_async_frame_locals_block(body, out, seen);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_frame_locals_expr(expr, out, seen);
+                for case in cases {
+                    let mut bindings = Vec::new();
+                    case.pattern.collect_bindings(&mut bindings);
+                    for (local_id, _, _, ty) in bindings {
+                        if !ty.is_erased_value() && seen.insert(*local_id) {
+                            out.push((*local_id, ty.clone()));
+                        }
+                    }
+                    for stmt in &case.statements {
+                        self.collect_async_frame_locals_stmt(stmt, out, seen);
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_frame_locals_stmt(stmt, out, seen);
+                }
+            }
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
+                self.collect_async_frame_locals_expr(expr, out, seen);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_frame_locals_for_init(
+        &self,
+        init: &TForInit,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match init {
+            TForInit::VarDecl {
+                ty, local_id, init, ..
+            } => {
+                if !ty.is_erased_value() && seen.insert(*local_id) {
+                    out.push((*local_id, ty.clone()));
+                }
+                if let Some(init) = init {
+                    self.collect_async_frame_locals_expr(init, out, seen);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_frame_locals_expr(target, out, seen);
+                self.collect_async_frame_locals_expr(value, out, seen);
+            }
+            TForInit::Expr(expr) => self.collect_async_frame_locals_expr(expr, out, seen),
+        }
+    }
+
+    fn collect_async_frame_locals_expr(
+        &self,
+        expr: &TExpr,
+        out: &mut Vec<(LocalId, Ty)>,
+        seen: &mut HashSet<LocalId>,
+    ) {
+        match &expr.kind {
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_frame_locals_stmt(stmt, out, seen);
+                }
+                if let Some(value) = value {
+                    self.collect_async_frame_locals_expr(value, out, seen);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_frame_locals_expr(child, out, seen);
+            }),
+        }
+    }
+
+    fn async_live_frame_locals_before_block(
+        &self,
+        block: &TBlock,
+        mut live: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        for stmt in block.statements.iter().rev() {
+            live = self.async_live_frame_locals_before_stmt(stmt, live, out);
+        }
+        live
+    }
+
+    fn async_live_frame_locals_before_stmt(
+        &self,
+        stmt: &TStmt,
+        live_after: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        match &stmt.kind {
+            TStmtKind::Block(block) => {
+                self.async_live_frame_locals_before_block(block, live_after, out)
+            }
+            TStmtKind::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_collect_live_awaits_in_expr(init, &live, out);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TStmtKind::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(value, &live, out);
+                self.async_collect_live_awaits_in_expr(target, &live, out);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                let then_live =
+                    self.async_live_frame_locals_before_block(then_block, live_after.clone(), out);
+                let else_live = else_branch
+                    .as_ref()
+                    .map(|stmt| {
+                        self.async_live_frame_locals_before_stmt(stmt, live_after.clone(), out)
+                    })
+                    .unwrap_or_else(|| live_after.clone());
+                let mut live = then_live;
+                live.extend(else_live);
+                self.async_collect_live_awaits_in_expr(cond, &live, out);
+                live.extend(Self::async_expr_used_locals(cond));
+                live
+            }
+            TStmtKind::While { cond, body } => {
+                let mut loop_live = live_after.clone();
+                loop_live.extend(Self::async_expr_used_locals(cond));
+                for _ in 0..2 {
+                    let body_live =
+                        self.async_live_frame_locals_before_block(body, loop_live.clone(), out);
+                    let old_len = loop_live.len();
+                    loop_live.extend(body_live);
+                    loop_live.extend(Self::async_expr_used_locals(cond));
+                    if loop_live.len() == old_len {
+                        break;
+                    }
+                }
+                self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
+                loop_live
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                let mut live = live_after;
+                if let Some(step) = step {
+                    live = self.async_live_frame_locals_before_for_init(step, live, out);
+                }
+                if let Some(cond) = cond {
+                    self.async_collect_live_awaits_in_expr(cond, &live, out);
+                    live.extend(Self::async_expr_used_locals(cond));
+                }
+                live = self.async_live_frame_locals_before_block(body, live, out);
+                if let Some(init) = init {
+                    live = self.async_live_frame_locals_before_for_init(init, live, out);
+                }
+                live
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                let mut live = HashSet::new();
+                for case in cases {
+                    let mut case_live = live_after.clone();
+                    for stmt in case.statements.iter().rev() {
+                        case_live = self.async_live_frame_locals_before_stmt(stmt, case_live, out);
+                    }
+                    let mut bindings = Vec::new();
+                    case.pattern.collect_bindings(&mut bindings);
+                    for (local_id, _, _, _) in bindings {
+                        case_live.remove(local_id);
+                    }
+                    live.extend(case_live);
+                }
+                let mut default_live = live_after;
+                for stmt in default.iter().rev() {
+                    default_live =
+                        self.async_live_frame_locals_before_stmt(stmt, default_live, out);
+                }
+                live.extend(default_live);
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Return(Some(expr)) => {
+                let live = HashSet::new();
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                Self::async_expr_used_locals(expr)
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => HashSet::new(),
+        }
+    }
+
+    fn async_live_frame_locals_before_for_init(
+        &self,
+        init: &TForInit,
+        live_after: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        match init {
+            TForInit::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.async_collect_live_awaits_in_expr(init, &live, out);
+                    live.extend(Self::async_expr_used_locals(init));
+                }
+                live
+            }
+            TForInit::Assign { target, value } => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(value, &live, out);
+                self.async_collect_live_awaits_in_expr(target, &live, out);
+                live.extend(Self::async_expr_used_locals(value));
+                live.extend(Self::async_expr_used_locals(target));
+                live
+            }
+            TForInit::Expr(expr) => {
+                let mut live = live_after;
+                self.async_collect_live_awaits_in_expr(expr, &live, out);
+                live.extend(Self::async_expr_used_locals(expr));
+                live
+            }
+        }
+    }
+
+    fn async_collect_live_awaits_in_expr(
+        &self,
+        expr: &TExpr,
+        live_after: &HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) {
+        let mut live_after = live_after.clone();
+        live_after.extend(Self::async_expr_used_locals(expr));
+        self.async_collect_live_awaits_in_expr_inner(expr, &live_after, out);
+    }
+
+    fn async_collect_live_awaits_in_expr_inner(
+        &self,
+        expr: &TExpr,
+        live_after: &HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                let mut live = live_after.clone();
+                live.extend(Self::async_expr_used_locals(future));
+                out.extend(live);
+                self.async_collect_live_awaits_in_expr_inner(future, live_after, out);
+            }
+            TExprKind::AsyncSelect { arms, .. } => {
+                let mut live = live_after.clone();
+                for arm in arms {
+                    live.extend(Self::async_expr_used_locals(&arm.future));
+                    let mut body_live = Self::async_expr_used_locals(&arm.body);
+                    body_live.remove(&arm.binding_local);
+                    live.extend(body_live);
+                }
+                out.extend(live);
+                for arm in arms {
+                    self.async_collect_live_awaits_in_expr_inner(&arm.future, live_after, out);
+                    self.async_collect_live_awaits_in_expr_inner(&arm.body, live_after, out);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                let mut live = live_after.clone();
+                if let Some(value) = value {
+                    self.async_collect_live_awaits_in_expr_inner(value, &live, out);
+                    live.extend(Self::async_expr_used_locals(value));
+                }
+                for stmt in statements.iter().rev() {
+                    live = self.async_live_frame_locals_before_stmt(stmt, live, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.async_collect_live_awaits_in_expr_inner(child, live_after, out);
+            }),
+        }
+    }
+
+    fn collect_async_defer_args_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
+        for stmt in &block.statements {
+            self.collect_async_defer_args_stmt(stmt, out);
+        }
+    }
+
+    fn collect_async_defer_args_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_defer_args_block(block, out);
+            }
+            TStmtKind::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_expr(init, out);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_defer_args_expr(target, out);
+                self.collect_async_defer_args_expr(value, out);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_defer_args_expr(cond, out);
+                self.collect_async_defer_args_block(then_block, out);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_defer_args_stmt(else_branch, out);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_for_init(init, out);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_defer_args_expr(cond, out);
+                }
+                if let Some(step) = step {
+                    self.collect_async_defer_args_for_init(step, out);
+                }
+                self.collect_async_defer_args_block(body, out);
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_defer_args_expr(expr, out);
+                let mut grouped = BTreeMap::<usize, Vec<&TCase>>::new();
+                for case in cases {
+                    grouped.entry(case.variant_index).or_default().push(case);
+                }
+                for (_, cases) in grouped {
+                    for case in cases {
+                        for stmt in &case.statements {
+                            self.collect_async_defer_args_stmt(stmt, out);
+                        }
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_defer_args_stmt(stmt, out);
+                }
+            }
+            TStmtKind::Defer(expr) => {
+                if let TExprKind::Call { callee, args, .. } = &expr.kind {
+                    self.collect_async_defer_args_expr(callee, out);
+                    for arg in args {
+                        self.collect_async_defer_args_expr(arg, out);
+                        if !arg.ty.is_erased_value() {
+                            out.push(arg.ty.clone());
+                        }
+                    }
+                } else {
+                    self.collect_async_defer_args_expr(expr, out);
+                }
+            }
+            TStmtKind::ResourceCleanup(expr) => {
+                self.collect_async_defer_args_expr(expr, out);
+            }
+            TStmtKind::Return(Some(expr)) | TStmtKind::Expr(expr) => {
+                self.collect_async_defer_args_expr(expr, out);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_defer_args_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
+        match init {
+            TForInit::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_defer_args_expr(init, out);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_defer_args_expr(target, out);
+                self.collect_async_defer_args_expr(value, out);
+            }
+            TForInit::Expr(expr) => self.collect_async_defer_args_expr(expr, out),
+        }
+    }
+
+    fn collect_async_defer_args_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
+        match &expr.kind {
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_defer_args_stmt(stmt, out);
+                }
+                if let Some(value) = value {
+                    self.collect_async_defer_args_expr(value, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_defer_args_expr(child, out);
+            }),
+        }
+    }
+
+    fn collect_async_await_output_tys_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
+        for stmt in &block.statements {
+            self.collect_async_await_output_tys_stmt(stmt, out);
+        }
+    }
+
+    fn collect_async_await_output_tys_stmt(&self, stmt: &TStmt, out: &mut Vec<Ty>) {
+        match &stmt.kind {
+            TStmtKind::Block(block) | TStmtKind::While { body: block, .. } => {
+                self.collect_async_await_output_tys_block(block, out);
+            }
+            TStmtKind::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_expr(init, out);
+                }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.collect_async_await_output_tys_expr(target, out);
+                self.collect_async_await_output_tys_expr(value, out);
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                self.collect_async_await_output_tys_expr(cond, out);
+                self.collect_async_await_output_tys_block(then_block, out);
+                if let Some(else_branch) = else_branch {
+                    self.collect_async_await_output_tys_stmt(else_branch, out);
+                }
+            }
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_for_init(init, out);
+                }
+                if let Some(cond) = cond {
+                    self.collect_async_await_output_tys_expr(cond, out);
+                }
+                self.collect_async_await_output_tys_block(body, out);
+                if let Some(step) = step {
+                    self.collect_async_await_output_tys_for_init(step, out);
+                }
+            }
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => {
+                self.collect_async_await_output_tys_expr(expr, out);
+                let mut grouped = BTreeMap::<usize, Vec<&TCase>>::new();
+                for case in cases {
+                    grouped.entry(case.variant_index).or_default().push(case);
+                }
+                for (_, cases) in grouped {
+                    for case in cases {
+                        for stmt in &case.statements {
+                            self.collect_async_await_output_tys_stmt(stmt, out);
+                        }
+                    }
+                }
+                for stmt in default {
+                    self.collect_async_await_output_tys_stmt(stmt, out);
+                }
+            }
+            TStmtKind::Defer(expr)
+            | TStmtKind::ResourceCleanup(expr)
+            | TStmtKind::Return(Some(expr))
+            | TStmtKind::Expr(expr) => {
+                self.collect_async_await_output_tys_expr(expr, out);
+            }
+            TStmtKind::Return(None)
+            | TStmtKind::Break
+            | TStmtKind::Continue
+            | TStmtKind::Unsupported => {}
+        }
+    }
+
+    fn collect_async_await_output_tys_for_init(&self, init: &TForInit, out: &mut Vec<Ty>) {
+        match init {
+            TForInit::VarDecl { init, .. } => {
+                if let Some(init) = init {
+                    self.collect_async_await_output_tys_expr(init, out);
+                }
+            }
+            TForInit::Assign { target, value } => {
+                self.collect_async_await_output_tys_expr(target, out);
+                self.collect_async_await_output_tys_expr(value, out);
+            }
+            TForInit::Expr(expr) => self.collect_async_await_output_tys_expr(expr, out),
+        }
+    }
+
+    fn collect_async_await_output_tys_expr(&self, expr: &TExpr, out: &mut Vec<Ty>) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                self.collect_async_await_output_tys_expr(future, out);
+                out.push(expr.ty.clone());
+            }
+            TExprKind::AsyncSelect { arms, .. } => {
+                for arm in arms {
+                    self.collect_async_await_output_tys_expr(&arm.future, out);
+                    self.collect_async_await_output_tys_expr(&arm.body, out);
+                }
+                out.push(Ty::Void);
+            }
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                for stmt in statements {
+                    self.collect_async_await_output_tys_stmt(stmt, out);
+                }
+                if let Some(value) = value {
+                    self.collect_async_await_output_tys_expr(value, out);
+                }
+            }
+            _ => walk_typed_expr(expr, &mut |child| {
+                self.collect_async_await_output_tys_expr(child, out);
+            }),
         }
     }
 
@@ -5768,7 +7078,18 @@ impl TypeChecker {
         ) {
             return None;
         }
-        if std_id::is_std_async_runtime_handle_ty(&self.resolved, ty) {
+        if matches!(ty, Ty::OpaqueReturn { .. }) {
+            let concrete = self.lower_opaque_returns_in_ty(ty);
+            if &concrete != ty {
+                return self.async_frame_safety_violation(
+                    &concrete,
+                    static_const_slice,
+                    path,
+                    visiting,
+                );
+            }
+        }
+        if std_id::is_std_async_runtime_handle_ty(&self.ctx.resolved, ty) {
             return None;
         }
         if contains_generic(ty) || contains_type_hole(ty) {
@@ -5807,14 +7128,14 @@ impl TypeChecker {
             }
             Ty::GeneratedFuture { .. } => None,
             Ty::Named { name, args } => {
-                if std_id::is_std_async_runtime_handle_ty(&self.resolved, ty) {
+                if std_id::is_std_async_runtime_handle_ty(&self.ctx.resolved, ty) {
                     return None;
                 }
                 if !visiting.insert(ty.clone()) {
                     return None;
                 }
                 let instance_name = aggregate_instance_name(name, args);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     for (field, field_ty) in fields {
                         if let Some(reason) = self.async_frame_safety_violation(
                             &field_ty,
@@ -5830,7 +7151,7 @@ impl TypeChecker {
                     return None;
                 }
                 self.ensure_enum_instance(ty);
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     for variant in enm.variants {
                         for (idx, payload_ty) in variant.payload.iter().enumerate() {
                             if let Some(reason) = self.async_frame_safety_violation(
@@ -5865,6 +7186,9 @@ impl TypeChecker {
             Ty::DynamicInterface { .. } => {
                 Some(format!("{path} has dynamic interface type `{ty}`"))
             }
+            Ty::OpaqueReturn { .. } => Some(format!(
+                "{path} has opaque return type `{ty}` without an async-frame-safety policy"
+            )),
             Ty::Function { .. } => Some(format!("{path} has function pointer type `{ty}`")),
             Ty::Generic(_) => Some(format!(
                 "{path} has generic type `{ty}` without a proven async-frame-safety policy"
@@ -6081,6 +7405,7 @@ impl TypeChecker {
                     checked_target.expr.span,
                 );
                 let target = checked_target.expr;
+                let diagnostics_before_value = self.diagnostics.len();
                 let value = self.check_consumed_expr(scopes, value, Some(&target.ty), false)?;
                 if target.ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
@@ -6088,7 +7413,9 @@ impl TypeChecker {
                         "void values are implicit and cannot be explicitly assigned",
                     ));
                 }
-                self.require_assignable(&target.ty, &value.ty, stmt.span);
+                if self.diagnostics.len() == diagnostics_before_value {
+                    self.require_assignable(&target.ty, &value.ty, stmt.span);
+                }
                 if assignment_allowed {
                     self.mark_assignment_complete(scopes, &target);
                 }
@@ -6240,6 +7567,35 @@ impl TypeChecker {
                         stmt: TStmt {
                             span: stmt.span,
                             kind: TStmtKind::Return(None),
+                        },
+                        flow: Flow::no_fallthrough(),
+                    });
+                }
+                if matches!(ret_ty, Ty::OpaqueReturn { .. }) {
+                    let expr = match expr {
+                        Some(expr) => {
+                            let expected = self
+                                .current_opaque_return
+                                .as_ref()
+                                .and_then(|state| state.concrete_ty.clone());
+                            let expr =
+                                self.check_consumed_expr(scopes, expr, expected.as_ref(), true)?;
+                            let concrete_ty = self.normalize_meta_repr_markers(&expr.ty, expr.span);
+                            self.record_opaque_return_ty(ret_ty, &concrete_ty, expr.span);
+                            Some(expr)
+                        }
+                        None => {
+                            self.diagnostics.push(Diagnostic::new(
+                                stmt.span,
+                                format!("function must return `{ret_ty}`"),
+                            ));
+                            None
+                        }
+                    };
+                    return Some(CheckedStmtFlow {
+                        stmt: TStmt {
+                            span: stmt.span,
+                            kind: TStmtKind::Return(expr),
                         },
                         flow: Flow::no_fallthrough(),
                     });
@@ -6427,7 +7783,7 @@ impl TypeChecker {
         };
         let enum_type_name = enum_instance_name(name, args);
         self.ensure_enum_instance(&expr.ty);
-        let Some(checked_enum) = self.checked_enums.get(&enum_type_name).cloned() else {
+        let Some(checked_enum) = self.ctx.checked_enums.get(&enum_type_name).cloned() else {
             self.diagnostics.push(Diagnostic::new(
                 expr.span,
                 format!("`{}` is not an enum type", expr.ty),
@@ -6734,7 +8090,7 @@ impl TypeChecker {
     ) -> Option<(DefId, VariantSig)> {
         match &name.kind {
             PatternNameKind::Variant(def_id) => {
-                let sig = self.variants.get(def_id)?.clone();
+                let sig = self.ctx.variants.get(def_id)?.clone();
                 Some((*def_id, sig))
             }
             PatternNameKind::VariantCandidates(candidates) => self.select_variant_candidate(
@@ -6820,7 +8176,7 @@ impl TypeChecker {
         };
         self.ensure_enum_instance(ty);
         let instance_name = enum_instance_name(name, args);
-        self.checked_enums.get(&instance_name).cloned()
+        self.ctx.checked_enums.get(&instance_name).cloned()
     }
 
     fn with_return_loop_move_context<T>(
@@ -7034,7 +8390,7 @@ impl TypeChecker {
                         kind: TExprKind::Function(sig.def_id, sig.name.clone()),
                     }
                 } else if let Some((def_id, sig)) = self.lookup_variant_name(name_ref, expected) {
-                    let variant_name = self.resolved.def(def_id).name.clone();
+                    let variant_name = self.ctx.resolved.def(def_id).name.clone();
                     self.check_variant_literal(
                         scopes,
                         expr.span,
@@ -7065,10 +8421,11 @@ impl TypeChecker {
                     return None;
                 };
                 let instance_name = enum_instance_name(type_name, args);
-                let struct_fields = if let Some(fields) = self.structs.get(&instance_name).cloned()
+                let struct_fields = if let Some(fields) =
+                    self.ctx.structs.get(&instance_name).cloned()
                 {
                     fields
-                } else if let Some(template) = self.struct_templates.get(type_name).cloned() {
+                } else if let Some(template) = self.ctx.struct_templates.get(type_name).cloned() {
                     if template.generics.len() != args.len() {
                         self.diagnostics.push(Diagnostic::new(
                             expr.span,
@@ -7494,7 +8851,7 @@ impl TypeChecker {
                     && !matches!(name_ref.kind, NameRefKind::Local(_))
                     && let Some((def_id, sig)) = self.lookup_variant_name(name_ref, expected)
                 {
-                    let variant_name = self.resolved.def(def_id).name.clone();
+                    let variant_name = self.ctx.resolved.def(def_id).name.clone();
                     return self.check_variant_literal(
                         scopes,
                         expr.span,
@@ -8627,10 +9984,10 @@ impl TypeChecker {
             return;
         };
         let instance_name = enum_instance_name(name, args);
-        let Some(fields) = self.structs.get(&instance_name) else {
+        let Some(fields) = self.ctx.structs.get(&instance_name).cloned() else {
             return;
         };
-        for (field, ty) in fields {
+        for (field, ty) in &fields {
             if ty.is_erased_value() {
                 self.diagnostics.push(Diagnostic::new(
                     span,
@@ -8690,8 +10047,8 @@ impl TypeChecker {
         if args.len() != 1 {
             return None;
         }
-        self.nominal_type_defs.get(name).and_then(|def_id| {
-            std_id::is_std_actor_type(&self.resolved, *def_id).then(|| args[0].clone())
+        self.ctx.nominal_type_defs.get(name).and_then(|def_id| {
+            std_id::is_std_actor_type(&self.ctx.resolved, *def_id).then(|| args[0].clone())
         })
     }
 
@@ -8814,21 +10171,25 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
         if std_id::is_std_actor_function(
-            &self.resolved,
+            &self.ctx.resolved,
             sig.module,
             &sig.name,
             "spawn_actor_cloned",
         ) {
             return self.check_actor_spawn_cloned_call(scopes, span, type_args, args, expected);
         }
-        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "spawn_actor_state")
-        {
+        if std_id::is_std_actor_function(
+            &self.ctx.resolved,
+            sig.module,
+            &sig.name,
+            "spawn_actor_state",
+        ) {
             return self.check_actor_spawn_state_call(scopes, span, type_args, args, expected);
         }
-        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "send") {
+        if std_id::is_std_actor_function(&self.ctx.resolved, sig.module, &sig.name, "send") {
             return self.check_actor_send_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "stop") {
+        if std_id::is_std_actor_function(&self.ctx.resolved, sig.module, &sig.name, "stop") {
             return self.check_actor_lifecycle_call(
                 scopes,
                 span,
@@ -8837,7 +10198,7 @@ impl TypeChecker {
                 ActorLifecycleOp::Stop,
             );
         }
-        if std_id::is_std_actor_function(&self.resolved, sig.module, &sig.name, "join") {
+        if std_id::is_std_actor_function(&self.ctx.resolved, sig.module, &sig.name, "join") {
             return self.check_actor_lifecycle_call(
                 scopes,
                 span,
@@ -8846,55 +10207,61 @@ impl TypeChecker {
                 ActorLifecycleOp::Join,
             );
         }
-        if std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "as_ref_repr")
-            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "into_repr")
-            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "from_repr")
+        if std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "as_ref_repr")
+            || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "into_repr")
+            || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "from_repr")
         {
             return self.check_meta_repr_call(scopes, span, &sig.name, type_args, args, expected);
         }
-        if std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "type_size")
-            || std_id::is_std_meta_function(&self.resolved, sig.module, &sig.name, "type_align")
+        if std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_size")
+            || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_align")
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "spawn") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "spawn") {
             return self.check_async_spawn_call(scopes, span, type_args, args, expected);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "cancel") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "cancel") {
             return self.check_async_task_cancel_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "is_finished") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "is_finished") {
             return self.check_async_task_is_finished_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "block_on") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "block_on") {
             return self.check_async_block_on_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "future_from_op") {
+        if std_id::is_std_async_function(
+            &self.ctx.resolved,
+            sig.module,
+            &sig.name,
+            "future_from_op",
+        ) {
             return self.check_async_future_from_op_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "send") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "send") {
             return self.check_async_channel_send_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "try_send") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "try_send") {
             return self.check_async_channel_try_send_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "reserve") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "reserve") {
             return self.check_async_channel_reserve_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "permit_send") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "permit_send") {
             return self.check_async_channel_permit_send_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_function(&self.resolved, sig.module, &sig.name, "recv") {
+        if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "recv") {
             return self.check_async_channel_recv_call(scopes, span, type_args, args);
         }
-        if std_id::is_std_async_time_function(&self.resolved, sig.module, &sig.name, "sleep_ms") {
+        if std_id::is_std_async_time_function(&self.ctx.resolved, sig.module, &sig.name, "sleep_ms")
+        {
             return self.check_async_sleep_ms_call(scopes, span, type_args, args);
         }
 
         let allow_resource_captures =
-            std_id::is_std_resource_function(&self.resolved, sig.module, &sig.name, "scoped")
+            std_id::is_std_resource_function(&self.ctx.resolved, sig.module, &sig.name, "scoped")
                 || std_id::is_std_resource_function(
-                    &self.resolved,
+                    &self.ctx.resolved,
                     sig.module,
                     &sig.name,
                     "scoped_with_limits",
@@ -9275,6 +10642,11 @@ impl TypeChecker {
         if is_async {
             self.check_async_closure_frame_safety(&checked_body, &checked_params, &captures);
         }
+        let async_facts = if is_async {
+            Some(self.async_facts_for_closure_body(&checked_body))
+        } else {
+            None
+        };
         let (closure_cancel_safe, closure_abortable) = if is_async {
             self.async_closure_body_capabilities(&checked_body)
         } else {
@@ -9347,6 +10719,7 @@ impl TypeChecker {
                 params: checked_params,
                 captures,
                 body: checked_body,
+                async_facts,
             },
         })
     }
@@ -9525,7 +10898,7 @@ impl TypeChecker {
     ) -> Option<TExpr> {
         match selector.callable {
             ReceiverSelectorCallable::Function(def_id) => {
-                let sig = self.functions_by_def.get(&def_id).cloned()?;
+                let sig = self.ctx.functions_by_def.get(&def_id).cloned()?;
                 let call_args = receiver_selector_desugared_args(
                     receiver,
                     args,
@@ -9536,7 +10909,7 @@ impl TypeChecker {
                 self.check_direct_function_call(scopes, span, sig, type_args, &call_args, expected)
             }
             ReceiverSelectorCallable::Interface(def_id) => {
-                let interface = self.interfaces.get(&def_id).cloned()?;
+                let interface = self.ctx.interfaces.get(&def_id).cloned()?;
                 let call_args = receiver_selector_desugared_args(
                     receiver,
                     args,
@@ -9569,7 +10942,8 @@ impl TypeChecker {
         match selector_path {
             [_name] => {
                 out.extend(
-                    self.receiver_selectors
+                    self.ctx
+                        .receiver_selectors
                         .iter()
                         .filter(|selector| {
                             selector.module == module && selector.selector == selector_name
@@ -9577,7 +10951,7 @@ impl TypeChecker {
                         .cloned(),
                 );
                 let mut visited = HashSet::new();
-                for import in &self.resolved.modules[module.0].imports {
+                for import in &self.ctx.resolved.modules[module.0].imports {
                     if import.alias.is_some() {
                         continue;
                     }
@@ -9619,7 +10993,8 @@ impl TypeChecker {
             return;
         }
         out.extend(
-            self.receiver_selectors
+            self.ctx
+                .receiver_selectors
                 .iter()
                 .filter(|selector| {
                     selector.module == module
@@ -9628,7 +11003,7 @@ impl TypeChecker {
                 })
                 .cloned(),
         );
-        for import in &self.resolved.modules[module.0].imports {
+        for import in &self.ctx.resolved.modules[module.0].imports {
             if !import.exported || import.alias.is_some() {
                 continue;
             }
@@ -9640,7 +11015,7 @@ impl TypeChecker {
 
     fn receiver_selector_alias_targets(&self, module: ModuleId, alias: &str) -> Vec<ModuleId> {
         let mut targets = Vec::new();
-        for import in &self.resolved.modules[module.0].imports {
+        for import in &self.ctx.resolved.modules[module.0].imports {
             if import.alias.as_deref() == Some(alias)
                 && let Some(target) = import.target
             {
@@ -9648,7 +11023,7 @@ impl TypeChecker {
             }
         }
         let mut visited = HashSet::new();
-        for import in &self.resolved.modules[module.0].imports {
+        for import in &self.ctx.resolved.modules[module.0].imports {
             if import.alias.is_some() {
                 continue;
             }
@@ -9675,7 +11050,7 @@ impl TypeChecker {
         if !visited.insert(module) {
             return;
         }
-        for import in &self.resolved.modules[module.0].imports {
+        for import in &self.ctx.resolved.modules[module.0].imports {
             if !import.exported {
                 continue;
             }
@@ -9899,9 +11274,9 @@ impl TypeChecker {
         if let Some(expected) = expected.as_ref() {
             self.require_assignable(expected, &sender.ty, sender.span);
         }
-        let payload_ty = explicit_payload
-            .cloned()
-            .or_else(|| std_id::std_async_sender_payload_arg(&self.resolved, &sender.ty).cloned());
+        let payload_ty = explicit_payload.cloned().or_else(|| {
+            std_id::std_async_sender_payload_arg(&self.ctx.resolved, &sender.ty).cloned()
+        });
         let Some(payload_ty) = payload_ty else {
             self.diagnostics.push(Diagnostic::new(
                 sender.span,
@@ -10058,7 +11433,7 @@ impl TypeChecker {
         }
         let payload_ty = explicit_payload
             .or_else(|| {
-                std_id::std_async_receiver_payload_arg(&self.resolved, &receiver.ty).cloned()
+                std_id::std_async_receiver_payload_arg(&self.ctx.resolved, &receiver.ty).cloned()
             })
             .unwrap_or_else(|| {
                 self.diagnostics.push(Diagnostic::new(
@@ -10116,7 +11491,7 @@ impl TypeChecker {
         }
         let payload_ty = explicit_payload
             .or_else(|| {
-                std_id::std_async_send_permit_payload_arg(&self.resolved, &permit.ty).cloned()
+                std_id::std_async_send_permit_payload_arg(&self.ctx.resolved, &permit.ty).cloned()
             })
             .unwrap_or_else(|| {
                 self.diagnostics.push(Diagnostic::new(
@@ -10528,7 +11903,12 @@ impl TypeChecker {
         let mut subst = HashMap::<String, Ty>::new();
         let current_subst = self.current_type_subst();
         for (idx, ty) in type_args.iter().enumerate() {
-            let Some(generic) = sig.generics.get(idx) else {
+            let Some(generic) = sig
+                .generics
+                .iter()
+                .filter(|generic| !generic.is_hidden)
+                .nth(idx)
+            else {
                 self.diagnostics.push(Diagnostic::new(
                     ty.span,
                     format!("too many type arguments for `{}`", sig.name),
@@ -10611,6 +11991,7 @@ impl TypeChecker {
             self.unify_ty_for_inference(&sig.ret, expected, &mut subst);
         }
         self.infer_generic_constraints_from_known_receivers(&sig.generics, &mut subst, span);
+        self.solve_hidden_generics(&sig.name, &sig.generics, &mut subst, span);
 
         for generic in &sig.generics {
             if !subst.contains_key(&generic.name) {
@@ -10663,6 +12044,7 @@ impl TypeChecker {
             let ty = self.normalize_meta_repr_markers(&substituted, span);
             self.resolve_type_holes(&ty)
         };
+        self.ensure_generic_opaque_return_solution(sig, &instance_args, &ret);
         Some((
             FunctionSig {
                 def_id: sig.def_id,
@@ -10680,6 +12062,67 @@ impl TypeChecker {
             },
             instance_args,
         ))
+    }
+
+    fn ensure_generic_opaque_return_solution(
+        &mut self,
+        sig: &FunctionSig,
+        instance_args: &[Ty],
+        ret: &Ty,
+    ) {
+        let Ty::OpaqueReturn { key, .. } = ret else {
+            return;
+        };
+        if self.opaque_returns.contains_key(key) {
+            return;
+        }
+        if !self.opaque_return_probe_stack.insert(key.clone()) {
+            return;
+        }
+        let Some(template) = self.ctx.generic_functions.get(&sig.def_id).cloned() else {
+            self.opaque_return_probe_stack.remove(key);
+            return;
+        };
+        let probe_def = self.alloc_synthetic_def();
+        let probe_name = format!(
+            "{}__opaque_probe_{}",
+            sig.name,
+            instance_args
+                .iter()
+                .map(mangle_ty_fragment)
+                .collect::<Vec<_>>()
+                .join("_")
+        );
+        let checked_template = CheckedGenericFunction {
+            def_id: sig.def_id,
+            module: sig.module,
+            name: sig.name.clone(),
+            is_unsafe: sig.is_unsafe,
+            is_async: sig.is_async,
+            abi: sig.abi.clone(),
+            noescape: sig.noescape,
+            exported: template.exported,
+            generics: sig
+                .generics
+                .iter()
+                .map(|generic| CheckedGenericParam {
+                    name: generic.name.clone(),
+                    is_resource: generic.is_resource,
+                    is_hidden: generic.is_hidden,
+                    constraint: generic.constraint.clone(),
+                })
+                .collect(),
+            ret: sig.ret.clone(),
+            params: sig.params.clone(),
+            function: template.function,
+        };
+        let _ = self.instantiate_generic_template_for_mono(
+            &checked_template,
+            instance_args,
+            probe_def,
+            probe_name,
+        );
+        self.opaque_return_probe_stack.remove(key);
     }
 
     fn infer_generic_constraints_from_known_receivers(
@@ -10826,6 +12269,7 @@ impl TypeChecker {
             .map(|generic| GenericInfo {
                 name: generic.name.clone(),
                 is_resource: generic.is_resource,
+                is_hidden: generic.is_hidden,
                 constraint: generic.constraint.clone(),
             })
             .collect::<Vec<_>>();
@@ -10860,7 +12304,12 @@ impl TypeChecker {
                 })
             })
             .collect::<Vec<_>>();
-        let ret = self.lower_type_with_subst(&template.function.signature.ret, &subst);
+        let ret = self.lower_function_return_type(
+            template.def_id,
+            &template.function.signature.ret,
+            &generics,
+            &subst,
+        );
         let instance_sig = FunctionSig {
             def_id,
             module: template.module,
@@ -10875,7 +12324,9 @@ impl TypeChecker {
             generics: Vec::new(),
             exported: false,
         };
-        self.functions_by_def.insert(def_id, instance_sig.clone());
+        self.ctx
+            .functions_by_def
+            .insert(def_id, instance_sig.clone());
 
         let body = template.function.body.as_ref().and_then(|body| {
             let previous_module = self.current_module;
@@ -10891,12 +12342,13 @@ impl TypeChecker {
             name: instance_name,
             is_unsafe: template.is_unsafe,
             is_async: template.is_async,
+            async_facts: body.async_facts,
             abi: template.abi.clone(),
             noescape: template.noescape,
             exported: false,
             ret,
             params,
-            body: Some(body),
+            body: Some(body.block),
         })
     }
 
@@ -10925,8 +12377,8 @@ impl TypeChecker {
         expected: Option<&Ty>,
         receiver_index: usize,
     ) -> Option<TExpr> {
-        let name = self.resolved.def(def_id).name.clone();
-        let Some(interface) = self.interfaces.get(&def_id).cloned() else {
+        let name = self.ctx.resolved.def(def_id).name.clone();
+        let Some(interface) = self.ctx.interfaces.get(&def_id).cloned() else {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("interface alias `{name}` is not directly callable"),
@@ -11029,6 +12481,7 @@ impl TypeChecker {
                 ),
             ));
         }
+        self.infer_interface_determined_parameters(&interface, &mut subst);
         for generic in &interface.generics {
             if subst.get(generic).is_none_or(contains_generic)
                 || subst
@@ -11068,7 +12521,7 @@ impl TypeChecker {
                 },
             });
         }
-        if std_id::is_std_message_clone_interface(&self.resolved, def_id)
+        if std_id::is_std_message_clone_interface(&self.ctx.resolved, def_id)
             && interface_args.len() == 1
             && let Some(message_ty) = receiver_ty.as_ref()
             && let Some(witness_ty) = self.meta_repr_owned_message_witness_ty(message_ty)
@@ -11111,7 +12564,7 @@ impl TypeChecker {
             });
         }
 
-        let message = if std_id::is_std_message_clone_interface(&self.resolved, def_id) {
+        let message = if std_id::is_std_message_clone_interface(&self.ctx.resolved, def_id) {
             receiver_ty
                 .as_ref()
                 .map(|ty| format!("`{ty}` does not implement `Message`"))
@@ -11184,6 +12637,43 @@ impl TypeChecker {
                 args: checked_args,
             },
         })
+    }
+
+    fn infer_interface_determined_parameters(
+        &mut self,
+        interface: &InterfaceSig,
+        subst: &mut HashMap<String, Ty>,
+    ) {
+        let Some(determined_start) = interface.determined_start else {
+            return;
+        };
+        let mut hidden_names = HashSet::new();
+        for generic in interface.generics.iter().skip(determined_start) {
+            if matches!(subst.get(generic), Some(Ty::Generic(name)) if name == generic) {
+                hidden_names.insert(generic.clone());
+            }
+        }
+        if hidden_names.is_empty() {
+            return;
+        }
+        let full_args = interface
+            .generics
+            .iter()
+            .map(|generic| {
+                subst
+                    .get(generic)
+                    .cloned()
+                    .unwrap_or_else(|| Ty::Generic(generic.clone()))
+            })
+            .collect::<Vec<_>>();
+        let Some(receiver_ty) = full_args.first().cloned() else {
+            return;
+        };
+        let capability = ConstraintRef {
+            name: interface.name.clone(),
+            args: full_args.get(1..).unwrap_or(&[]).to_vec(),
+        };
+        self.solve_hidden_from_capability(&receiver_ty, &capability, &hidden_names, subst);
     }
 
     fn coerce_expr_to_expected(
@@ -11283,7 +12773,7 @@ impl TypeChecker {
             {
                 self.diagnostics.push(Diagnostic::new(
                     expr.span,
-                    format!("expected `{expected}`, got `{expr_ty}`"),
+                    self.type_mismatch_message(&expected, &expr_ty),
                 ));
                 return expr;
             }
@@ -11378,7 +12868,7 @@ impl TypeChecker {
         }
         self.diagnostics.push(Diagnostic::new(
             expr.span,
-            format!("expected `{expected}`, got `{expr_ty}`"),
+            self.type_mismatch_message(&expected, &expr_ty),
         ));
         expr
     }
@@ -12142,9 +13632,9 @@ impl TypeChecker {
             Ty::Slice { .. } if field == "len" => Some(Ty::Usize),
             Ty::Named { name, args } => {
                 let instance_name = enum_instance_name(name, args);
-                let fields = if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                let fields = if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     fields
-                } else if let Some(template) = self.struct_templates.get(name).cloned() {
+                } else if let Some(template) = self.ctx.struct_templates.get(name).cloned() {
                     if template.generics.len() != args.len() {
                         self.diagnostics.push(Diagnostic::new(
                             span,
@@ -12216,11 +13706,11 @@ impl TypeChecker {
 
     fn ty_can_assign_from(&self, expected: &Ty, actual: &Ty) -> bool {
         expected.can_assign_from(actual)
-            || std_id::std_async_future_accepts_generated(&self.resolved, expected, actual)
+            || std_id::std_async_future_accepts_generated(&self.ctx.resolved, expected, actual)
     }
 
     fn std_future_erasure_hides_affine_state(&mut self, expected: &Ty, actual: &Ty) -> bool {
-        if std_id::std_async_future_output_arg(&self.resolved, expected).is_none() {
+        if std_id::std_async_future_output_arg(&self.ctx.resolved, expected).is_none() {
             return false;
         }
         let Ty::GeneratedFuture {
@@ -12297,8 +13787,147 @@ impl TypeChecker {
         if !self.ty_can_assign_from(&expected, &actual) {
             self.diagnostics.push(Diagnostic::new(
                 span,
-                format!("expected `{expected}`, got `{actual}`"),
+                self.type_mismatch_message(&expected, &actual),
             ));
+        }
+    }
+
+    fn type_mismatch_message(&self, expected: &Ty, actual: &Ty) -> String {
+        if let (
+            Ty::OpaqueReturn {
+                key: expected_key, ..
+            },
+            Ty::OpaqueReturn {
+                key: actual_key, ..
+            },
+        ) = (expected, actual)
+        {
+            return format!(
+                "cannot assign opaque return type from {} to opaque return type from {}; opaque return identities are distinct (expected `{expected}`, got `{actual}`)",
+                self.opaque_return_origin_label(actual_key),
+                self.opaque_return_origin_label(expected_key),
+            );
+        }
+        format!("expected `{expected}`, got `{actual}`")
+    }
+
+    fn opaque_return_origin_label(&self, key: &OpaqueReturnKey) -> String {
+        let name = &self.ctx.resolved.def(key.def_id).name;
+        if key.args.is_empty() {
+            return format!("function `{name}`");
+        }
+        let args = key
+            .args
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("function `{name}<{args}>`")
+    }
+
+    fn record_opaque_return_ty(
+        &mut self,
+        opaque_ty: &Ty,
+        concrete_ty: &Ty,
+        span: crate::span::Span,
+    ) {
+        if concrete_ty.is_never() || matches!(concrete_ty, Ty::Unknown) {
+            return;
+        }
+        let concrete_ty = self.resolve_type_holes(concrete_ty);
+        let Some(current_opaque_ty) = self
+            .current_opaque_return
+            .as_ref()
+            .map(|state| state.opaque_ty.clone())
+        else {
+            return;
+        };
+        if self.opaque_return_concrete_ty_is_recursive(&current_opaque_ty, &concrete_ty) {
+            if let Ty::OpaqueReturn { key, .. } = &current_opaque_ty {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "opaque return {} cannot use an opaque return type that resolves back to itself",
+                        self.opaque_return_origin_label(key),
+                    ),
+                ));
+            }
+            if let Some(state) = self.current_opaque_return.as_mut() {
+                state.saw_recursive_concrete_ty = true;
+            }
+            return;
+        }
+        self.check_opaque_return_bounds(opaque_ty, &concrete_ty, span);
+        let Some(state) = self.current_opaque_return.as_mut() else {
+            return;
+        };
+        match &state.concrete_ty {
+            Some(existing) if existing != &concrete_ty => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("opaque return function returns both `{existing}` and `{concrete_ty}`"),
+                ));
+            }
+            Some(_) => {}
+            None => {
+                state.concrete_ty = Some(concrete_ty);
+            }
+        }
+    }
+
+    fn opaque_return_concrete_ty_is_recursive(&self, opaque_ty: &Ty, concrete_ty: &Ty) -> bool {
+        opaque_return_concrete_ty_is_recursive(opaque_ty, concrete_ty, &self.opaque_returns)
+    }
+
+    fn check_opaque_return_bounds(
+        &mut self,
+        opaque_ty: &Ty,
+        concrete_ty: &Ty,
+        span: crate::span::Span,
+    ) {
+        let Ty::OpaqueReturn { bounds, .. } = opaque_ty else {
+            return;
+        };
+        for capability in &bounds.positive {
+            if !self.type_implements_capability(&capability.name, &capability.args, concrete_ty) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "opaque return type requires `{concrete_ty}` to implement `{}`",
+                        capability.name
+                    ),
+                ));
+            }
+        }
+        for capability in &bounds.negative {
+            if self.type_implements_capability(&capability.name, &capability.args, concrete_ty) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "opaque return type forbids `{concrete_ty}` from implementing `{}`",
+                        capability.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    fn opaque_return_concrete_ty(&self, ty: &Ty) -> Option<Ty> {
+        let Ty::OpaqueReturn { key, .. } = ty else {
+            return None;
+        };
+        self.opaque_returns.get(key).cloned()
+    }
+
+    fn lower_opaque_returns_in_ty(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::OpaqueReturn { .. } => {
+                let Some(concrete) = self.opaque_return_concrete_ty(ty) else {
+                    return ty.clone();
+                };
+                self.lower_opaque_returns_in_ty(&concrete)
+            }
+            _ => map_ty_children(ty, |child| self.lower_opaque_returns_in_ty(child)),
         }
     }
 
@@ -12470,13 +14099,14 @@ impl TypeChecker {
     }
 
     fn is_opaque_by_value(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { name, args } if args.is_empty() && self.opaque_structs.contains(name))
+        matches!(ty, Ty::Named { name, args } if args.is_empty() && self.ctx.opaque_structs.contains(name))
     }
 
     fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
         let instance_name = enum_instance_name(name, args);
-        self.unsafe_structs.contains(&instance_name)
+        self.ctx.unsafe_structs.contains(&instance_name)
             || self
+                .ctx
                 .struct_templates
                 .get(name)
                 .is_some_and(|template| template.is_unsafe)
@@ -12486,8 +14116,8 @@ impl TypeChecker {
         match ty {
             Ty::Named { name, args } => {
                 let instance_name = enum_instance_name(name, args);
-                self.structs.contains_key(&instance_name)
-                    || self.checked_enums.contains_key(&instance_name)
+                self.ctx.structs.contains_key(&instance_name)
+                    || self.ctx.checked_enums.contains_key(&instance_name)
             }
             Ty::Slice { .. } | Ty::DynamicInterface { .. } => true,
             _ => false,
@@ -12495,14 +14125,7 @@ impl TypeChecker {
     }
 
     fn find_impl(&self, interface_name: &str, args: &[Ty], receiver_ty: &Ty) -> Option<&ImplSig> {
-        self.impls.iter().find(|implementation| {
-            implementation.interface_name == interface_name
-                && implementation
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|candidate| candidate == receiver_ty)
-                && interface_non_receiver_args(&implementation.interface_args) == args
-        })
+        CapabilityTable::new(&self.ctx).find_impl(interface_name, args, receiver_ty)
     }
 
     fn type_implements_capability(
@@ -12511,6 +14134,14 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        if let Ty::OpaqueReturn { .. } = receiver_ty {
+            if self.opaque_return_bounds_forbid(receiver_ty, interface_name, args) {
+                return false;
+            }
+            if self.opaque_return_bounds_prove(receiver_ty, interface_name, args) {
+                return true;
+            }
+        }
         if self.is_std_message_clone_interface_name(interface_name)
             && args.is_empty()
             && let Some(sop_ty) = self.meta_repr_owned_message_witness_ty(receiver_ty)
@@ -12525,6 +14156,26 @@ impl TypeChecker {
             return false;
         }
         self.type_implements_capability_for_receiver(interface_name, args, &storage_receiver_ty)
+    }
+
+    fn opaque_return_bounds_prove(&self, ty: &Ty, interface_name: &str, args: &[Ty]) -> bool {
+        let Ty::OpaqueReturn { bounds, .. } = ty else {
+            return false;
+        };
+        bounds
+            .positive
+            .iter()
+            .any(|entry| entry.name == interface_name && entry.args == args)
+    }
+
+    fn opaque_return_bounds_forbid(&self, ty: &Ty, interface_name: &str, args: &[Ty]) -> bool {
+        let Ty::OpaqueReturn { bounds, .. } = ty else {
+            return false;
+        };
+        bounds
+            .negative
+            .iter()
+            .any(|entry| entry.name == interface_name && entry.args == args)
     }
 
     fn type_implements_capability_for_receiver(
@@ -12685,7 +14336,7 @@ impl TypeChecker {
 
     fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
         matches!(ty, Ty::Named { name, args } if args.is_empty()
-            && std_id::is_std_resource_handle_type_name(&self.resolved, name))
+            && std_id::is_std_resource_handle_type_name(&self.ctx.resolved, name))
     }
 
     fn generic_is_resource_only(&self, name: &str) -> bool {
@@ -12736,6 +14387,10 @@ impl TypeChecker {
             | Ty::Pointer { .. }
             | Ty::Slice { .. }
             | Ty::DynamicInterface { .. } => false,
+            Ty::OpaqueReturn { .. } => {
+                let concrete = self.lower_opaque_returns_in_ty(ty);
+                &concrete != ty && self.type_is_affine_inner(&concrete, visiting)
+            }
             Ty::Generic(name) => self.generic_is_resource_only(name),
             Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
             Ty::GeneratedFuture {
@@ -12752,19 +14407,19 @@ impl TypeChecker {
                     args: args.clone(),
                 };
                 if let Some(output_ty) =
-                    std_id::std_async_future_output_arg(&self.resolved, &named_ty).cloned()
+                    std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).cloned()
                 {
                     return self.type_is_affine_inner(&output_ty, visiting);
                 }
                 let instance_name = enum_instance_name(name, args);
-                if self.resource_structs.contains(&instance_name) {
+                if self.ctx.resource_structs.contains(&instance_name) {
                     return true;
                 }
                 if !visiting.insert(ty.clone()) {
                     return false;
                 }
                 self.ensure_struct_instance(ty);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     let affine = fields
                         .iter()
                         .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
@@ -12772,7 +14427,7 @@ impl TypeChecker {
                     return affine;
                 }
                 self.ensure_enum_instance(ty);
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     let affine = enm.variants.iter().any(|variant| {
                         variant
                             .payload
@@ -12799,6 +14454,12 @@ impl TypeChecker {
         }
         if self.type_implements_message(ty) {
             return None;
+        }
+        if matches!(ty, Ty::OpaqueReturn { .. }) {
+            let concrete = self.lower_opaque_returns_in_ty(ty);
+            if &concrete != ty {
+                return self.task_boundary_message_violation(&concrete, path, visiting);
+            }
         }
         if contains_generic(ty) || contains_type_hole(ty) {
             return Some(format!(
@@ -12859,7 +14520,7 @@ impl TypeChecker {
                 }
                 self.ensure_struct_instance(ty);
                 let instance_name = enum_instance_name(name, args);
-                if let Some(fields) = self.structs.get(&instance_name).cloned() {
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     for (field, field_ty) in fields {
                         if let Some(reason) = self.task_boundary_message_violation(
                             &field_ty,
@@ -12876,7 +14537,7 @@ impl TypeChecker {
                     ));
                 }
                 self.ensure_enum_instance(ty);
-                if let Some(enm) = self.checked_enums.get(&instance_name).cloned() {
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     for variant in enm.variants {
                         for (idx, payload_ty) in variant.payload.iter().enumerate() {
                             if let Some(reason) = self.task_boundary_message_violation(
@@ -12901,6 +14562,9 @@ impl TypeChecker {
             }
             Ty::DynamicInterface { .. } => Some(format!(
                 "{path} has dynamic interface type `{ty}` without a `Message` policy"
+            )),
+            Ty::OpaqueReturn { .. } => Some(format!(
+                "{path} has opaque return type `{ty}` without a `Message` policy"
             )),
             Ty::Function { .. } => Some(format!(
                 "{path} has function pointer type `{ty}` without a `Message` policy"
@@ -13141,42 +14805,11 @@ impl TypeChecker {
         non_receiver_args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
-        let interface_args = std::iter::once(receiver_ty.clone())
-            .chain(non_receiver_args.iter().cloned())
-            .collect::<Vec<_>>();
-        self.generic_impls.iter().any(|template| {
-            if template.interface_name != interface_name
-                || template.interface_args.len() != interface_args.len()
-            {
-                return false;
-            }
-            if template
-                .generics
-                .iter()
-                .any(|generic| generic.constraint.is_some())
-            {
-                return false;
-            }
-            let mut subst = template
-                .generics
-                .iter()
-                .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
-                .collect::<HashMap<_, _>>();
-            template
-                .interface_args
-                .iter()
-                .zip(interface_args.iter())
-                .all(|(pattern, actual)| unify_ty(pattern, actual, &mut subst))
-                && template
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|pattern| unify_ty(pattern, receiver_ty, &mut subst))
-                && template.generics.iter().all(|generic| {
-                    subst
-                        .get(&generic.name)
-                        .is_some_and(|ty| !contains_generic(ty))
-                })
-        })
+        CapabilityTable::new(&self.ctx).generic_impl_matches_without_constraints(
+            interface_name,
+            non_receiver_args,
+            receiver_ty,
+        )
     }
 
     fn find_impl_by_full_args(
@@ -13185,7 +14818,9 @@ impl TypeChecker {
         interface_args: &[Ty],
         receiver_ty: Option<&Ty>,
     ) -> Option<ImplSig> {
-        find_impl_in(&self.impls, interface_name, interface_args, receiver_ty).cloned()
+        CapabilityTable::new(&self.ctx)
+            .find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+            .cloned()
     }
 
     fn find_or_instantiate_impl_by_full_args(
@@ -13195,6 +14830,27 @@ impl TypeChecker {
         receiver_ty: Option<&Ty>,
         span: crate::span::Span,
     ) -> Option<ImplSig> {
+        if let Some(receiver_ty) = receiver_ty
+            && matches!(receiver_ty, Ty::OpaqueReturn { .. })
+        {
+            let non_receiver_args = interface_non_receiver_args(interface_args);
+            if !self.opaque_return_bounds_prove(receiver_ty, interface_name, non_receiver_args) {
+                return None;
+            }
+            let concrete_receiver = self.lower_opaque_returns_in_ty(receiver_ty);
+            if &concrete_receiver != receiver_ty {
+                let concrete_args = interface_args
+                    .iter()
+                    .map(|arg| self.lower_opaque_returns_in_ty(arg))
+                    .collect::<Vec<_>>();
+                return self.find_or_instantiate_impl_by_full_args(
+                    interface_name,
+                    &concrete_args,
+                    Some(&concrete_receiver),
+                    span,
+                );
+            }
+        }
         if let Some(implementation) =
             self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
         {
@@ -13258,7 +14914,7 @@ impl TypeChecker {
         {
             return Some(existing);
         }
-        let templates = self.generic_impls.clone();
+        let templates = self.ctx.generic_impls.clone();
         let mut matches = Vec::new();
         for template in templates {
             if template.interface_name != interface_name {
@@ -13353,29 +15009,6 @@ impl TypeChecker {
         None
     }
 
-    fn merge_existing_impls(&mut self, impls: &[CheckedImpl]) {
-        for implementation in impls {
-            if self
-                .find_impl_by_full_args(
-                    &implementation.interface_name,
-                    &implementation.interface_args,
-                    implementation.receiver_ty.as_ref(),
-                )
-                .is_some()
-            {
-                continue;
-            }
-            self.impls.push(ImplSig {
-                interface_name: implementation.interface_name.clone(),
-                interface_args: implementation.interface_args.clone(),
-                receiver_ty: implementation.receiver_ty.clone(),
-                function_def: implementation.function_def,
-                ret: implementation.ret.clone(),
-                params: implementation.params.clone(),
-            });
-        }
-    }
-
     fn dynamic_view_interface(
         &mut self,
         dyn_name: &str,
@@ -13428,9 +15061,10 @@ impl TypeChecker {
             let args = term
                 .args
                 .iter()
-                .map(|arg| self.lower_type_with_subst(arg, subst))
+                .map(|arg| self.lower_constraint_arg_with_subst(arg, subst))
                 .collect::<Vec<_>>();
-            let view = self.interface_view(&name_ref_canonical(&self.resolved, &term.name), &args);
+            let view =
+                self.interface_view(&name_ref_canonical(&self.ctx.resolved, &term.name), &args);
             if term.removed {
                 bounds
                     .positive
@@ -13458,6 +15092,20 @@ impl TypeChecker {
             }
         }
         bounds
+    }
+
+    fn lower_constraint_arg_with_subst(
+        &mut self,
+        arg: &ConstraintArg,
+        subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        match arg {
+            ConstraintArg::Type(ty) => self.lower_type_with_subst(ty, subst),
+            ConstraintArg::Binding { name, .. } => subst
+                .get(&name.name)
+                .cloned()
+                .unwrap_or_else(|| Ty::Generic(name.name.clone())),
+        }
     }
 
     fn resolve_constraint_bounds_type_holes(&self, bounds: &ConstraintBounds) -> ConstraintBounds {
@@ -13496,9 +15144,10 @@ impl TypeChecker {
         expanding: &mut HashSet<String>,
     ) -> InterfaceView {
         if let Some(alias) = self
+            .ctx
             .interface_alias_names
             .get(name)
-            .and_then(|def_id| self.interface_aliases.get(def_id))
+            .and_then(|def_id| self.ctx.interface_aliases.get(def_id))
             .cloned()
         {
             if alias.generics.len() != args.len() {
@@ -13591,7 +15240,7 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         expanding: &mut HashSet<String>,
     ) -> InterfaceView {
-        let name = name_ref_canonical(&self.resolved, &term.name);
+        let name = name_ref_canonical(&self.ctx.resolved, &term.name);
         let args = term
             .args
             .iter()
@@ -13607,11 +15256,11 @@ impl TypeChecker {
         if args.len() != 2 {
             return None;
         }
-        let def_id = self.nominal_type_defs.get(name).copied()?;
-        if !std_id::is_std_result_enum(&self.resolved, def_id) {
+        let def_id = self.ctx.nominal_type_defs.get(name).copied()?;
+        if !std_id::is_std_result_enum(&self.ctx.resolved, def_id) {
             return None;
         }
-        let template = self.enum_templates.get(name)?;
+        let template = self.ctx.enum_templates.get(name)?;
         if !template.variants.iter().any(|variant| variant.name == "Ok")
             || !template
                 .variants
@@ -13639,11 +15288,13 @@ impl TypeChecker {
         generated_future_ty_with_affine_state(
             format!("fn_{}", def_id.0),
             output_ty,
-            self.async_function_cancel_safety
+            self.ctx
+                .async_function_cancel_safety
                 .get(&def_id)
                 .copied()
                 .unwrap_or(false),
-            self.async_function_abortability
+            self.ctx
+                .async_function_abortability
                 .get(&def_id)
                 .copied()
                 .unwrap_or(true),
@@ -13717,10 +15368,13 @@ impl TypeChecker {
         storage_receiver_ty: &Ty,
         span: crate::span::Span,
     ) -> Option<Vec<Ty>> {
-        if !std_id::has_std_async_interface(&self.resolved, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE) {
+        if !std_id::has_std_async_interface(
+            &self.ctx.resolved,
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+        ) {
             return None;
         }
-        if let Some(existing) = self.impls.iter().find(|implementation| {
+        if let Some(existing) = self.ctx.impls.iter().find(|implementation| {
             implementation.interface_name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
                 && implementation
                     .receiver_ty
@@ -13732,7 +15386,7 @@ impl TypeChecker {
             return Some(existing.interface_args.clone());
         }
 
-        let templates = self.generic_impls.clone();
+        let templates = self.ctx.generic_impls.clone();
         let mut matches = Vec::new();
         for template in templates {
             if template.interface_name != STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
@@ -13793,11 +15447,11 @@ impl TypeChecker {
         if let Some(output_ty) = generated_future_output_ty(ty) {
             return Some(output_ty);
         }
-        std_id::std_async_future_output_arg(&self.resolved, ty).cloned()
+        std_id::std_async_future_output_arg(&self.ctx.resolved, ty).cloned()
     }
 
     fn task_output_ty(&self, ty: &Ty) -> Option<Ty> {
-        std_id::std_async_task_output_arg(&self.resolved, ty).cloned()
+        std_id::std_async_task_output_arg(&self.ctx.resolved, ty).cloned()
     }
 
     fn task_output_from_pointer_ty(&self, ty: &Ty) -> Option<Ty> {
@@ -13814,16 +15468,16 @@ impl TypeChecker {
 
     fn is_std_message_clone_interface_name(&self, name: &str) -> bool {
         name == STD_MESSAGE_CLONE_INTERFACE
-            && self.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_clone_interface(&self.resolved, *def_id)
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_message_clone_interface(&self.ctx.resolved, *def_id)
             })
     }
 
     fn is_std_message_share_handle_marker_name(&self, name: &str) -> bool {
         name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
-            && self.interface_names.get(name).is_some_and(|def_id| {
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
                 std_id::is_std_message_interface(
-                    &self.resolved,
+                    &self.ctx.resolved,
                     *def_id,
                     STD_MESSAGE_SHARE_HANDLE_INTERFACE,
                 )
@@ -13832,9 +15486,9 @@ impl TypeChecker {
 
     fn is_std_message_thread_local_marker_name(&self, name: &str) -> bool {
         name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
-            && self.interface_names.get(name).is_some_and(|def_id| {
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
                 std_id::is_std_message_interface(
-                    &self.resolved,
+                    &self.ctx.resolved,
                     *def_id,
                     STD_MESSAGE_THREAD_LOCAL_INTERFACE,
                 )
@@ -13843,22 +15497,26 @@ impl TypeChecker {
 
     fn is_std_meta_ciel_fn_value_marker_name(&self, name: &str) -> bool {
         name == "ciel_fn_value_marker"
-            && self.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_meta_interface(&self.resolved, *def_id, "ciel_fn_value_marker")
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_meta_interface(&self.ctx.resolved, *def_id, "ciel_fn_value_marker")
             })
     }
 
     fn is_std_meta_closure_value_marker_name(&self, name: &str) -> bool {
         name == "closure_value_marker"
-            && self.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_meta_interface(&self.resolved, *def_id, "closure_value_marker")
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_meta_interface(&self.ctx.resolved, *def_id, "closure_value_marker")
             })
     }
 
     fn is_std_error_format_interface_name(&self, name: &str) -> bool {
         name == STD_ERROR_FORMAT_INTERFACE
-            && self.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_error_interface(&self.resolved, *def_id, STD_ERROR_FORMAT_INTERFACE)
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_error_interface(
+                    &self.ctx.resolved,
+                    *def_id,
+                    STD_ERROR_FORMAT_INTERFACE,
+                )
             })
     }
 
@@ -13869,9 +15527,10 @@ impl TypeChecker {
         if !args.is_empty() {
             return false;
         }
-        self.nominal_type_defs
+        self.ctx
+            .nominal_type_defs
             .get(name)
-            .is_some_and(|def_id| std_id::is_std_error_struct(&self.resolved, *def_id))
+            .is_some_and(|def_id| std_id::is_std_error_struct(&self.ctx.resolved, *def_id))
     }
 
     fn type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
@@ -13880,8 +15539,8 @@ impl TypeChecker {
     }
 
     fn is_compiler_provided_meta_marker_def(&self, def_id: DefId) -> bool {
-        std_id::is_std_meta_interface(&self.resolved, def_id, "ciel_fn_value_marker")
-            || std_id::is_std_meta_interface(&self.resolved, def_id, "closure_value_marker")
+        std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "ciel_fn_value_marker")
+            || std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "closure_value_marker")
     }
 
     fn is_std_message_capability_interface_name(&self, name: &str) -> bool {
@@ -14156,6 +15815,7 @@ fn type_contains_plain_never_value(ty: &Ty) -> bool {
         Ty::Pointer { .. }
         | Ty::Named { .. }
         | Ty::DynamicInterface { .. }
+        | Ty::OpaqueReturn { .. }
         | Ty::Hole(_)
         | Ty::Generic(_)
         | Ty::Void
@@ -14185,6 +15845,14 @@ fn type_contains_closure(ty: &Ty) -> bool {
         Ty::GeneratedFuture { output, .. } => type_contains_closure(output),
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(type_contains_closure)
+        }
+        Ty::OpaqueReturn { key, bounds } => {
+            key.args.iter().any(type_contains_closure)
+                || bounds
+                    .positive
+                    .iter()
+                    .chain(bounds.negative.iter())
+                    .any(|entry| entry.args.iter().any(type_contains_closure))
         }
         Ty::Function { ret, params, .. } => {
             type_contains_closure(ret) || params.iter().any(type_contains_closure)
@@ -14266,6 +15934,216 @@ fn interface_non_receiver_args(args: &[Ty]) -> &[Ty] {
     if args.is_empty() { args } else { &args[1..] }
 }
 
+fn ty_generic_names(ty: &Ty) -> HashSet<String> {
+    let mut names = HashSet::new();
+    collect_ty_generic_names(ty, &mut names);
+    names
+}
+
+fn collect_ty_generic_names(ty: &Ty, names: &mut HashSet<String>) {
+    match ty {
+        Ty::Generic(name) => {
+            names.insert(name.clone());
+        }
+        Ty::Pointer { inner, .. } => collect_ty_generic_names(inner, names),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => collect_ty_generic_names(elem, names),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            for arg in args {
+                collect_ty_generic_names(arg, names);
+            }
+        }
+        Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
+            collect_ty_generic_names(ret, names);
+            for param in params {
+                collect_ty_generic_names(param, names);
+            }
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            collect_ty_generic_names(ret, names);
+            for param in params {
+                collect_ty_generic_names(param, names);
+            }
+            for capture in captures {
+                collect_ty_generic_names(capture, names);
+            }
+        }
+        Ty::GeneratedFuture { output, .. } => collect_ty_generic_names(output, names),
+        _ => {}
+    }
+}
+
+fn known_ty_matches(left: &Ty, right: &Ty) -> bool {
+    match (left, right) {
+        (Ty::Generic(left), Ty::Generic(right)) => left == right,
+        (
+            Ty::Pointer {
+                nullable,
+                mutability,
+                inner,
+            },
+            Ty::Pointer {
+                nullable: right_nullable,
+                mutability: right_mutability,
+                inner: right_inner,
+            },
+        ) => {
+            nullable == right_nullable
+                && mutability == right_mutability
+                && known_ty_matches(inner, right_inner)
+        }
+        (
+            Ty::Array { len, elem },
+            Ty::Array {
+                len: right_len,
+                elem: right_elem,
+            },
+        ) => len == right_len && known_ty_matches(elem, right_elem),
+        (
+            Ty::Slice { mutability, elem },
+            Ty::Slice {
+                mutability: right_mutability,
+                elem: right_elem,
+            },
+        ) => mutability == right_mutability && known_ty_matches(elem, right_elem),
+        (
+            Ty::Named { name, args },
+            Ty::Named {
+                name: right_name,
+                args: right_args,
+            },
+        )
+        | (
+            Ty::DynamicInterface { name, args },
+            Ty::DynamicInterface {
+                name: right_name,
+                args: right_args,
+            },
+        ) => {
+            name == right_name
+                && args.len() == right_args.len()
+                && args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| known_ty_matches(left, right))
+        }
+        (
+            Ty::Function {
+                is_unsafe,
+                abi,
+                ret,
+                params,
+            },
+            Ty::Function {
+                is_unsafe: right_is_unsafe,
+                abi: right_abi,
+                ret: right_ret,
+                params: right_params,
+            },
+        ) => {
+            is_unsafe == right_is_unsafe
+                && abi == right_abi
+                && params.len() == right_params.len()
+                && known_ty_matches(ret, right_ret)
+                && params
+                    .iter()
+                    .zip(right_params.iter())
+                    .all(|(left, right)| known_ty_matches(left, right))
+        }
+        _ => left == right,
+    }
+}
+
+fn opaque_return_concrete_ty_is_recursive(
+    opaque_ty: &Ty,
+    concrete_ty: &Ty,
+    opaque_returns: &HashMap<OpaqueReturnKey, Ty>,
+) -> bool {
+    let Ty::OpaqueReturn { key, .. } = opaque_ty else {
+        return false;
+    };
+    let mut seen = HashSet::new();
+    opaque_return_ty_reaches_via_lowering(key, concrete_ty, opaque_returns, &mut seen)
+}
+
+fn opaque_return_ty_reaches_via_lowering(
+    target: &OpaqueReturnKey,
+    ty: &Ty,
+    opaque_returns: &HashMap<OpaqueReturnKey, Ty>,
+    seen: &mut HashSet<OpaqueReturnKey>,
+) -> bool {
+    match ty {
+        Ty::Pointer { inner, .. } => {
+            opaque_return_ty_reaches_via_lowering(target, inner, opaque_returns, seen)
+        }
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => {
+            opaque_return_ty_reaches_via_lowering(target, elem, opaque_returns, seen)
+        }
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => args
+            .iter()
+            .any(|arg| opaque_return_ty_reaches_via_lowering(target, arg, opaque_returns, seen)),
+        Ty::GeneratedFuture { output, .. } => {
+            opaque_return_ty_reaches_via_lowering(target, output, opaque_returns, seen)
+        }
+        Ty::OpaqueReturn { key, .. } => {
+            if key == target {
+                return true;
+            }
+            if !seen.insert(key.clone()) {
+                return false;
+            }
+            let reaches = opaque_returns.get(key).is_some_and(|concrete| {
+                opaque_return_ty_reaches_via_lowering(target, concrete, opaque_returns, seen)
+            });
+            seen.remove(key);
+            reaches
+        }
+        Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
+            opaque_return_ty_reaches_via_lowering(target, ret, opaque_returns, seen)
+                || params.iter().any(|param| {
+                    opaque_return_ty_reaches_via_lowering(target, param, opaque_returns, seen)
+                })
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            opaque_return_ty_reaches_via_lowering(target, ret, opaque_returns, seen)
+                || params.iter().any(|param| {
+                    opaque_return_ty_reaches_via_lowering(target, param, opaque_returns, seen)
+                })
+                || captures.iter().any(|capture| {
+                    opaque_return_ty_reaches_via_lowering(target, capture, opaque_returns, seen)
+                })
+        }
+        Ty::Hole(_)
+        | Ty::Never
+        | Ty::Void
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Generic(_)
+        | Ty::Unknown => false,
+    }
+}
+
 fn interface_generic_placeholder(interface_name: &str, generic_name: &str) -> String {
     format!("__ciel_iface_{}_{}", interface_name, generic_name)
 }
@@ -14280,226 +16158,6 @@ fn impl_function_name(interface_name: &str, params: &[Ty]) -> String {
             .collect::<Vec<_>>()
             .join("_")
     )
-}
-
-fn find_impl_in<'a>(
-    impls: &'a [ImplSig],
-    interface_name: &str,
-    interface_args: &[Ty],
-    receiver_ty: Option<&Ty>,
-) -> Option<&'a ImplSig> {
-    impls.iter().find(|implementation| {
-        implementation.interface_name == interface_name
-            && implementation.interface_args == interface_args
-            && match (implementation.receiver_ty.as_ref(), receiver_ty) {
-                (Some(left), Some(right)) => left == right,
-                (None, None) => true,
-                (Some(_), None) => true,
-                _ => false,
-            }
-    })
-}
-
-fn marker_impl_patterns_overlap(
-    left_args: &[Ty],
-    left_receiver: Option<&Ty>,
-    right_args: &[Ty],
-    right_receiver: Option<&Ty>,
-) -> bool {
-    if left_args.len() != right_args.len() {
-        return false;
-    }
-    let receiver_overlaps = match (left_receiver, right_receiver) {
-        (Some(left), Some(right)) => marker_ty_patterns_overlap(left, right),
-        (None, None) => true,
-        (Some(_), None) | (None, Some(_)) => true,
-    };
-    receiver_overlaps
-        && left_args
-            .iter()
-            .zip(right_args.iter())
-            .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-}
-
-fn marker_impl_domains_disjoint(
-    left_domain: Option<CompilerMarkerDomain>,
-    left_receiver: Option<&Ty>,
-    right_domain: Option<CompilerMarkerDomain>,
-    right_receiver: Option<&Ty>,
-) -> bool {
-    match (left_domain, right_domain) {
-        (Some(left), Some(right)) if left != right => return true,
-        _ => {}
-    }
-
-    if let (Some(domain), Some(receiver)) = (left_domain, right_receiver)
-        && !ty_can_satisfy_compiler_marker_domain(receiver, domain)
-    {
-        return true;
-    }
-    if let (Some(domain), Some(receiver)) = (right_domain, left_receiver)
-        && !ty_can_satisfy_compiler_marker_domain(receiver, domain)
-    {
-        return true;
-    }
-    false
-}
-
-fn ty_can_satisfy_compiler_marker_domain(ty: &Ty, domain: CompilerMarkerDomain) -> bool {
-    match (ty, domain) {
-        (Ty::Generic(_), _) => true,
-        (
-            Ty::Function {
-                is_unsafe: false,
-                abi: None,
-                ..
-            },
-            CompilerMarkerDomain::CielFnValue,
-        ) => true,
-        (Ty::ClosureInstance { .. }, CompilerMarkerDomain::ClosureValue) => true,
-        _ => false,
-    }
-}
-
-fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
-    match (left, right) {
-        (Ty::Generic(_), _) | (_, Ty::Generic(_)) => true,
-        (
-            Ty::Pointer {
-                nullable: left_nullable,
-                mutability: left_mutability,
-                inner: left_inner,
-            },
-            Ty::Pointer {
-                nullable: right_nullable,
-                mutability: right_mutability,
-                inner: right_inner,
-            },
-        ) => {
-            left_nullable == right_nullable
-                && left_mutability == right_mutability
-                && marker_ty_patterns_overlap(left_inner, right_inner)
-        }
-        (
-            Ty::Array {
-                len: left_len,
-                elem: left_elem,
-            },
-            Ty::Array {
-                len: right_len,
-                elem: right_elem,
-            },
-        ) => left_len == right_len && marker_ty_patterns_overlap(left_elem, right_elem),
-        (
-            Ty::Slice {
-                mutability: left_mutability,
-                elem: left_elem,
-            },
-            Ty::Slice {
-                mutability: right_mutability,
-                elem: right_elem,
-            },
-        ) => {
-            left_mutability == right_mutability && marker_ty_patterns_overlap(left_elem, right_elem)
-        }
-        (
-            Ty::Named {
-                name: left_name,
-                args: left_args,
-            },
-            Ty::Named {
-                name: right_name,
-                args: right_args,
-            },
-        )
-        | (
-            Ty::DynamicInterface {
-                name: left_name,
-                args: left_args,
-            },
-            Ty::DynamicInterface {
-                name: right_name,
-                args: right_args,
-            },
-        ) => {
-            left_name == right_name
-                && left_args.len() == right_args.len()
-                && left_args
-                    .iter()
-                    .zip(right_args.iter())
-                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-        }
-        (
-            Ty::Function {
-                is_unsafe: left_is_unsafe,
-                abi: left_abi,
-                ret: left_ret,
-                params: left_params,
-            },
-            Ty::Function {
-                is_unsafe: right_is_unsafe,
-                abi: right_abi,
-                ret: right_ret,
-                params: right_params,
-            },
-        ) => {
-            left_is_unsafe == right_is_unsafe
-                && left_abi == right_abi
-                && left_params.len() == right_params.len()
-                && marker_ty_patterns_overlap(left_ret, right_ret)
-                && left_params
-                    .iter()
-                    .zip(right_params.iter())
-                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-        }
-        (
-            Ty::Closure {
-                ret: left_ret,
-                params: left_params,
-                ..
-            },
-            Ty::Closure {
-                ret: right_ret,
-                params: right_params,
-                ..
-            },
-        ) => {
-            left_params.len() == right_params.len()
-                && marker_ty_patterns_overlap(left_ret, right_ret)
-                && left_params
-                    .iter()
-                    .zip(right_params.iter())
-                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-        }
-        (
-            Ty::ClosureInstance {
-                id: left_id,
-                ret: left_ret,
-                params: left_params,
-                captures: left_captures,
-            },
-            Ty::ClosureInstance {
-                id: right_id,
-                ret: right_ret,
-                params: right_params,
-                captures: right_captures,
-            },
-        ) => {
-            left_id == right_id
-                && left_params.len() == right_params.len()
-                && left_captures.len() == right_captures.len()
-                && marker_ty_patterns_overlap(left_ret, right_ret)
-                && left_params
-                    .iter()
-                    .zip(right_params.iter())
-                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-                && left_captures
-                    .iter()
-                    .zip(right_captures.iter())
-                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
-        }
-        (left, right) => left == right,
-    }
 }
 
 fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
@@ -14554,8 +16212,18 @@ fn ast_type_mentions_name(ty: &Type, name: &str) -> bool {
 
 fn constraint_expr_mentions_name(expr: &ConstraintExpr, name: &str) -> bool {
     expr.terms.iter().any(|term| {
-        term.args
-            .iter()
-            .any(|arg| ast_type_mentions_name(arg, name))
+        term.args.iter().any(|arg| match arg {
+            ConstraintArg::Type(ty) => ast_type_mentions_name(ty, name),
+            ConstraintArg::Binding {
+                name: binding,
+                constraint,
+                ..
+            } => {
+                binding.name == name
+                    || constraint
+                        .as_ref()
+                        .is_some_and(|constraint| constraint_expr_mentions_name(constraint, name))
+            }
+        })
     })
 }

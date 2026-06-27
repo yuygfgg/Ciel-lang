@@ -104,6 +104,7 @@ pub struct VariantDecl {
 pub struct InterfaceDecl {
     pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
+    pub determined_start: Option<usize>,
     pub signature: FunctionSignature,
 }
 
@@ -148,11 +149,40 @@ pub struct FunctionDecl {
 
 #[derive(Clone, Debug)]
 pub struct FunctionSignature {
-    pub ret: Type,
+    pub ret: FunctionReturnType,
     pub name: ast::Ident,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub receiver_selector: Option<ReceiverSelector>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FunctionReturnType {
+    Type(Type),
+    OpaqueConstraint {
+        marker_span: Span,
+        constraint: ConstraintExpr,
+    },
+}
+
+impl FunctionReturnType {
+    pub fn span(&self) -> Span {
+        match self {
+            FunctionReturnType::Type(ty) => ty.span,
+            FunctionReturnType::OpaqueConstraint {
+                marker_span,
+                constraint,
+            } => constraint
+                .terms
+                .last()
+                .and_then(|term| match &term.name.kind {
+                    NameRefKind::Def(_) | NameRefKind::Error => Some(term.name.span),
+                    _ => Some(term.name.span),
+                })
+                .map(|span| marker_span.merge(span))
+                .unwrap_or(*marker_span),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +212,7 @@ pub enum ExternItem {
 #[derive(Clone, Debug)]
 pub struct GenericParam {
     pub is_resource: bool,
+    pub is_hidden: bool,
     pub name: ast::Ident,
     pub constraint: Option<ConstraintExpr>,
 }
@@ -196,7 +227,17 @@ pub struct ConstraintTerm {
     pub negated: bool,
     pub removed: bool,
     pub name: NameRef,
-    pub args: Vec<Type>,
+    pub args: Vec<ConstraintArg>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ConstraintArg {
+    Type(Type),
+    Binding {
+        name: ast::Ident,
+        constraint: Option<ConstraintExpr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -519,6 +560,12 @@ struct ModuleLowerer<'a, 'b> {
     generic_scopes: Vec<HashSet<String>>,
 }
 
+#[derive(Clone, Debug)]
+struct HiddenGenericParam {
+    name: ast::Ident,
+    constraint: Option<ast::ConstraintExpr>,
+}
+
 impl<'a> Lowerer<'a> {
     fn lower_module(&mut self, module: &crate::resolve::ResolvedModule) -> Module {
         let mut ctx = ModuleLowerer {
@@ -556,8 +603,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             ast::ItemKind::Import(decl) => ItemKind::Import(decl.clone()),
             ast::ItemKind::CInclude(include) => ItemKind::CInclude(include.clone()),
             ast::ItemKind::TypeAlias(decl) => {
-                self.push_generics(&decl.generics);
-                let generics = self.lower_generics(&decl.generics);
+                let hidden = self.hidden_generics_for(&decl.generics);
+                self.push_generics_with_hidden(&decl.generics, &hidden);
+                let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
                 let target = self.lower_type_alias_target(&decl.target);
                 self.pop_generics();
                 ItemKind::TypeAlias(TypeAliasDecl {
@@ -567,8 +615,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 })
             }
             ast::ItemKind::Struct(decl) => {
-                self.push_generics(&decl.generics);
-                let generics = self.lower_generics(&decl.generics);
+                let hidden = self.hidden_generics_for(&decl.generics);
+                self.push_generics_with_hidden(&decl.generics, &hidden);
+                let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
                 let fields = decl
                     .fields
                     .iter()
@@ -587,8 +636,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 })
             }
             ast::ItemKind::Enum(decl) => {
-                self.push_generics(&decl.generics);
-                let generics = self.lower_generics(&decl.generics);
+                let hidden = self.hidden_generics_for(&decl.generics);
+                self.push_generics_with_hidden(&decl.generics, &hidden);
+                let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
                 let variants = decl
                     .variants
                     .iter()
@@ -616,6 +666,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 ItemKind::Interface(InterfaceDecl {
                     is_unsafe: decl.is_unsafe,
                     generics,
+                    determined_start: decl.determined_start,
                     signature,
                 })
             }
@@ -631,9 +682,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 })
             }
             ast::ItemKind::Impl(decl) => {
-                self.push_generics(&decl.generics);
+                let hidden = self.hidden_generics_for(&decl.generics);
+                self.push_generics_with_hidden(&decl.generics, &hidden);
                 self.push_scope();
-                let generics = self.lower_generics(&decl.generics);
+                let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
                 let name = self.resolve_name(&decl.name, "interface");
                 self.require_def_kind(&name, &[DefKind::Interface], "interface");
                 let args = decl.args.iter().map(|ty| self.lower_type(ty)).collect();
@@ -660,8 +712,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 })
             }
             ast::ItemKind::Function(decl) => {
-                self.push_generics(&decl.signature.generics);
-                let signature = self.lower_signature(&decl.signature, decl.body.is_some());
+                let hidden = self.hidden_generics_for(&decl.signature.generics);
+                self.push_generics_with_hidden(&decl.signature.generics, &hidden);
+                let signature =
+                    self.lower_signature_with_hidden(&decl.signature, &hidden, decl.body.is_some());
                 let body = decl.body.as_ref().map(|body| {
                     self.push_scope();
                     for param in &signature.params {
@@ -741,8 +795,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     signature: self.lower_signature(signature, false),
                 },
                 ast::ExternItem::TypeAlias(alias) => {
-                    self.push_generics(&alias.generics);
-                    let generics = self.lower_generics(&alias.generics);
+                    let hidden = self.hidden_generics_for(&alias.generics);
+                    self.push_generics_with_hidden(&alias.generics, &hidden);
+                    let generics = self.lower_generics_with_hidden(&alias.generics, &hidden);
                     let target = self.lower_type_alias_target(&alias.target);
                     self.pop_generics();
                     ExternItem::TypeAlias(TypeAliasDecl {
@@ -771,17 +826,38 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
     }
 
     fn lower_generics(&mut self, generics: &[ast::GenericParam]) -> Vec<GenericParam> {
-        generics
+        self.lower_generics_with_hidden(generics, &[])
+    }
+
+    fn lower_generics_with_hidden(
+        &mut self,
+        generics: &[ast::GenericParam],
+        hidden: &[HiddenGenericParam],
+    ) -> Vec<GenericParam> {
+        let mut lowered = generics
             .iter()
             .map(|param| GenericParam {
                 is_resource: param.is_resource,
+                is_hidden: false,
                 name: param.name.clone(),
                 constraint: param
                     .constraint
                     .as_ref()
                     .map(|constraint| self.lower_constraint_expr(constraint)),
             })
-            .collect()
+            .collect::<Vec<_>>();
+        lowered.extend(hidden.iter().map(|param| {
+            GenericParam {
+                is_resource: false,
+                is_hidden: true,
+                name: param.name.clone(),
+                constraint: param
+                    .constraint
+                    .as_ref()
+                    .map(|constraint| self.lower_constraint_expr(constraint)),
+            }
+        }));
+        lowered
     }
 
     fn lower_constraint_expr(&mut self, expr: &ast::ConstraintExpr) -> ConstraintExpr {
@@ -793,9 +869,30 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     negated: term.negated,
                     removed: term.removed,
                     name: self.resolve_interface_name(&term.name),
-                    args: term.args.iter().map(|ty| self.lower_type(ty)).collect(),
+                    args: term
+                        .args
+                        .iter()
+                        .map(|arg| self.lower_constraint_arg(arg))
+                        .collect(),
                 })
                 .collect(),
+        }
+    }
+
+    fn lower_constraint_arg(&mut self, arg: &ast::ConstraintArg) -> ConstraintArg {
+        match arg {
+            ast::ConstraintArg::Type(ty) => ConstraintArg::Type(self.lower_type(ty)),
+            ast::ConstraintArg::Binding {
+                name,
+                constraint,
+                span,
+            } => ConstraintArg::Binding {
+                name: name.clone(),
+                constraint: constraint
+                    .as_ref()
+                    .map(|constraint| self.lower_constraint_expr(constraint)),
+                span: *span,
+            },
         }
     }
 
@@ -823,8 +920,17 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         signature: &ast::FunctionSignature,
         bind_params: bool,
     ) -> FunctionSignature {
-        let generics = self.lower_generics(&signature.generics);
-        let ret = self.lower_type(&signature.ret);
+        self.lower_signature_with_hidden(signature, &[], bind_params)
+    }
+
+    fn lower_signature_with_hidden(
+        &mut self,
+        signature: &ast::FunctionSignature,
+        hidden: &[HiddenGenericParam],
+        bind_params: bool,
+    ) -> FunctionSignature {
+        let generics = self.lower_generics_with_hidden(&signature.generics, hidden);
+        let ret = self.lower_function_return_type(&signature.ret);
         let params = signature
             .params
             .iter()
@@ -842,6 +948,19 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     span: selector.span,
                 }
             }),
+        }
+    }
+
+    fn lower_function_return_type(&mut self, ret: &ast::FunctionReturnType) -> FunctionReturnType {
+        match ret {
+            ast::FunctionReturnType::Type(ty) => FunctionReturnType::Type(self.lower_type(ty)),
+            ast::FunctionReturnType::OpaqueConstraint {
+                marker_span,
+                constraint,
+            } => FunctionReturnType::OpaqueConstraint {
+                marker_span: *marker_span,
+                constraint: self.lower_constraint_expr(constraint),
+            },
         }
     }
 
@@ -1634,9 +1753,80 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         }
     }
 
+    fn hidden_generics_for(&mut self, generics: &[ast::GenericParam]) -> Vec<HiddenGenericParam> {
+        let mut hidden = Vec::new();
+        let mut seen = generics
+            .iter()
+            .map(|generic| generic.name.name.clone())
+            .collect::<HashSet<_>>();
+        for generic in generics {
+            if let Some(constraint) = &generic.constraint {
+                self.collect_hidden_generics_from_constraint(constraint, &mut seen, &mut hidden);
+            }
+        }
+        hidden
+    }
+
+    fn collect_hidden_generics_from_constraint(
+        &mut self,
+        constraint: &ast::ConstraintExpr,
+        seen: &mut HashSet<String>,
+        hidden: &mut Vec<HiddenGenericParam>,
+    ) {
+        for term in &constraint.terms {
+            for arg in &term.args {
+                self.collect_hidden_generics_from_constraint_arg(arg, seen, hidden);
+            }
+        }
+    }
+
+    fn collect_hidden_generics_from_constraint_arg(
+        &mut self,
+        arg: &ast::ConstraintArg,
+        seen: &mut HashSet<String>,
+        hidden: &mut Vec<HiddenGenericParam>,
+    ) {
+        let ast::ConstraintArg::Binding {
+            name, constraint, ..
+        } = arg
+        else {
+            return;
+        };
+        if !seen.insert(name.name.clone()) {
+            self.lowerer.diagnostics.push(Diagnostic::new(
+                name.span,
+                format!("duplicate hidden generic parameter `{}`", name.name),
+            ));
+            return;
+        }
+        hidden.push(HiddenGenericParam {
+            name: name.clone(),
+            constraint: constraint.clone(),
+        });
+        if let Some(constraint) = constraint {
+            self.collect_hidden_generics_from_constraint(constraint, seen, hidden);
+        }
+    }
+
     fn push_generics(&mut self, generics: &[ast::GenericParam]) {
+        self.push_generics_with_hidden(generics, &[]);
+    }
+
+    fn push_generics_with_hidden(
+        &mut self,
+        generics: &[ast::GenericParam],
+        hidden: &[HiddenGenericParam],
+    ) {
         let mut scope = HashSet::new();
         for generic in generics {
+            if !scope.insert(generic.name.name.clone()) {
+                self.lowerer.diagnostics.push(Diagnostic::new(
+                    generic.name.span,
+                    format!("duplicate generic parameter `{}`", generic.name.name),
+                ));
+            }
+        }
+        for generic in hidden {
             if !scope.insert(generic.name.name.clone()) {
                 self.lowerer.diagnostics.push(Diagnostic::new(
                     generic.name.span,

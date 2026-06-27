@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 64
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Range {
+    i64 value;
+}
+
+impl next<i64>(*Range iter) {
+    return Item(iter->value);
+}
+
+_: Iterator<Item> passthrough<I: Iterator<Item = _>>(I iter) {
+    return iter;
+}
+
+i64 main() {
+    Range range = { value: 64 };
+    _ iter = passthrough(range);
+    switch (next(&iter)) {
+    case Item(value):
+        return value;
+    case Done:
+        return 0;
+    }
+}

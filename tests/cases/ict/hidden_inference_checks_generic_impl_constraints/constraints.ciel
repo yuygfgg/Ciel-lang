@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: could not infer hidden parameter `Item`
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<T> void marker(*T value);
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Stream<T> {
+    T value;
+}
+
+impl<T: marker> next<T>(*Stream<T> iter) {
+    return Item(iter->value);
+}
+
+type Cached<I: Iterator<Item = _>> = Item;
+
+i64 main() {
+    Cached<Stream<i64>> cached = 1;
+    return cached;
+}

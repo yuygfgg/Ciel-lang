@@ -1,0 +1,28 @@
+// ciel-test: error
+// expect-error: conflicting determined parameters
+
+struct Bar {
+    i64 value;
+}
+
+struct Baz {
+    i64 value;
+}
+
+struct Foo<T> {
+    T value;
+}
+
+interface<I, K -> Item> Item get(*I value, K key);
+
+impl<T> get<Bar, T>(*Foo<T> value, Bar key) {
+    return value->value;
+}
+
+impl<T> get<T, T>(*Foo<Baz> value, T key) {
+    return key;
+}
+
+i64 main() {
+    return 0;
+}

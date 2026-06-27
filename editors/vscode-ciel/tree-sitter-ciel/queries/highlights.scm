@@ -78,6 +78,9 @@
 (named_type name: (identifier) @type)
 (named_type name: (qualified_name (identifier) @type .))
 (generic_parameter name: (identifier) @type.parameter)
+(constraint_binding name: (identifier) @type.parameter)
+(constraint_binding (type_hole) @type.parameter)
+(opaque_return_type (type_hole) @type.parameter)
 (interface_term name: (identifier) @type)
 (interface_term name: (qualified_name (identifier) @type .))
 (constraint_term name: (identifier) @type)
@@ -120,6 +123,7 @@
   "||"
   "="
   "->"
+  ":"
   "?"
   "?*"
   "*const"

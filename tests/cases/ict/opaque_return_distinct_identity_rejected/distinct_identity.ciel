@@ -1,0 +1,34 @@
+// ciel-test: error
+// expect-error: cannot assign opaque return type from function `evens` to opaque return type from function `odds`
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Range {
+    i64 value;
+}
+
+impl next<i64>(*Range iter) {
+    return Item(iter->value);
+}
+
+_: Iterator<i64> odds() {
+    Range range = { value: 1 };
+    return range;
+}
+
+_: Iterator<i64> evens() {
+    Range range = { value: 2 };
+    return range;
+}
+
+i64 main() {
+    _ @iter = odds();
+    iter = evens();
+    return 0;
+}

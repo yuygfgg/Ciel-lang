@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: conflicting determined parameters
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+
+struct Range {
+    i64 value;
+}
+
+impl next<i64>(*Range iter) {
+    return Item(iter->value);
+}
+
+impl next<u8>(*Range iter) {
+    return Item(1 as u8);
+}
+
+i64 main() {
+    return 0;
+}

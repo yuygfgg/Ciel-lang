@@ -1,0 +1,28 @@
+// ciel-test: run
+// expect-exit: 42
+
+struct Box<T> {
+    T value;
+}
+
+struct Source {
+    Box<i64> value;
+}
+
+interface<I -> Wrapped> Wrapped unwrap(*I value);
+interface Unwraps<Item> = unwrap<Box<Item>>;
+
+impl unwrap<Box<i64>>(*Source value) {
+    return value->value;
+}
+
+struct Holder<I: Unwraps<Item = _>> {
+    I inner;
+    Item cached;
+}
+
+i64 main() {
+    Source source = { value: { value: 42 } };
+    Holder<Source> holder = { inner: source, cached: 42 };
+    return holder.cached;
+}

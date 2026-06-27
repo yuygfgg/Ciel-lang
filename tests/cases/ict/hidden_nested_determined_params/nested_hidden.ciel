@@ -1,0 +1,39 @@
+// ciel-test: run
+// expect-exit: 8
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct InnerIter {
+    i64 value;
+}
+
+struct OuterIter {
+    InnerIter inner;
+}
+
+impl next<i64>(*InnerIter iter) {
+    return Item(iter->value);
+}
+
+impl next<InnerIter>(*OuterIter iter) {
+    return Item(iter->inner);
+}
+
+struct Flatten<I: Iterator<Inner = _: Iterator<Item = _>>> {
+    I inner;
+    Inner current;
+    Item cached;
+}
+
+i64 main() {
+    InnerIter inner = { value: 7 };
+    OuterIter outer = { inner: inner };
+    Flatten<OuterIter> flat = { inner: outer, current: inner, cached: 8 };
+    return flat.cached;
+}

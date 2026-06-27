@@ -1,0 +1,39 @@
+// ciel-test: run
+// expect-exit: 4
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+interface<F, In -> Out> Out map_call(*F f, In value);
+interface Mapper<In, Out> = map_call<In, Out>;
+
+struct Range {
+    i64 value;
+}
+
+struct AddOne {}
+
+impl next<i64>(*Range iter) {
+    return Item(iter->value);
+}
+
+impl map_call<i64, i64>(*AddOne f, i64 value) {
+    return value + 1;
+}
+
+struct MapIter<I: Iterator<In = _>, F: Mapper<In, Out = _>> {
+    I inner;
+    F f;
+    Out cached;
+}
+
+i64 main() {
+    Range range = { value: 3 };
+    AddOne add = {};
+    MapIter<Range, AddOne> mapped = { inner: range, f: add, cached: 4 };
+    return mapped.cached;
+}

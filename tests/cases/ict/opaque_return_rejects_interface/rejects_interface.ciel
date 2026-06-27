@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: opaque return type cannot be used in interface declarations
+
+interface<T> bool marker(*T value);
+
+interface<I> _: marker make(*I value);
+
+i64 main() {
+    return 0;
+}

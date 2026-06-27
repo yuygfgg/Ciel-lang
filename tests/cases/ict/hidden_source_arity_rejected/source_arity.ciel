@@ -1,0 +1,31 @@
+// ciel-test: error
+// expect-error: struct `Peekable` expects 1 type arguments, got 2
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Range {
+    i64 value;
+}
+
+impl next<i64>(*Range iter) {
+    return Item(iter->value);
+}
+
+struct Peekable<I: Iterator<Item = _>> {
+    I inner;
+    Item cached;
+}
+
+void takes(Peekable<Range, i64> value) {
+    return;
+}
+
+i64 main() {
+    return 0;
+}

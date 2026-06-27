@@ -202,14 +202,14 @@ module.exports = grammar({
         interface_declaration: $ => seq(
             optional('unsafe'),
             'interface',
-            $.generic_parameter_list,
+            $.interface_generic_parameter_list,
             $.interface_signature,
             optional($.receiver_selector),
             ';',
         ),
 
         interface_signature: $ => seq(
-            field('return_type', $.type),
+            field('return_type', $.function_return_type),
             field('name', $.identifier),
             field('parameters', $.parameter_list),
         ),
@@ -275,7 +275,7 @@ module.exports = grammar({
         ),
 
         function_signature: $ => seq(
-            field('return_type', $.type),
+            field('return_type', $.function_return_type),
             field('name', $.identifier),
             optional($.generic_parameter_list),
             field('parameters', $.parameter_list),
@@ -307,6 +307,18 @@ module.exports = grammar({
             '>',
         ),
 
+        interface_generic_parameter_list: $ => seq(
+            '<',
+            commaSep1($.generic_parameter),
+            optional(seq(
+                $.determined_parameter_separator,
+                commaSep1($.generic_parameter),
+            )),
+            '>',
+        ),
+
+        determined_parameter_separator: _ => '->',
+
         generic_parameter: $ => choice(
             seq(
                 'resource',
@@ -327,7 +339,25 @@ module.exports = grammar({
         constraint_term: $ => seq(
             optional('!'),
             field('name', choice($.identifier, $.qualified_name)),
-            optional($.type_argument_list),
+            optional($.constraint_argument_list),
+        ),
+
+        constraint_argument_list: $ => seq(
+            '<',
+            commaSep1($.constraint_argument),
+            '>',
+        ),
+
+        constraint_argument: $ => choice(
+            $.constraint_binding,
+            $.type,
+        ),
+
+        constraint_binding: $ => seq(
+            field('name', $.identifier),
+            '=',
+            $.type_hole,
+            optional(seq(':', $.constraint_expr)),
         ),
 
         parameter_list: $ => seq(
@@ -344,6 +374,17 @@ module.exports = grammar({
         binding_name: $ => seq(
             optional('@'),
             $.identifier,
+        ),
+
+        function_return_type: $ => choice(
+            $.opaque_return_type,
+            $.type,
+        ),
+
+        opaque_return_type: $ => seq(
+            $.type_hole,
+            ':',
+            $.constraint_expr,
         ),
 
         type: $ => prec.right(seq(

@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: opaque return type requires a function body
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+_: Iterator<i64> make_range();
+
+i64 main() {
+    return 0;
+}

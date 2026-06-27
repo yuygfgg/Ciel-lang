@@ -1,13 +1,17 @@
+use std::collections::{HashMap, HashSet};
+
 use crate::{
     ast::{BinaryOp, BindingMutability, Literal, UnaryOp},
     hir::{ConstraintExpr, FunctionDecl, Local, LocalId, Module},
     resolve::{DefId, ModuleId, ResolvedProgram},
     span::Span,
-    types::Ty,
+    typeck::env::TyCtx,
+    types::{OpaqueReturnKey, Ty},
 };
 
 #[derive(Clone, Debug)]
 pub struct CheckedProgram {
+    pub ty_ctx: TyCtx,
     pub resolved: ResolvedProgram,
     pub hir_modules: Vec<Module>,
     pub hir_locals: Vec<Local>,
@@ -21,6 +25,7 @@ pub struct CheckedProgram {
     pub impls: Vec<CheckedImpl>,
     pub functions: Vec<CheckedFunction>,
     pub generic_functions: Vec<CheckedGenericFunction>,
+    pub opaque_returns: HashMap<OpaqueReturnKey, Ty>,
 }
 
 #[derive(Clone, Debug)]
@@ -86,12 +91,35 @@ pub struct CheckedFunction {
     pub name: String,
     pub is_unsafe: bool,
     pub is_async: bool,
+    pub async_facts: Option<AsyncFacts>,
     pub abi: Option<String>,
     pub noescape: bool,
     pub exported: bool,
     pub ret: Ty,
     pub params: Vec<(Option<LocalId>, String, Ty)>,
     pub body: Option<TBlock>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AsyncFacts {
+    pub frame_locals: Vec<AsyncFrameLocal>,
+    pub live_across_await: HashSet<LocalId>,
+    pub await_output_tys: Vec<Ty>,
+    pub defer_args: Vec<AsyncDeferArg>,
+}
+
+#[derive(Clone, Debug)]
+pub struct AsyncFrameLocal {
+    pub id: LocalId,
+    pub ty: Ty,
+    pub field: String,
+    pub heap: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct AsyncDeferArg {
+    pub ty: Ty,
+    pub field: String,
 }
 
 #[derive(Clone, Debug)]
@@ -114,6 +142,7 @@ pub struct CheckedGenericFunction {
 pub struct CheckedGenericParam {
     pub name: String,
     pub is_resource: bool,
+    pub is_hidden: bool,
     pub constraint: Option<ConstraintExpr>,
 }
 
@@ -307,6 +336,7 @@ pub enum TExprKind {
         params: Vec<(LocalId, String, Ty)>,
         captures: Vec<TClosureCapture>,
         body: TClosureBody,
+        async_facts: Option<AsyncFacts>,
     },
     FunctionToClosure(Box<TExpr>),
     RetainClosure {

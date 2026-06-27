@@ -224,6 +224,12 @@ impl MonoContext {
         let Some(mut function) = self.functions_by_def.get(&def_id).cloned() else {
             return;
         };
+        function.ret = self.lower_opaque_returns_in_ty(&function.ret);
+        function.params = function
+            .params
+            .into_iter()
+            .map(|(local, name, ty)| (local, name, self.lower_opaque_returns_in_ty(&ty)))
+            .collect();
         let previous_stack = std::mem::replace(
             &mut self.current_stack,
             self.generic_chains
@@ -265,6 +271,7 @@ impl MonoContext {
             function,
             generated_functions,
             impls,
+            opaque_returns,
         } = type_check_generic_instance(
             &self.checked,
             &template,
@@ -287,6 +294,7 @@ impl MonoContext {
             self.next_def = self.next_def.max(generated.def_id.0 + 1);
             self.functions_by_def.insert(generated.def_id, generated);
         }
+        self.checked.opaque_returns.extend(opaque_returns);
         self.generic_instances.insert(key, instance_def);
         let mut chain = self.current_stack.clone();
         chain.push(GenericFrame {
@@ -367,6 +375,18 @@ impl MonoContext {
         })
     }
 
+    fn lower_opaque_returns_in_ty(&self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::OpaqueReturn { key, .. } => {
+                let Some(concrete) = self.checked.opaque_returns.get(key) else {
+                    return ty.clone();
+                };
+                self.lower_opaque_returns_in_ty(concrete)
+            }
+            _ => map_ty_children(ty, |child| self.lower_opaque_returns_in_ty(child)),
+        }
+    }
+
     fn rewrite_stmt(&mut self, stmt: TStmt) -> DiagResult<TStmt> {
         let kind = match stmt.kind {
             TStmtKind::Block(block) => TStmtKind::Block(self.rewrite_block(block)?),
@@ -376,7 +396,7 @@ impl MonoContext {
                 local_id,
                 init,
             } => TStmtKind::VarDecl {
-                ty,
+                ty: self.lower_opaque_returns_in_ty(&ty),
                 name,
                 local_id,
                 init: init.map(|expr| self.rewrite_expr(expr)).transpose()?,
@@ -459,7 +479,7 @@ impl MonoContext {
                 local_id,
                 init,
             } => Ok(TForInit::VarDecl {
-                ty,
+                ty: self.lower_opaque_returns_in_ty(&ty),
                 name,
                 local_id,
                 init: init.map(|expr| self.rewrite_expr(expr)).transpose()?,
@@ -488,7 +508,9 @@ impl MonoContext {
 
     fn rewrite_pattern(&mut self, pattern: TPattern) -> DiagResult<TPattern> {
         Ok(match pattern {
-            TPattern::Wildcard { ty } => TPattern::Wildcard { ty },
+            TPattern::Wildcard { ty } => TPattern::Wildcard {
+                ty: self.lower_opaque_returns_in_ty(&ty),
+            },
             TPattern::Binding {
                 local_id,
                 name,
@@ -498,7 +520,7 @@ impl MonoContext {
                 local_id,
                 name,
                 mutability,
-                ty,
+                ty: self.lower_opaque_returns_in_ty(&ty),
             },
             TPattern::Variant {
                 ty,
@@ -507,8 +529,9 @@ impl MonoContext {
                 variant_index,
                 payload,
             } => TPattern::Variant {
-                enum_type_name: enum_c_name_from_ty(&ty).unwrap_or(enum_type_name),
-                ty,
+                enum_type_name: enum_c_name_from_ty(&self.lower_opaque_returns_in_ty(&ty))
+                    .unwrap_or(enum_type_name),
+                ty: self.lower_opaque_returns_in_ty(&ty),
                 variant_name,
                 variant_index,
                 payload: payload
@@ -549,7 +572,7 @@ impl MonoContext {
             },
             TExprKind::Cast { expr: inner, ty } => TExprKind::Cast {
                 expr: Box::new(self.rewrite_expr(*inner)?),
-                ty,
+                ty: self.lower_opaque_returns_in_ty(&ty),
             },
             TExprKind::Call { callee, args } => TExprKind::Call {
                 callee: Box::new(self.rewrite_expr(*callee)?),
@@ -573,12 +596,24 @@ impl MonoContext {
                 params,
                 captures,
                 body,
+                async_facts,
             } => TExprKind::Closure {
                 is_async,
                 id,
-                params,
-                captures,
+                params: params
+                    .into_iter()
+                    .map(|(local, name, ty)| (local, name, self.lower_opaque_returns_in_ty(&ty)))
+                    .collect(),
+                captures: captures
+                    .into_iter()
+                    .map(|capture| crate::thir::TClosureCapture {
+                        local_id: capture.local_id,
+                        name: capture.name,
+                        ty: self.lower_opaque_returns_in_ty(&capture.ty),
+                    })
+                    .collect(),
                 body: self.rewrite_closure_body(body)?,
+                async_facts,
             },
             TExprKind::FunctionToClosure(inner) => {
                 self.mark_retained_closure_witness_impls(&expr.ty, &inner.ty);
@@ -604,6 +639,7 @@ impl MonoContext {
                 expr: inner,
                 concrete_ty,
             } => {
+                let concrete_ty = self.lower_opaque_returns_in_ty(&concrete_ty);
                 self.mark_dynamic_impls(&expr.ty, &concrete_ty);
                 TExprKind::MakeDynamicInterface {
                     expr: Box::new(self.rewrite_expr(*inner)?),
@@ -629,7 +665,10 @@ impl MonoContext {
                 args,
             } => TExprKind::RetainedClosureInterfaceCall {
                 interface_name,
-                interface_args,
+                interface_args: interface_args
+                    .iter()
+                    .map(|arg| self.lower_opaque_returns_in_ty(arg))
+                    .collect(),
                 receiver: Box::new(self.rewrite_expr(*receiver)?),
                 args: args
                     .into_iter()
@@ -641,7 +680,7 @@ impl MonoContext {
                 self.mark_task_boundary_clone_impls(&message_ty);
                 TExprKind::CloneMessage {
                     value: Box::new(self.rewrite_expr(*value)?),
-                    message_ty,
+                    message_ty: self.lower_opaque_returns_in_ty(&message_ty),
                 }
             }
             TExprKind::Field { base, field } => TExprKind::Field {
@@ -707,7 +746,8 @@ impl MonoContext {
                                 binding_local: arm.binding_local,
                                 binding_name: arm.binding_name,
                                 future: self.rewrite_expr(arm.future)?,
-                                future_output_ty: arm.future_output_ty,
+                                future_output_ty: self
+                                    .lower_opaque_returns_in_ty(&arm.future_output_ty),
                                 body: self.rewrite_expr(arm.body)?,
                             })
                         })
@@ -728,7 +768,7 @@ impl MonoContext {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncSleep {
                     ms: Box::new(self.rewrite_expr(*ms)?),
-                    output_ty,
+                    output_ty: self.lower_opaque_returns_in_ty(&output_ty),
                 }
             }
             TExprKind::AsyncOpFuture { op, output_ty } => {
@@ -736,7 +776,7 @@ impl MonoContext {
                 self.mark_async_op_impls(&op.ty, &output_ty);
                 TExprKind::AsyncOpFuture {
                     op: Box::new(self.rewrite_expr(*op)?),
-                    output_ty,
+                    output_ty: self.lower_opaque_returns_in_ty(&output_ty),
                 }
             }
             TExprKind::AsyncSpawn {
@@ -754,7 +794,7 @@ impl MonoContext {
                 }
                 TExprKind::AsyncSpawn {
                     body: Box::new(self.rewrite_expr(*body)?),
-                    task_output_ty,
+                    task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
                 }
             }
             TExprKind::AsyncTaskCancel {
@@ -764,7 +804,7 @@ impl MonoContext {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncTaskCancel {
                     task: Box::new(self.rewrite_expr(*task)?),
-                    task_output_ty,
+                    task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
                 }
             }
             TExprKind::AsyncTaskIsFinished {
@@ -774,7 +814,7 @@ impl MonoContext {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncTaskIsFinished {
                     task: Box::new(self.rewrite_expr(*task)?),
-                    task_output_ty,
+                    task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
                 }
             }
             TExprKind::AsyncChannelSend {
@@ -787,7 +827,7 @@ impl MonoContext {
                 TExprKind::AsyncChannelSend {
                     sender: Box::new(self.rewrite_expr(*sender)?),
                     value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty,
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::AsyncChannelTrySend {
@@ -800,14 +840,14 @@ impl MonoContext {
                 TExprKind::AsyncChannelTrySend {
                     sender: Box::new(self.rewrite_expr(*sender)?),
                     value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty,
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::AsyncChannelReserve { sender, payload_ty } => {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncChannelReserve {
                     sender: Box::new(self.rewrite_expr(*sender)?),
-                    payload_ty,
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::AsyncChannelPermitSend {
@@ -820,7 +860,7 @@ impl MonoContext {
                 TExprKind::AsyncChannelPermitSend {
                     permit: Box::new(self.rewrite_expr(*permit)?),
                     value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty,
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::AsyncChannelRecv {
@@ -830,20 +870,20 @@ impl MonoContext {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncChannelRecv {
                     receiver: Box::new(self.rewrite_expr(*receiver)?),
-                    payload_ty,
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
-                source_ty,
+                source_ty: self.lower_opaque_returns_in_ty(&source_ty),
             },
             TExprKind::MetaIntoRepr { value, source_ty } => TExprKind::MetaIntoRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
-                source_ty,
+                source_ty: self.lower_opaque_returns_in_ty(&source_ty),
             },
             TExprKind::MetaFromRepr { value, target_ty } => TExprKind::MetaFromRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
-                target_ty,
+                target_ty: self.lower_opaque_returns_in_ty(&target_ty),
             },
             TExprKind::ActorSpawn {
                 mode,
@@ -863,10 +903,10 @@ impl MonoContext {
                     mode,
                     state_arg: Box::new(self.rewrite_expr(*state_arg)?),
                     handler: Box::new(self.rewrite_expr(*handler)?),
-                    state_ty,
-                    handle_message_ty,
-                    message_ty,
-                    handler_ty,
+                    state_ty: self.lower_opaque_returns_in_ty(&state_ty),
+                    handle_message_ty: self.lower_opaque_returns_in_ty(&handle_message_ty),
+                    message_ty: self.lower_opaque_returns_in_ty(&message_ty),
+                    handler_ty: self.lower_opaque_returns_in_ty(&handler_ty),
                 }
             }
             TExprKind::ActorSend {
@@ -879,25 +919,29 @@ impl MonoContext {
                 TExprKind::ActorSend {
                     actor: Box::new(self.rewrite_expr(*actor)?),
                     value: Box::new(self.rewrite_expr(*value)?),
-                    message_ty,
+                    message_ty: self.lower_opaque_returns_in_ty(&message_ty),
                 }
             }
             TExprKind::ActorStop { actor, message_ty } => {
                 self.mark_standard_error_code_impl();
                 TExprKind::ActorStop {
                     actor: Box::new(self.rewrite_expr(*actor)?),
-                    message_ty,
+                    message_ty: self.lower_opaque_returns_in_ty(&message_ty),
                 }
             }
             TExprKind::ActorJoin { actor, message_ty } => {
                 self.mark_standard_error_code_impl();
                 TExprKind::ActorJoin {
                     actor: Box::new(self.rewrite_expr(*actor)?),
-                    message_ty,
+                    message_ty: self.lower_opaque_returns_in_ty(&message_ty),
                 }
             }
-            TExprKind::TypeSize { ty } => TExprKind::TypeSize { ty },
-            TExprKind::TypeAlign { ty } => TExprKind::TypeAlign { ty },
+            TExprKind::TypeSize { ty } => TExprKind::TypeSize {
+                ty: self.lower_opaque_returns_in_ty(&ty),
+            },
+            TExprKind::TypeAlign { ty } => TExprKind::TypeAlign {
+                ty: self.lower_opaque_returns_in_ty(&ty),
+            },
             TExprKind::StructLiteral { type_name, fields } => TExprKind::StructLiteral {
                 type_name,
                 fields: fields
@@ -933,7 +977,11 @@ impl MonoContext {
             TExprKind::Local(local_id, name) => TExprKind::Local(local_id, name),
             TExprKind::Literal(literal) => TExprKind::Literal(literal),
         };
-        Ok(TExpr { kind, ..expr })
+        Ok(TExpr {
+            ty: self.lower_opaque_returns_in_ty(&expr.ty),
+            kind,
+            ..expr
+        })
     }
 
     fn rewrite_closure_body(
@@ -1140,6 +1188,17 @@ struct EnumTemplate {
 struct AliasTemplate {
     generics: Vec<String>,
     target: TypeAliasTarget,
+}
+
+enum CheckedAggregateInstance {
+    Struct(CheckedStruct),
+    Enum(CheckedEnum),
+}
+
+#[derive(Clone, Copy)]
+enum AggregateKind {
+    Struct,
+    Enum,
 }
 
 struct AggregateCollector<'a> {
@@ -1777,6 +1836,15 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_ty(arg);
                 }
             }
+            Ty::OpaqueReturn { key, bounds } => {
+                for arg in &key.args {
+                    self.collect_ty(arg);
+                }
+                self.collect_constraint_bounds_tys(bounds);
+                if let Some(concrete) = self.checked.opaque_returns.get(key).cloned() {
+                    self.collect_ty(&concrete);
+                }
+            }
             Ty::Function { ret, params, .. } => {
                 self.collect_ty(ret);
                 for param in params {
@@ -1863,11 +1931,105 @@ impl<'a> AggregateCollector<'a> {
         }
     }
 
+    fn checked_aggregate_instance(
+        &self,
+        kind: AggregateKind,
+        instance_name: &str,
+    ) -> Option<CheckedAggregateInstance> {
+        match kind {
+            AggregateKind::Struct => self
+                .checked
+                .structs
+                .iter()
+                .find(|candidate| candidate.name == instance_name)
+                .cloned()
+                .map(CheckedAggregateInstance::Struct),
+            AggregateKind::Enum => self
+                .checked
+                .enums
+                .iter()
+                .find(|candidate| candidate.name == instance_name)
+                .cloned()
+                .map(CheckedAggregateInstance::Enum),
+        }
+    }
+
+    fn aggregate_emitted_or_visiting(&self, kind: AggregateKind, instance_name: &str) -> bool {
+        match kind {
+            AggregateKind::Struct => {
+                self.emitted_structs.contains(instance_name)
+                    || self.visiting_structs.contains(instance_name)
+            }
+            AggregateKind::Enum => {
+                self.emitted_enums.contains(instance_name)
+                    || self.visiting_enums.contains(instance_name)
+            }
+        }
+    }
+
+    fn with_aggregate_emission(
+        &mut self,
+        kind: AggregateKind,
+        instance_name: &str,
+        collect: impl FnOnce(&mut Self),
+    ) {
+        match kind {
+            AggregateKind::Struct => {
+                self.visiting_structs.insert(instance_name.to_string());
+            }
+            AggregateKind::Enum => {
+                self.visiting_enums.insert(instance_name.to_string());
+            }
+        }
+
+        collect(self);
+
+        match kind {
+            AggregateKind::Struct => {
+                self.visiting_structs.remove(instance_name);
+                self.emitted_structs.insert(instance_name.to_string());
+            }
+            AggregateKind::Enum => {
+                self.visiting_enums.remove(instance_name);
+                self.emitted_enums.insert(instance_name.to_string());
+            }
+        }
+    }
+
+    fn emit_checked_aggregate_instance(&mut self, instance: CheckedAggregateInstance) {
+        match instance {
+            CheckedAggregateInstance::Struct(checked) => {
+                let instance_name = checked.name.clone();
+                self.with_aggregate_emission(AggregateKind::Struct, &instance_name, |collector| {
+                    for (_, ty) in &checked.fields {
+                        collector.collect_ty(ty);
+                    }
+                });
+                self.checked_structs.push(checked);
+            }
+            CheckedAggregateInstance::Enum(checked) => {
+                let instance_name = checked.name.clone();
+                self.with_aggregate_emission(AggregateKind::Enum, &instance_name, |collector| {
+                    for variant in &checked.variants {
+                        for ty in &variant.payload {
+                            collector.collect_ty(ty);
+                        }
+                    }
+                });
+                self.checked_enums.push(checked);
+            }
+        }
+    }
+
     fn instantiate_struct(&mut self, name: &str, args: &[Ty]) {
         let instance_name = aggregate_instance_name(name, args);
-        if self.emitted_structs.contains(&instance_name)
-            || self.visiting_structs.contains(&instance_name)
+        if self.aggregate_emitted_or_visiting(AggregateKind::Struct, &instance_name) {
+            return;
+        }
+        if let Some(checked) =
+            self.checked_aggregate_instance(AggregateKind::Struct, &instance_name)
         {
+            self.emit_checked_aggregate_instance(checked);
             return;
         }
         let Some(template) = self.structs.get(name) else {
@@ -1885,23 +2047,23 @@ impl<'a> AggregateCollector<'a> {
             return;
         }
         let generics = template.generics.clone();
-        let fields = template.fields.clone();
+        let template_fields = template.fields.clone();
         let is_resource = template.is_resource;
         let subst = generics
             .into_iter()
             .zip(args.iter().cloned())
             .collect::<HashMap<_, _>>();
-        self.visiting_structs.insert(instance_name.clone());
-        let fields = fields
-            .iter()
-            .map(|field| {
-                let ty = self.lower_ast_type(&field.ty, &subst);
-                self.collect_ty(&ty);
-                (field.name.name.clone(), ty)
-            })
-            .collect::<Vec<_>>();
-        self.visiting_structs.remove(&instance_name);
-        self.emitted_structs.insert(instance_name.clone());
+        let mut fields = Vec::new();
+        self.with_aggregate_emission(AggregateKind::Struct, &instance_name, |collector| {
+            fields = template_fields
+                .iter()
+                .map(|field| {
+                    let ty = collector.lower_ast_type(&field.ty, &subst);
+                    collector.collect_ty(&ty);
+                    (field.name.name.clone(), ty)
+                })
+                .collect();
+        });
         self.checked_structs.push(CheckedStruct {
             name: instance_name,
             is_resource,
@@ -1911,9 +2073,12 @@ impl<'a> AggregateCollector<'a> {
 
     fn instantiate_enum(&mut self, name: &str, args: &[Ty]) {
         let instance_name = aggregate_instance_name(name, args);
-        if self.emitted_enums.contains(&instance_name)
-            || self.visiting_enums.contains(&instance_name)
+        if self.aggregate_emitted_or_visiting(AggregateKind::Enum, &instance_name) {
+            return;
+        }
+        if let Some(checked) = self.checked_aggregate_instance(AggregateKind::Enum, &instance_name)
         {
+            self.emit_checked_aggregate_instance(checked);
             return;
         }
         let Some(template) = self.enums.get(name) else {
@@ -1931,36 +2096,36 @@ impl<'a> AggregateCollector<'a> {
             return;
         }
         let generics = template.generics.clone();
-        let variants = template.variants.clone();
+        let template_variants = template.variants.clone();
         let subst = generics
             .into_iter()
             .zip(args.iter().cloned())
             .collect::<HashMap<_, _>>();
-        self.visiting_enums.insert(instance_name.clone());
-        let variants = variants
-            .iter()
-            .map(|variant| {
-                let payload = variant
-                    .payload
-                    .iter()
-                    .filter_map(|payload| {
-                        let ty = self.lower_ast_type(payload, &subst);
-                        if ty.is_erased_value() {
-                            None
-                        } else {
-                            self.collect_ty(&ty);
-                            Some(ty)
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                CheckedVariant {
-                    name: variant.name.name.clone(),
-                    payload,
-                }
-            })
-            .collect::<Vec<_>>();
-        self.visiting_enums.remove(&instance_name);
-        self.emitted_enums.insert(instance_name.clone());
+        let mut variants = Vec::new();
+        self.with_aggregate_emission(AggregateKind::Enum, &instance_name, |collector| {
+            variants = template_variants
+                .iter()
+                .map(|variant| {
+                    let payload = variant
+                        .payload
+                        .iter()
+                        .filter_map(|payload| {
+                            let ty = collector.lower_ast_type(payload, &subst);
+                            if ty.is_erased_value() {
+                                None
+                            } else {
+                                collector.collect_ty(&ty);
+                                Some(ty)
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    CheckedVariant {
+                        name: variant.name.name.clone(),
+                        payload,
+                    }
+                })
+                .collect();
+        });
         self.checked_enums.push(CheckedEnum {
             name: instance_name,
             variants,
@@ -2585,7 +2750,7 @@ impl<'a> AggregateCollector<'a> {
             let args = term
                 .args
                 .iter()
-                .map(|arg| self.lower_ast_type(arg, subst))
+                .map(|arg| self.lower_constraint_arg(arg, subst))
                 .collect::<Vec<_>>();
             let view = constraint_interface_view(
                 &self.checked.interface_aliases,
@@ -2619,6 +2784,20 @@ impl<'a> AggregateCollector<'a> {
             }
         }
         bounds
+    }
+
+    fn lower_constraint_arg(
+        &mut self,
+        arg: &crate::hir::ConstraintArg,
+        subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        match arg {
+            crate::hir::ConstraintArg::Type(ty) => self.lower_ast_type(ty, subst),
+            crate::hir::ConstraintArg::Binding { name, .. } => subst
+                .get(&name.name)
+                .cloned()
+                .unwrap_or_else(|| Ty::Generic(name.name.clone())),
+        }
     }
 }
 

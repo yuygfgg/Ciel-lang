@@ -37,6 +37,32 @@ impl measure(*const Packet<usize> value) {
     return value->count;
 }
 
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter) = .next;
+interface Iterator<Item> = next<Item>;
+
+struct Range {
+    i64 value;
+}
+
+impl next<i64>(*Range iter) {
+    return Next::Item(iter->value);
+}
+
+struct Peekable<I: Iterator<Item = _>> {
+    I inner;
+    Item cached;
+}
+
+_: Iterator<i64> make_range(i64 value) {
+    Range range = { value: value };
+    return range;
+}
+
 async Result<Event, Error> read_event() {
     Event event = await select {
         case tick = async_time::sleep_ms(10): Event::Timeout;

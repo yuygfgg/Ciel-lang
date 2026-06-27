@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: named constraint binding `Item = _` is not allowed in negative
+
+interface<I -> Item> bool next(*I iter);
+
+void bad<I: !next<Item = _>>() {
+    return;
+}
+
+i64 main() {
+    return 0;
+}

@@ -89,6 +89,7 @@ pub struct VariantDecl {
 pub struct InterfaceDecl {
     pub is_unsafe: bool,
     pub generics: Vec<GenericParam>,
+    pub determined_start: Option<usize>,
     pub signature: FunctionSignature,
 }
 
@@ -139,11 +140,37 @@ pub struct FunctionDecl {
 
 #[derive(Clone, Debug)]
 pub struct FunctionSignature {
-    pub ret: Type,
+    pub ret: FunctionReturnType,
     pub name: Ident,
     pub generics: Vec<GenericParam>,
     pub params: Vec<Param>,
     pub receiver_selector: Option<ReceiverSelector>,
+}
+
+#[derive(Clone, Debug)]
+pub enum FunctionReturnType {
+    Type(Type),
+    OpaqueConstraint {
+        marker_span: Span,
+        constraint: ConstraintExpr,
+    },
+}
+
+impl FunctionReturnType {
+    pub fn span(&self) -> Span {
+        match self {
+            FunctionReturnType::Type(ty) => ty.span,
+            FunctionReturnType::OpaqueConstraint {
+                marker_span,
+                constraint,
+            } => constraint
+                .terms
+                .last()
+                .and_then(|term| term.name.last())
+                .map(|name| marker_span.merge(name.span))
+                .unwrap_or(*marker_span),
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -187,7 +214,17 @@ pub struct ConstraintTerm {
     pub negated: bool,
     pub removed: bool,
     pub name: Vec<Ident>,
-    pub args: Vec<Type>,
+    pub args: Vec<ConstraintArg>,
+}
+
+#[derive(Clone, Debug)]
+pub enum ConstraintArg {
+    Type(Type),
+    Binding {
+        name: Ident,
+        constraint: Option<ConstraintExpr>,
+        span: Span,
+    },
 }
 
 #[derive(Clone, Debug)]

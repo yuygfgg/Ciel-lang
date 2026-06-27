@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: opaque return type requires `Plain` to implement `next`
+
+enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+interface<I -> Item> Next<Item> next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Plain {
+    i64 value;
+}
+
+_: Iterator<i64> bad_iter() {
+    Plain plain = { value: 3 };
+    return plain;
+}
+
+i64 main() {
+    _ iter = bad_iter();
+    return 0;
+}

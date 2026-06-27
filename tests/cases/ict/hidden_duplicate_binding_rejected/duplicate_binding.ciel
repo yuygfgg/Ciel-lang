@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: duplicate hidden generic parameter `Item`
+
+interface<I -> Item> bool next(*I iter);
+interface Iterator<Item> = next<Item>;
+
+struct Bad<I: Iterator<Item = _>, J: Iterator<Item = _>> {
+    I left;
+    J right;
+}
+
+i64 main() {
+    return 0;
+}

@@ -145,6 +145,7 @@ fn collect_layout_edges_from_ty(
         | Ty::Closure { .. }
         | Ty::ClosureInstance { .. }
         | Ty::DynamicInterface { .. }
+        | Ty::OpaqueReturn { .. }
         | Ty::Hole(_)
         | Ty::Never
         | Ty::Void

@@ -1,0 +1,82 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_try_affine_temporaries_cleanup.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+resource struct Pair {
+    io::File first;
+    io::File second;
+}
+
+Result<Pair, Error> open_pair_literal([]const char path) {
+    return Ok({
+        first: io::open_read(path)?,
+        second: io::open_read(path)?,
+    });
+}
+
+Result<Pair, Error> open_pair_move_literal([]const char path) {
+    io::File file = io::open_read(path)?;
+    return Ok({
+        first: file,
+        second: io::open_read(path)?,
+    });
+}
+
+Result<void, Error> consume_two(io::File @first, io::File @second) {
+    io::close(first)?;
+    io::close(second)?;
+    return Ok;
+}
+
+Result<void, Error> open_call_args([]const char path) {
+    return consume_two(io::open_read(path)?, io::open_read(path)?);
+}
+
+Result<void, Error> expect_pair_failure_released(Result<Pair, Error> result, []const char path) {
+    switch (result) {
+        case Ok(_):
+            return Err(text_error("quota accepted pair"));
+        case Err(_):
+            io::File again = io::open_read(path)?;
+            io::close(again)?;
+            return Ok;
+    }
+}
+
+Result<void, Error> expect_void_failure_released(Result<void, Error> result, []const char path) {
+    switch (result) {
+        case Ok:
+            return Err(text_error("quota accepted call args"));
+        case Err(_):
+            io::File again = io::open_read(path)?;
+            io::close(again)?;
+            return Ok;
+    }
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "cleanup")?;
+        return Ok;
+    }));
+
+    resource::Limits limits = {
+        max_resources: 1,
+        max_child_owners: 16,
+        max_pending_ops: 16,
+        max_descriptors: 1,
+    };
+    must(resource::scoped_with_limits<void>(limits, || {
+        expect_pair_failure_released(open_pair_literal(path), path)?;
+        expect_pair_failure_released(open_pair_move_literal(path), path)?;
+        expect_void_failure_released(open_call_args(path), path)?;
+        return Ok;
+    }));
+    return 0;
+}

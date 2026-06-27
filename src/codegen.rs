@@ -58,6 +58,8 @@ struct CGenerator<'a> {
     current_capture_locals: HashMap<LocalId, String>,
     current_closure_owner: Option<DefId>,
     defer_stack: Vec<Vec<String>>,
+    temporary_resource_cleanup_depth: usize,
+    temporary_resource_cleanup_frames: Vec<usize>,
     current_owned_resource_roots: Vec<(Ty, String)>,
     loop_defer_starts: Vec<usize>,
     break_defer_starts: Vec<usize>,
@@ -283,6 +285,8 @@ impl<'a> CGenerator<'a> {
             current_capture_locals: HashMap::new(),
             current_closure_owner: None,
             defer_stack: Vec::new(),
+            temporary_resource_cleanup_depth: 0,
+            temporary_resource_cleanup_frames: Vec::new(),
             current_owned_resource_roots: Vec::new(),
             loop_defer_starts: Vec::new(),
             break_defer_starts: Vec::new(),
@@ -4814,6 +4818,8 @@ impl<'a> CGenerator<'a> {
         self.emit_line_directive(body.span);
         self.line(&format!("{} {{", self.function_decl(function, false)));
         self.defer_stack.clear();
+        self.temporary_resource_cleanup_depth = 0;
+        self.temporary_resource_cleanup_frames.clear();
         self.loop_defer_starts.clear();
         self.break_defer_starts.clear();
         self.current_return_ty = function.ret.clone();
@@ -4918,6 +4924,8 @@ impl<'a> CGenerator<'a> {
             names.run
         ));
         self.defer_stack.clear();
+        self.temporary_resource_cleanup_depth = 0;
+        self.temporary_resource_cleanup_frames.clear();
         self.loop_defer_starts.clear();
         self.break_defer_starts.clear();
         self.current_return_ty = function.ret.clone();
@@ -5107,54 +5115,14 @@ impl<'a> CGenerator<'a> {
                     }
                     return Ok(true);
                 }
-                if self.local_is_async_frame(*local_id) {
-                    if self.local_is_heap(*local_id) {
-                        self.line_indent(
-                            indent,
-                            &format!(
-                                "{cname} = ({}){};",
-                                self.c_pointer_type(ty),
-                                self.c_object_alloc_expr(ty)
-                            ),
-                        );
-                        if self.type_is_affine(ty) {
-                            self.line_indent(
-                                indent,
-                                &format!("memset({cname}, 0, sizeof(*{cname}));"),
-                            );
-                        }
-                        if let Some(init) = init {
-                            self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
-                        }
-                    } else if let Some(init) = init {
-                        self.emit_expr_store(&cname, init, indent)?;
-                    }
-                    let local_value = self.local_value_expr(*local_id, name);
-                    self.push_resource_cleanup_defer(ty, &local_value);
-                    return Ok(true);
-                }
-                if self.local_is_heap(*local_id) {
-                    self.line_indent(
-                        indent,
-                        &format!(
-                            "{} = ({}){};",
-                            self.c_pointer_decl(ty, &cname),
-                            self.c_pointer_type(ty),
-                            self.c_object_alloc_expr(ty)
-                        ),
-                    );
-                    if self.type_is_affine(ty) {
-                        self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
-                    }
-                    if let Some(init) = init {
-                        self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
-                    }
-                    let local_value = self.local_value_expr(*local_id, name);
-                    self.push_resource_cleanup_defer(ty, &local_value);
+                if self.local_is_async_frame(*local_id) || self.local_is_heap(*local_id) {
+                    self.gen_frame_or_heap_local_decl(ty, name, *local_id, init.as_ref(), indent)?;
                     return Ok(true);
                 }
                 if let Some(init) = init {
-                    self.emit_local_decl_with_init(ty, &cname, init, indent)?;
+                    self.with_temporary_resource_cleanup_scope(|this| {
+                        this.emit_local_decl_with_init(ty, &cname, init, indent)
+                    })?;
                 } else if self.type_is_affine(ty) {
                     self.line_indent(indent, &format!("{} = {{0}};", self.c_decl(ty, &cname)));
                 } else {
@@ -5764,7 +5732,9 @@ impl<'a> CGenerator<'a> {
                     );
                 }
                 if let Some(init) = init {
-                    self.emit_local_decl_with_init(ty, &cname, init, indent)?;
+                    self.with_temporary_resource_cleanup_scope(|this| {
+                        this.emit_local_decl_with_init(ty, &cname, init, indent)
+                    })?;
                 } else if self.type_is_affine(ty) {
                     self.line_indent(indent, &format!("{} = {{0}};", self.c_decl(ty, &cname)));
                 } else {
@@ -5801,6 +5771,7 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<()> {
         let cname = self.local_c_name(local_id, name);
+        let local_value = self.local_value_expr(local_id, name);
         if self.local_is_async_frame(local_id) {
             if self.local_is_heap(local_id) {
                 self.line_indent(
@@ -5815,12 +5786,18 @@ impl<'a> CGenerator<'a> {
                     self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
                 }
                 if let Some(init) = init {
-                    self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
+                    let target = format!("(*{cname})");
+                    self.with_temporary_resource_cleanup_scope(|this| {
+                        this.push_temporary_resource_cleanup_defer(ty, &local_value);
+                        this.emit_expr_store(&target, init, indent)
+                    })?;
                 }
             } else if let Some(init) = init {
-                self.emit_expr_store(&cname, init, indent)?;
+                self.with_temporary_resource_cleanup_scope(|this| {
+                    this.push_temporary_resource_cleanup_defer(ty, &local_value);
+                    this.emit_expr_store(&cname, init, indent)
+                })?;
             }
-            let local_value = self.local_value_expr(local_id, name);
             self.push_resource_cleanup_defer(ty, &local_value);
             return Ok(());
         }
@@ -5837,9 +5814,12 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, &format!("memset({cname}, 0, sizeof(*{cname}));"));
         }
         if let Some(init) = init {
-            self.emit_expr_store(&format!("(*{cname})"), init, indent)?;
+            let target = format!("(*{cname})");
+            self.with_temporary_resource_cleanup_scope(|this| {
+                this.push_temporary_resource_cleanup_defer(ty, &local_value);
+                this.emit_expr_store(&target, init, indent)
+            })?;
         }
-        let local_value = self.local_value_expr(local_id, name);
         self.push_resource_cleanup_defer(ty, &local_value);
         Ok(())
     }
@@ -5849,7 +5829,9 @@ impl<'a> CGenerator<'a> {
     }
 
     fn gen_expr_in_stmt(&mut self, expr: &TExpr, indent: usize) -> DiagResult<String> {
-        self.gen_expr_with_lowering(expr, Some(indent))
+        self.with_temporary_resource_cleanup_scope(|this| {
+            this.gen_expr_with_lowering(expr, Some(indent))
+        })
     }
 
     fn gen_call_args(
@@ -5925,6 +5907,7 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, &format!("{};", self.c_decl(&inner.ty, &temp)));
                 self.emit_value_copy(&temp, &source, &inner.ty, indent);
                 self.emit_resource_zero_expr(&inner.ty, &source, indent);
+                self.push_temporary_resource_cleanup_defer(&inner.ty, &temp);
                 temp
             }
             TExprKind::Function(def_id, name) => self
@@ -7114,12 +7097,14 @@ impl<'a> CGenerator<'a> {
 
     fn emit_assignment(&mut self, target: &TExpr, value: &TExpr, indent: usize) -> DiagResult<()> {
         if self.type_is_affine(&target.ty) {
-            let source = self.emit_temp_value("resource_assign", value, indent)?;
-            let target_code = self.gen_expr_in_stmt(target, indent)?;
-            let cleanup = self.resource_cleanup_call(&target.ty, &target_code);
-            self.line_indent(indent, &format!("{cleanup};"));
-            self.emit_value_copy(&target_code, &source, &target.ty, indent);
-            return Ok(());
+            return self.with_temporary_resource_cleanup_scope(|this| {
+                let source = this.emit_temp_value("resource_assign", value, indent)?;
+                let target_code = this.gen_expr_in_stmt(target, indent)?;
+                let cleanup = this.resource_cleanup_call(&target.ty, &target_code);
+                this.line_indent(indent, &format!("{cleanup};"));
+                this.emit_value_copy(&target_code, &source, &target.ty, indent);
+                Ok(())
+            });
         }
         let target_code = self.gen_expr_in_stmt(target, indent)?;
         self.emit_expr_store(&target_code, value, indent)
@@ -7154,6 +7139,12 @@ impl<'a> CGenerator<'a> {
         init: &TExpr,
         indent: usize,
     ) -> DiagResult<()> {
+        if self.type_is_affine(ty) {
+            self.line_indent(indent, &format!("{} = {{0}};", self.c_decl(ty, name)));
+            self.push_temporary_resource_cleanup_defer(ty, name);
+            self.emit_expr_store(name, init, indent)?;
+            return Ok(());
+        }
         if matches!(ty, Ty::Array { .. }) {
             self.line_indent(indent, &format!("{};", self.c_decl(ty, name)));
             self.emit_expr_store(name, init, indent)?;
@@ -7165,8 +7156,32 @@ impl<'a> CGenerator<'a> {
     }
 
     fn emit_temp_value(&mut self, prefix: &str, expr: &TExpr, indent: usize) -> DiagResult<String> {
+        self.emit_temp_value_with_tracking(prefix, expr, indent, true)
+    }
+
+    fn emit_untracked_temp_value(
+        &mut self,
+        prefix: &str,
+        expr: &TExpr,
+        indent: usize,
+    ) -> DiagResult<String> {
+        self.emit_temp_value_with_tracking(prefix, expr, indent, false)
+    }
+
+    fn emit_temp_value_with_tracking(
+        &mut self,
+        prefix: &str,
+        expr: &TExpr,
+        indent: usize,
+        track_result: bool,
+    ) -> DiagResult<String> {
         let temp = self.next_temp(prefix);
-        self.emit_local_decl_with_init(&expr.ty, &temp, expr, indent)?;
+        self.with_temporary_resource_cleanup_scope(|this| {
+            this.emit_local_decl_with_init(&expr.ty, &temp, expr, indent)
+        })?;
+        if track_result {
+            self.push_temporary_resource_cleanup_defer(&expr.ty, &temp);
+        }
         Ok(temp)
     }
 
@@ -8496,6 +8511,7 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &ok_temp)));
             self.emit_value_copy(&ok_temp, &ok_source, &expr.ty, indent);
             self.emit_resource_zero_expr(&expr.ty, &ok_source, indent);
+            self.push_temporary_resource_cleanup_defer(&expr.ty, &ok_temp);
             Ok(ok_temp)
         } else {
             Ok(format!("{temp}.as.{}._0", inner_layout.ok_name))
@@ -8519,8 +8535,9 @@ impl<'a> CGenerator<'a> {
         let async_ctx = self.current_async_context.clone();
         let async_await = async_ctx.is_some() && await_index.is_some();
         if let Some(await_index) = await_index {
+            let cleanup_frames = self.async_cleanup_defer_stack();
             if let Some(case) = self.current_async_cleanup_cases.get_mut(await_index - 1) {
-                *case = self.defer_stack.clone();
+                *case = cleanup_frames;
             }
             self.line_indent(indent, &format!("ciel_async_resume_{await_index}:;"));
             self.line_indent(indent, &format!("CielFuture *{raw} = NULL;"));
@@ -8532,7 +8549,7 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent + 1, &format!("{raw} = {ctx}->active_future;"));
             self.line_indent(indent, "} else {");
             let future_temp =
-                self.emit_temp_value(&format!("{prefix}_future"), future, indent + 1)?;
+                self.emit_untracked_temp_value(&format!("{prefix}_future"), future, indent + 1)?;
             self.emit_awaitable_future_raw(&raw, &future_temp, &future.ty, output_ty, indent + 1)?;
             self.line_indent(indent + 1, &format!("{ctx}->pc = {await_index};"));
             self.line_indent(indent + 1, &format!("{ctx}->cleanup_state = {ctx}->pc;"));
@@ -8747,6 +8764,7 @@ impl<'a> CGenerator<'a> {
         set: &str,
         biased: bool,
         arms: &[TSelectArm],
+        track_future_temps: bool,
         indent: usize,
     ) -> DiagResult<()> {
         let (file, line) = self.location_args(expr.span);
@@ -8767,7 +8785,11 @@ impl<'a> CGenerator<'a> {
         );
         self.line_indent(indent, "}");
         for arm in arms {
-            let future_temp = self.emit_temp_value("select_arm_future", &arm.future, indent)?;
+            let future_temp = if track_future_temps {
+                self.emit_temp_value("select_arm_future", &arm.future, indent)?
+            } else {
+                self.emit_untracked_temp_value("select_arm_future", &arm.future, indent)?
+            };
             let arm_raw = self.next_temp("select_arm_raw");
             self.line_indent(indent, &format!("CielFuture *{arm_raw} = NULL;"));
             self.emit_awaitable_future_raw(
@@ -8918,8 +8940,9 @@ impl<'a> CGenerator<'a> {
         let async_ctx = self.current_async_context.clone();
         let async_await = async_ctx.is_some() && await_index.is_some();
         if let Some(await_index) = await_index {
+            let cleanup_frames = self.async_cleanup_defer_stack();
             if let Some(case) = self.current_async_cleanup_cases.get_mut(await_index - 1) {
-                *case = self.defer_stack.clone();
+                *case = cleanup_frames;
             }
             self.line_indent(indent, &format!("ciel_async_resume_{await_index}:;"));
             self.line_indent(indent, &format!("CielFuture *{raw} = NULL;"));
@@ -8935,7 +8958,7 @@ impl<'a> CGenerator<'a> {
                 &format!("{set} = ciel_select_future_set({raw});"),
             );
             self.line_indent(indent, "} else {");
-            self.emit_select_future_setup(expr, &raw, &set, biased, arms, indent + 1)?;
+            self.emit_select_future_setup(expr, &raw, &set, biased, arms, false, indent + 1)?;
             self.line_indent(indent + 1, &format!("{ctx}->pc = {await_index};"));
             self.line_indent(indent + 1, &format!("{ctx}->cleanup_state = {ctx}->pc;"));
             self.line_indent(indent + 1, &format!("{ctx}->active_future = {raw};"));
@@ -8943,7 +8966,7 @@ impl<'a> CGenerator<'a> {
         } else {
             self.line_indent(indent, &format!("CielFuture *{raw} = NULL;"));
             self.line_indent(indent, &format!("CielSelectSet *{set} = NULL;"));
-            self.emit_select_future_setup(expr, &raw, &set, biased, arms, indent)?;
+            self.emit_select_future_setup(expr, &raw, &set, biased, arms, true, indent)?;
         }
 
         let select_out = self.next_temp("select_out");
@@ -10718,28 +10741,30 @@ impl<'a> CGenerator<'a> {
     }
 
     fn gen_defer_call(&mut self, expr: &TExpr, indent: usize) -> DiagResult<String> {
-        let TExprKind::Call { callee, args, .. } = &expr.kind else {
-            return self.gen_expr_in_stmt(expr, indent);
-        };
-        let callee = self.gen_expr_in_stmt(callee, indent)?;
-        let mut temp_args = Vec::new();
-        for arg in args {
-            if arg.ty.is_erased_value() {
-                let value = self.gen_expr_in_stmt(arg, indent)?;
-                self.line_indent(indent, &format!("(void)({value});"));
-                continue;
+        self.with_temporary_resource_cleanup_scope(|this| {
+            let TExprKind::Call { callee, args, .. } = &expr.kind else {
+                return this.gen_expr_in_stmt(expr, indent);
+            };
+            let callee = this.gen_expr_in_stmt(callee, indent)?;
+            let mut temp_args = Vec::new();
+            for arg in args {
+                if arg.ty.is_erased_value() {
+                    let value = this.gen_expr_in_stmt(arg, indent)?;
+                    this.line_indent(indent, &format!("(void)({value});"));
+                    continue;
+                }
+                if let Some(ctx) = this.current_async_context.clone() {
+                    this.current_async_defer_arg_index += 1;
+                    let field = format!("{ctx}->defer_arg{}", this.current_async_defer_arg_index);
+                    this.emit_expr_store(&field, arg, indent)?;
+                    temp_args.push(field);
+                } else {
+                    let temp = this.emit_temp_value("defer_arg", arg, indent)?;
+                    temp_args.push(temp);
+                }
             }
-            if let Some(ctx) = self.current_async_context.clone() {
-                self.current_async_defer_arg_index += 1;
-                let field = format!("{ctx}->defer_arg{}", self.current_async_defer_arg_index);
-                self.emit_expr_store(&field, arg, indent)?;
-                temp_args.push(field);
-            } else {
-                let temp = self.emit_temp_value("defer_arg", arg, indent)?;
-                temp_args.push(temp);
-            }
-        }
-        Ok(format!("{callee}({})", temp_args.join(", ")))
+            Ok(format!("{callee}({})", temp_args.join(", ")))
+        })
     }
 
     fn emit_slice_literal_temp(
@@ -12420,6 +12445,8 @@ impl<'a> CGenerator<'a> {
         let previous_capture_locals = std::mem::take(&mut self.current_capture_locals);
         let previous_closure_owner = self.current_closure_owner.replace(closure.owner);
         self.defer_stack.clear();
+        self.temporary_resource_cleanup_depth = 0;
+        self.temporary_resource_cleanup_frames.clear();
         self.loop_defer_starts.clear();
         self.break_defer_starts.clear();
 
@@ -12489,6 +12516,8 @@ impl<'a> CGenerator<'a> {
         self.current_capture_locals = previous_capture_locals;
         self.current_closure_owner = previous_closure_owner;
         self.defer_stack.clear();
+        self.temporary_resource_cleanup_depth = 0;
+        self.temporary_resource_cleanup_frames.clear();
         self.loop_defer_starts.clear();
         self.break_defer_starts.clear();
         self.line("}");
@@ -12722,6 +12751,8 @@ impl<'a> CGenerator<'a> {
             names.run
         ));
         self.defer_stack.clear();
+        self.temporary_resource_cleanup_depth = 0;
+        self.temporary_resource_cleanup_frames.clear();
         self.loop_defer_starts.clear();
         self.break_defer_starts.clear();
         self.current_return_ty = output_ty.clone();
@@ -13673,6 +13704,40 @@ impl<'a> CGenerator<'a> {
             .push(call);
     }
 
+    fn push_temporary_resource_cleanup_defer(&mut self, ty: &Ty, value: &str) {
+        if self.temporary_resource_cleanup_depth == 0 {
+            return;
+        }
+        self.push_resource_cleanup_defer(ty, value);
+    }
+
+    fn with_temporary_resource_cleanup_scope<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> DiagResult<T>,
+    ) -> DiagResult<T> {
+        let frame_index = self.defer_stack.len();
+        self.defer_stack.push(Vec::new());
+        self.temporary_resource_cleanup_depth += 1;
+        self.temporary_resource_cleanup_frames.push(frame_index);
+        let result = f(self);
+        self.temporary_resource_cleanup_frames.pop();
+        self.temporary_resource_cleanup_depth -= 1;
+        self.defer_stack.pop();
+        result
+    }
+
+    fn async_cleanup_defer_stack(&self) -> Vec<Vec<String>> {
+        if self.temporary_resource_cleanup_frames.is_empty() {
+            return self.defer_stack.clone();
+        }
+        self.defer_stack
+            .iter()
+            .enumerate()
+            .filter(|(idx, _)| !self.temporary_resource_cleanup_frames.contains(idx))
+            .map(|(_, frame)| frame.clone())
+            .collect()
+    }
+
     fn resource_cleanup_arg_decl(&self, ty: &Ty, name: &str) -> String {
         match ty {
             Ty::Array { len, elem } => format!("{} (*{name})[{len}]", self.c_type(elem)),
@@ -13874,6 +13939,10 @@ impl<'a> CGenerator<'a> {
             return;
         }
         match ty {
+            Ty::GeneratedFuture { .. } => {
+                self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
+                self.line_indent(indent, "return ENOTSUP;");
+            }
             Ty::Array { len, elem } if self.type_is_affine(elem) => {
                 let index = self.next_temp("resource_transfer_i");
                 let helper = self.resource_transfer_to_parent_name(elem);
@@ -13888,6 +13957,17 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, "return 0;");
             }
             Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                    .is_some()
+                {
+                    self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
+                    self.line_indent(indent, "return ENOTSUP;");
+                    return;
+                }
                 let instance_name = aggregate_instance_name(name, args);
                 if let Some(strukt) = self
                     .program

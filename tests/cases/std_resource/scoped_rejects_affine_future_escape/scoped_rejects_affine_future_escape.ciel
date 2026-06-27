@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_scoped_rejects_affine_future_escape.txt
+
+import /std/async as async;
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+async Result<io::File, Error> open_later([]const char path) {
+    return io::open_read(path);
+}
+
+Result<async::Future<Result<io::File, Error>>, Error> future_from_child_owner([]const char path) {
+    return resource::scoped<async::Future<Result<io::File, Error>>>(|| {
+        return Ok(open_later(path));
+    });
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "future")?;
+        return Ok;
+    }));
+
+    switch (future_from_child_owner(path)) {
+        case Ok(future):
+            switch (async::block_on(future)) {
+                case Ok(file):
+                    must(io::close(file));
+                    return 1;
+                case Err(_):
+                    return 1;
+            }
+        case Err(_):
+            return 0;
+    }
+}

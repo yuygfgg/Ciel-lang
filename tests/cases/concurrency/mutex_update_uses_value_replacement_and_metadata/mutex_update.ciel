@@ -20,8 +20,8 @@ impl update_value<i64, i64>(*const Add updater, i64 value) {
 i64 main() {
     Mutex<i64> mutex = must(make_mutex<i64>(10));
     Add add = { delta: 5 };
-    i64 first = must(mutex_update<i64, Add, i64>(&mutex, &add));
-    i64 second = must(mutex_update<i64, Add, i64>(&mutex, &add));
+    i64 first = must(mutex_update<i64, Add>(&mutex, &add));
+    i64 second = must(mutex_update<i64, Add>(&mutex, &add));
     must(print("{}", [first + second]));
     return 0;
 }

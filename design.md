@@ -844,7 +844,8 @@ async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
 The written return type is the value produced when the function is awaited.
 Calling an async function creates a first-class future whose concrete type is
 compiler-generated and opaque. That generated type implements the standard
-`Future<Out>`/`Awaitable<Out>` surface for the function's written output type.
+`Future<Out>` and `Awaitable<Out>` surface for the function's written output
+type, with `Awaitable` determining `Out` from the future receiver.
 Async functions may be declared or prototyped like ordinary Ciel functions, but
 they cannot use a C ABI; exporting or importing an async `extern "C"` function
 is rejected.
@@ -1234,9 +1235,10 @@ can expose a selector while preserving the unsafe C boundary.
 Calling an async function or async closure produces a future value immediately;
 it does not run the body to completion at the call site. `await future` is valid
 only inside an async body or inside compiler-recognized async bridges such as
-`async::block_on`. The operand must implement `Awaitable<Out>`, and the await
-expression has type `Out`. If `Out` is `Result<T, Error>`, ordinary `?`
-propagation composes after the await:
+`async::block_on`. The operand must implement `Awaitable`, whose determined
+output is named by the compiler as `Out`; the await expression has type `Out`.
+If `Out` is `Result<T, Error>`, ordinary `?` propagation composes after the
+await:
 
 ```ciel
 Bytes bytes = await socket_read(stream)?;
@@ -2032,11 +2034,12 @@ Bytes frame = await read_frame(stream)?;
 ```
 
 The concrete future type generated for `read_frame` is opaque. It implements
-`Awaitable<Result<Bytes, Error>>`, and may also implement `CancelSafe` or
-`Abortable` when its body proves the corresponding contract. Users can store a
-future in a local, pass it to `async::spawn`, pass it to `select`, pass it to a
-generic future combinator, or await it. Users cannot name the generated frame
-type, inspect its layout, or reach into another task's frame through the future.
+`Awaitable<Result<Bytes, Error>>`, with that output determined by the future
+receiver, and may also implement `CancelSafe` or `Abortable` when its body
+proves the corresponding contract. Users can store a future in a local, pass it
+to `async::spawn`, pass it to `select`, pass it to a generic future combinator,
+or await it. Users cannot name the generated frame type, inspect its layout, or
+reach into another task's frame through the future.
 
 Compiler-generated futures are single-consumer values. After a generated future
 has completed, awaiting it again is invalid unless the particular future type
@@ -2050,8 +2053,9 @@ terminating requires `Abortable`.
 
 `await expr` is valid only inside an async body or inside a compiler-recognized
 synchronous bridge such as `async::block_on`. The operand is evaluated exactly
-once and must implement `Awaitable<Out>`. The expression has type `Out`, and
-ordinary `?` propagation composes after the await:
+once and must implement `Awaitable`; the compiler asks capability solving for
+the determined output `Out`. The expression has type `Out`, and ordinary `?`
+propagation composes after the await:
 
 ```ciel
 Bytes bytes = await async_net::read(stream, 16384)?;
@@ -2164,17 +2168,20 @@ nested `await` expressions. Each arm binds the completed arm value and evaluates
 an arm body whose result must be assignable to the common `select` result type.
 `?` inside an arm propagates from the enclosing async function.
 
-Every arm future must implement `SelectableFuture<ArmOut>`, which is
-`Awaitable<ArmOut> + CancelSafe + Abortable`. The compiler and stdlib lower a
-select expression to an internal select-set future that polls every arm once
-before parking, so ready buffered data, completed tasks, channel messages, and
-expired timers cannot be missed. Default `select` chooses fairly among all
-ready arms; `biased select` is the explicit source-order priority form. Losing
-futures are cancelled only after their `CancelSafe` contract permits it.
+Every arm future must implement `SelectableFuture`, whose determined output is
+the arm binding type `ArmOut`; this is the selectable view of `Awaitable`,
+`CancelSafe`, and `Abortable`. The compiler and stdlib lower a select
+expression to an internal select-set future that polls every arm once before
+parking, so ready buffered data, completed tasks, channel messages, and expired
+timers cannot be missed. Default `select` chooses fairly among all ready arms;
+`biased select` is the explicit source-order priority form. Losing futures are
+cancelled only after their `CancelSafe` contract permits it.
 
 `async::timeout(future, ms)` is a convenience wrapper over the same model. It
 races the operand with a timer and, on timeout, cancels only the waiting future.
 It does not assume that an arbitrary protocol future can discard partial state.
+Its operand must satisfy `SelectableFuture<Out = _>`, with `Out` determined
+from the operand.
 
 ### Cancel and Abort
 
@@ -2563,15 +2570,20 @@ struct Update<T, R> {
     R result;
 }
 
-interface<F, T, R> Result<Update<T, R>, Error> update_value(*const F f, T value);
+interface<F, T -> R> Result<Update<T, R>, Error> update_value(*const F f, T value);
 
-Result<R, Error> mutex_update<T, F, R>(*const Mutex<T> mutex, *const F f);
+Result<R, Error> mutex_update<T, F: update_value<T, R = _>>(
+    *const Mutex<T> mutex,
+    *const F f
+);
 ```
 
 `mutex_update` takes the current value, calls `update_value`, stores the
-replacement value, unlocks, and returns the result. Implementations may
-optimize the storage path internally, but the safe API exposes value
-replacement rather than a borrowed interior pointer.
+replacement value, unlocks, and returns the result. The updater and protected
+value type determine the result type `R`, so callers do not pass `R` as a
+separate source type argument. Implementations may optimize the storage path
+internally, but the safe API exposes value replacement rather than a borrowed
+interior pointer.
 
 The actor model uses interfaces for capability classification:
 
@@ -2685,7 +2697,7 @@ import /std/actor;
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
 `/std/async_net`, `/std/async_time`, `/std/message`, `/std/meta`,
 `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`, `/std/codec`,
-`/std/buf`, `/std/bytes`, `/std/text`, `/std/map`, `/std/shared_map`,
+`/std/buf`, `/std/bytes`, `/std/text`, `/std/map`, `/std/iter`, `/std/shared_map`,
 `/std/time`, `/std/env`, `/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
@@ -3285,13 +3297,13 @@ export struct Update<T, R> {
     R result;
 }
 
-export interface<F, T, R> Result<Update<T, R>, Error> update_value(
+export interface<F, T -> R> Result<Update<T, R>, Error> update_value(
     *const F f,
     T value
 );
 
 export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial);
-export Result<R, Error> mutex_update<T: Message, F, R>(
+export Result<R, Error> mutex_update<T: Message, F: update_value<T, R = _>>(
     *const Mutex<T> mutex,
     *const F f
 ) = .update;
@@ -3322,6 +3334,7 @@ export import /std/buf;
 export import /std/bytes;
 export import /std/text;
 export import /std/map;
+export import /std/iter;
 export import /std/shared_map;
 export import /std/time;
 export import /std/env;
@@ -3530,6 +3543,83 @@ Keys must be both `map_key` and `Message`, and values must be `Message`, because
 operations clone values across the synchronized boundary. It is intended for
 registries and routing tables shared by async tasks or actors, while
 `/std/map` remains the cheaper actor-local storage primitive.
+
+```ciel
+// /std/iter
+export enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+export interface<I -> Item> Next<Item> next(*I iter);
+export interface Iterator<Item> = next<Item>;
+
+export interface<F, In -> Out> Out map_call(*F f, In value);
+export interface Mapper<In, Out> = map_call<In, Out>;
+
+export interface<P, Item> bool filter_accept(*P predicate, *const Item value);
+export interface Predicate<Item> = filter_accept<Item>;
+
+export struct Range {
+    i64 current;
+    i64 end;
+}
+
+export struct Once<T> {
+    Next<T> state;
+}
+
+export struct Empty<T> {
+    bool done;
+}
+
+export struct SliceIter<T> {
+    []const T items;
+    usize index;
+}
+
+export struct Enumerated<Item> {
+    usize index;
+    Item value;
+}
+
+export struct Pair<Left, Right> {
+    Left left;
+    Right right;
+}
+
+export _: Iterator<i64> range(i64 start, i64 end);
+export _: Iterator<T> once<T>(T value);
+export _: Iterator<T> empty<T>();
+export _: Iterator<T> slice_iter<T>([]const T items);
+export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(I iter, F mapper);
+export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
+export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit);
+export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter);
+export _: Iterator<Pair<LeftItem, RightItem>> zip<
+    Left: Iterator<LeftItem = _>,
+    Right: Iterator<RightItem = _>
+>(Left left, Right right);
+export _: Iterator<Item> chain<First: Iterator<Item = _>, Second: Iterator<Item>>(
+    First first,
+    Second second
+);
+export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter);
+
+export usize count<I: Iterator<Item = _>>(I iter);
+export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item)| step);
+export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
+export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
+export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
+```
+
+`/std/iter` provides static iterators whose item type is determined by the
+iterator receiver through ordinary ICT capability solving. It has no compiler
+std-id hook: duplicate or overlapping `next` impls are rejected by the general
+determined-parameter coherence rules, and generic `Iterator<Item = _>` bounds
+are solved by the same hidden binding machinery available to user code.
+Adapter constructors return opaque constrained iterator types so callers do not
+depend on nested private adapter structs.
 
 ```ciel
 // /std/time
@@ -3808,12 +3898,13 @@ or slice inspection is needed.
 ```ciel
 // /std/async
 export import /std/async/core;
+import /std/async/internal/adapter as adapter;
 
 export struct Future<T> {
     *void handle;
 }
 
-export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
+export unsafe interface<A -> Out> *void awaitable_future(*const A awaitable);
 export interface Awaitable<Out> = awaitable_future<Out>;
 
 export unsafe interface<F> bool cancel_safe_marker(*const F future);
@@ -3823,8 +3914,8 @@ export unsafe interface<F> Result<void, Error> abort_future(*F future);
 export interface Abortable = abort_future;
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
-export T block_on<T, A: Awaitable<T> + Abortable>(A future);
-export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
+export Out block_on<A: Awaitable<Out = _> + Abortable>(A future);
+export Future<Result<Out, Error>> future_from_op<Op: adapter::OperationFuture<Out = _>>(Op op);
 
 export Error timeout_error();
 export Error channel_closed_error();
@@ -3878,7 +3969,7 @@ export async Result<R, Error> with_task_group<T: Message, R>(
     Future<Result<R, Error>> |(*const TaskGroup<T>)| body
 ) = .with_task_group;
 
-export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
+export async Result<Out, Error> timeout<A: SelectableFuture<Out = _>>(
     A future,
     u64 ms
 );
@@ -3886,10 +3977,13 @@ export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
 
 `/std/async` is the user-facing async/await surface. `Future<T>` is a
 runtime-backed future handle; compiler-generated async functions and closures
-also implement `Awaitable<T>` without exposing their generated frame type.
-`block_on` is the synchronous bridge for `main`, tests, and embedding hosts; it
-starts a future on the task runtime and blocks the current thread until the
-future returns. Async bodies should use `await` instead of nested `block_on`.
+also implement `Awaitable<T>` without exposing their generated frame type. The
+`awaitable_future` interface determines `Out` from the awaitable receiver, so
+generic helpers can write `A: Awaitable<Out = _>` when they need to name the
+output without exposing it as an explicit type parameter. `block_on` is the
+synchronous bridge for `main`, tests, and embedding hosts; it starts a future on
+the task runtime and blocks the current thread until the future returns. Async
+bodies should use `await` instead of nested `block_on`.
 
 `Task<T>` is an awaitable handle to a spawned task. `spawn` starts an awaitable
 body whose output is `Result<T, Error>`. The compiler attaches hidden
@@ -3917,7 +4011,9 @@ closing the group.
 `timeout` races a selectable future with a timer. Timing out cancels only the
 waiter future; it does not assume that an arbitrary underlying protocol can
 discard partial state. The operand therefore must satisfy
-`SelectableFuture<Out>`, which is `Awaitable<Out> + CancelSafe + Abortable`.
+`SelectableFuture<Out = _>`, which expands to the selectable view of
+`Awaitable`, `CancelSafe`, and `Abortable` with `Out` determined from the
+operand.
 
 ```ciel
 // /std/async/internal/adapter
@@ -3932,17 +4028,19 @@ export interface<Op, M> Result<void, Error> notify_done(
     M message
 );
 
-export interface<Op, Out> Result<Out, Error> finish(Op op);
+export interface<Op -> Out> Result<Out, Error> finish(Op op);
 export unsafe interface<Op> ?*void raw_operation(*const Op op);
-export unsafe interface<Op, Out> c::c_int poll_done(*Op op, *Out out);
+export unsafe interface<Op -> Out> c::c_int poll_done(*Op op, *Out out);
+export interface OperationFuture<Out> = raw_operation + poll_done<Out>;
 ```
 
 The internal adapter namespace describes runtime operation tokens. `notify_done`
 and `finish` support low-level actor completion tests and direct operation
 integration.
 `raw_operation` returns null for a stale resource-backed operation token.
-`raw_operation` and `poll_done` are used by `future_from_op` to wrap a
-one-shot runtime operation as a future. Normal application code should call
+`OperationFuture<Out = _>` is used by `future_from_op` to wrap a one-shot
+runtime operation as a future while deriving `Out` from the operation token.
+Normal application code should call
 awaitable stdlib functions such as `async_io::read_bytes`, `async_net::read`,
 or `async_time::sleep_ms` instead of implementing operation adapters directly.
 
@@ -4059,6 +4157,10 @@ export resource unsafe struct AsyncTcpRead {
     resource::Handle handle;
 }
 
+export resource unsafe struct AsyncTcpReadInto {
+    resource::Handle handle;
+}
+
 export resource unsafe struct AsyncTcpWrite {
     resource::Handle handle;
 }
@@ -4095,7 +4197,7 @@ export Result<net::SocketAddr, Error> stream_local_addr(*const AsyncTcpStream st
 export Result<net::SocketAddr, Error> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr;
 
 export Result<AsyncTcpRead, Error> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async;
-export Result<AsyncTcpRead, Error> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
+export Result<AsyncTcpReadInto, Error> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
 export Result<AsyncTcpWrite, Error> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async;
 export Result<AsyncTcpWrite, Error> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async;
 export async Result<Bytes, Error> read(*const AsyncTcpStream stream, usize max_len) = .read;
@@ -4156,6 +4258,11 @@ export Result<void, Error> notify_read_done<M: Message>(
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
+export Result<void, Error> notify_read_into_done<M: Message>(
+    *const AsyncTcpReadInto op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) = .notify_done;
 export Result<void, Error> notify_write_done<M: Message>(
     *const AsyncTcpWrite op,
     *const actor::Actor<M> actor_handle,
@@ -4165,10 +4272,12 @@ export Result<void, Error> notify_write_done<M: Message>(
 export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op) = .finish;
 export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op) = .finish;
 export Result<Bytes, Error> finish_read(AsyncTcpRead op) = .finish;
+export Result<ReadIntoResult, Error> finish_read_into(AsyncTcpReadInto op) = .finish;
 export Result<usize, Error> finish_write(AsyncTcpWrite op) = .finish;
 export Result<void, Error> cancel_accept(AsyncAccept op) = .cancel;
 export Result<void, Error> cancel_connect(AsyncConnect op) = .cancel;
 export Result<void, Error> cancel_read(AsyncTcpRead op) = .cancel;
+export Result<void, Error> cancel_read_into(AsyncTcpReadInto op) = .cancel;
 export Result<void, Error> cancel_write(AsyncTcpWrite op) = .cancel;
 export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op) = .cancel;
 ```
@@ -4203,6 +4312,12 @@ integration. `finish_*` and `cancel_*` consume or close the registry entry for
 the operation token, so stale token copies cannot finish or cancel a reused
 runtime operation. Normal async application code should prefer `accept`,
 `connect`, `read`, `write`, and the buffered reader helpers.
+Operation token types are split by completion value: for example,
+`AsyncTcpRead` completes to `Bytes`, while `AsyncTcpReadInto` completes to
+`ReadIntoResult`. This preserves the determined `Op -> Out` contract on
+`adapter::finish` and `adapter::poll_done`, allowing `future_from_op` to infer
+its output through `OperationFuture<Out = _>` instead of accepting an explicit
+output type argument.
 
 Selectable stream reads use `BufferedStreamReader`. The reader owns the read
 half token and a private buffer. It does not register a second owner entry for

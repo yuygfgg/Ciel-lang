@@ -58,6 +58,9 @@ export import /std/text;
 // Re-exports actor-local hash maps.
 export import /std/map;
 
+// Re-exports static iterator abstractions and adapters.
+export import /std/iter;
+
 // Re-exports synchronized shared hash maps.
 export import /std/shared_map;
 

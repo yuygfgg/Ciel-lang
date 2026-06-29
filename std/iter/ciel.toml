@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.iter"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/iter" = "iter.ciel"

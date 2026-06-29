@@ -17,7 +17,7 @@ export interface<Op, M> Result<void, Error> notify_done(
 );
 
 // Finishes op and converts the runtime result into Out.
-export interface<Op, Out> Result<Out, Error> finish(Op op);
+export interface<Op -> Out> Result<Out, Error> finish(Op op);
 
 // Unsafe interface hole: returns the raw runtime operation pointer for op, or
 // null for a stale token. Implementations must validate the resource handle and
@@ -27,4 +27,7 @@ export unsafe interface<Op> ?*void raw_operation(*const Op op);
 // Unsafe interface hole: polls op without suspending; returns a C status code
 // and writes Out on success. Implementations must consume/close the operation
 // handle exactly once when the runtime reports completion.
-export unsafe interface<Op, Out> c::c_int poll_done(*Op op, *Out out);
+export unsafe interface<Op -> Out> c::c_int poll_done(*Op op, *Out out);
+
+// Runtime operation tokens that can be wrapped as std async futures.
+export interface OperationFuture<Out> = raw_operation + poll_done<Out>;

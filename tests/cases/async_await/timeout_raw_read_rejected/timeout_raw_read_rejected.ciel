@@ -7,8 +7,8 @@ import /std/result;
 
 async Result<void, Error> bad_timeout(aio::AsyncFd file) {
     aio::AsyncRead op = aio::read_bytes_async(file, 16)?;
-    _ timed = async::timeout<Result<aio::Bytes, Error>>(
-        async::future_from_op<aio::AsyncRead, aio::Bytes>(op),
+    _ timed = async::timeout(
+        async::future_from_op(op),
         1
     );
     return Ok;

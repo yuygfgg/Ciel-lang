@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: expects at most 1 type argument
+
+import /std/async as async;
+
+i32 main() {
+    _ future = async::future_from_op<i64, i64>(0);
+    return 0;
+}

@@ -7,6 +7,7 @@ export import /std/message;
 // Re-exports Result for async APIs.
 export import /std/result;
 import /std/c as c;
+import /std/async/internal/adapter as adapter;
 import /std/meta;
 
 unsafe extern "C" {
@@ -47,7 +48,7 @@ export struct Future<T> {
 // Unsafe interface hole: adapts an awaitable value to its runtime future
 // handle. Implementations must return a valid runtime future for the lifetime
 // of the await operation.
-export unsafe interface<A, Out> *void awaitable_future(*const A awaitable);
+export unsafe interface<A -> Out> *void awaitable_future(*const A awaitable);
 
 // Constraint alias for values that can be awaited for output Out.
 export interface Awaitable<Out> = awaitable_future<Out>;
@@ -74,10 +75,10 @@ unsafe impl<T> awaitable_future<T>(*const Future<T> future) {
 }
 
 // Synchronously drives an awaitable to completion and returns its output.
-export T block_on<T, A: Awaitable<T> + Abortable>(A future);
+export Out block_on<A: Awaitable<Out = _> + Abortable>(A future);
 
 // Wraps a std runtime operation token as a one-shot Future<Result<Out, Error>>.
-export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
+export Future<Result<Out, Error>> future_from_op<Op: adapter::OperationFuture<Out = _>>(Op op);
 
 // Returns the stable timeout Error used by async::timeout.
 export Error timeout_error() {

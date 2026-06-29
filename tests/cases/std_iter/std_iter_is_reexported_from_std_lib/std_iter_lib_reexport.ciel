@@ -1,0 +1,38 @@
+// ciel-test: run
+// expect-exit: 37
+
+import /std/lib;
+
+struct GreaterThanTwo {}
+
+impl filter_accept<i64>(*GreaterThanTwo predicate, *const i64 value) {
+    return *value > 2;
+}
+
+i64 main() {
+    [3]i64 values = [1, 3, 5];
+    GreaterThanTwo gt = {};
+
+    usize slice_count = count(slice_iter(values[..]));
+    usize singleton_count = count(once(9));
+    usize empty_count = count(empty<i64>());
+
+    bool has_large = any(slice_iter(values[..]), gt);
+    bool all_large = all(range(3, 6), gt);
+    Next<i64> found = find(range(0, 5), gt);
+
+    i64 @score = (slice_count + singleton_count + empty_count) as i64;
+    if (has_large) {
+        score = score + 10;
+    }
+    if (all_large) {
+        score = score + 20;
+    }
+    switch (found) {
+        case Item(value):
+            score = score + value;
+        case Done:
+            score = score + 100;
+    }
+    return score;
+}

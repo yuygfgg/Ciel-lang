@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/iter as iter;
+
+struct AddOne {}
+
+struct Even {}
+
+struct Cache<I: iter::Iterator<Item = _>> {
+    Item value;
+}
+
+impl iter::map_call<i64, i64>(*AddOne mapper, i64 value) {
+    return value + 1;
+}
+
+impl iter::filter_accept<i64>(*Even predicate, *const i64 value) {
+    return ((*value) % 2) == 0;
+}
+
+i64 main() {
+    AddOne add = {};
+    Even even = {};
+    _ mapped = iter::map(iter::range(0, 10), add);
+    _ filtered = iter::filter(mapped, even);
+    _ first_three = iter::take(filtered, 3);
+    Cache<iter::Range> cached = { value: 12 };
+    return iter::fold(first_three, 0, |i64 acc, i64 value| acc + value) + cached.value - 12;
+}

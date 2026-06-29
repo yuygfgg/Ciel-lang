@@ -325,13 +325,13 @@ export Result<AsyncWrite, Error> write_bytes_async(*const AsyncFd fd, Bytes data
 // Awaits an async read and returns owned Bytes.
 export async Result<Bytes, Error> read_bytes(*const AsyncFd fd, usize max_len) = .read {
     AsyncRead op = read_bytes_async(fd, max_len)?;
-    return await async_core::future_from_op<AsyncRead, Bytes>(op);
+    return await async_core::future_from_op(op);
 }
 
 // Awaits an async write and returns the number of bytes written.
 export async Result<usize, Error> write_bytes(*const AsyncFd fd, Bytes data) = .write {
     AsyncWrite op = write_bytes_async(fd, data)?;
-    return await async_core::future_from_op<AsyncWrite, usize>(op);
+    return await async_core::future_from_op(op);
 }
 
 // Sends message to actor_handle when a read operation completes.

@@ -12,6 +12,6 @@ async Result<usize, Error> multi_await() {
 }
 
 i32 main() {
-    _ timed = async::timeout<Result<usize, Error>>(multi_await(), 1);
+    _ timed = async::timeout(multi_await(), 1);
     return 0;
 }

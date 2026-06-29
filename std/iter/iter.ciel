@@ -1,0 +1,358 @@
+// Result of advancing an iterator.
+export enum Next<Item> {
+    Item(Item),
+    Done,
+}
+
+// Advances an iterator and returns either the next item or Done.
+export interface<I -> Item> Next<Item> next(*I iter);
+
+// Constraint alias for static iterators whose item type is determined by the iterator.
+export interface Iterator<Item> = next<Item>;
+
+// Calls a mapper object. Out is determined by the mapper object and input type.
+export interface<F, In -> Out> Out map_call(*F f, In value);
+
+// Constraint alias for mapper objects used by map().
+export interface Mapper<In, Out> = map_call<In, Out>;
+
+// Calls a predicate object without consuming the candidate item.
+export interface<P, Item> bool filter_accept(*P predicate, *const Item value);
+
+// Constraint alias for predicate objects used by filter(), find(), any(), and all().
+export interface Predicate<Item> = filter_accept<Item>;
+
+// Half-open integer range [current, end).
+export struct Range {
+    i64 current;
+    i64 end;
+}
+
+// Iterator that yields one value.
+export struct Once<T> {
+    Next<T> state;
+}
+
+// Iterator that yields no values.
+export struct Empty<T> {
+    bool done;
+}
+
+// Iterator over a read-only slice.
+export struct SliceIter<T> {
+    []const T items;
+    usize index;
+}
+
+// Item yielded by enumerate().
+export struct Enumerated<Item> {
+    usize index;
+    Item value;
+}
+
+// Item yielded by zip().
+export struct Pair<Left, Right> {
+    Left left;
+    Right right;
+}
+
+struct MapIter<I: Iterator<In = _>, F: Mapper<In, Out = _>> {
+    I iter;
+    F mapper;
+}
+
+struct FilterIter<I: Iterator<Item = _>, P: Predicate<Item>> {
+    I iter;
+    P predicate;
+}
+
+struct TakeIter<I: Iterator<Item = _>> {
+    I iter;
+    usize remaining;
+}
+
+struct EnumerateIter<I: Iterator<Item = _>> {
+    I iter;
+    usize index;
+}
+
+struct ZipIter<Left: Iterator<LeftItem = _>, Right: Iterator<RightItem = _>> {
+    Left left;
+    Right right;
+}
+
+struct ChainIter<First: Iterator<Item = _>, Second: Iterator<Item>> {
+    First first;
+    Second second;
+    bool in_second;
+}
+
+struct FlattenIter<I: Iterator<Inner = _: Iterator<Item = _>>> {
+    I outer;
+    Next<Inner> current;
+}
+
+impl next<i64>(*Range iter) {
+    if (iter->current >= iter->end) {
+        return Done;
+    }
+    i64 value = iter->current;
+    iter->current = iter->current + 1;
+    return Item(value);
+}
+
+impl<T> next<T>(*Once<T> iter) {
+    switch (iter->state) {
+        case Item(value):
+            iter->state = Done;
+            return Item(value);
+        case Done:
+            return Done;
+    }
+}
+
+impl<T> next<T>(*Empty<T> iter) {
+    return Done;
+}
+
+impl<T> next<T>(*SliceIter<T> iter) {
+    if (iter->index >= iter->items.len) {
+        return Done;
+    }
+    T value = iter->items[iter->index];
+    iter->index = iter->index + 1;
+    return Item(value);
+}
+
+impl<I: Iterator<In = _>, F: Mapper<In, Out = _>> next<Out>(*MapIter<I, F> iter) {
+    switch (next(&iter->iter)) {
+        case Item(value):
+            return Item(map_call(&iter->mapper, value));
+        case Done:
+            return Done;
+    }
+}
+
+impl<I: Iterator<Item = _>, P: Predicate<Item>> next<Item>(*FilterIter<I, P> iter) {
+    while (true) {
+        switch (next(&iter->iter)) {
+            case Item(value):
+                if (filter_accept(&iter->predicate, &value)) {
+                    return Item(value);
+                }
+            case Done:
+                return Done;
+        }
+    }
+}
+
+impl<I: Iterator<Item = _>> next<Item>(*TakeIter<I> iter) {
+    if (iter->remaining == 0) {
+        return Done;
+    }
+    iter->remaining = iter->remaining - 1;
+    return next(&iter->iter);
+}
+
+impl<I: Iterator<Item = _>> next<Enumerated<Item>>(*EnumerateIter<I> iter) {
+    switch (next(&iter->iter)) {
+        case Item(value):
+            usize index = iter->index;
+            iter->index = iter->index + 1;
+            return Item({ index: index, value: value });
+        case Done:
+            return Done;
+    }
+}
+
+impl<Left: Iterator<LeftItem = _>, Right: Iterator<RightItem = _>>
+next<Pair<LeftItem, RightItem>>(*ZipIter<Left, Right> iter) {
+    switch (next(&iter->left)) {
+        case Item(left):
+            switch (next(&iter->right)) {
+                case Item(right):
+                    return Item({ left: left, right: right });
+                case Done:
+                    return Done;
+            }
+        case Done:
+            return Done;
+    }
+}
+
+impl<First: Iterator<Item = _>, Second: Iterator<Item>> next<Item>(*ChainIter<First, Second> iter) {
+    while (true) {
+        if (!iter->in_second) {
+            switch (next(&iter->first)) {
+                case Item(value):
+                    return Item(value);
+                case Done:
+                    iter->in_second = true;
+            }
+        } else {
+            return next(&iter->second);
+        }
+    }
+}
+
+impl<I: Iterator<Inner = _: Iterator<Item = _>>> next<Item>(*FlattenIter<I> iter) {
+    while (true) {
+        switch (iter->current) {
+            case Item(current):
+                switch (next(&current)) {
+                    case Item(value):
+                        iter->current = Item(current);
+                        return Item(value);
+                    case Done:
+                        iter->current = Done;
+                }
+            case Done:
+                switch (next(&iter->outer)) {
+                    case Item(inner):
+                        iter->current = Item(inner);
+                    case Done:
+                        return Done;
+                }
+        }
+    }
+}
+
+// Creates a half-open integer range [start, end).
+export _: Iterator<i64> range(i64 start, i64 end) {
+    Range iter = { current: start, end: end };
+    return iter;
+}
+
+// Creates an iterator that yields one value.
+export _: Iterator<T> once<T>(T value) {
+    Once<T> iter = { state: Item(value) };
+    return iter;
+}
+
+// Creates an empty iterator for T.
+export _: Iterator<T> empty<T>() {
+    Empty<T> iter = { done: true };
+    return iter;
+}
+
+// Creates an iterator over a read-only slice.
+export _: Iterator<T> slice_iter<T>([]const T items) {
+    SliceIter<T> iter = { items: items, index: 0 };
+    return iter;
+}
+
+// Maps each item with a mapper object.
+export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(I iter, F mapper) {
+    MapIter<I, F> mapped = { iter: iter, mapper: mapper };
+    return mapped;
+}
+
+// Keeps only items accepted by a predicate object.
+export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+    FilterIter<I, P> filtered = { iter: iter, predicate: predicate };
+    return filtered;
+}
+
+// Yields at most limit items.
+export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit) {
+    TakeIter<I> taken = { iter: iter, remaining: limit };
+    return taken;
+}
+
+// Yields each item with its zero-based index.
+export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter) {
+    EnumerateIter<I> enumerated = { iter: iter, index: 0 };
+    return enumerated;
+}
+
+// Zips two iterators until either side is exhausted.
+export _: Iterator<Pair<LeftItem, RightItem>> zip<
+    Left: Iterator<LeftItem = _>,
+    Right: Iterator<RightItem = _>
+>(Left left, Right right) {
+    ZipIter<Left, Right> zipped = { left: left, right: right };
+    return zipped;
+}
+
+// Yields all items from first, then all items from second.
+export _: Iterator<Item> chain<First: Iterator<Item = _>, Second: Iterator<Item>>(
+    First first,
+    Second second
+) {
+    ChainIter<First, Second> chained = {
+        first: first,
+        second: second,
+        in_second: false
+    };
+    return chained;
+}
+
+// Flattens an iterator of iterators.
+export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter) {
+    FlattenIter<I> flattened = { outer: iter, current: Done };
+    return flattened;
+}
+
+// Counts the remaining items.
+export usize count<I: Iterator<Item = _>>(I iter) {
+    usize @total = 0;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                total = total + 1;
+            case Done:
+                return total;
+        }
+    }
+}
+
+// Folds the remaining items into an accumulator.
+export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item)| step) {
+    Acc @acc = initial;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                acc = step(acc, value);
+            case Done:
+                return acc;
+        }
+    }
+}
+
+// Returns the first remaining item accepted by predicate, or Done.
+export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                if (filter_accept(&predicate, &value)) {
+                    return Item(value);
+                }
+            case Done:
+                return Done;
+        }
+    }
+}
+
+// Returns true if any remaining item is accepted by predicate.
+export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+    switch (find(iter, predicate)) {
+        case Item(value):
+            return true;
+        case Done:
+            return false;
+    }
+}
+
+// Returns true if every remaining item is accepted by predicate.
+export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                if (!filter_accept(&predicate, &value)) {
+                    return false;
+                }
+            case Done:
+                return true;
+        }
+    }
+}

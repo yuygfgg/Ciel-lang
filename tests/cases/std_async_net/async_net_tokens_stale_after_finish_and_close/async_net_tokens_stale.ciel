@@ -88,8 +88,7 @@ async Result<usize, Error> drive() {
 
     anet::AsyncConnect op = anet::connect_async(bound)?;
     HandleParts op_parts = parts_from_connect(&op);
-    anet::AsyncTcpStream client =
-        await async::future_from_op<anet::AsyncConnect, anet::AsyncTcpStream>(op)?;
+    anet::AsyncTcpStream client = await async::future_from_op(op)?;
     anet::AsyncConnect old_op = connect_from_parts(op_parts);
     if (!connect_finish_is_err(anet::finish_connect(old_op))) {
         return Err(code_error(91));

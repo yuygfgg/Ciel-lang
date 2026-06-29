@@ -11,6 +11,6 @@ async Result<usize, Error> waits_then_returns() {
 }
 
 i32 main() {
-    _ timed = async::timeout<Result<usize, Error>>(waits_then_returns(), 1);
+    _ timed = async::timeout(waits_then_returns(), 1);
     return 0;
 }

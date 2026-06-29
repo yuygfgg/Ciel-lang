@@ -1,0 +1,55 @@
+// ciel-test: run
+// expect-exit: 124
+
+import /std/iter as iter;
+
+struct TwoOnce {
+    iter::Once<i64> first;
+    iter::Once<i64> second;
+    usize index;
+}
+
+impl iter::next<iter::Once<i64>>(*TwoOnce iter) {
+    if (iter->index == 0) {
+        iter->index = 1;
+        return iter::Item(iter->first);
+    }
+    if (iter->index == 1) {
+        iter->index = 2;
+        return iter::Item(iter->second);
+    }
+    return iter::Done;
+}
+
+i64 pair_sum(iter::Pair<i64, i64> pair) {
+    return pair.left + pair.right;
+}
+
+i64 enum_score(iter::Enumerated<i64> item) {
+    return (item.index as i64) * 10 + item.value;
+}
+
+i64 main() {
+    [4]i64 values = [10, 20, 30, 40];
+
+    _ zipped = iter::zip(iter::range(1, 4), iter::slice_iter(values[..]));
+    i64 zip_total = iter::fold(zipped, 0, |i64 acc, iter::Pair<i64, i64> pair| {
+        return acc + pair_sum(pair);
+    });
+
+    _ chained = iter::chain(iter::range(0, 2), iter::once(5));
+    i64 chain_total = iter::fold(chained, 0, |i64 acc, i64 value| acc + value);
+
+    _ enumerated = iter::enumerate(iter::range(4, 7));
+    i64 enum_total = iter::fold(enumerated, 0, |i64 acc, iter::Enumerated<i64> item| {
+        return acc + enum_score(item);
+    });
+
+    iter::Once<i64> first = { state: iter::Item(2) };
+    iter::Once<i64> second = { state: iter::Item(5) };
+    TwoOnce nested = { first: first, second: second, index: 0 };
+    _ flattened = iter::flatten(nested);
+    i64 flat_total = iter::fold(flattened, 0, |i64 acc, i64 value| acc + value);
+
+    return zip_total + chain_total + enum_total + flat_total;
+}

@@ -106,7 +106,7 @@ async Result<void, Error> use_async_tcp(
     BufferedStreamReader owned_reader = split.buffered_reader(4096)?;
     AsyncTcpRead read_op = stream.read_async(64)?;
     read_op.cancel()?;
-    AsyncTcpRead read_into_op = stream.read_into_async(data)?;
+    AsyncTcpReadInto read_into_op = stream.read_into_async(data)?;
     read_into_op.cancel()?;
     AsyncTcpWrite write_op = stream.write_async(data)?;
     write_op.cancel()?;

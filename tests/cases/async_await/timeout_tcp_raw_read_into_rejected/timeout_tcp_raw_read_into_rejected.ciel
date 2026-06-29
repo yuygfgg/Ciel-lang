@@ -9,9 +9,9 @@ async Result<void, Error> bad_timeout(
     anet::AsyncTcpStream stream,
     anet::Bytes buffer
 ) {
-    anet::AsyncTcpRead op = anet::read_into_async(stream, buffer)?;
-    _ timed = async::timeout<Result<anet::ReadIntoResult, Error>>(
-        async::future_from_op<anet::AsyncTcpRead, anet::ReadIntoResult>(op),
+    anet::AsyncTcpReadInto op = anet::read_into_async(stream, buffer)?;
+    _ timed = async::timeout(
+        async::future_from_op(op),
         1
     );
     return Ok;

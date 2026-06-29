@@ -65,8 +65,7 @@ async Result<usize, Error> drive() {
         net::SocketAddr bound = anet::listener_addr(&listener)?;
         anet::AsyncAccept accept_op = anet::accept_async(&listener)?;
         anet::AsyncTcpStream client = await anet::connect(bound)?;
-        anet::AsyncTcpStream accepted =
-            await async::future_from_op<anet::AsyncAccept, anet::AsyncTcpStream>(accept_op)?;
+        anet::AsyncTcpStream accepted = await async::future_from_op(accept_op)?;
         HandleParts old_stream = parts_from_stream(&accepted);
         async::try_send<HandleParts>(old_streams.sender, old_stream)?;
         anet::close_stream(client)?;

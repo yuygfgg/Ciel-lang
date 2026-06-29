@@ -543,6 +543,7 @@ impl MonoContext {
     }
 
     fn rewrite_expr(&mut self, expr: TExpr) -> DiagResult<TExpr> {
+        let lowered_expr_ty = self.lower_opaque_returns_in_ty(&expr.ty);
         let kind = match expr.kind {
             TExprKind::Function(def_id, name) => {
                 self.mark_function(def_id);
@@ -942,27 +943,39 @@ impl MonoContext {
             TExprKind::TypeAlign { ty } => TExprKind::TypeAlign {
                 ty: self.lower_opaque_returns_in_ty(&ty),
             },
-            TExprKind::StructLiteral { type_name, fields } => TExprKind::StructLiteral {
-                type_name,
-                fields: fields
-                    .into_iter()
-                    .map(|(name, value)| self.rewrite_expr(value).map(|value| (name, value)))
-                    .collect::<DiagResult<Vec<_>>>()?,
-            },
+            TExprKind::StructLiteral { type_name, fields } => {
+                let type_name = match &lowered_expr_ty {
+                    Ty::Named { name, args } => aggregate_instance_name(name, args),
+                    _ => type_name,
+                };
+                TExprKind::StructLiteral {
+                    type_name,
+                    fields: fields
+                        .into_iter()
+                        .map(|(name, value)| self.rewrite_expr(value).map(|value| (name, value)))
+                        .collect::<DiagResult<Vec<_>>>()?,
+                }
+            }
             TExprKind::EnumLiteral {
                 type_name,
                 variant_name,
                 variant_index,
                 payload,
-            } => TExprKind::EnumLiteral {
-                type_name,
-                variant_name,
-                variant_index,
-                payload: payload
-                    .into_iter()
-                    .map(|value| self.rewrite_expr(value))
-                    .collect::<DiagResult<Vec<_>>>()?,
-            },
+            } => {
+                let type_name = match &lowered_expr_ty {
+                    Ty::Named { name, args } => aggregate_instance_name(name, args),
+                    _ => type_name,
+                };
+                TExprKind::EnumLiteral {
+                    type_name,
+                    variant_name,
+                    variant_index,
+                    payload: payload
+                        .into_iter()
+                        .map(|value| self.rewrite_expr(value))
+                        .collect::<DiagResult<Vec<_>>>()?,
+                }
+            }
             TExprKind::ArrayLiteral(elements) => TExprKind::ArrayLiteral(
                 elements
                     .into_iter()
@@ -978,7 +991,7 @@ impl MonoContext {
             TExprKind::Literal(literal) => TExprKind::Literal(literal),
         };
         Ok(TExpr {
-            ty: self.lower_opaque_returns_in_ty(&expr.ty),
+            ty: lowered_expr_ty,
             kind,
             ..expr
         })

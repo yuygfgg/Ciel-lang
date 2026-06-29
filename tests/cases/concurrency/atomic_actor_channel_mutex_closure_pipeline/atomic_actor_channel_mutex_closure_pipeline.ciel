@@ -78,7 +78,7 @@ i64 main() {
                 i64 amount = value * msg.scale;
                 atomic_fetch_add(&total, amount, AcqRel)?;
                 SetLast set = { value: amount };
-                mutex_update<i64, SetLast, i64>(&last, &set)?;
+                mutex_update<i64, SetLast>(&last, &set)?;
                 return Ok(state + amount);
             case Emit(value):
                 i64 total_value = atomic_load(&total, Acquire)?;
@@ -95,7 +95,7 @@ i64 main() {
     must(join(&actor));
 
     ReadLast read = {};
-    i64 last = must(mutex_update<i64, ReadLast, i64>(&metrics.last, &read));
+    i64 last = must(mutex_update<i64, ReadLast>(&metrics.last, &read));
     i64 total = must(atomic_load(&metrics.total, SeqCst));
 
     if (received != 42) {

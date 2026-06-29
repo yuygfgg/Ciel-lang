@@ -8,9 +8,8 @@ Result<Out, Error> timeout_elapsed<Out>(Result<void, Error> sleep_result) {
     return Err(timeout_error());
 }
 
-// TODO(async-await channels): keep timeout on this pure select wrapper and add channel receive coverage when channels land.
 // Races a selectable future with a timer and returns timeout_error on expiry.
-export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
+export async Result<Out, Error> timeout<A: SelectableFuture<Out = _>>(
     A future,
     u64 ms
 ) {

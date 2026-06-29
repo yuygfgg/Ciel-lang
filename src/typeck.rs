@@ -668,11 +668,7 @@ impl ThirVisitor for AsyncSuspensionCapabilityVisitor<'_> {
         match &expr.kind {
             TExprKind::Await { future } => {
                 self.await_count += 1;
-                if !self.checker.type_implements_capability(
-                    STD_ASYNC_ABORT_FUTURE_INTERFACE,
-                    &[],
-                    &future.ty,
-                ) {
+                if !self.checker.is_abortable_ty(&future.ty) {
                     self.abortable = false;
                 }
                 self.visit_expr(future);
@@ -5691,13 +5687,7 @@ impl TypeChecker {
             }
             TClosureBody::Expr(expr) => self
                 .transparent_cancel_safe_await_future(expr)
-                .is_some_and(|future| {
-                    self.type_implements_capability(
-                        STD_ASYNC_CANCEL_SAFE_INTERFACE,
-                        &[],
-                        &future.ty,
-                    )
-                }),
+                .is_some_and(|future| self.is_cancel_safe_ty(&future.ty)),
         }
     }
 
@@ -5722,7 +5712,7 @@ impl TypeChecker {
     }
 
     fn transparent_cancel_safe_future(&mut self, prefix: &[TStmt], future: &TExpr) -> bool {
-        if !self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], &future.ty) {
+        if !self.is_cancel_safe_ty(&future.ty) {
             return false;
         }
         if prefix.is_empty() {
@@ -9227,9 +9217,29 @@ impl TypeChecker {
                     "select arm future cannot contain `await` or nested `select`",
                 ));
             }
-            let awaitable = self.awaitable_ty(&future.ty, arm.future.span);
-            let future_output_ty = if let Some(awaitable) = awaitable {
-                awaitable.output_ty
+            let selectable_output = self.selectable_future_output_ty(&future.ty, arm.future.span);
+            let future_output_ty = if let Some(output_ty) = selectable_output {
+                output_ty
+            } else if let Some(output_ty) = self.awaitable_output_ty(&future.ty, arm.future.span) {
+                if !self.is_cancel_safe_ty(&future.ty) {
+                    self.diagnostics.push(Diagnostic::new(
+                        arm.future.span,
+                        format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            future.ty, STD_ASYNC_CANCEL_SAFE_INTERFACE
+                        ),
+                    ));
+                }
+                if !self.is_abortable_ty(&future.ty) {
+                    self.diagnostics.push(Diagnostic::new(
+                        arm.future.span,
+                        format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
+                        ),
+                    ));
+                }
+                output_ty
             } else {
                 self.diagnostics.push(Diagnostic::new(
                     arm.future.span,
@@ -9238,22 +9248,26 @@ impl TypeChecker {
                         future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
                     ),
                 ));
-                Ty::Unknown
-            };
-            for capability in [
-                STD_ASYNC_CANCEL_SAFE_INTERFACE,
-                STD_ASYNC_ABORT_FUTURE_INTERFACE,
-            ] {
-                if !self.type_implements_capability(capability, &[], &future.ty) {
+                if !self.is_cancel_safe_ty(&future.ty) {
                     self.diagnostics.push(Diagnostic::new(
                         arm.future.span,
                         format!(
                             "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, capability
+                            future.ty, STD_ASYNC_CANCEL_SAFE_INTERFACE
                         ),
                     ));
                 }
-            }
+                if !self.is_abortable_ty(&future.ty) {
+                    self.diagnostics.push(Diagnostic::new(
+                        arm.future.span,
+                        format!(
+                            "generic constraint not satisfied: `{}` does not implement `{}`",
+                            future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
+                        ),
+                    ));
+                }
+                Ty::Unknown
+            };
             let future = self.consume_affine_expr(scopes, future, false);
             affine_state |= self.type_is_affine(&future.ty);
 
@@ -11124,7 +11138,7 @@ impl TypeChecker {
                 ),
             ));
         }
-        if !self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], &future.ty) {
+        if !self.is_abortable_ty(&future.ty) {
             self.diagnostics.push(Diagnostic::new(
                 future.span,
                 format!(
@@ -11184,11 +11198,11 @@ impl TypeChecker {
         type_args: &[Type],
         args: &[Expr],
     ) -> Option<TExpr> {
-        if type_args.len() != 2 {
+        if type_args.len() > 1 {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!(
-                    "`future_from_op` expects 2 type arguments, got {}",
+                    "`future_from_op` expects at most 1 type argument, got {}",
                     type_args.len()
                 ),
             ));
@@ -11200,13 +11214,32 @@ impl TypeChecker {
                 format!("call expects 1 arguments, got {}", args.len()),
             ));
         }
-        let op_ty = self.lower_type(&type_args[0]);
-        let output_ty = self.lower_type(&type_args[1]);
+        let explicit_op_ty = type_args.first().map(|ty| self.lower_type(ty));
         let Some(arg) = args.first() else {
             return None;
         };
-        let op_expr = self.check_consumed_expr(scopes, arg, Some(&op_ty), false)?;
-        self.require_assignable(&op_ty, &op_expr.ty, op_expr.span);
+        let op_expr = self.check_consumed_expr(scopes, arg, explicit_op_ty.as_ref(), false)?;
+        if let Some(op_ty) = explicit_op_ty.as_ref() {
+            self.require_assignable(op_ty, &op_expr.ty, op_expr.span);
+        }
+        let op_ty = explicit_op_ty.clone().unwrap_or_else(|| op_expr.ty.clone());
+        let output_ty = {
+            let diagnostic_count = self.diagnostics.len();
+            match self.capability_determined_arg("poll_done", "poll_done::Out", &op_ty, span) {
+                Some(output_ty) => output_ty,
+                None => {
+                    if self.diagnostics.len() == diagnostic_count {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "`future_from_op` operation type `{op_ty}` does not determine `poll_done::Out`"
+                            ),
+                        ));
+                    }
+                    Ty::Unknown
+                }
+            }
+        };
         if !self.type_implements_capability("raw_operation", &[], &op_ty) {
             self.diagnostics.push(Diagnostic::new(
                 span,
@@ -11739,7 +11772,7 @@ impl TypeChecker {
             ));
         }
         if let Some(future_ty) = &body_future_ty
-            && !self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], future_ty)
+            && !self.is_abortable_ty(future_ty)
         {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
@@ -12166,10 +12199,38 @@ impl TypeChecker {
     ) -> Option<Vec<Ty>> {
         if capability.name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE {
             return self
-                .awaitable_ty(receiver_ty, span)
-                .map(|awaitable| vec![awaitable.output_ty]);
+                .awaitable_output_ty(receiver_ty, span)
+                .map(|output_ty| vec![output_ty]);
         }
-        None
+        let generic_names = capability
+            .args
+            .iter()
+            .flat_map(|arg| ty_generic_names(arg).into_iter())
+            .collect::<HashSet<_>>();
+        if generic_names.is_empty() {
+            return None;
+        }
+        let assumptions = self.hidden_solver_assumptions(receiver_ty);
+        match capability_solve::solve_hidden_from_capability(
+            &self.ctx,
+            receiver_ty,
+            capability,
+            &generic_names,
+            &assumptions,
+        ) {
+            capability_solve::HiddenSolveResult::Unique(bindings) => {
+                let subst = bindings.into_iter().collect::<HashMap<_, _>>();
+                Some(
+                    capability
+                        .args
+                        .iter()
+                        .map(|arg| substitute_ty(arg, &subst))
+                        .collect(),
+                )
+            }
+            capability_solve::HiddenSolveResult::NoSolution
+            | capability_solve::HiddenSolveResult::Ambiguous => None,
+        }
     }
 
     fn check_generic_constraints(
@@ -15273,14 +15334,39 @@ impl TypeChecker {
     }
 
     fn awaitable_ty(&mut self, ty: &Ty, span: crate::span::Span) -> Option<AwaitableInfo> {
+        self.awaitable_output_ty(ty, span)
+            .map(|output_ty| AwaitableInfo { output_ty })
+    }
+
+    fn awaitable_output_ty(&mut self, ty: &Ty, span: crate::span::Span) -> Option<Ty> {
         if let Some(output_ty) = generated_future_output_ty(ty) {
-            return Some(AwaitableInfo { output_ty });
+            return Some(output_ty);
         }
-        let implementation = self.find_or_instantiate_awaitable_impl(ty, span)?;
-        let output_ty = interface_non_receiver_args(&implementation.interface_args)
-            .first()
-            .cloned()?;
-        Some(AwaitableInfo { output_ty })
+        if !std_id::has_std_async_interface(
+            &self.ctx.resolved,
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+        ) {
+            return None;
+        }
+        self.capability_determined_arg(
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+            "Awaitable::Out",
+            ty,
+            span,
+        )
+    }
+
+    fn is_abortable_ty(&mut self, ty: &Ty) -> bool {
+        self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], ty)
+    }
+
+    fn is_cancel_safe_ty(&mut self, ty: &Ty) -> bool {
+        self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], ty)
+    }
+
+    fn selectable_future_output_ty(&mut self, ty: &Ty, span: crate::span::Span) -> Option<Ty> {
+        let output_ty = self.awaitable_output_ty(ty, span)?;
+        (self.is_cancel_safe_ty(ty) && self.is_abortable_ty(ty)).then_some(output_ty)
     }
 
     fn async_function_future_ty(&mut self, def_id: DefId, output_ty: Ty, params: &[Ty]) -> Ty {
@@ -15330,10 +15416,8 @@ impl TypeChecker {
 
     fn async_op_future_ty(&mut self, op_ty: &Ty, result_ty: Ty, span: crate::span::Span) -> Ty {
         let storage_op_ty = self.meta_repr_storage_ty(op_ty, span);
-        let cancel_safe =
-            self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], &storage_op_ty);
-        let abortable =
-            self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], &storage_op_ty);
+        let cancel_safe = self.is_cancel_safe_ty(&storage_op_ty);
+        let abortable = self.is_abortable_ty(&storage_op_ty);
         let affine_state = self.type_is_affine(&storage_op_ty);
         generated_future_ty_with_affine_state(
             format!(
@@ -15348,99 +15432,59 @@ impl TypeChecker {
         )
     }
 
-    fn find_or_instantiate_awaitable_impl(
+    fn capability_determined_arg(
         &mut self,
+        interface_name: &str,
+        binding_label: &str,
         receiver_ty: &Ty,
         span: crate::span::Span,
-    ) -> Option<ImplSig> {
+    ) -> Option<Ty> {
+        let Some(interface) = self.interface_sig_by_name(interface_name) else {
+            return None;
+        };
+        if interface.determined_start.is_none() {
+            return None;
+        }
         let storage_receiver_ty = self.meta_repr_storage_ty(receiver_ty, span);
-        let interface_args = self.awaitable_interface_args(&storage_receiver_ty, span)?;
-        self.find_or_instantiate_impl_by_full_args(
-            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-            &interface_args,
-            Some(&storage_receiver_ty),
-            span,
-        )
-    }
+        let hidden_name = format!("__ciel_{interface_name}_determined");
+        let hidden_names = HashSet::from([hidden_name.clone()]);
+        let capability = ConstraintRef {
+            name: interface_name.to_string(),
+            args: vec![Ty::Generic(hidden_name.clone())],
+        };
+        let assumptions = self.hidden_solver_assumptions(&storage_receiver_ty);
+        let result = capability_solve::solve_hidden_from_capability(
+            &self.ctx,
+            &storage_receiver_ty,
+            &capability,
+            &hidden_names,
+            &assumptions,
+        );
+        let bindings = match result {
+            capability_solve::HiddenSolveResult::Unique(bindings) => bindings,
+            capability_solve::HiddenSolveResult::Ambiguous => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!("ambiguous impls for {binding_label}"),
+                ));
+                return None;
+            }
+            capability_solve::HiddenSolveResult::NoSolution => return None,
+        };
+        let output_ty = bindings
+            .into_iter()
+            .find_map(|(name, ty)| (name == hidden_name).then_some(ty))?;
 
-    fn awaitable_interface_args(
-        &mut self,
-        storage_receiver_ty: &Ty,
-        span: crate::span::Span,
-    ) -> Option<Vec<Ty>> {
-        if !std_id::has_std_async_interface(
-            &self.ctx.resolved,
-            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        ) {
-            return None;
-        }
-        if let Some(existing) = self.ctx.impls.iter().find(|implementation| {
-            implementation.interface_name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                && implementation
-                    .receiver_ty
-                    .as_ref()
-                    .is_some_and(|candidate| candidate == storage_receiver_ty)
-                && implementation.interface_args.len() == 2
-                && implementation.interface_args.first() == Some(storage_receiver_ty)
-        }) {
-            return Some(existing.interface_args.clone());
-        }
-
-        let templates = self.ctx.generic_impls.clone();
-        let mut matches = Vec::new();
-        for template in templates {
-            if template.interface_name != STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                || template.interface_args.len() != 2
-            {
-                continue;
-            }
-            let mut subst = template
-                .generics
-                .iter()
-                .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
-                .collect::<HashMap<_, _>>();
-            if let Some(pattern) = template.receiver_ty.as_ref()
-                && !unify_ty(pattern, storage_receiver_ty, &mut subst)
-            {
-                continue;
-            }
-            if !unify_ty(&template.interface_args[0], storage_receiver_ty, &mut subst) {
-                continue;
-            }
-            if template
-                .generics
-                .iter()
-                .any(|generic| subst.get(&generic.name).is_none_or(contains_generic))
-            {
-                continue;
-            }
-            let diagnostic_count = self.diagnostics.len();
-            self.check_generic_constraints(&template.generics, &subst, span);
-            if self.diagnostics.len() != diagnostic_count {
-                self.diagnostics.truncate(diagnostic_count);
-                continue;
-            }
-            let concrete_interface_args = template
-                .interface_args
-                .iter()
-                .map(|ty| self.substitute_ty_normalized(ty, &subst, span))
-                .collect::<Vec<_>>();
-            if concrete_interface_args.first() != Some(storage_receiver_ty) {
-                continue;
-            }
-            matches.push(concrete_interface_args);
-        }
-
-        if matches.len() > 1 {
-            self.diagnostics.push(Diagnostic::new(
+        if !contains_generic(&storage_receiver_ty) && !contains_generic(&output_ty) {
+            let interface_args = vec![storage_receiver_ty.clone(), output_ty.clone()];
+            let _ = self.find_or_instantiate_impl_by_full_args(
+                interface_name,
+                &interface_args,
+                Some(&storage_receiver_ty),
                 span,
-                format!(
-                    "ambiguous impls for awaitable interface `{STD_ASYNC_AWAITABLE_FUTURE_INTERFACE}`"
-                ),
-            ));
-            return None;
+            );
         }
-        matches.into_iter().next()
+        Some(output_ty)
     }
 
     fn future_output_ty(&self, ty: &Ty) -> Option<Ty> {

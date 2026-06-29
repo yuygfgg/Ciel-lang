@@ -8,7 +8,7 @@ import /std/result;
 async Result<usize, Error> bad_select(anet::AsyncTcpStream stream, anet::Bytes data) {
     anet::AsyncTcpWrite op = anet::write_bytes(stream, data)?;
     return await select {
-        case written = async::future_from_op<anet::AsyncTcpWrite, usize>(op): written;
+        case written = async::future_from_op(op): written;
     };
 }
 

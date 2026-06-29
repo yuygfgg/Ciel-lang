@@ -29,8 +29,8 @@ export struct Update<T, R> {
     R result;
 }
 
-// Functional update policy consumed by mutex_update.
-export interface<F, T, R> Result<Update<T, R>, Error> update_value(*const F updater, T value);
+// Functional update policy consumed by mutex_update. R is determined by updater and value type.
+export interface<F, T -> R> Result<Update<T, R>, Error> update_value(*const F updater, T value);
 
 unsafe impl<T> clone_message(*const Mutex<T> value) {
     return Ok(*value);
@@ -65,7 +65,10 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
 
 // Locks the mutex, clones the current value, applies update_value, and stores
 // the returned replacement before unlocking.
-export Result<R, Error> mutex_update<T: Message, F, R>(*const Mutex<T> mutex, *const F updater) = .update {
+export Result<R, Error> mutex_update<T: Message, F: update_value<T, R = _>>(
+    *const Mutex<T> mutex,
+    *const F updater
+) = .update {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {

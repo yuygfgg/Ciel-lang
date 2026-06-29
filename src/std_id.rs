@@ -360,6 +360,7 @@ pub fn is_std_async_resource_runtime_handle_type_name(
         "AsyncAccept",
         "AsyncConnect",
         "AsyncTcpRead",
+        "AsyncTcpReadInto",
         "AsyncTcpWrite",
         "AsyncBufferedRead",
     ];

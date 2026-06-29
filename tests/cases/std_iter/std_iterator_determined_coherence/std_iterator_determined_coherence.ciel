@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: conflicting determined parameters
+
+import /std/iter as iter;
+
+struct Bad {
+    i64 value;
+}
+
+impl iter::next<i64>(*Bad iter) {
+    return iter::Item(iter->value);
+}
+
+impl iter::next<u8>(*Bad iter) {
+    return iter::Item(1 as u8);
+}
+
+i64 main() {
+    return 0;
+}

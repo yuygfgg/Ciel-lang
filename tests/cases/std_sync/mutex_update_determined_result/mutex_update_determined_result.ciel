@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 17
+
+import /std/lib;
+
+struct Add {
+    i64 amount;
+}
+
+struct WasPositive {}
+
+impl update_value<i64, i64>(*const Add updater, i64 value) {
+    i64 next = value + updater->amount;
+    return Ok({ value: next, result: next });
+}
+
+impl update_value<i64, bool>(*const WasPositive updater, i64 value) {
+    return Ok({ value: value, result: value > 0 });
+}
+
+i64 main() {
+    _ mutex = must(make_mutex(10));
+    Add add = { amount: 7 };
+    WasPositive check = {};
+
+    i64 updated = must(mutex_update<i64, Add>(&mutex, &add));
+    bool positive = must(mutex_update<i64, WasPositive>(&mutex, &check));
+    if (!positive) {
+        return 1;
+    }
+    return updated;
+}

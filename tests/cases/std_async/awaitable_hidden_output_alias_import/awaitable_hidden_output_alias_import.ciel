@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 9
+
+import /std/async as aio;
+import /std/async_time as time;
+import /std/lib;
+
+Out drive<A: aio::Awaitable<Out = _> + aio::Abortable>(A future) {
+    return aio::block_on(future);
+}
+
+async Result<i64, Error> delayed() {
+    await time::sleep_ms(0)?;
+    return Ok(9);
+}
+
+i64 main() {
+    return must(drive(delayed()));
+}

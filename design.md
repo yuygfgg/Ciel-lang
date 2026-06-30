@@ -3476,6 +3476,7 @@ define an equivalent trusted slice-construction primitive.
 // /std/buf
 import /std/result;
 import /std/bytes as bytes;
+import /std/iter as iter;
 import /std/storage as storage;
 
 export unsafe struct ByteBuf {
@@ -3487,6 +3488,7 @@ export Result<ByteBuf, BufError> byte_buf_new(usize capacity);
 export usize byte_buf_len(*const ByteBuf buf) = .len;
 export void byte_buf_clear(*ByteBuf buf) = .clear;
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice;
+export _: iter::Iterator<u8> byte_buf_iter(*const ByteBuf buf) = .iter;
 export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice;
 export usize byte_buf_capacity(*const ByteBuf buf) = .capacity;
 export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve;
@@ -3508,6 +3510,8 @@ callers use `byte_buf_new` and the exported operations. Slice-returning
 functions expose views into the buffer's initialized prefix. `byte_buf_clear`
 sets the initialized length to zero without releasing capacity, and
 `byte_buf_reserve` grows while preserving existing bytes.
+`byte_buf_iter` creates a read-only byte iterator over the initialized prefix
+and is exposed through receiver selector `.iter()`.
 `byte_buf_spare_mut_slice` and `byte_buf_commit_tail` support staged appends:
 callers reserve writable tail space, fill it through the returned slice, then
 commit the number of bytes actually initialized. This pattern is used by frame
@@ -3555,6 +3559,7 @@ export Result<*const T, VecError> vec_at<T>(
 export Result<*T, VecError> vec_mut_at<T>(*Vec<T> vec, usize index) = .mut_at;
 export void vec_clear<T>(*Vec<T> vec) = .clear;
 export []const T vec_slice<T>(*const Vec<T> vec) = .slice;
+export _: iter::Iterator<T> vec_iter<T>(*const Vec<T> vec) = .iter;
 export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice;
 export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source);
 
@@ -3593,7 +3598,9 @@ mutating vector operation that may replace or clear that storage.
 capacity. `vec_clear` resets the initialized length to zero while keeping the
 capacity reusable; for pointer-containing vectors it also clears the backing
 slots so removed elements are not retained by the vector's current storage.
-`vec_from_slice` copies the source slice into a new vector.
+`vec_iter` creates a read-only iterator over the initialized prefix and is
+exposed through receiver selector `.iter()`. `vec_from_slice` copies the source
+slice into a new vector.
 
 `VecError` implements `/std/error::ErrorTrait` through `format_error`, so a
 `Result<T, VecError>` can be propagated with `?` into a `Result<U, Error>` by
@@ -3712,6 +3719,12 @@ Structural policies cover `/std/meta` product and sum nodes used by
 with explicit `hash_key` and `key_eq` wrappers that delegate to the structural
 representation.
 
+`HashMap<K, V>` intentionally does not expose a safe borrowed `.iter()` in the
+alpha surface. A borrowed map iterator would need borrow/lifetime enforcement
+to prevent `insert`, `remove`, or `clear` from invalidating outstanding entry
+references. A snapshot iterator or entry-list API is possible, but it is a
+separate fallible cloning design rather than a borrowed iteration entrypoint.
+
 ```ciel
 // /std/shared_map
 import /std/result;
@@ -3765,7 +3778,10 @@ export Result<usize, SharedMapError> shared_map_len<K: shared_map_key, V: Messag
 Keys must be both `map_key` and `Message`, and values must be `Message`, because
 operations clone values across the synchronized boundary. It is intended for
 registries and routing tables shared by async tasks or actors, while
-`/std/map` remains the cheaper actor-local storage primitive.
+`/std/map` remains the cheaper actor-local storage primitive. It also does not
+expose `.iter()` in the alpha surface: a live iterator would need to hold or
+leak a mutex guard lifetime, while a snapshot iterator requires explicit
+cloning semantics.
 
 ```ciel
 // /std/iter
@@ -3825,30 +3841,43 @@ export struct Pair<Left, Right> {
 export _: Iterator<i64> range(i64 start, i64 end);
 export _: Iterator<T> once<T>(T value);
 export _: Iterator<T> empty<T>();
-export _: Iterator<T> slice_iter<T>([]const T items);
-export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(I iter, F mapper);
-export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
-export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit);
-export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter);
+export _: Iterator<T> slice_iter<T>([]const T items) = .iter;
+export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(
+    I iter,
+    F mapper
+) = .map;
+export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .filter;
+export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit) = .take;
+export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter) = .enumerate;
 export _: Iterator<Pair<LeftItem, RightItem>> zip<
     Left: Iterator<LeftItem = _>,
     Right: Iterator<RightItem = _>
->(Left left, Right right);
+>(Left left, Right right) = .zip;
 export _: Iterator<Item> chain<First: Iterator<Item = _>, Second: Iterator<Item>>(
     First first,
     Second second
-);
-export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter);
+) = .chain;
+export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter) = .flatten;
 
-export usize count<I: Iterator<Item = _>>(I iter);
-export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item)| step);
+export usize count<I: Iterator<Item = _>>(I iter) = .count;
+export Acc fold<I: Iterator<Item = _>, Acc>(
+    I iter,
+    Acc initial,
+    Acc |(Acc, Item)| step
+) = .fold;
 export Result<C, E> collect<
     C: CollectTarget<Item = _, E = _: ErrorTrait>,
     I: Iterator<Item>
 >(I iter) = .collect;
-export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
-export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
-export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
+export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .find;
+export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .any;
+export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .all;
 ```
 
 `/std/iter` provides static iterators whose item type is determined by the
@@ -3858,6 +3887,13 @@ determined-parameter coherence rules, and generic `Iterator<Item = _>` bounds
 are solved by the same hidden binding machinery available to user code.
 Adapter constructors return opaque constrained iterator types so callers do not
 depend on nested private adapter structs.
+
+The borrowed slice entrypoint is `slice_iter<T>([]const T)`, exposed through
+receiver selector `.iter()` for `[]const T`. Iterator adapters and consumers
+also expose receiver selectors: `.map`, `.filter`, `.take`, `.enumerate`,
+`.zip`, `.chain`, `.flatten`, `.count`, `.fold`, `.find`, `.any`, `.all`, and
+`.collect`. Selector calls and ordinary function calls are the same operations;
+selectors do not introduce separate method semantics.
 
 `collect` consumes the remaining items of an iterator into a target collection
 chosen by the expected result type or explicit type argument. A collection
@@ -4093,6 +4129,7 @@ resource cleanup, and body failures remain separate matchable domains.
 ```ciel
 // /std/bytes
 export import /std/result;
+import /std/iter as iter;
 import /std/storage as storage;
 
 export unsafe struct Bytes {
@@ -4108,6 +4145,7 @@ export Result<Bytes, BytesError> bytes_append(Bytes left, Bytes right) = .append
 export Result<Bytes, BytesError> bytes_slice(Bytes bytes, usize offset, usize len) = .slice;
 export usize bytes_len(Bytes bytes) = .len;
 export []const u8 bytes_const_slice(Bytes bytes) = .const_slice;
+export _: iter::Iterator<u8> bytes_iter(Bytes bytes) = .iter;
 export Result<usize, BytesError> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to;
 export Result<usize, BytesError> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars;
 export Result<[]u8, BytesError> bytes_to_slice(Bytes bytes) = .to_slice;
@@ -4122,12 +4160,14 @@ standard-library clone policy and implements `ShareHandle` because it exposes
 only immutable views. `ShareHandle` values opt into async-frame storage through
 the standard-library `async_frame_opt_in_marker` impl. Async modules import
 `/std/bytes` in their signatures; there is no separate async-specific bytes
-public namespace.
+public namespace. `bytes_iter` is exposed as `.iter()` and yields `u8` byte
+items, matching the byte-sequence contract.
 
 ```ciel
 // /std/text
 export import /std/result;
 import /std/bytes as bytes;
+import /std/iter as iter;
 
 export struct Text {
     bytes::Bytes bytes;
@@ -4137,6 +4177,7 @@ export Result<Text, TextError> text_empty();
 export Result<Text, TextError> text_copy([]const char text);
 export usize text_len(Text text) = .len;
 export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes;
+export _: iter::Iterator<char> text_chars(Text text) = .chars;
 export Result<[]char, TextError> text_to_chars(Text text) = .to_chars;
 export Result<[]const char, TextError> text_to_slice(Text text) = .slice;
 ```
@@ -4145,7 +4186,9 @@ export Result<[]const char, TextError> text_to_slice(Text text) = .slice;
 perform Unicode normalization or validation beyond preserving byte contents.
 `Text` implements `Message` as a shareable handle, so it is suitable for actor
 and async-task payloads. Conversion helpers copy the contents out when mutable
-or slice inspection is needed.
+or slice inspection is needed. `text_chars` is exposed as `.chars()` and
+iterates the stored UTF-8 bytes as `char` code units; it does not perform
+Unicode scalar decoding.
 
 ```ciel
 // /std/async

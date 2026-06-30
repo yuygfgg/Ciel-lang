@@ -1,12 +1,18 @@
 // Re-exports Result for Text operations.
 export import /std/result;
 import /std/bytes as bytes;
+import /std/iter as iter;
 import /std/message;
 import /std/storage as storage;
 
 // Immutable runtime-backed text value stored as owned bytes.
 export struct Text {
     bytes::Bytes bytes;
+}
+
+struct TextCharIter {
+    []const u8 data;
+    usize index;
 }
 
 // Errors produced by Text operations.
@@ -34,6 +40,15 @@ unsafe impl clone_message(*const Text value) {
 
 unsafe impl share_handle_marker(*const Text value) {
     return true;
+}
+
+impl iter::next<char>(*TextCharIter iter) {
+    if (iter->index >= iter->data.len) {
+        return iter::Done;
+    }
+    char value = iter->data[iter->index] as char;
+    iter->index = iter->index + 1;
+    return iter::Item(value);
 }
 
 // Returns an empty Text value.
@@ -64,6 +79,12 @@ export usize text_len(Text text) = .len {
 // Returns a cloned owned Bytes handle for the Text contents.
 export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes {
     return Ok(text.bytes);
+}
+
+// Iterates the stored UTF-8 bytes as char code units; this is not Unicode scalar decoding.
+export _: iter::Iterator<char> text_chars(Text text) = .chars {
+    TextCharIter out = { data: bytes::bytes_const_slice(text.bytes), index: 0 };
+    return out;
 }
 
 // Copies Text contents into a mutable character slice allocation.

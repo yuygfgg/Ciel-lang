@@ -250,31 +250,37 @@ export _: Iterator<T> empty<T>() {
 }
 
 // Creates an iterator over a read-only slice.
-export _: Iterator<T> slice_iter<T>([]const T items) {
+export _: Iterator<T> slice_iter<T>([]const T items) = .iter {
     SliceIter<T> iter = { items: items, index: 0 };
     return iter;
 }
 
 // Maps each item with a mapper object.
-export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(I iter, F mapper) {
+export _: Iterator<Out> map<I: Iterator<In = _>, F: Mapper<In, Out = _>>(
+    I iter,
+    F mapper
+) = .map {
     MapIter<I, F> mapped = { iter: iter, mapper: mapper };
     return mapped;
 }
 
 // Keeps only items accepted by a predicate object.
-export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+export _: Iterator<Item> filter<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .filter {
     FilterIter<I, P> filtered = { iter: iter, predicate: predicate };
     return filtered;
 }
 
 // Yields at most limit items.
-export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit) {
+export _: Iterator<Item> take<I: Iterator<Item = _>>(I iter, usize limit) = .take {
     TakeIter<I> taken = { iter: iter, remaining: limit };
     return taken;
 }
 
 // Yields each item with its zero-based index.
-export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter) {
+export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter) = .enumerate {
     EnumerateIter<I> enumerated = { iter: iter, index: 0 };
     return enumerated;
 }
@@ -283,7 +289,7 @@ export _: Iterator<Enumerated<Item>> enumerate<I: Iterator<Item = _>>(I iter) {
 export _: Iterator<Pair<LeftItem, RightItem>> zip<
     Left: Iterator<LeftItem = _>,
     Right: Iterator<RightItem = _>
->(Left left, Right right) {
+>(Left left, Right right) = .zip {
     ZipIter<Left, Right> zipped = { left: left, right: right };
     return zipped;
 }
@@ -292,7 +298,7 @@ export _: Iterator<Pair<LeftItem, RightItem>> zip<
 export _: Iterator<Item> chain<First: Iterator<Item = _>, Second: Iterator<Item>>(
     First first,
     Second second
-) {
+) = .chain {
     ChainIter<First, Second> chained = {
         first: first,
         second: second,
@@ -302,13 +308,13 @@ export _: Iterator<Item> chain<First: Iterator<Item = _>, Second: Iterator<Item>
 }
 
 // Flattens an iterator of iterators.
-export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter) {
+export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I iter) = .flatten {
     FlattenIter<I> flattened = { outer: iter, current: Done };
     return flattened;
 }
 
 // Counts the remaining items.
-export usize count<I: Iterator<Item = _>>(I iter) {
+export usize count<I: Iterator<Item = _>>(I iter) = .count {
     usize @total = 0;
     while (true) {
         switch (next(&iter)) {
@@ -321,7 +327,11 @@ export usize count<I: Iterator<Item = _>>(I iter) {
 }
 
 // Folds the remaining items into an accumulator.
-export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item)| step) {
+export Acc fold<I: Iterator<Item = _>, Acc>(
+    I iter,
+    Acc initial,
+    Acc |(Acc, Item)| step
+) = .fold {
     Acc @acc = initial;
     while (true) {
         switch (next(&iter)) {
@@ -351,7 +361,10 @@ export Result<C, E> collect<
 }
 
 // Returns the first remaining item accepted by predicate, or Done.
-export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .find {
     while (true) {
         switch (next(&iter)) {
             case Item(value):
@@ -365,7 +378,7 @@ export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P pred
 }
 
 // Returns true if any remaining item is accepted by predicate.
-export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .any {
     switch (find(iter, predicate)) {
         case Item(value):
             return true;
@@ -375,7 +388,7 @@ export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) 
 }
 
 // Returns true if every remaining item is accepted by predicate.
-export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) {
+export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .all {
     while (true) {
         switch (next(&iter)) {
             case Item(value):

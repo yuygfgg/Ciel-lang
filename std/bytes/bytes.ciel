@@ -1,6 +1,7 @@
 // Immutable RawStorage-backed owned byte sequence.
 export import /std/result;
 import /std/c as c;
+import /std/iter as iter;
 import /std/message;
 import /std/storage as storage;
 
@@ -88,6 +89,12 @@ export usize bytes_len(Bytes bytes) = .len {
 // Returns a read-only view of the initialized byte sequence.
 export []const u8 bytes_const_slice(Bytes bytes) = .const_slice {
     return unsafe { bytes.data };
+}
+
+// Creates a read-only byte iterator over the owned byte sequence.
+export _: iter::Iterator<u8> bytes_iter(Bytes bytes) = .iter {
+    iter::SliceIter<u8> out = { items: bytes_const_slice(bytes), index: 0 };
+    return out;
 }
 
 // Returns an empty owned Bytes value.

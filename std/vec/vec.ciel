@@ -183,6 +183,12 @@ export []const T vec_slice<T>(*const Vec<T> vec) = .slice {
     return unsafe { storage_view[..vec->len] };
 }
 
+// Creates a read-only iterator over the initialized item prefix.
+export _: iter::Iterator<T> vec_iter<T>(*const Vec<T> vec) = .iter {
+    iter::SliceIter<T> out = { items: vec_slice<T>(vec), index: 0 };
+    return out;
+}
+
 // Returns a mutable view of the initialized item prefix.
 export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice {
     []T storage_view = unsafe { storage::raw_slice<T>(&vec->storage) };

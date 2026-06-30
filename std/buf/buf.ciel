@@ -2,6 +2,7 @@
 export import /std/result;
 import /std/c as c;
 import /std/bytes as bytes;
+import /std/iter as iter;
 import /std/message;
 import /std/storage as storage;
 
@@ -61,6 +62,12 @@ export void byte_buf_clear(*ByteBuf buf) = .clear {
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice {
     []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
     return unsafe { storage_view[..buf->len] };
+}
+
+// Creates a read-only byte iterator over the initialized byte prefix.
+export _: iter::Iterator<u8> byte_buf_iter(*const ByteBuf buf) = .iter {
+    iter::SliceIter<u8> out = { items: byte_buf_slice(buf), index: 0 };
+    return out;
 }
 
 // Returns a mutable view of the initialized byte prefix.

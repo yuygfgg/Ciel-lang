@@ -344,6 +344,27 @@ Done criteria:
 - Tests cover that iterator item types are inferred through the `Iterator`
   determined type.
 
+Implementation status:
+
+- Completed for `/std/iter`, `/std/vec`, `/std/bytes`, `/std/text`, and
+  `/std/buf`.
+- `slice_iter` is also the receiver selector for `[]const T.iter()`.
+  `Vec<T>.iter()`, `Bytes.iter()`, and `ByteBuf.iter()` are read-only
+  slice-backed entrypoints.
+- `Text.chars()` iterates the stored UTF-8 bytes as `char` code units; it does
+  not perform Unicode scalar decoding.
+- `/std/map` intentionally does not expose `.iter()` in the alpha surface yet:
+  a borrowed `HashMap<K, V>.iter()` would require borrow/lifetime enforcement
+  to prevent mutation invalidating outstanding entries, while a snapshot
+  iterator needs a separate fallible cloning API design.
+- `/std/shared_map` also intentionally does not expose `.iter()` in the alpha
+  surface because it would either leak lock-guard lifetimes or require snapshot
+  cloning semantics. Its current public iteration-like operation remains
+  destructive `pop_any`.
+- Tests cover empty, single-item, and multi-item iteration across alpha
+  containers, selector chaining through `.map`, `.filter`, and `.collect`, and
+  ordinary function-call equivalents.
+
 ### 9. Complete Receiver Selectors For Core Std APIs
 
 Receiver selectors are already implemented, but core library ergonomics are

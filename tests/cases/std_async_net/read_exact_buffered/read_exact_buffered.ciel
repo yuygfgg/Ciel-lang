@@ -4,12 +4,13 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/panic;
 import /std/result;
 
-bool is_err_bytes(Result<anet::Bytes, anet::AsyncNetError> value) {
+bool is_err_bytes(Result<bytes::Bytes, anet::AsyncNetError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -22,8 +23,8 @@ async Result<void, Error> write_chunks(anet::AsyncTcpListener listener) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [2]u8 first = [1 as u8, 2 as u8];
     [4]u8 second = [3 as u8, 4 as u8, 5 as u8, 6 as u8];
-    server = await anet::write_all(server, anet::bytes_copy(first[..])?)?;
-    server = await anet::write_all(server, anet::bytes_copy(second[..])?)?;
+    server = await anet::write_all(server, bytes::bytes_copy(first[..])?)?;
+    server = await anet::write_all(server, bytes::bytes_copy(second[..])?)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok;
@@ -37,8 +38,8 @@ async Result<usize, Error> drive() {
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 2)?;
-    anet::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
-    usize len = anet::bytes_len(exact);
+    bytes::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
+    usize len = bytes::bytes_len(exact);
     if (!is_err_bytes(await anet::read_exact_buffered(&reader, 1))) {
         return Err(code_error(90));
     }

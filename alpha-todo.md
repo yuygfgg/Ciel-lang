@@ -256,25 +256,29 @@ Implementation status:
 
 ### 6. Replace The `Bytes` Runtime Handle Public Shape
 
-`Bytes` must not expose a runtime handle as its durable public representation.
+`Bytes` no longer exposes a runtime handle as its durable public
+representation.
 
-Required work:
+Chosen shape:
 
-- Decide whether public `Bytes` is immutable `Vec<u8>`-backed storage,
-  `ByteBuf`-backed storage, or a small public wrapper over a private runtime
-  representation.
-- Keep async runtime internals free to use native `CielBytes`, but do not expose
-  that shape as the public model.
-- Make `async_io` and `async_net` return the final alpha `Bytes` shape.
+- Public `Bytes` is an immutable owned byte sequence backed by
+  `/std/storage.RawStorage<u8>`.
+- `ByteBuf` is the mutable reusable buffer type. APIs such as TCP `read_into`
+  take and return `ByteBuf`, not `Bytes`.
+- `async_io` and `async_net` use `/std/bytes` explicitly in public signatures;
+  they do not re-export a separate async bytes namespace.
+- The runtime no longer has a dedicated bytes allocation path. Async reads
+  return raw allocated storage to the standard library adapter, which wraps it
+  as `RawStorage`.
 
 Done criteria:
 
 - Public `Bytes` does not expose `*void handle`.
 - Bytes construction, slicing, append, copy-out, async read, async write, and
-  message cloning all use the final alpha representation or a private adapter.
-- Compatibility facades do not leak legacy names as preferred public APIs.
+  message cloning all use the final alpha representation.
+- Compatibility facades do not leak legacy async bytes names as public APIs.
 - Tests cover bytes conversion across `/std/bytes`, `/std/async_io`, and
-  `/std/async_net`.
+  `/std/async_net`, plus reusable `ByteBuf` read buffers.
 
 ### 7. Add Generic Iterator Collection
 

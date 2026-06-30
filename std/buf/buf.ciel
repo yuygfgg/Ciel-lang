@@ -1,6 +1,7 @@
 // Re-exports Result for ByteBuf operations.
 export import /std/result;
 import /std/c as c;
+import /std/bytes as bytes;
 import /std/message;
 import /std/storage as storage;
 
@@ -68,7 +69,7 @@ export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice {
     return unsafe { storage_view[..buf->len] };
 }
 
-usize byte_buf_capacity(*const ByteBuf buf) {
+export usize byte_buf_capacity(*const ByteBuf buf) = .capacity {
     []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
     return storage_view.len;
 }
@@ -138,6 +139,13 @@ export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data)
     return Ok;
 }
 
+// Copies a slice into a new ByteBuf with exactly data.len initialized bytes.
+export Result<ByteBuf, BufError> byte_buf_from_slice([]const u8 data) {
+    ByteBuf @out = byte_buf_new(data.len)?;
+    byte_buf_push_slice(&out, data)?;
+    return Ok(out);
+}
+
 // Reserves additional uninitialized tail space and returns a mutable view to it.
 export Result<[]u8, BufError> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
     byte_buf_reserve(buf, additional)?;
@@ -182,8 +190,38 @@ export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count)
     return Ok;
 }
 
+// Copies the initialized bytes into an immutable Bytes value.
+export Result<bytes::Bytes, BufError> byte_buf_to_bytes(*const ByteBuf buf) = .to_bytes {
+    switch (bytes::bytes_copy(byte_buf_slice(buf))) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            switch (error) {
+                case bytes::CapacityOverflow:
+                    return Err(CapacityOverflow);
+                case bytes::SliceOutOfBounds:
+                    return Err(Runtime(5));
+                case bytes::ShortCopy:
+                    return Err(Runtime(5));
+                case bytes::Runtime(code):
+                    return Err(Runtime(code));
+            }
+    }
+}
+
+// Consumes a ByteBuf and copies its initialized bytes into immutable Bytes.
+// Copying preserves Bytes immutability even if older mutable slice views still
+// point at the buffer's backing storage.
+export Result<bytes::Bytes, BufError> byte_buf_freeze(ByteBuf @buf) = .freeze {
+    return byte_buf_to_bytes(&buf);
+}
+
 unsafe impl clone_message(*const ByteBuf value) {
     ByteBuf @out = byte_buf_new(byte_buf_len(value))?;
     byte_buf_push_slice(&out, byte_buf_slice(value))?;
     return Ok(out);
+}
+
+unsafe impl async_frame_opt_in_marker(*const ByteBuf value) {
+    return true;
 }

@@ -401,10 +401,11 @@ write_bytes_completion<S: Message>(
 ) -> Result<flow::Completion<S, usize>, Error>
 ```
 
-Async networking reuses the shared async `Bytes` ownership model from
-`/std/async/bytes`, re-exported by both async I/O and async networking. This
-keeps async file reads and async TCP reads compatible with the same
-`flow::Completion<S, Bytes>` shape.
+Async networking uses the standard immutable `Bytes` ownership model from
+`/std/bytes`. Async I/O and async networking accept and return that same
+standard type explicitly; they do not expose a separate async bytes namespace.
+Reusable read buffers use `/std/buf::ByteBuf` rather than treating immutable
+`Bytes` as mutable storage.
 
 ### 10.3 `/std/buf`
 
@@ -418,14 +419,21 @@ byte_buf_len(*const ByteBuf) -> usize
 byte_buf_clear(*ByteBuf) -> void
 byte_buf_slice(*const ByteBuf) -> []const u8
 byte_buf_mut_slice(*ByteBuf) -> []u8
+byte_buf_capacity(*const ByteBuf) -> usize
 byte_buf_reserve(*ByteBuf, additional: usize) -> Result<void, Error>
 byte_buf_push_slice(*ByteBuf, data: []const u8) -> Result<void, Error>
+byte_buf_from_slice(data: []const u8) -> Result<ByteBuf, Error>
+byte_buf_spare_mut_slice(*ByteBuf, additional: usize) -> Result<[]u8, Error>
+byte_buf_commit_tail(*ByteBuf, additional: usize) -> Result<void, Error>
 byte_buf_discard_prefix(*ByteBuf, count: usize) -> Result<void, Error>
+byte_buf_to_bytes(*const ByteBuf) -> Result<Bytes, Error>
+byte_buf_freeze(ByteBuf) -> Result<Bytes, Error>
 ```
 
-The first implementation may use fixed-size stack buffers inside the standard
-library while the public API is stabilized. Application code should use the
-intended `std/` surface.
+`ByteBuf` is the growable mutable byte buffer for protocol assembly and
+reusable async read destinations. `byte_buf_to_bytes` copies initialized data
+into immutable `Bytes`; `byte_buf_freeze` consumes the buffer but still copies
+initialized data so stale mutable slice views cannot mutate immutable `Bytes`.
 
 ### 10.4 `/std/map`
 

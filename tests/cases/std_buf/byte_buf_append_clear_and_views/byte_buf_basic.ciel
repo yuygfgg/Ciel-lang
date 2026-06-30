@@ -2,6 +2,7 @@
 // expect-exit: 0
 
 import /std/buf as buf;
+import /std/bytes as bytes;
 import /std/result;
 
 bool is_discard_error(Result<void, buf::BufError> value) {
@@ -79,6 +80,47 @@ i64 main() {
     must(bytes.buf::discard_prefix(2));
     if (bytes.buf::len() != 0 || bytes.buf::slice().len != 0) {
         return 12;
+    }
+
+    buf::ByteBuf @from_slice = must(buf::byte_buf_from_slice([11 as u8, 12 as u8]));
+    if (from_slice.buf::len() != 2 || from_slice.buf::capacity() != 2) {
+        return 13;
+    }
+
+    []u8 spare = must(from_slice.buf::spare_mut_slice(3));
+    if (spare.len != 3) {
+        return 14;
+    }
+    spare[0] = 13 as u8;
+    spare[1] = 14 as u8;
+    spare[2] = 15 as u8;
+    must(from_slice.buf::commit_tail(3));
+
+    []const u8 committed = from_slice.buf::slice();
+    if (committed.len != 5 || committed[0] != (11 as u8) || committed[4] != (15 as u8)) {
+        return 15;
+    }
+
+    bytes::Bytes copied = must(from_slice.buf::to_bytes());
+    []u8 copied_slice = must(bytes::bytes_to_slice(copied));
+    if (copied_slice.len != 5 || copied_slice[1] != (12 as u8) || copied_slice[3] != (14 as u8)) {
+        return 16;
+    }
+
+    bytes::Bytes frozen = must(from_slice.buf::freeze());
+    if (bytes::bytes_len(frozen) != 5) {
+        return 17;
+    }
+    []u8 frozen_slice = must(bytes::bytes_to_slice(frozen));
+    if (frozen_slice.len != 5 || frozen_slice[2] != (13 as u8) || frozen_slice[4] != (15 as u8)) {
+        return 18;
+    }
+
+    spare[0] = 99 as u8;
+    spare[2] = 88 as u8;
+    []u8 frozen_after_alias_write = must(bytes::bytes_to_slice(frozen));
+    if (frozen_after_alias_write[2] != (13 as u8) || frozen_after_alias_write[4] != (15 as u8)) {
+        return 19;
     }
 
     return 0;

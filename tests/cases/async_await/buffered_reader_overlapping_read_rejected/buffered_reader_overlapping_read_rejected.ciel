@@ -4,6 +4,7 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/result;
@@ -17,7 +18,7 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpSplit halves = anet::split(client)?;
     anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
-    Result<anet::Bytes, anet::AsyncNetError> picked = await select {
+    Result<bytes::Bytes, anet::AsyncNetError> picked = await select {
         case first = anet::read_buffered(&reader, 1): first;
         case second = anet::read_buffered(&reader, 1): second;
     };

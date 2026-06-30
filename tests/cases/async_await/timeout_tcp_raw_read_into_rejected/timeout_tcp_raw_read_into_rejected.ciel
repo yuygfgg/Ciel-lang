@@ -3,11 +3,12 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/buf as buf;
 import /std/result;
 
 async Result<void, Error> bad_timeout(
     anet::AsyncTcpStream stream,
-    anet::Bytes buffer
+    buf::ByteBuf buffer
 ) {
     anet::AsyncTcpReadInto op = anet::read_into_async(stream, buffer)?;
     _ timed = async::timeout(

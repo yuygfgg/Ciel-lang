@@ -5,13 +5,14 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/async_time as async_time;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> bytes_len_result(Result<anet::Bytes, anet::AsyncNetError> result) {
-    anet::Bytes bytes = result?;
-    return Ok(anet::bytes_len(bytes));
+Result<usize, Error> bytes_len_result(Result<bytes::Bytes, anet::AsyncNetError> result) {
+    bytes::Bytes bytes = result?;
+    return Ok(bytes::bytes_len(bytes));
 }
 
 Result<usize, Error> timeout_tag(Result<void, async::AsyncError> result) {
@@ -23,7 +24,7 @@ async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
     [4]u8 payload = [97 as u8, 98 as u8, 99 as u8, 100 as u8];
-    anet::Bytes out = anet::bytes_copy(payload[..])?;
+    bytes::Bytes out = bytes::bytes_copy(payload[..])?;
     server = await anet::write_all(server, out)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
@@ -40,8 +41,8 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpSplit halves = anet::split(client)?;
     anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
-    anet::Bytes first = await anet::read_buffered(&reader, 2)?;
-    if (anet::bytes_len(first) != 2) {
+    bytes::Bytes first = await anet::read_buffered(&reader, 2)?;
+    if (bytes::bytes_len(first) != 2) {
         return Err(code_error(80));
     }
 
@@ -54,14 +55,14 @@ async Result<usize, Error> drive() {
         return Err(code_error(81));
     }
 
-    anet::Bytes eof = await anet::read_buffered(&reader, 2)?;
-    if (anet::bytes_len(eof) != 0) {
+    bytes::Bytes eof = await anet::read_buffered(&reader, 2)?;
+    if (bytes::bytes_len(eof) != 0) {
         return Err(code_error(82));
     }
     anet::AsyncTcpReadHalf half = anet::into_read_half(reader)?;
     anet::shutdown_read_half(&half)?;
     usize written = await server?;
-    return Ok(anet::bytes_len(first) + second_len + (written - 4));
+    return Ok(bytes::bytes_len(first) + second_len + (written - 4));
 }
 
 i32 main() {

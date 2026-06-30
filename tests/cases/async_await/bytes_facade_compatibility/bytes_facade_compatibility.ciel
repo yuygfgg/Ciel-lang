@@ -3,19 +3,14 @@
 // expect-stdout: 3
 
 import /std/lib;
-import /std/async_io as aio;
-import /std/async_net as anet;
 import /std/bytes as bytes;
 
 i32 main() {
     [3]u8 payload = [120 as u8, 121 as u8, 122 as u8];
-    Bytes plain = must(bytes_copy(payload[..]));
-    aio::Bytes io_bytes = plain;
-    anet::Bytes net_bytes = io_bytes;
-    bytes::Bytes facade_bytes = net_bytes;
-    if (bytes::bytes_capacity(facade_bytes) != 3) {
+    bytes::Bytes value = must(bytes::bytes_copy(payload[..]));
+    if (bytes::bytes_len(value) != 3) {
         return 1;
     }
-    must(print_value(bytes_len(facade_bytes)));
+    must(print_value(bytes::bytes_len(value)));
     return 0;
 }

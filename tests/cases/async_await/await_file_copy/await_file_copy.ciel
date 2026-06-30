@@ -6,6 +6,7 @@
 
 import /std/async as async;
 import /std/async_io as aio;
+import /std/bytes as bytes;
 import /std/env as env;
 import /std/io as io;
 import /std/result;
@@ -25,7 +26,7 @@ bool same_prefix([]u8 got, []const u8 want) {
 }
 
 async Result<usize, Error> copy_file(aio::AsyncFd input, aio::AsyncFd output) {
-    aio::Bytes bytes = await aio::read_bytes(&input, 16)?;
+    bytes::Bytes bytes = await aio::read_bytes(&input, 16)?;
     usize written = await aio::write_bytes(&output, bytes)?;
 
     aio::close_async(input)?;

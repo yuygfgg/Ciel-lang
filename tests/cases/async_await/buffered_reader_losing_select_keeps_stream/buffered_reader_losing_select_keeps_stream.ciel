@@ -5,6 +5,7 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/async_time as async_time;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/result;
@@ -18,16 +19,16 @@ async Result<usize, Error> delayed_write(anet::AsyncTcpListener listener) {
     anet::close_listener(listener)?;
     await async_time::sleep_ms(20)?;
     [2]u8 payload = [120 as u8, 121 as u8];
-    anet::Bytes out = anet::bytes_copy(payload[..])?;
+    bytes::Bytes out = bytes::bytes_copy(payload[..])?;
     server = await anet::write_all(server, out)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok(2);
 }
 
-Result<usize, Error> bytes_len_result(Result<anet::Bytes, anet::AsyncNetError> result) {
-    anet::Bytes bytes = result?;
-    return Ok(anet::bytes_len(bytes));
+Result<usize, Error> bytes_len_result(Result<bytes::Bytes, anet::AsyncNetError> result) {
+    bytes::Bytes bytes = result?;
+    return Ok(bytes::bytes_len(bytes));
 }
 
 async Result<usize, Error> drive() {
@@ -48,12 +49,12 @@ async Result<usize, Error> drive() {
         return Err(code_error(100));
     }
 
-    anet::Bytes bytes = await anet::read_buffered(&reader, 2)?;
+    bytes::Bytes bytes = await anet::read_buffered(&reader, 2)?;
     usize written = await server?;
     if (written != 2) {
         return Err(code_error(101));
     }
-    return Ok(anet::bytes_len(bytes));
+    return Ok(bytes::bytes_len(bytes));
 }
 
 i32 main() {

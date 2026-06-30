@@ -64,10 +64,13 @@ CielAsyncFd* ciel_async_from_raw_fd(int32_t raw);
 int32_t ciel_async_fd_retain(CielAsyncFd* fd);
 int32_t ciel_async_close(CielAsyncFd* fd);
 CielAsyncOp* ciel_async_read_bytes(CielAsyncFd* fd, size_t max_len);
-CielAsyncOp* ciel_async_write_bytes(CielAsyncFd* fd, CielBytes* bytes);
+CielAsyncOp* ciel_async_write_bytes(CielAsyncFd* fd, const uint8_t* data,
+                                    size_t len);
 CielAsyncOp* ciel_async_tcp_read_bytes(CielAsyncFd* fd, size_t max_len);
-CielAsyncOp* ciel_async_tcp_read_into(CielAsyncFd* fd, CielBytes* bytes);
-CielAsyncOp* ciel_async_tcp_write_bytes(CielAsyncFd* fd, CielBytes* bytes);
+CielAsyncOp* ciel_async_tcp_read_into(CielAsyncFd* fd, uint8_t* data,
+                                      size_t cap);
+CielAsyncOp* ciel_async_tcp_write_bytes(CielAsyncFd* fd, const uint8_t* data,
+                                        size_t len);
 CielBufferedReader* ciel_async_tcp_buffered_reader_new(CielAsyncFd* fd,
                                                        size_t capacity);
 CielAsyncFd*
@@ -85,7 +88,8 @@ int32_t ciel_async_notify_write(CielAsyncOp* op, CielActor* actor,
                                 void* message);
 int32_t ciel_async_notify_sleep(CielAsyncOp* op, CielActor* actor,
                                 void* message);
-int32_t ciel_async_finish_read(CielAsyncOp* op, CielBytes** out);
+int32_t ciel_async_finish_read(CielAsyncOp* op, uint8_t** out, size_t* len,
+                               size_t* cap);
 int32_t ciel_async_finish_write(CielAsyncOp* op, size_t* written);
 int32_t ciel_async_finish_sleep(CielAsyncOp* op);
 int32_t ciel_async_cancel(CielAsyncOp* op);

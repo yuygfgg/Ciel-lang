@@ -11,7 +11,8 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, OpaqueReturnKey,
         STD_ASYNC_ABORT_FUTURE_INTERFACE, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ERROR_FORMAT_INTERFACE,
+        STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
         aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
         contains_any_generic_name, contains_generic, contains_type_hole,
@@ -7100,7 +7101,7 @@ impl TypeChecker {
         if self.type_implements_thread_local(ty) {
             return Some(format!("{path} has ThreadLocal type `{ty}`"));
         }
-        if self.type_implements_share_handle(ty) {
+        if self.type_implements_async_frame_opt_in(ty) {
             return None;
         }
         match ty {
@@ -7115,7 +7116,7 @@ impl TypeChecker {
                 if *mutability == ViewMutability::Writable {
                     return Some(format!("{path} has mutable slice type `{ty}`"));
                 }
-                if static_const_slice && matches!(&**elem, Ty::Char) {
+                if static_const_slice && matches!(&**elem, Ty::Char | Ty::U8) {
                     None
                 } else {
                     Some(format!(
@@ -7220,7 +7221,7 @@ impl TypeChecker {
             Ty::Slice {
                 mutability: ViewMutability::ReadOnly,
                 elem
-            } if matches!(&**elem, Ty::Char)
+            } if matches!(&**elem, Ty::Char | Ty::U8)
         ) && init.is_some_and(|expr| matches!(expr.kind, TExprKind::Literal(Literal::String(_))))
     }
 
@@ -13580,9 +13581,18 @@ impl TypeChecker {
                 self.check_char_literal_range(span, raw);
                 Ty::Char
             }
-            Literal::String(_) => Ty::Slice {
-                mutability: ViewMutability::ReadOnly,
-                elem: Box::new(Ty::Char),
+            Literal::String(_) => match expected {
+                Some(Ty::Slice {
+                    mutability: ViewMutability::ReadOnly,
+                    elem,
+                }) if matches!(&**elem, Ty::Char | Ty::U8) => Ty::Slice {
+                    mutability: ViewMutability::ReadOnly,
+                    elem: elem.clone(),
+                },
+                _ => Ty::Slice {
+                    mutability: ViewMutability::ReadOnly,
+                    elem: Box::new(Ty::Char),
+                },
             },
             Literal::Bool(_) => Ty::Bool,
             Literal::Null => match expected {
@@ -14967,6 +14977,15 @@ impl TypeChecker {
             )
     }
 
+    fn type_implements_async_frame_opt_in(&mut self, ty: &Ty) -> bool {
+        if !self
+            .is_std_message_async_frame_opt_in_marker_name(STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE)
+        {
+            return false;
+        }
+        self.type_implements_capability(STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE, &[], ty)
+    }
+
     fn type_implements_meta_policy_marker(&mut self, ty: &Ty) -> bool {
         self.type_implements_share_handle(ty)
             || self.type_implements_thread_local(ty)
@@ -15661,6 +15680,17 @@ impl TypeChecker {
                     &self.ctx.resolved,
                     *def_id,
                     STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+                )
+            })
+    }
+
+    fn is_std_message_async_frame_opt_in_marker_name(&self, name: &str) -> bool {
+        name == STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE
+            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
+                std_id::is_std_message_interface(
+                    &self.ctx.resolved,
+                    *def_id,
+                    STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE,
                 )
             })
     }

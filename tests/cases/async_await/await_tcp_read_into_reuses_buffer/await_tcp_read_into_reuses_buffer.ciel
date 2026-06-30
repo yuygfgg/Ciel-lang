@@ -4,11 +4,13 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/buf as buf;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-bool same_prefix([]u8 got, []const u8 want) {
+bool same_prefix([]const u8 got, []const u8 want) {
     if (got.len < want.len) {
         return false;
     }
@@ -26,7 +28,7 @@ async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
     [3]u8 payload = [97 as u8, 98 as u8, 99 as u8];
-    anet::Bytes out = anet::bytes_copy(payload[..])?;
+    bytes::Bytes out = bytes::bytes_copy(payload[..])?;
     server = await anet::write_all(server, out)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
@@ -36,29 +38,28 @@ async Result<usize, Error> write_payload(anet::AsyncTcpListener listener) {
 async Result<usize, Error> read_with_reused_buffer(net::SocketAddr bound) {
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     [8]u8 zeroes = [0;];
-    anet::Bytes buffer = anet::bytes_copy(zeroes[..])?;
-    usize cap = anet::bytes_capacity(buffer);
+    buf::ByteBuf buffer = buf::byte_buf_from_slice(zeroes[..])?;
+    usize cap = buf::byte_buf_capacity(&buffer);
 
     anet::ReadIntoResult first = await anet::read_into(&client, buffer)?;
-    if (first.read != 3 || anet::bytes_len(first.bytes) != 3) {
+    if (first.read != 3 || buf::byte_buf_len(&first.buffer) != 3) {
         return Err(code_error(50));
     }
-    if (anet::bytes_capacity(first.bytes) != cap) {
+    if (buf::byte_buf_capacity(&first.buffer) != cap) {
         return Err(code_error(51));
     }
 
-    [3]u8 @got = [0;];
-    usize copied = anet::bytes_copy_to(first.bytes, got[..])?;
+    []const u8 got = buf::byte_buf_slice(&first.buffer);
     [3]u8 want = [97 as u8, 98 as u8, 99 as u8];
-    if (copied != 3 || !same_prefix(got[..], want[..])) {
+    if (!same_prefix(got, want[..])) {
         return Err(code_error(52));
     }
 
-    anet::ReadIntoResult eof = await anet::read_into(&client, first.bytes)?;
-    if (eof.read != 0 || anet::bytes_len(eof.bytes) != 0) {
+    anet::ReadIntoResult eof = await anet::read_into(&client, first.buffer)?;
+    if (eof.read != 0 || buf::byte_buf_len(&eof.buffer) != 0) {
         return Err(code_error(53));
     }
-    if (anet::bytes_capacity(eof.bytes) != cap) {
+    if (buf::byte_buf_capacity(&eof.buffer) != cap) {
         return Err(code_error(54));
     }
 

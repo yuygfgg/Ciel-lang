@@ -86,7 +86,9 @@ async Result<void, Error> use_async_tcp(
     AsyncTcpReadHalf read_half_for_buffer,
     AsyncTcpWriteHalf @write_half,
     BufferedStreamReader reader,
-    Bytes data
+    Bytes data,
+    ByteBuf @read_into_async_buffer,
+    ByteBuf @read_into_buffer
 ) {
     AsyncTcpListener fresh_listener = addr.listen_async()?;
     fresh_listener.close()?;
@@ -106,12 +108,12 @@ async Result<void, Error> use_async_tcp(
     BufferedStreamReader owned_reader = split.buffered_reader(4096)?;
     AsyncTcpRead read_op = stream.read_async(64)?;
     read_op.cancel()?;
-    AsyncTcpReadInto read_into_op = stream.read_into_async(data)?;
+    AsyncTcpReadInto read_into_op = stream.read_into_async(read_into_async_buffer)?;
     read_into_op.cancel()?;
     AsyncTcpWrite write_op = stream.write_async(data)?;
     write_op.cancel()?;
     Bytes got = await stream.read(64)?;
-    ReadIntoResult into_result = await stream.read_into(data)?;
+    ReadIntoResult into_result = await stream.read_into(read_into_buffer)?;
     usize written = await stream.write(data)?;
     stream = await stream.write_all(data)?;
     if (got.len() + into_result.read + written > data.len()) {

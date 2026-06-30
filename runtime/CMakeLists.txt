@@ -18,7 +18,6 @@ add_library(ciel_runtime STATIC
     src/net_tcp.c
     src/actor.c
     src/io.c
-    src/bytes.c
     src/async.c
 )
 

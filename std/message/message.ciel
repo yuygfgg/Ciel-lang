@@ -21,6 +21,12 @@ export unsafe interface<T> bool share_handle_marker(*const T value);
 // implementations.
 export unsafe interface<T> bool thread_local_marker(*const T value);
 
+// Unsafe async-frame opt-in marker: tells the compiler that values of this type
+// may be stored in a suspended async frame even when structural inspection
+// cannot prove it. This is only a manual unsafe opt-in and does not imply
+// cross-thread share-handle semantics.
+export unsafe interface<T> bool async_frame_opt_in_marker(*const T value);
+
 // Internal alias for the clone_message marker.
 export interface MessageInternal = clone_message;
 
@@ -97,6 +103,10 @@ unsafe impl clone_message(*const f64 value) {
 
 unsafe impl clone_message(*const Error value) {
     return Ok(*value);
+}
+
+unsafe impl<T: ShareHandle> async_frame_opt_in_marker(*const T value) {
+    return true;
 }
 
 unsafe impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {

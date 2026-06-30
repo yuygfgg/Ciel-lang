@@ -5,6 +5,7 @@
 
 import /std/lib;
 import /std/async_io as aio;
+import /std/bytes as bytes;
 import /std/env as env;
 
 Result<Channel<usize>, Error> handle(Channel<usize> out, usize expected_len) {
@@ -25,8 +26,8 @@ i32 main() {
     aio::AsyncRead op = must(aio::read_bytes_async(&fd, 16));
     must(aio::notify_read_done(&op, &actor, 5));
     usize len = must(channel_recv(&done));
-    aio::Bytes bytes = must(aio::finish_read(op));
-    if (aio::bytes_len(bytes) != len) {
+    bytes::Bytes bytes = must(aio::finish_read(op));
+    if (bytes::bytes_len(bytes) != len) {
         return 1;
     }
     must(print_value(len));

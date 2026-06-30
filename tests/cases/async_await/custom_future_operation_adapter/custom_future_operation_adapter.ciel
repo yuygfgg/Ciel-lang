@@ -7,6 +7,7 @@ import /std/async as async;
 import /std/async;
 import /std/async/internal/adapter as adapter;
 import /std/async_io as aio;
+import /std/bytes as bytes;
 import /std/c as c;
 import /std/env as env;
 import /std/io as io;
@@ -20,7 +21,7 @@ unsafe impl adapter::raw_operation(*const WrappedRead op) {
     return adapter::raw_operation(&op->inner);
 }
 
-unsafe impl adapter::poll_done<aio::Bytes>(*WrappedRead op, *aio::Bytes out) {
+unsafe impl adapter::poll_done<bytes::Bytes>(*WrappedRead op, *bytes::Bytes out) {
     return adapter::poll_done(&op->inner, out);
 }
 
@@ -32,8 +33,8 @@ unsafe impl abort_future(*WrappedRead op) {
 async Result<usize, Error> read_with_wrapper(*const aio::AsyncFd file) {
     aio::AsyncRead read = aio::read_bytes_async(file, 16)?;
     WrappedRead wrapped = { inner: read };
-    aio::Bytes bytes = await async::future_from_op(wrapped)?;
-    return Ok(aio::bytes_len(bytes));
+    bytes::Bytes bytes = await async::future_from_op(wrapped)?;
+    return Ok(bytes::bytes_len(bytes));
 }
 
 i32 main() {

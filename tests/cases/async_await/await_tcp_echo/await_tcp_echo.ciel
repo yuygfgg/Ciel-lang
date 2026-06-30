@@ -4,6 +4,7 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/result;
@@ -25,14 +26,14 @@ bool same_prefix([]u8 got, []const u8 want) {
 async Result<usize, Error> serve_once(anet::AsyncTcpListener listener) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
-    anet::Bytes inbound = await anet::read(&server, 8)?;
-    if (anet::bytes_len(inbound) != 4) {
+    bytes::Bytes inbound = await anet::read(&server, 8)?;
+    if (bytes::bytes_len(inbound) != 4) {
         return Err(code_error(40));
     }
     server = await anet::write_all(server, inbound)?;
 
-    anet::Bytes eof = await anet::read(&server, 8)?;
-    usize eof_len = anet::bytes_len(eof);
+    bytes::Bytes eof = await anet::read(&server, 8)?;
+    usize eof_len = bytes::bytes_len(eof);
     anet::close_stream(server)?;
     return Ok(eof_len);
 }
@@ -40,15 +41,15 @@ async Result<usize, Error> serve_once(anet::AsyncTcpListener listener) {
 async Result<usize, Error> run_client(net::SocketAddr bound) {
     anet::AsyncTcpStream @client = await anet::connect(bound)?;
     [4]u8 payload = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
-    anet::Bytes out = anet::bytes_copy(payload[..])?;
+    bytes::Bytes out = bytes::bytes_copy(payload[..])?;
     client = await anet::write_all(client, out)?;
 
-    anet::Bytes echoed = await anet::read(&client, 8)?;
-    if (anet::bytes_len(echoed) != 4) {
+    bytes::Bytes echoed = await anet::read(&client, 8)?;
+    if (bytes::bytes_len(echoed) != 4) {
         return Err(code_error(41));
     }
     [4]u8 @got = [0;];
-    usize copied = anet::bytes_copy_to(echoed, got[..])?;
+    usize copied = bytes::bytes_copy_to(echoed, got[..])?;
     if (copied != 4 || !same_prefix(got[..], payload[..])) {
         return Err(code_error(42));
     }

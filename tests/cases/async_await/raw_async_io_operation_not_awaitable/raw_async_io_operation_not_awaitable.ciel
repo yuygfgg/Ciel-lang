@@ -3,9 +3,10 @@
 // expect-error: does not implement `awaitable_future`
 
 import /std/async_io as aio;
+import /std/bytes as bytes;
 import /std/result;
 
-async Result<aio::Bytes, Error> bad(aio::AsyncFd file) {
+async Result<bytes::Bytes, Error> bad(aio::AsyncFd file) {
     aio::AsyncRead op = aio::read_bytes_async(file, 16)?;
     return await op;
 }

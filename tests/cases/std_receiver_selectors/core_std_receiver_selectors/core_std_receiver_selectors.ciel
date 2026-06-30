@@ -30,7 +30,7 @@ i64 main() {
     if (bytes.len() != 3) {
         return 4;
     }
-    if (bytes.capacity() < 3) {
+    if (bytes.const_slice().len != 3) {
         return 5;
     }
     Bytes tail = bytes.slice(1, 2).must();

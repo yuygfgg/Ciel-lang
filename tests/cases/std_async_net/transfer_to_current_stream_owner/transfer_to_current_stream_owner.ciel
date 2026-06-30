@@ -4,6 +4,7 @@
 
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/message;
 import /std/net as net;
@@ -79,8 +80,8 @@ async Result<usize, Error> drive() {
         return Err(code_error(91));
     }
 
-    anet::Bytes eof = await anet::read(&accepted, 1)?;
-    if (anet::bytes_len(eof) != 0) {
+    bytes::Bytes eof = await anet::read(&accepted, 1)?;
+    if (bytes::bytes_len(eof) != 0) {
         return Err(code_error(92));
     }
 

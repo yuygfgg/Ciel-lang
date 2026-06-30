@@ -1,0 +1,13 @@
+// ciel-test: error
+// expect-error: FrameSafe
+
+import /std/lib;
+
+Result<void, Error> accept<T: FrameSafe>(T value) {
+    return Ok;
+}
+
+i32 main() {
+    must(accept(1));
+    return 0;
+}

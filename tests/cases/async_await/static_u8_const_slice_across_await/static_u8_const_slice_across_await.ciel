@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 100
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io as io;
+import /std/result;
+
+async Result<usize, Error> keep_static_bytes() {
+    []const u8 data = "abc";
+    await async_time::sleep_ms(0)?;
+    return Ok(data.len + (data[0] as usize));
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(keep_static_bytes()))));
+    return 0;
+}

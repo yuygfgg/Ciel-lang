@@ -46,11 +46,32 @@ i32 main() {
         return 2;
     }
     bytes::Bytes from_text = must(text::text_to_bytes(owned));
-    []u8 raw = must(bytes::bytes_to_slice(from_text));
     [7]u8 expected = [
         112 as u8, 97 as u8, 121 as u8, 108 as u8,
         111 as u8, 97 as u8, 100 as u8
     ];
+    if (from_text.bytes::len() != 7) {
+        return 4;
+    }
+    [1]u8 prefix = [33 as u8];
+    bytes::Bytes prefixed = must(from_text.bytes::prepend(prefix[..]));
+    if (prefixed.bytes::len() != 8) {
+        return 5;
+    }
+    bytes::Bytes tail = must(prefixed.bytes::slice(1, 7));
+    if (tail.bytes::len() != 7) {
+        return 6;
+    }
+    [8]u8 @selector_out = [0;];
+    usize copied = must(prefixed.bytes::copy_to(selector_out[..]));
+    if (copied != 8 || selector_out[0] != (33 as u8)) {
+        return 7;
+    }
+    []u8 selector_raw = must(prefixed.bytes::to_slice());
+    if (!bytes_equal(selector_raw[1..], expected[..])) {
+        return 8;
+    }
+    []u8 raw = must(bytes::bytes_to_slice(from_text));
     if (!bytes_equal(raw, expected[..])) {
         return 3;
     }

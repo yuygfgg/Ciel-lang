@@ -1,5 +1,6 @@
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/meta as meta;
 import /std/net as net;
@@ -11,7 +12,7 @@ import ./protocol/frame as frame;
 import ./runtime as rt;
 
 struct AgentControlState {
-    async::Sender<anet::Bytes> writer;
+    async::Sender<bytes::Bytes> writer;
     rt::StreamRegistry streams;
     net::SocketAddr target_addr;
 }
@@ -22,10 +23,10 @@ Error agent_auth_error() {
 
 async Result<void, Error> agent_control_writer(
     anet::AsyncTcpWriteHalf write,
-    async::Receiver<anet::Bytes> receiver
+    async::Receiver<bytes::Bytes> receiver
 ) {
     while (true) {
-        _ next = await async::recv<anet::Bytes>(receiver);
+        _ next = await async::recv<bytes::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
                 _ wrote = await anet::write_half(&write, bytes);
@@ -45,7 +46,7 @@ async Result<void, Error> agent_control_writer(
 }
 
 async Result<void, Error> send_agent_handshake(
-    async::Sender<anet::Bytes> writer,
+    async::Sender<bytes::Bytes> writer,
     rt::AuthConfig auth_config
 ) {
     io::eprintln_value("tunnel-agent: sending hello")?;
@@ -57,7 +58,7 @@ async Result<void, Error> send_agent_handshake(
             psk
         )?;
     io::eprintln("tunnel-agent: hello payload {} bytes", [hello_payload.len])?;
-    anet::Bytes hello_frame =
+    bytes::Bytes hello_frame =
         rt::encode_frame_from_slice(frame::Hello, 0 as u32, hello_payload)?;
     await rt::send_control_bytes(writer, hello_frame)?;
     return Ok;
@@ -95,10 +96,10 @@ async Result<void, Error> send_agent_open_result_error(
     []const char message
 ) {
     []u8 failure = tunnel_codec::encode_open_result_error(code, message)?;
-    anet::Bytes failure_frame =
+    bytes::Bytes failure_frame =
         rt::encode_frame_from_slice(frame::OpenResult, stream_id, failure)?;
     []u8 close_payload = tunnel_codec::encode_close_reason(code, message)?;
-    anet::Bytes close_frame =
+    bytes::Bytes close_frame =
         rt::encode_frame_from_slice(frame::CloseStream, stream_id, close_payload)?;
     await rt::send_control_bytes(control.writer, failure_frame)?;
     await rt::send_control_bytes(control.writer, close_frame)?;
@@ -123,7 +124,7 @@ async Result<void, Error> agent_stream_worker(
                 anet::take_buffered_split_write(&split)?;
 
             []u8 success = tunnel_codec::encode_open_result_success()?;
-            anet::Bytes success_frame =
+            bytes::Bytes success_frame =
                 rt::encode_frame_from_slice(frame::OpenResult, stream_id, success)?;
             await rt::send_control_bytes(control.writer, success_frame)?;
             _ reader_task =
@@ -213,22 +214,22 @@ async Result<void, Error> agent_control_reader(
     AgentControlState control
 ) {
     while (true) {
-        Result<anet::Bytes, Error> header_read =
+        Result<bytes::Bytes, Error> header_read =
             rt::map_exact_frame_read(await reader.anet::read_exact(frame::header_len()));
         switch (header_read) {
             case Ok(header_exact):
                 []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
                 frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
-                Result<anet::Bytes, Error> payload_read = rt::map_exact_frame_read(
+                Result<bytes::Bytes, Error> payload_read = rt::map_exact_frame_read(
                     await reader.anet::read_exact(header.length as usize)
                 );
-                anet::Bytes payload;
+                bytes::Bytes payload;
                 switch (payload_read) {
                     case Ok(value):
                         payload = value;
                     case Err(error):
                         io::eprintln("tunnel-agent: control read error: {}", [error])?;
-                        async::close<anet::Bytes>(control.writer)?;
+                        async::close<bytes::Bytes>(control.writer)?;
                         rt::stream_registry_close_all(control.streams)?;
                         return Ok;
                 }
@@ -238,8 +239,8 @@ async Result<void, Error> agent_control_reader(
                     payload: payload
                 };
                 if (rt::kind_is(incoming.kind, frame::OpenStream)) {
-                    if (incoming.payload.anet::len() != 0) {
-                        async::close<anet::Bytes>(control.writer)?;
+                    if (bytes::bytes_len(incoming.payload) != 0) {
+                        async::close<bytes::Bytes>(control.writer)?;
                         rt::stream_registry_close_all(control.streams)?;
                         return Err(text_error("protocol error: malformed OpenStream"));
                     }
@@ -279,13 +280,13 @@ async Result<void, Error> agent_control_reader(
                     io::eprintln_value(
                         "tunnel-agent: protocol error: illegal control frame"
                     )?;
-                    async::close<anet::Bytes>(control.writer)?;
+                    async::close<bytes::Bytes>(control.writer)?;
                     rt::stream_registry_close_all(control.streams)?;
                     return Err(text_error("protocol error: illegal agent control frame"));
                 }
             case Err(error):
                 io::eprintln("tunnel-agent: control read error: {}", [error])?;
-                async::close<anet::Bytes>(control.writer)?;
+                async::close<bytes::Bytes>(control.writer)?;
                 rt::stream_registry_close_all(control.streams)?;
                 return Ok;
         }
@@ -305,7 +306,7 @@ async Result<void, Error> run_agent_async(
         anet::take_buffered_split_reader(&split)?;
     anet::AsyncTcpWriteHalf write =
         anet::take_buffered_split_write(&split)?;
-    async::ChannelPair<anet::Bytes> control_channel = async::channel<anet::Bytes>(128)?;
+    async::ChannelPair<bytes::Bytes> control_channel = async::channel<bytes::Bytes>(128)?;
     _ control_writer =
         async::spawn<void>(agent_control_writer(write, control_channel.receiver))?;
 
@@ -315,15 +316,15 @@ async Result<void, Error> run_agent_async(
         case Ok:
             {}
         case Err(error):
-            async::close<anet::Bytes>(control_channel.sender)?;
+            async::close<bytes::Bytes>(control_channel.sender)?;
             return Err(error);
     }
-    anet::Bytes header_exact = rt::map_exact_frame_read(
+    bytes::Bytes header_exact = rt::map_exact_frame_read(
         await reader.anet::read_exact(frame::header_len())
     )?;
     []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
     frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
-    anet::Bytes payload = rt::map_exact_frame_read(
+    bytes::Bytes payload = rt::map_exact_frame_read(
         await reader.anet::read_exact(header.length as usize)
     )?;
     rt::AsyncFrame response = {
@@ -336,7 +337,7 @@ async Result<void, Error> run_agent_async(
         case Ok:
             {}
         case Err(error):
-            async::close<anet::Bytes>(control_channel.sender)?;
+            async::close<bytes::Bytes>(control_channel.sender)?;
             return Err(error);
     }
 

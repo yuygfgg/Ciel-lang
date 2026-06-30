@@ -7819,7 +7819,12 @@ impl<'a> CGenerator<'a> {
                     .get(&span_key(span))
                     .cloned()
                     .unwrap_or_else(|| raw.clone());
-                format!("({slice}){{ .ptr = {name}, .len = {len} }}")
+                let ptr = if matches!(elem, Ty::U8) {
+                    format!("(uint8_t const *){name}")
+                } else {
+                    name
+                };
+                format!("({slice}){{ .ptr = {ptr}, .len = {len} }}")
             }
         }
     }

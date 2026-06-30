@@ -32,6 +32,7 @@ pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
 pub const STD_MESSAGE_SHARE_HANDLE_INTERFACE: &str = "share_handle_marker";
 pub const STD_MESSAGE_THREAD_LOCAL_INTERFACE: &str = "thread_local_marker";
+pub const STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE: &str = "async_frame_opt_in_marker";
 pub const STD_ASYNC_AWAITABLE_FUTURE_INTERFACE: &str = "awaitable_future";
 pub const STD_ASYNC_CANCEL_SAFE_INTERFACE: &str = "cancel_safe_marker";
 pub const STD_ASYNC_ABORT_FUTURE_INTERFACE: &str = "abort_future";

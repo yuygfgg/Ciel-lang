@@ -1,41 +1,205 @@
-// Facade re-export for the runtime-backed Bytes type and raw byte helpers.
-export import /std/async/bytes;
-import /std/async/bytes as raw;
-import /std/result;
+// Immutable RawStorage-backed owned byte sequence.
+export import /std/result;
+import /std/c as c;
+import /std/message;
 import /std/storage as storage;
 
-// Returns an empty owned Bytes value.
-export Result<raw::Bytes, raw::BytesError> bytes_empty() {
-    [1]u8 empty = [0;];
-    return raw::bytes_copy(empty[..0]);
+unsafe extern "C" {
+    c::c_int ciel_errno();
+    c::c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
 }
 
-// Copies UTF-8/text bytes into an owned Bytes value.
-export Result<raw::Bytes, raw::BytesError> bytes_from_text([]const char text) {
-    return raw::bytes_copy_chars(text);
+// Immutable owned bytes. Safe code must construct it through this module.
+export unsafe struct Bytes {
+    []const u8 data;
+}
+
+// Errors produced by owned byte-sequence operations.
+export enum BytesError {
+    CapacityOverflow,
+    SliceOutOfBounds,
+    ShortCopy,
+    Runtime(i64),
+}
+
+impl format_error(*const BytesError error) {
+    switch (*error) {
+        case CapacityOverflow:
+            return "bytes capacity overflow";
+        case SliceOutOfBounds:
+            return "bytes slice out of bounds";
+        case ShortCopy:
+            return "short bytes copy";
+        case Runtime(_):
+            return "bytes runtime error";
+    }
+}
+
+BytesError runtime_error() {
+    c::c_int code = unsafe { ciel_errno() };
+    if ((code as i64) == 0) {
+        return Runtime(5);
+    }
+    return Runtime(code as i64);
+}
+
+BytesError copy_error(c::c_int code) {
+    if ((code as i64) != 0) {
+        return Runtime(code as i64);
+    }
+    return Runtime(5);
+}
+
+bool add_overflows(usize left, usize right) {
+    return right > ((~(0 as usize)) - left);
+}
+
+Result<storage::RawStorage<u8>, BytesError> bytes_raw_zeroed(usize capacity) {
+    switch (unsafe { storage::raw_zeroed<u8>(capacity) }) {
+        case Ok(raw):
+            return Ok(raw);
+        case Err(_):
+            return Err(runtime_error());
+    }
+}
+
+Result<void, BytesError> copy_into([]u8 dst, usize offset, []const u8 src) {
+    if (src.len == 0) {
+        return Ok;
+    }
+    c::c_int rc = unsafe { ciel_u8_copy(&dst[offset], src.ptr, src.len) };
+    if ((rc as i64) != 0) {
+        return Err(copy_error(rc));
+    }
+    return Ok;
+}
+
+// Constructs owned bytes from raw storage and an initialized length.
+export unsafe Bytes bytes_from_raw_storage(storage::RawStorage<u8> raw, usize len) {
+    []const u8 view = unsafe { storage::raw_const_slice<u8>(&raw) };
+    return unsafe { { data: view[..len] } };
+}
+
+// Returns the logical length in bytes.
+export usize bytes_len(Bytes bytes) = .len {
+    return unsafe { bytes.data.len };
+}
+
+// Returns a read-only view of the initialized byte sequence.
+export []const u8 bytes_const_slice(Bytes bytes) = .const_slice {
+    return unsafe { bytes.data };
+}
+
+// Returns an empty owned Bytes value.
+export Result<Bytes, BytesError> bytes_empty() {
+    storage::RawStorage<u8> raw = bytes_raw_zeroed(0)?;
+    return Ok(unsafe { bytes_from_raw_storage(raw, 0) });
+}
+
+// Copies a byte slice into immutable owned Bytes.
+export Result<Bytes, BytesError> bytes_copy([]const u8 data) {
+    storage::RawStorage<u8> @raw = bytes_raw_zeroed(data.len)?;
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw) };
+    copy_into(out, 0, data)?;
+    return Ok(unsafe { bytes_from_raw_storage(raw, data.len) });
+}
+
+// Copies UTF-8/text bytes into immutable owned Bytes.
+export Result<Bytes, BytesError> bytes_from_text([]const char text) {
+    storage::RawStorage<u8> @raw = bytes_raw_zeroed(text.len)?;
+    if (text.len > 0) {
+        []u8 out = unsafe { storage::raw_slice<u8>(&raw) };
+        usize @i = 0;
+        while (i < text.len) {
+            out[i] = text[i] as u8;
+            i = i + 1;
+        }
+    }
+    return Ok(unsafe { bytes_from_raw_storage(raw, text.len) });
+}
+
+// Copies and concatenates two byte slices into immutable owned Bytes.
+export Result<Bytes, BytesError> bytes_concat([]const u8 left, []const u8 right) {
+    if (add_overflows(left.len, right.len)) {
+        return Err(CapacityOverflow);
+    }
+    usize len = left.len + right.len;
+    storage::RawStorage<u8> @raw = bytes_raw_zeroed(len)?;
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw) };
+    copy_into(out, 0, left)?;
+    copy_into(out, left.len, right)?;
+    return Ok(unsafe { bytes_from_raw_storage(raw, len) });
+}
+
+// Prepends a byte slice to an existing Bytes value and returns a new value.
+export Result<Bytes, BytesError> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend {
+    return bytes_concat(prefix, bytes_const_slice(bytes));
+}
+
+// Appends two owned Bytes values and returns a new owned Bytes value.
+export Result<Bytes, BytesError> bytes_append(Bytes left, Bytes right) = .append {
+    return bytes_concat(bytes_const_slice(left), bytes_const_slice(right));
+}
+
+// Returns a new owned Bytes value for a subrange of an existing Bytes value.
+export Result<Bytes, BytesError> bytes_slice(Bytes bytes, usize offset, usize len) = .slice {
+    usize total = bytes_len(bytes);
+    if (offset > total || len > (total - offset)) {
+        return Err(SliceOutOfBounds);
+    }
+    return bytes_copy(bytes_const_slice(bytes)[offset..(offset + len)]);
+}
+
+// Copies bytes into out and returns the number of bytes copied.
+export Result<usize, BytesError> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to {
+    []const u8 source = bytes_const_slice(bytes);
+    usize @n = out.len;
+    if (source.len < n) {
+        n = source.len;
+    }
+    if (n > 0) {
+        c::c_int rc = unsafe { ciel_u8_copy(out.ptr, source.ptr, n) };
+        if ((rc as i64) != 0) {
+            return Err(copy_error(rc));
+        }
+    }
+    return Ok(n);
+}
+
+// Copies bytes into a char slice and returns the number of bytes copied.
+export Result<usize, BytesError> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars {
+    []const u8 source = bytes_const_slice(bytes);
+    usize @n = out.len;
+    if (source.len < n) {
+        n = source.len;
+    }
+    if (n > 0) {
+        usize @i = 0;
+        while (i < n) {
+            out[i] = source[i] as char;
+            i = i + 1;
+        }
+    }
+    return Ok(n);
 }
 
 // Copies an owned Bytes value into a mutable byte slice allocation.
-export Result<[]u8, raw::BytesError> bytes_to_slice(raw::Bytes bytes) = .to_slice {
-    usize len = raw::bytes_len(bytes);
-    storage::RawStorage<u8> @raw_storage;
-    switch (unsafe { storage::raw_zeroed<u8>(len) }) {
-        case Ok(storage):
-            raw_storage = storage;
-        case Err(_):
-            return Err(raw::Runtime(5));
-    }
-    []u8 out = unsafe { storage::raw_slice<u8>(&raw_storage) };
-    usize copied = raw::bytes_copy_to(bytes, out)?;
+export Result<[]u8, BytesError> bytes_to_slice(Bytes bytes) = .to_slice {
+    usize len = bytes_len(bytes);
+    storage::RawStorage<u8> @raw = bytes_raw_zeroed(len)?;
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw) };
+    usize copied = bytes_copy_to(bytes, out)?;
     if (copied != len) {
-        return Err(raw::ShortCopy);
+        return Err(ShortCopy);
     }
     return Ok(out);
 }
 
-// Appends two owned Bytes values and returns a new owned Bytes value.
-export Result<raw::Bytes, raw::BytesError> bytes_append(raw::Bytes left, raw::Bytes right) = .append {
-    []u8 left_slice = bytes_to_slice(left)?;
-    []u8 right_slice = bytes_to_slice(right)?;
-    return raw::bytes_concat(left_slice, right_slice);
+unsafe impl clone_message(*const Bytes value) {
+    Bytes @out = bytes_copy(bytes_const_slice(unsafe { *value }))?;
+    return Ok(out);
+}
+
+unsafe impl share_handle_marker(*const Bytes value) {
+    return true;
 }

@@ -1,5 +1,6 @@
 import /std/async as async;
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/meta as meta;
 import /std/net as net;
@@ -19,7 +20,7 @@ enum ServerEvent {
 
 struct ServerControlState {
     u32 epoch;
-    async::Sender<anet::Bytes> writer;
+    async::Sender<bytes::Bytes> writer;
     rt::StreamRegistry streams;
 }
 
@@ -29,8 +30,8 @@ enum ServerActiveControl {
 }
 
 enum ServerHelloResult {
-    ServerHelloAccepted(anet::Bytes),
-    ServerHelloRejected(anet::Bytes),
+    ServerHelloAccepted(bytes::Bytes),
+    ServerHelloRejected(bytes::Bytes),
 }
 
 
@@ -44,10 +45,10 @@ u32 next_server_stream_id(u32 stream_id) {
 
 async Result<void, Error> server_control_writer(
     anet::AsyncTcpWriteHalf write,
-    async::Receiver<anet::Bytes> receiver
+    async::Receiver<bytes::Bytes> receiver
 ) {
     while (true) {
-        _ next = await async::recv<anet::Bytes>(receiver);
+        _ next = await async::recv<bytes::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
                 _ wrote = await anet::write_half(&write, bytes);
@@ -84,7 +85,7 @@ Result<ServerHelloResult, Error> prepare_server_hello(
     switch (verified) {
         case Ok:
             []u8 ok_payload = auth::encode_hello_ok()?;
-            anet::Bytes encoded =
+            bytes::Bytes encoded =
                 rt::encode_frame_from_slice(frame::HelloOk, 0 as u32, ok_payload)?;
             io::eprintln(
                 "tunnel-server: agent authenticated for route {}",
@@ -95,7 +96,7 @@ Result<ServerHelloResult, Error> prepare_server_hello(
             io::eprintln("tunnel-server: rejecting agent: {}", [error])?;
             []u8 error_payload =
                 tunnel_codec::encode_error_message(error_message(&error))?;
-            anet::Bytes encoded =
+            bytes::Bytes encoded =
                 rt::encode_frame_from_slice(frame::ErrorFrame, 0 as u32, error_payload)?;
             return Ok(ServerHelloRejected(encoded));
     }
@@ -103,7 +104,7 @@ Result<ServerHelloResult, Error> prepare_server_hello(
 
 async Result<void, Error> handle_server_handshake_frame(
     rt::AsyncFrame incoming,
-    async::Sender<anet::Bytes> writer,
+    async::Sender<bytes::Bytes> writer,
     rt::AuthConfig auth_config
 ) {
     if (!rt::kind_is(incoming.kind, frame::Hello)) {
@@ -126,22 +127,22 @@ async Result<void, Error> server_control_reader(
     async::Sender<u32> control_closed
 ) {
     while (true) {
-        Result<anet::Bytes, Error> header_read =
+        Result<bytes::Bytes, Error> header_read =
             rt::map_exact_frame_read(await reader.anet::read_exact(frame::header_len()));
         switch (header_read) {
             case Ok(header_exact):
                 []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
                 frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
-                Result<anet::Bytes, Error> payload_read = rt::map_exact_frame_read(
+                Result<bytes::Bytes, Error> payload_read = rt::map_exact_frame_read(
                     await reader.anet::read_exact(header.length as usize)
                 );
-                anet::Bytes payload;
+                bytes::Bytes payload;
                 switch (payload_read) {
                     case Ok(value):
                         payload = value;
                     case Err(error):
                         io::eprintln("tunnel-server: control read error: {}", [error])?;
-                        async::close<anet::Bytes>(control.writer)?;
+                        async::close<bytes::Bytes>(control.writer)?;
                         await async::send<u32>(control_closed, control.epoch)?;
                         return Ok;
                 }
@@ -172,13 +173,13 @@ async Result<void, Error> server_control_reader(
                     io::eprintln_value(
                         "tunnel-server: protocol error: illegal control frame"
                     )?;
-                    async::close<anet::Bytes>(control.writer)?;
+                    async::close<bytes::Bytes>(control.writer)?;
                     await async::send<u32>(control_closed, control.epoch)?;
                     return Ok;
                 }
             case Err(error):
                 io::eprintln("tunnel-server: control read error: {}", [error])?;
-                async::close<anet::Bytes>(control.writer)?;
+                async::close<bytes::Bytes>(control.writer)?;
                 await async::send<u32>(control_closed, control.epoch)?;
                 return Ok;
         }
@@ -197,15 +198,15 @@ async Result<ServerControlState, Error> accept_server_control(
         anet::take_buffered_split_reader(&split)?;
     anet::AsyncTcpWriteHalf write =
         anet::take_buffered_split_write(&split)?;
-    async::ChannelPair<anet::Bytes> writer_channel = async::channel<anet::Bytes>(128)?;
+    async::ChannelPair<bytes::Bytes> writer_channel = async::channel<bytes::Bytes>(128)?;
     _ control_writer = async::spawn<void>(server_control_writer(write, writer_channel.receiver))?;
 
-    anet::Bytes header_exact = rt::map_exact_frame_read(
+    bytes::Bytes header_exact = rt::map_exact_frame_read(
         await reader.anet::read_exact(frame::header_len())
     )?;
     []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
     frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
-    anet::Bytes payload = rt::map_exact_frame_read(
+    bytes::Bytes payload = rt::map_exact_frame_read(
         await reader.anet::read_exact(header.length as usize)
     )?;
     rt::AsyncFrame incoming = {
@@ -222,7 +223,7 @@ async Result<ServerControlState, Error> accept_server_control(
         case Ok:
             {}
         case Err(error):
-            async::close<anet::Bytes>(writer_channel.sender)?;
+            async::close<bytes::Bytes>(writer_channel.sender)?;
             return Err(error);
     }
 
@@ -412,7 +413,7 @@ Result<void, Error> close_active_control(*ServerActiveControl active, u32 epoch)
                 return Ok;
             }
             rt::stream_registry_close_all(control.streams)?;
-            async::close<anet::Bytes>(control.writer)?;
+            async::close<bytes::Bytes>(control.writer)?;
             *active = ServerNoControl;
             io::eprintln_value("tunnel-server: closing control connection")?;
             return Ok;

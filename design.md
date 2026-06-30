@@ -2232,9 +2232,10 @@ value crosses task ownership or enters a low-level actor mailbox:
 Task-local values that remain inside one task do not need `Message`. If they
 are live across an `await`, they must be safe to store in the private async
 frame. Safe code allows owned scalars, structs, enums, arrays, owned runtime
-handles documented as frame-safe, values satisfying `Message`, direct local
-static read-only slices such as string literals, and compiler-generated
-operation keys.
+handles documented as async-frame opt-ins, direct local static read-only slices
+such as string literals, and compiler-generated operation keys. `ShareHandle`
+values opt into async-frame storage through the standard library's generic
+marker implementation.
 
 Safe code rejects the following values across `await`: raw pointers, nullable
 raw pointers, mutable slices, borrowed read-only slices whose owner is not
@@ -2242,7 +2243,8 @@ syntactically static, thread-local handles, closures that capture forbidden
 locals, and compound values whose transitive fields may contain those rejected
 views or handles. In the first implementation, compound values containing slice
 or reference-view fields are rejected across await unless the compiler has an
-explicit built-in proof that the representation is owned and frame-safe.
+explicit canonical marker proof that the representation is owned and
+frame-safe.
 
 ```ciel
 []const u8 view = buffer[0..n];
@@ -2252,11 +2254,22 @@ use(view); // error: borrowed slice crosses await
 []const char msg = "start processing";
 await async_time::sleep_ms(1)?;
 print(msg); // ok: string-literal storage is static and read-only
+
+[]const u8 magic = "PING";
+await async_time::sleep_ms(1)?;
+use_bytes(magic); // ok: the string literal is static byte storage
 ```
 
-The frame-safety predicate is compiler-private. Ordinary users should fix the
-reported local, move the data into an owned value such as `Bytes`, or construct
-the non-message resource inside the task that owns it.
+The compiler recognizes the canonical
+`/std/message.async_frame_opt_in_marker` capability as an unsafe opt-in for
+owned values whose structural fields are not directly visible to the
+frame-safety walk. This marker is only a manual unsafe opt-in, not a public
+async-frame predicate.
+Implementing it asserts that storing the value in a suspended async frame is
+valid, but it does not imply cross-thread shared mutation safety. Ordinary
+users should fix the reported local, move the data into an owned value such as
+`Bytes` or `ByteBuf`, or construct the non-message resource inside the task
+that owns it.
 
 ### Lowering and Execution Invariants
 
@@ -2357,6 +2370,7 @@ place and returns `Result<void, Error>`.
 unsafe interface<T> Result<T, Error> clone_message(*const T value);
 unsafe interface<T> bool share_handle_marker(*const T value);
 unsafe interface<T> bool thread_local_marker(*const T value);
+unsafe interface<T> bool async_frame_opt_in_marker(*const T value);
 
 interface MessageInternal = clone_message;
 interface ShareHandleInternal = share_handle_marker;
@@ -2601,6 +2615,7 @@ The actor model uses interfaces for capability classification:
 unsafe interface<T> Result<T, Error> clone_message(*const T value);
 unsafe interface<T> bool share_handle_marker(*const T value);
 unsafe interface<T> bool thread_local_marker(*const T value);
+unsafe interface<T> bool async_frame_opt_in_marker(*const T value);
 
 interface MessageInternal = clone_message;
 interface ShareHandleInternal = share_handle_marker;
@@ -2615,7 +2630,10 @@ The public aliases encode the standard capability relationships. `Message`
 means an explicit `clone_message` witness and no thread-local marker.
 `ShareHandle` means a share-handle marker, `Message`, and no thread-local
 marker. `ThreadLocal` means a thread-local marker and neither a message clone
-witness nor a share-handle marker.
+witness nor a share-handle marker. The standard library provides
+`unsafe impl<T: ShareHandle> async_frame_opt_in_marker(*const T)` so
+synchronized or immutable share handles opt into async-frame storage through
+normal interface composition, not a user-facing alias.
 
 Examples:
 
@@ -3118,6 +3136,7 @@ import /std/meta as meta;
 export unsafe interface<T> Result<T, Error> clone_message(*const T value);
 export unsafe interface<T> bool share_handle_marker(*const T value);
 export unsafe interface<T> bool thread_local_marker(*const T value);
+export unsafe interface<T> bool async_frame_opt_in_marker(*const T value);
 
 export interface MessageInternal = clone_message;
 export interface ShareHandleInternal = share_handle_marker;
@@ -3456,6 +3475,7 @@ define an equivalent trusted slice-construction primitive.
 ```ciel
 // /std/buf
 import /std/result;
+import /std/bytes as bytes;
 import /std/storage as storage;
 
 export unsafe struct ByteBuf {
@@ -3468,14 +3488,18 @@ export usize byte_buf_len(*const ByteBuf buf) = .len;
 export void byte_buf_clear(*ByteBuf buf) = .clear;
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice;
 export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice;
+export usize byte_buf_capacity(*const ByteBuf buf) = .capacity;
 export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve;
 export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice;
+export Result<ByteBuf, BufError> byte_buf_from_slice([]const u8 data);
 export Result<[]u8, BufError> byte_buf_spare_mut_slice(
     *ByteBuf buf,
     usize additional
 ) = .spare_mut_slice;
 export Result<void, BufError> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail;
 export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix;
+export Result<bytes::Bytes, BufError> byte_buf_to_bytes(*const ByteBuf buf) = .to_bytes;
+export Result<bytes::Bytes, BufError> byte_buf_freeze(ByteBuf @buf) = .freeze;
 ```
 
 `/std/buf` provides a GC-backed growable byte buffer. `ByteBuf` is an unsafe
@@ -3487,10 +3511,16 @@ sets the initialized length to zero without releasing capacity, and
 `byte_buf_spare_mut_slice` and `byte_buf_commit_tail` support staged appends:
 callers reserve writable tail space, fill it through the returned slice, then
 commit the number of bytes actually initialized. This pattern is used by frame
-readers that copy async `Bytes` into reusable buffers.
+readers that append incoming byte chunks into reusable buffers.
 `byte_buf_discard_prefix` removes an initialized prefix and shifts the
 remaining bytes down, which supports frame parsers that retain partial input
-between async reads.
+between async reads. `ByteBuf` implements `Message` by copying initialized
+bytes into a fresh buffer and has an explicit unsafe async-frame opt-in marker,
+but it is not a `ShareHandle`; mutation APIs require unique mutable access and
+do not provide synchronization. `byte_buf_freeze` also copies initialized bytes
+before constructing `Bytes`; safe code can keep older mutable slice views
+alive, so safe freeze must not reuse the same backing storage for immutable
+shareable bytes.
 
 ```ciel
 // /std/vec
@@ -4017,46 +4047,38 @@ The scoped `with_tcp_*` helpers return `NetWithError<E>` so network setup,
 resource cleanup, and body failures remain separate matchable domains.
 
 ```ciel
-// /std/async/bytes
+// /std/bytes
 export import /std/result;
+import /std/storage as storage;
 
-export struct Bytes {
-    *void handle;
+export unsafe struct Bytes {
+    []const u8 data;
 }
 
+export Result<Bytes, BytesError> bytes_empty();
 export Result<Bytes, BytesError> bytes_copy([]const u8 data);
-export Result<Bytes, BytesError> bytes_copy_chars([]const char text);
+export Result<Bytes, BytesError> bytes_from_text([]const char text);
 export Result<Bytes, BytesError> bytes_concat([]const u8 left, []const u8 right);
 export Result<Bytes, BytesError> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend;
+export Result<Bytes, BytesError> bytes_append(Bytes left, Bytes right) = .append;
 export Result<Bytes, BytesError> bytes_slice(Bytes bytes, usize offset, usize len) = .slice;
 export usize bytes_len(Bytes bytes) = .len;
-export usize bytes_capacity(Bytes bytes) = .capacity;
+export []const u8 bytes_const_slice(Bytes bytes) = .const_slice;
 export Result<usize, BytesError> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to;
 export Result<usize, BytesError> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars;
-```
-
-`/std/async/bytes` is the implementation module for immutable runtime-backed
-owned byte buffers. `Bytes` implements `Message` as a shareable handle. The
-copy helpers allocate new immutable handles from slices; `bytes_slice` creates
-a subrange handle; `bytes_copy_to` and `bytes_copy_to_chars` copy into caller
-provided mutable buffers. `bytes_capacity` exposes backing capacity for APIs
-such as async TCP `read_into`, where a returned buffer can be reused.
-
-```ciel
-// /std/bytes
-export import /std/async/bytes;
-
-export Result<Bytes, BytesError> bytes_empty();
-export Result<Bytes, BytesError> bytes_from_text([]const char text);
 export Result<[]u8, BytesError> bytes_to_slice(Bytes bytes) = .to_slice;
-export Result<Bytes, BytesError> bytes_append(Bytes left, Bytes right) = .append;
+export unsafe Bytes bytes_from_raw_storage(storage::RawStorage<u8> raw, usize len);
 ```
 
-`Bytes` is the general immutable owned byte buffer used by async file and TCP
-APIs. It is a runtime-backed handle, implements `Message` through explicit
-standard-library policy, and can be copied into slices when mutable inspection
-is needed. `/std/bytes` is the general facade; `/std/async/bytes` remains the
-implementation module exported by older async modules.
+`Bytes` is the standard immutable owned byte buffer used by text, async file
+I/O, async TCP, and package APIs. It is backed by
+`/std/storage.RawStorage<u8>` and exposes only read-only views; mutable reuse is
+handled by `/std/buf.ByteBuf`. `Bytes` implements `Message` through an explicit
+standard-library clone policy and implements `ShareHandle` because it exposes
+only immutable views. `ShareHandle` values opt into async-frame storage through
+the standard-library `async_frame_opt_in_marker` impl. Async modules import
+`/std/bytes` in their signatures; there is no separate async-specific bytes
+public namespace.
 
 ```ciel
 // /std/text
@@ -4244,8 +4266,8 @@ or `async_time::sleep_ms` instead of implementing operation adapters directly.
 ```ciel
 // /std/async_io
 export import /std/result;
-export import /std/async/bytes;
 import /std/actor as actor;
+import /std/bytes as bytes;
 import /std/io;
 import /std/message;
 import /std/os/fd as os_fd;
@@ -4271,9 +4293,9 @@ export unsafe Result<AsyncFd, AsyncIoError> async_from_raw_fd(os_fd::RawFd fd);
 export Result<void, AsyncIoError> close_async(AsyncFd @fd) = .close;
 
 export Result<AsyncRead, AsyncIoError> read_bytes_async(*const AsyncFd fd, usize max_len) = .read_async;
-export Result<AsyncWrite, AsyncIoError> write_bytes_async(*const AsyncFd fd, Bytes data) = .write_async;
-export async Result<Bytes, AsyncIoError> read_bytes(*const AsyncFd fd, usize max_len) = .read;
-export async Result<usize, AsyncIoError> write_bytes(*const AsyncFd fd, Bytes data) = .write;
+export Result<AsyncWrite, AsyncIoError> write_bytes_async(*const AsyncFd fd, bytes::Bytes data) = .write_async;
+export async Result<bytes::Bytes, AsyncIoError> read_bytes(*const AsyncFd fd, usize max_len) = .read;
+export async Result<usize, AsyncIoError> write_bytes(*const AsyncFd fd, bytes::Bytes data) = .write;
 
 export Result<void, AsyncIoError> notify_read_done<M: Message>(
     *const AsyncRead op,
@@ -4285,7 +4307,7 @@ export Result<void, AsyncIoError> notify_write_done<M: Message>(
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<Bytes, AsyncIoError> finish_read(AsyncRead op) = .finish;
+export Result<bytes::Bytes, AsyncIoError> finish_read(AsyncRead op) = .finish;
 export Result<usize, AsyncIoError> finish_write(AsyncWrite op) = .finish;
 export Result<void, AsyncIoError> cancel_read(AsyncRead op) = .cancel;
 export Result<void, AsyncIoError> cancel_write(AsyncWrite op) = .cancel;
@@ -4305,8 +4327,9 @@ offset changes or partial writes.
 ```ciel
 // /std/async_net
 export import /std/result;
-export import /std/async/bytes;
 import /std/actor as actor;
+import /std/buf as buf;
+import /std/bytes as bytes;
 import /std/message;
 import /std/net;
 import /std/resource as resource;
@@ -4367,7 +4390,7 @@ export resource unsafe struct AsyncBufferedRead {
 }
 
 export struct ReadIntoResult {
-    Bytes bytes;
+    buf::ByteBuf buffer;
     usize read;
 }
 
@@ -4394,15 +4417,15 @@ export Result<net::SocketAddr, AsyncNetError> stream_local_addr(*const AsyncTcpS
 export Result<net::SocketAddr, AsyncNetError> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr;
 
 export Result<AsyncTcpRead, AsyncNetError> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async;
-export Result<AsyncTcpReadInto, AsyncNetError> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
-export Result<AsyncTcpWrite, AsyncNetError> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async;
-export Result<AsyncTcpWrite, AsyncNetError> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async;
-export async Result<Bytes, AsyncNetError> read(*const AsyncTcpStream stream, usize max_len) = .read;
-export async Result<ReadIntoResult, AsyncNetError> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into;
-export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, Bytes data) = .write;
-export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write;
-export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, Bytes data) = .write_all;
-export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all;
+export Result<AsyncTcpReadInto, AsyncNetError> read_into_async(*const AsyncTcpStream stream, buf::ByteBuf @buffer) = .read_into_async;
+export Result<AsyncTcpWrite, AsyncNetError> write_bytes(*const AsyncTcpStream stream, bytes::Bytes data) = .write_async;
+export Result<AsyncTcpWrite, AsyncNetError> write_half_bytes(*const AsyncTcpWriteHalf half, bytes::Bytes data) = .write_async;
+export async Result<bytes::Bytes, AsyncNetError> read(*const AsyncTcpStream stream, usize max_len) = .read;
+export async Result<ReadIntoResult, AsyncNetError> read_into(*const AsyncTcpStream stream, buf::ByteBuf @buffer) = .read_into;
+export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, bytes::Bytes data) = .write;
+export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, bytes::Bytes data) = .write;
+export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, bytes::Bytes data) = .write_all;
+export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWriteHalf @half, bytes::Bytes data) = .write_all;
 
 export Result<BufferedStreamReader, AsyncNetError> buffered_reader(
     AsyncTcpReadHalf @half,
@@ -4431,11 +4454,11 @@ export Result<AsyncBufferedRead, AsyncNetError> read_exact_buffered_async(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact_async;
-export async Result<Bytes, AsyncNetError> read_buffered(
+export async Result<bytes::Bytes, AsyncNetError> read_buffered(
     *const BufferedStreamReader reader,
     usize max_len
 ) = .read;
-export async Result<Bytes, AsyncNetError> read_exact_buffered(
+export async Result<bytes::Bytes, AsyncNetError> read_exact_buffered(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact;
@@ -4468,7 +4491,7 @@ export Result<void, AsyncNetError> notify_write_done<M: Message>(
 
 export Result<AsyncTcpStream, AsyncNetError> finish_accept(AsyncAccept op) = .finish;
 export Result<AsyncTcpStream, AsyncNetError> finish_connect(AsyncConnect op) = .finish;
-export Result<Bytes, AsyncNetError> finish_read(AsyncTcpRead op) = .finish;
+export Result<bytes::Bytes, AsyncNetError> finish_read(AsyncTcpRead op) = .finish;
 export Result<ReadIntoResult, AsyncNetError> finish_read_into(AsyncTcpReadInto op) = .finish;
 export Result<usize, AsyncNetError> finish_write(AsyncTcpWrite op) = .finish;
 export Result<void, AsyncNetError> cancel_accept(AsyncAccept op) = .cancel;
@@ -4484,10 +4507,10 @@ resources registered in the common resource registry. `AsyncTcpListener`,
 `AsyncTcpStream`, split halves, and low-level async operation tokens are
 revocable `resource::Handle` wrappers. `accept` and `connect` are
 `CancelSafe + Abortable`, so they can be used directly with `timeout` and
-`select`. `read` returns zero-length `Bytes` for EOF. `read_into` moves an
-owned `Bytes` buffer into the future and returns the same owned buffer with the
-number of bytes read so hot loops can reuse capacity without keeping a mutable
-slice live across await.
+`select`. `read` returns zero-length `bytes::Bytes` for EOF. `read_into` moves
+an owned `buf::ByteBuf` into the future and returns the same buffer with the
+number of bytes read so hot loops can reuse capacity without treating immutable
+`Bytes` as a mutable destination.
 
 `/std/async_net` no longer exposes a Message-safe stream transfer wrapper.
 `AsyncTcpStream` and its split/read/write operation tokens are resource-affine
@@ -4510,8 +4533,8 @@ the operation token, so stale token copies cannot finish or cancel a reused
 runtime operation. Normal async application code should prefer `accept`,
 `connect`, `read`, `write`, and the buffered reader helpers.
 Operation token types are split by completion value: for example,
-`AsyncTcpRead` completes to `Bytes`, while `AsyncTcpReadInto` completes to
-`ReadIntoResult`. This preserves the determined `Op -> Out` contract on
+`AsyncTcpRead` completes to `bytes::Bytes`, while `AsyncTcpReadInto` completes
+to `ReadIntoResult`. This preserves the determined `Op -> Out` contract on
 `adapter::finish` and `adapter::poll_done`, allowing `future_from_op` to infer
 its output through `OperationFuture<Out = _>` instead of accepting an explicit
 output type argument.

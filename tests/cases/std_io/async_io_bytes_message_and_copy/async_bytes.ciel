@@ -3,15 +3,16 @@
 
 import /std/lib;
 import /std/async_io as aio;
+import /std/bytes as bytes;
 
 i32 main() {
-    aio::Bytes bytes = must(aio::bytes_copy([65 as u8, 66 as u8]));
-    aio::Bytes copy = must(clone_message(&bytes));
-    if (aio::bytes_len(copy) != 2) {
+    bytes::Bytes value = must(bytes::bytes_copy([65 as u8, 66 as u8]));
+    bytes::Bytes copy = must(clone_message(&value));
+    if (bytes::bytes_len(copy) != 2) {
         return 1;
     }
     [4]u8 @out = [0;];
-    usize n = must(aio::bytes_copy_to(copy, out[..]));
+    usize n = must(bytes::bytes_copy_to(copy, out[..]));
     if (n != 2) {
         return 2;
     }

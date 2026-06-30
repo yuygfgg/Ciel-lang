@@ -440,10 +440,11 @@ Allowed across `await` in safe code:
 
 1. owned scalars, enums, structs, and arrays whose transitive fields are also
    frame-safe;
-2. runtime handles documented as shareable or async-frame-safe;
-3. values satisfying `Message`;
-4. direct local `[]const T` slices with syntactically proven static read-only
-   provenance, including string literals;
+2. runtime handles or owned containers accepted by the compiler's async-frame
+   safety rule;
+3. values whose type has the explicit unsafe async-frame opt-in marker;
+4. direct local `[]const char` or `[]const u8` slices with syntactically proven
+   static read-only provenance, including string literals;
 5. compiler-generated operation keys and discriminants.
 
 Rejected across `await` in safe code:
@@ -460,11 +461,20 @@ Rejected across `await` in safe code:
 9. structs, enums, arrays, or generic values whose transitive fields may contain
    forbidden fields and lack a proven async-frame-safety policy.
 
-This predicate can remain compiler-private, for example as an internal
-`AsyncFrameSafe` check. It is not an ordinary user-named concept.
-The predicate is deep and contagious: if any field or enum payload contains a
-rejected pointer, borrowed view, mutable slice, thread-local handle, or closure
-capture, the outer value is rejected across `await`.
+The compiler recognizes the canonical
+`/std/message.async_frame_opt_in_marker` capability for owned values whose
+fields would otherwise look unsafe to the structural frame walk. This is a
+manual unsafe opt-in, not a public user-facing predicate. The standard library
+provides `unsafe impl<T: ShareHandle> async_frame_opt_in_marker` so immutable
+or internally synchronized share handles satisfy the frame rule through
+interface composition. Implementing `async_frame_opt_in_marker` asserts that
+storing the value in a suspended async frame is valid, but it does not imply
+cross-thread shared mutation safety.
+
+The structural fallback is deep and contagious: if any field or enum payload
+contains a rejected pointer, borrowed view, mutable slice, thread-local handle,
+or closure capture, the outer value is rejected across `await` unless the type
+has an explicit unsafe async-frame opt-in marker.
 
 The predicate is provenance-sensitive for slices. A direct local string literal
 slice is safe because it points at static read-only storage. A slice into a
@@ -474,8 +484,8 @@ relationship across suspension.
 In the first implementation, the compiler does not prove static provenance
 through struct fields, enum payloads, arrays of slices, or generic containers.
 Composite values are rejected across `await` if they contain a slice or
-reference-view field, unless the compiler has an explicit built-in proof that
-the representation is owned and frame-safe.
+reference-view field, unless the compiler has an explicit canonical marker
+proof that the representation is owned and frame-safe.
 
 Rejected:
 
@@ -491,6 +501,10 @@ Accepted:
 []const char msg = "start processing";
 await async_time::sleep_ms(1)?;
 print(msg); // ok: string-literal storage is static and read-only
+
+[]const u8 magic = "PING";
+await async_time::sleep_ms(1)?;
+use_bytes(magic); // ok: string-literal storage is static byte storage
 ```
 
 Rejected in the first implementation:
@@ -724,8 +738,9 @@ The accepted design implies these compiler responsibilities:
 15. track slice provenance well enough to allow direct local static read-only
     slices while rejecting slices into non-static owners;
 16. reject compound values containing slice or reference-view fields across
-    await in the first implementation unless the compiler has a built-in proof
-    that the representation is owned and frame-safe;
+    await in the first implementation unless the compiler has a canonical
+    async-frame opt-in marker proof that the representation is owned and
+    frame-safe;
 17. infer hidden frame-safety constraints for generic locals that cross await;
 18. lower async functions to opaque future frame types;
 19. generate deterministic drop glue for every initialized async-frame field
@@ -927,17 +942,24 @@ they are not the public async composition API.
 
 ### Bytes
 
-`Bytes` is a general owned byte buffer. It is useful for async I/O because it
-can cross awaits without preserving borrowed mutable views. Reusable-buffer APIs
-move owned `Bytes` into futures and return owned buffers in results.
+`Bytes` is the standard immutable owned byte buffer. It is useful for async I/O
+because it can cross awaits without preserving borrowed mutable views, and it
+implements `ShareHandle` because it exposes only read-only byte views.
+`ShareHandle` opts into async-frame storage through the standard-library
+`async_frame_opt_in_marker` impl.
+
+Reusable mutable read buffers are represented by `/std/buf.ByteBuf`, not
+`Bytes`. `ByteBuf` has an explicit unsafe async-frame opt-in marker so it can
+be moved through an async read future, but it is not a `ShareHandle`; mutation
+APIs require unique mutable access and do not provide synchronization.
 
 ### `/std/async_io`
 
 `/std/async_io` exposes awaitable file-descriptor operations:
 
 ```ciel
-export async Result<Bytes, AsyncIoError> read_bytes(AsyncFd fd, usize max_len);
-export async Result<usize, AsyncIoError> write_bytes(AsyncFd fd, Bytes data);
+export async Result<bytes::Bytes, AsyncIoError> read_bytes(*const AsyncFd fd, usize max_len);
+export async Result<usize, AsyncIoError> write_bytes(*const AsyncFd fd, bytes::Bytes data);
 ```
 
 The high-level async functions are the normal API. Low-level `*_async`,
@@ -954,30 +976,30 @@ preserve state.
 `/std/async_net` exposes awaitable TCP operations:
 
 ```ciel
-export async Result<AsyncTcpStream, AsyncNetError> accept(AsyncTcpListener listener);
+export async Result<AsyncTcpStream, AsyncNetError> accept(*const AsyncTcpListener listener);
 export async Result<AsyncTcpStream, AsyncNetError> connect(net::SocketAddr addr);
 export async Result<AsyncTcpStream, AsyncNetError> connect_timeout(
     net::SocketAddr addr,
     u64 ms
 );
-export async Result<Bytes, AsyncNetError> read(AsyncTcpStream stream, usize max_len);
+export async Result<bytes::Bytes, AsyncNetError> read(*const AsyncTcpStream stream, usize max_len);
 export async Result<ReadIntoResult, AsyncNetError> read_into(
-    AsyncTcpStream stream,
-    Bytes buffer
+    *const AsyncTcpStream stream,
+    buf::ByteBuf @buffer
 );
-export async Result<usize, AsyncNetError> write(AsyncTcpStream stream, Bytes data);
-export async Result<usize, AsyncNetError> write_half(AsyncTcpWriteHalf half, Bytes data);
-export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream stream, Bytes data);
+export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, bytes::Bytes data);
+export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, bytes::Bytes data);
+export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, bytes::Bytes data);
 export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(
-    AsyncTcpWriteHalf half,
-    Bytes data
+    AsyncTcpWriteHalf @half,
+    bytes::Bytes data
 );
 ```
 
-`read` returns zero-length `Bytes` for EOF. `read_into` moves an owned `Bytes`
-buffer into the future and returns the same owned buffer with the number of
-bytes read. This lets hot read loops reuse capacity without keeping a mutable
-slice live across await.
+`read` returns zero-length `bytes::Bytes` for EOF. `read_into` moves an owned
+`buf::ByteBuf` into the future and returns the same buffer with the number of
+bytes read. This lets hot read loops reuse capacity without treating immutable
+`Bytes` as a mutable destination or keeping a mutable slice live across await.
 
 Raw TCP `read`, `read_into`, `write`, and `write_all` are `Abortable` but not
 `CancelSafe`. Task abort may close or poison the stream to release a stuck

@@ -14,7 +14,7 @@ import ./protocol/frame as frame;
 export struct AsyncFrame {
     frame::FrameKind kind;
     u32 stream_id;
-    anet::Bytes payload;
+    bytes::Bytes payload;
 }
 
 export enum StreamEvent {
@@ -130,15 +130,15 @@ export Result<[]u8, Error> auth_config_psk(*const AuthConfig config) {
     return Ok(config->psk.bytes::to_slice()?);
 }
 
-export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
-    usize len = bytes.anet::len();
+export Result<[]u8, Error> bytes_to_slice(bytes::Bytes bytes) {
+    usize len = bytes.bytes::len();
     if (len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
     }
-    return Ok(bytes::bytes_to_slice(bytes)?);
+    return Ok(bytes.bytes::to_slice()?);
 }
 
-export Result<anet::Bytes, Error> map_exact_frame_read<E>(Result<anet::Bytes, E> read) {
+export Result<bytes::Bytes, Error> map_exact_frame_read<E>(Result<bytes::Bytes, E> read) {
     switch (read) {
         case Ok(bytes):
             return Ok(bytes);
@@ -147,15 +147,15 @@ export Result<anet::Bytes, Error> map_exact_frame_read<E>(Result<anet::Bytes, E>
     }
 }
 
-export Result<void, Error> frame_reader_push(*FrameReader reader, anet::Bytes bytes) {
-    usize len = bytes.anet::len();
+export Result<void, Error> frame_reader_push(*FrameReader reader, bytes::Bytes bytes) {
+    usize len = bytes.bytes::len();
     if (len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
     }
     []u8 dst = reader->buffer.buf::spare_mut_slice(len)?;
-    usize copied = bytes.anet::copy_to(dst)?;
+    usize copied = bytes.bytes::copy_to(dst)?;
     if (copied != len) {
-        return Err(text_error("short async byte copy"));
+        return Err(text_error("short byte copy"));
     }
     reader->buffer.buf::commit_tail(copied)?;
     return Ok;
@@ -174,14 +174,14 @@ export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
         return Ok(NeedMore);
     }
 
-    anet::Bytes payload = anet::bytes_copy(input[frame::header_len()..total_len])?;
+    bytes::Bytes payload = bytes::bytes_copy(input[frame::header_len()..total_len])?;
     reader->buffer.buf::discard_prefix(total_len)?;
     return Ok(FrameReady({ kind: header.kind, stream_id: header.stream_id, payload: payload }));
 }
 
-export Result<anet::Bytes, Error> empty_bytes() {
+export Result<bytes::Bytes, Error> empty_bytes() {
     [1]u8 empty = [0;];
-    return Ok(anet::bytes_copy(empty[..0])?);
+    return Ok(bytes::bytes_copy(empty[..0])?);
 }
 
 export void close_stream_silent(anet::AsyncTcpStream stream) {
@@ -190,7 +190,7 @@ export void close_stream_silent(anet::AsyncTcpStream stream) {
     stream.anet::close();
 }
 
-export Result<anet::Bytes, Error> encode_frame_from_slice(
+export Result<bytes::Bytes, Error> encode_frame_from_slice(
     frame::FrameKind kind,
     u32 stream_id,
     []const u8 payload
@@ -203,15 +203,15 @@ export Result<anet::Bytes, Error> encode_frame_from_slice(
         length: payload.len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    return Ok(anet::bytes_concat(encoded_header, payload)?);
+    return Ok(bytes::bytes_concat(encoded_header, payload)?);
 }
 
-export Result<anet::Bytes, Error> encode_frame_from_bytes(
+export Result<bytes::Bytes, Error> encode_frame_from_bytes(
     frame::FrameKind kind,
     u32 stream_id,
-    anet::Bytes payload
+    bytes::Bytes payload
 ) {
-    usize len = payload.anet::len();
+    usize len = payload.bytes::len();
     frame::validate_stream_id(kind, stream_id)?;
     frame::validate_payload_len(len)?;
     frame::FrameHeader header = {
@@ -220,48 +220,48 @@ export Result<anet::Bytes, Error> encode_frame_from_bytes(
         length: len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    return Ok(payload.anet::prepend(encoded_header)?);
+    return Ok(payload.bytes::prepend(encoded_header)?);
 }
 
 export async Result<void, Error> send_control_bytes(
-    async::Sender<anet::Bytes> control,
-    anet::Bytes bytes
+    async::Sender<bytes::Bytes> control,
+    bytes::Bytes bytes
 ) {
     await control.async::send(bytes)?;
     return Ok;
 }
 
 export async Result<void, Error> send_control_frame_bytes(
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     frame::FrameKind kind,
     u32 stream_id,
-    anet::Bytes payload
+    bytes::Bytes payload
 ) {
-    anet::Bytes encoded = encode_frame_from_bytes(kind, stream_id, payload)?;
+    bytes::Bytes encoded = encode_frame_from_bytes(kind, stream_id, payload)?;
     return await send_control_bytes(control, encoded);
 }
 
 export async Result<void, Error> send_control_empty(
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     frame::FrameKind kind,
     u32 stream_id
 ) {
-    anet::Bytes empty = empty_bytes()?;
+    bytes::Bytes empty = empty_bytes()?;
     return await send_control_frame_bytes(control, kind, stream_id, empty);
 }
 
 export async Result<void, Error> send_close_stream(
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     u32 stream_id,
     u16 code,
     []const char message
 ) {
     []u8 payload = tunnel_codec::encode_close_reason(code, message)?;
-    anet::Bytes encoded = encode_frame_from_slice(frame::CloseStream, stream_id, payload)?;
+    bytes::Bytes encoded = encode_frame_from_slice(frame::CloseStream, stream_id, payload)?;
     return await send_control_bytes(control, encoded);
 }
 
-Result<anet::Bytes, Error> encode_close_stream_text(
+Result<bytes::Bytes, Error> encode_close_stream_text(
     u32 stream_id,
     u16 code,
     text::Text message
@@ -272,12 +272,12 @@ Result<anet::Bytes, Error> encode_close_stream_text(
 }
 
 export async Result<void, Error> send_close_stream_text(
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     u32 stream_id,
     u16 code,
     text::Text message
 ) {
-    anet::Bytes encoded = encode_close_stream_text(stream_id, code, message)?;
+    bytes::Bytes encoded = encode_close_stream_text(stream_id, code, message)?;
     return await send_control_bytes(control, encoded);
 }
 
@@ -329,14 +329,14 @@ export Result<void, Error> notify_stream_local_failed(
 export async Result<void, Error> local_stream_reader(
     u32 stream_id,
     anet::BufferedStreamReader reader,
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     async::Sender<meta::Repr<StreamEvent>> events
 ) {
     while (true) {
         _ read = await anet::read_buffered(&reader, 16384);
         switch (read) {
             case Ok(bytes):
-                usize len = anet::bytes_len(bytes);
+                usize len = bytes::bytes_len(bytes);
                 if (len == 0) {
                     notify_stream_local_closed(events)?;
                     return Ok;
@@ -360,7 +360,7 @@ export async Result<void, Error> local_stream_reader(
 export Result<async::Task<void>, Error> spawn_local_reader(
     u32 stream_id,
     anet::BufferedStreamReader reader,
-    async::Sender<anet::Bytes> control,
+    async::Sender<bytes::Bytes> control,
     async::Sender<meta::Repr<StreamEvent>> events
 ) {
     return Ok(async::spawn<void>(local_stream_reader(stream_id, reader, control, events))?);

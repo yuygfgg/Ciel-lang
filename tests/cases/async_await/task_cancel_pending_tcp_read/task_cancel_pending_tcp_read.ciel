@@ -5,6 +5,7 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/async_time as async_time;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/panic;
@@ -14,17 +15,17 @@ async Result<usize, Error> read_until_cancelled(anet::AsyncTcpListener listener)
     anet::AsyncTcpStream @stream = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
     [1]u8 ready = [82 as u8];
-    anet::Bytes signal = anet::bytes_copy(ready[..])?;
+    bytes::Bytes signal = bytes::bytes_copy(ready[..])?;
     stream = await anet::write_all(stream, signal)?;
-    anet::Bytes inbound = await anet::read(&stream, 8)?;
+    bytes::Bytes inbound = await anet::read(&stream, 8)?;
     anet::close_stream(stream)?;
-    return Ok(anet::bytes_len(inbound));
+    return Ok(bytes::bytes_len(inbound));
 }
 
 async Result<anet::AsyncTcpStream, Error> connect_and_wait_ready(net::SocketAddr bound) {
     anet::AsyncTcpStream client = await anet::connect(bound)?;
-    anet::Bytes signal = await anet::read(&client, 1)?;
-    if (anet::bytes_len(signal) != 1) {
+    bytes::Bytes signal = await anet::read(&client, 1)?;
+    if (bytes::bytes_len(signal) != 1) {
         return Err(code_error(70));
     }
     return Ok(client);

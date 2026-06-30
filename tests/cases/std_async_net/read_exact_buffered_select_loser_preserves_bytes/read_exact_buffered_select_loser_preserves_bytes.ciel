@@ -6,6 +6,7 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/async_time as async_time;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/panic;
@@ -30,7 +31,7 @@ Result<usize, Error> sleep_winner(Result<void, async::AsyncError> value) {
     return Ok(1);
 }
 
-Result<usize, Error> read_loser(Result<anet::Bytes, anet::AsyncNetError> value) {
+Result<usize, Error> read_loser(Result<bytes::Bytes, anet::AsyncNetError> value) {
     value?;
     return Ok(2);
 }
@@ -38,7 +39,7 @@ Result<usize, Error> read_loser(Result<anet::Bytes, anet::AsyncNetError> value) 
 async Result<void, Error> write_once(anet::AsyncTcpListener listener) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [6]u8 data = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
-    server = await anet::write_all(server, anet::bytes_copy(data[..])?)?;
+    server = await anet::write_all(server, bytes::bytes_copy(data[..])?)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok;
@@ -62,9 +63,9 @@ async Result<usize, Error> drive() {
         return Err(code_error(90));
     }
 
-    anet::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
+    bytes::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
     [6]u8 @got = [0;];
-    usize copied = anet::bytes_copy_to(exact, got[..])?;
+    usize copied = bytes::bytes_copy_to(exact, got[..])?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
     if (copied != 6 || !same_bytes(got[..], want[..])) {
         return Err(code_error(91));

@@ -5,6 +5,7 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/async_time as async_time;
+import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
 import /std/panic;
@@ -28,9 +29,9 @@ async Result<void, Error> write_delayed_chunks(anet::AsyncTcpListener listener) 
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [2]u8 first = [1 as u8, 2 as u8];
     [4]u8 second = [3 as u8, 4 as u8, 5 as u8, 6 as u8];
-    server = await anet::write_all(server, anet::bytes_copy(first[..])?)?;
+    server = await anet::write_all(server, bytes::bytes_copy(first[..])?)?;
     await async_time::sleep_ms(80)?;
-    server = await anet::write_all(server, anet::bytes_copy(second[..])?)?;
+    server = await anet::write_all(server, bytes::bytes_copy(second[..])?)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
     return Ok;
@@ -46,7 +47,7 @@ async Result<usize, Error> drive() {
     anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 2)?;
     await async_time::sleep_ms(20)?;
 
-    Result<Result<anet::Bytes, anet::AsyncNetError>, async::AsyncError> timed =
+    Result<Result<bytes::Bytes, anet::AsyncNetError>, async::AsyncError> timed =
         await async::timeout(anet::read_exact_buffered(&reader, 6), 20);
     switch (timed) {
         case Err(_):
@@ -55,9 +56,9 @@ async Result<usize, Error> drive() {
             return Err(code_error(90));
     }
 
-    anet::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
+    bytes::Bytes exact = await anet::read_exact_buffered(&reader, 6)?;
     [6]u8 @got = [0;];
-    usize copied = anet::bytes_copy_to(exact, got[..])?;
+    usize copied = bytes::bytes_copy_to(exact, got[..])?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
     if (copied != 6 || !same_bytes(got[..], want[..])) {
         return Err(code_error(91));

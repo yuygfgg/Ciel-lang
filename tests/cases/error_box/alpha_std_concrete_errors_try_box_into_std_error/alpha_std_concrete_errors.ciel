@@ -271,6 +271,10 @@ bool matches_bytes() {
             return false;
         case Err(error):
             switch (error) {
+                case bytes::CapacityOverflow:
+                    return false;
+                case bytes::SliceOutOfBounds:
+                    return false;
                 case bytes::ShortCopy:
                     return true;
                 case bytes::Runtime(_):
@@ -454,7 +458,7 @@ bool matches_async_net() {
                     return true;
                 case anet::Runtime(_):
                     return false;
-                case anet::Bytes(_):
+                case anet::BytesError(_):
                     return false;
                 case anet::MessageClone(_):
                     return false;

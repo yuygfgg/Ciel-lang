@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: does not implement `share_handle_marker`
+
+import /std/lib;
+
+Result<void, Error> accept_shared<T: ShareHandle>(T value) {
+    return Ok;
+}
+
+i32 main() {
+    [1]u8 seed = [7 as u8];
+    ByteBuf buffer = must(byte_buf_from_slice(seed[..]));
+    must(accept_shared(buffer));
+    return 0;
+}

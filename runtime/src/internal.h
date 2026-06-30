@@ -42,18 +42,10 @@ struct CielSocketAddr {
     socklen_t len;
 };
 
-struct CielBytes {
-    size_t len;
-    size_t cap;
-    uint8_t* data;
-};
-
 CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void*
 ciel_alloc_uncollectable(size_t size);
 int32_t ciel_thread_attach_persistent(void);
 int ciel_file_open_mode_flags(int32_t mode);
-CielBytes* ciel_bytes_new(size_t len);
-uint8_t* ciel_bytes_data_alloc(size_t len);
 CielSocketAddr* ciel_net_addr_from_fd(int fd, int peer, int32_t* out_rc);
 int ciel_net_make_socket(const struct sockaddr* addr);
 int32_t ciel_fd_set_nonblocking(int fd);

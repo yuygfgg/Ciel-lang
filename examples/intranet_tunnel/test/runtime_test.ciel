@@ -1,4 +1,5 @@
 import /std/async_net as anet;
+import /std/bytes as bytes;
 import /std/result;
 import ../protocol/codec as tunnel_codec;
 import ../protocol/frame as frame;
@@ -80,14 +81,14 @@ i32 main() {
 
     rt::FrameReader @reader = must(rt::frame_reader_new());
     []u8 first_payload = [10 as u8, 11 as u8, 12 as u8];
-    anet::Bytes first_encoded =
+    bytes::Bytes first_encoded =
         must(rt::encode_frame_from_slice(frame::Data, 42 as u32, first_payload));
     []u8 first_frame = must(rt::bytes_to_slice(first_encoded));
-    must(rt::frame_reader_push(&reader, must(anet::bytes_copy(first_frame[..5]))));
+    must(rt::frame_reader_push(&reader, must(bytes::bytes_copy(first_frame[..5]))));
     if (!read_result_need_more(must(rt::frame_reader_next(&reader)))) {
         return 5;
     }
-    must(rt::frame_reader_push(&reader, must(anet::bytes_copy(first_frame[5..]))));
+    must(rt::frame_reader_push(&reader, must(bytes::bytes_copy(first_frame[5..]))));
     if (!frame_matches(must(rt::frame_reader_next(&reader)), frame::Data, 42 as u32, first_payload)) {
         return 6;
     }
@@ -96,14 +97,14 @@ i32 main() {
     }
 
     []u8 second_payload = [1 as u8, 2 as u8];
-    anet::Bytes second_encoded =
+    bytes::Bytes second_encoded =
         must(rt::encode_frame_from_slice(frame::Data, 7 as u32, second_payload));
-    anet::Bytes third_encoded =
+    bytes::Bytes third_encoded =
         must(rt::encode_frame_from_slice(frame::CloseWrite, 7 as u32, empty[..0]));
     []u8 second_frame = must(rt::bytes_to_slice(second_encoded));
     []u8 third_frame = must(rt::bytes_to_slice(third_encoded));
-    must(rt::frame_reader_push(&reader, must(anet::bytes_copy(second_frame))));
-    must(rt::frame_reader_push(&reader, must(anet::bytes_copy(third_frame))));
+    must(rt::frame_reader_push(&reader, must(bytes::bytes_copy(second_frame))));
+    must(rt::frame_reader_push(&reader, must(bytes::bytes_copy(third_frame))));
     if (!frame_matches(must(rt::frame_reader_next(&reader)), frame::Data, 7 as u32, second_payload)) {
         return 8;
     }

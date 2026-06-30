@@ -5,6 +5,7 @@
 
 import /std/lib;
 import /std/async_io as aio;
+import /std/bytes as bytes;
 import /std/env as env;
 
 Result<Channel<usize>, Error> handle(Channel<usize> out, usize expected_written) {
@@ -17,7 +18,7 @@ i32 main() {
     Channel<usize> done = must(make_channel<usize>());
     Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(done, handle));
     aio::AsyncFd fd = must(aio::create_async(path));
-    aio::Bytes bytes = must(aio::bytes_copy([116 as u8, 101 as u8, 115 as u8, 116 as u8]));
+    bytes::Bytes bytes = must(bytes::bytes_copy([116 as u8, 101 as u8, 115 as u8, 116 as u8]));
     aio::AsyncWrite op = must(aio::write_bytes_async(&fd, bytes));
     must(aio::notify_write_done(&op, &actor, 4));
     usize written = must(channel_recv(&done));

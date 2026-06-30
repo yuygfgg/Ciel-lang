@@ -27,13 +27,9 @@ typedef void (*CielFinalizerFn)(void* obj, void* client_data);
 void ciel_register_finalizer(void* obj, CielFinalizerFn finalizer,
                              void* client_data);
 
-CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len);
-CielSlice_char ciel_runtime_char_alloc_slice(size_t len);
-CielSlice_u8 ciel_runtime_u8_realloc_slice(CielSlice_u8 old, size_t len);
-
-void* ciel_map_alloc_buckets(size_t capacity);
-void* ciel_map_bucket_get(void* buckets, size_t index);
-void ciel_map_bucket_set(void* buckets, size_t index, void* value);
+void* ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity);
+void* ciel_raw_realloc_zeroed(void* old, size_t elem_size, size_t align,
+                              size_t initialized, size_t next_capacity);
 
 CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void*
 ciel_box_value(const void* value, size_t size);

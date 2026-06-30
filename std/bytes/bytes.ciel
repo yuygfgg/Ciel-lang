@@ -2,10 +2,7 @@
 export import /std/async/bytes;
 import /std/async/bytes as raw;
 import /std/result;
-
-unsafe extern "C" {
-    []u8 ciel_runtime_u8_alloc_slice(usize len);
-}
+import /std/storage as storage;
 
 // Returns an empty owned Bytes value.
 export Result<raw::Bytes, Error> bytes_empty() {
@@ -21,7 +18,8 @@ export Result<raw::Bytes, Error> bytes_from_text([]const char text) {
 // Copies an owned Bytes value into a mutable byte slice allocation.
 export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) = .to_slice {
     usize len = raw::bytes_len(bytes);
-    []u8 out = unsafe { ciel_runtime_u8_alloc_slice(len) };
+    storage::RawStorage<u8> @raw_storage = unsafe { storage::raw_zeroed<u8>(len)? };
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw_storage) };
     usize copied = raw::bytes_copy_to(bytes, out)?;
     if (copied != len) {
         return Err(text_error("short bytes copy"));

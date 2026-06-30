@@ -5,6 +5,7 @@ import /std/c as c;
 import /std/message;
 import /std/resource;
 import /std/resource as resource;
+import /std/storage as storage;
 import /std/text as text;
 
 unsafe extern "C" {
@@ -137,9 +138,6 @@ unsafe extern "C" {
     c::c_int ciel_sqlite_type_null();
     []const char ciel_sqlite_error_message(c::c_int code);
     []const char ciel_sqlite_libversion();
-
-    []char ciel_runtime_char_alloc_slice(usize len);
-    []u8 ciel_runtime_u8_alloc_slice(usize len);
 }
 
 // SQLite database connection. Connections are actor-local handles.
@@ -699,7 +697,8 @@ export Result<usize, Error> column_name_copy_to(*const Statement statement, usiz
 // Returns the result column name as owned Text.
 export Result<text::Text, Error> column_name(*const Statement statement, usize index) {
     usize len = column_name_len(statement, index)?;
-    []char out = unsafe { ciel_runtime_char_alloc_slice(len) };
+    storage::RawStorage<char> @raw_storage = unsafe { storage::raw_zeroed<char>(len)? };
+    []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
     usize copied = column_name_copy_to(statement, index, out)?;
     if (copied != len) {
         return Err(text_error("short sqlite column name copy"));
@@ -732,7 +731,8 @@ export Result<usize, Error> column_text_copy_to(*const Statement statement, usiz
 // Returns a text column as a mutable copied character slice.
 export Result<[]char, Error> column_text_slice(*const Statement statement, usize index) {
     usize len = column_text_len(statement, index)?;
-    []char out = unsafe { ciel_runtime_char_alloc_slice(len) };
+    storage::RawStorage<char> @raw_storage = unsafe { storage::raw_zeroed<char>(len)? };
+    []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
     usize copied = column_text_copy_to(statement, index, out)?;
     if (copied != len) {
         return Err(text_error("short sqlite text copy"));
@@ -771,7 +771,8 @@ export Result<usize, Error> column_blob_copy_to(*const Statement statement, usiz
 // Returns a blob column as a mutable copied byte slice.
 export Result<[]u8, Error> column_blob_slice(*const Statement statement, usize index) {
     usize len = column_blob_len(statement, index)?;
-    []u8 out = unsafe { ciel_runtime_u8_alloc_slice(len) };
+    storage::RawStorage<u8> @raw_storage = unsafe { storage::raw_zeroed<u8>(len)? };
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw_storage) };
     usize copied = column_blob_copy_to(statement, index, out)?;
     if (copied != len) {
         return Err(text_error("short sqlite blob copy"));

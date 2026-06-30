@@ -291,31 +291,6 @@ impl<'a> CGenerator<'a> {
             self.line("");
         }
 
-        let mut emitted_slice_type = false;
-        for (slice, ty) in self.plan.slice_types.clone() {
-            if prelude_defines_slice_type(&slice) {
-                continue;
-            }
-            let Ty::Slice { mutability, elem } = ty else {
-                continue;
-            };
-            let ptr_decl = self.c_decl(
-                &Ty::Pointer {
-                    nullable: false,
-                    mutability,
-                    inner: elem,
-                },
-                "ptr",
-            );
-            self.line(&format!(
-                "typedef struct {{ {ptr_decl}; size_t len; }} {slice};"
-            ));
-            emitted_slice_type = true;
-        }
-        if emitted_slice_type {
-            self.line("");
-        }
-
         for name in self.plan.closure_types.keys().cloned().collect::<Vec<_>>() {
             self.line(&format!("typedef struct {name} {name};"));
         }
@@ -385,6 +360,31 @@ impl<'a> CGenerator<'a> {
             || !self.program.checked.enums.is_empty()
             || !self.plan.array_return_types.is_empty()
         {
+            self.line("");
+        }
+
+        let mut emitted_slice_type = false;
+        for (slice, ty) in self.plan.slice_types.clone() {
+            if prelude_defines_slice_type(&slice) {
+                continue;
+            }
+            let Ty::Slice { mutability, elem } = ty else {
+                continue;
+            };
+            let ptr_decl = self.c_decl(
+                &Ty::Pointer {
+                    nullable: false,
+                    mutability,
+                    inner: elem,
+                },
+                "ptr",
+            );
+            self.line(&format!(
+                "typedef struct {{ {ptr_decl}; size_t len; }} {slice};"
+            ));
+            emitted_slice_type = true;
+        }
+        if emitted_slice_type {
             self.line("");
         }
 
@@ -643,6 +643,10 @@ impl<'a> CGenerator<'a> {
             | TExprKind::RetainClosure { expr: inner, .. }
             | TExprKind::MakeDynamicInterface { expr: inner, .. } => {
                 self.collect_resource_cleanup_expr(inner);
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_resource_cleanup_expr(ptr);
+                self.collect_resource_cleanup_expr(len);
             }
             TExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
@@ -1322,6 +1326,10 @@ impl<'a> CGenerator<'a> {
             | TExprKind::ArrayToSlice(expr)
             | TExprKind::SliceToConst(expr)
             | TExprKind::FunctionToClosure(expr) => self.collect_expr_array_returns(expr),
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_expr_array_returns(ptr);
+                self.collect_expr_array_returns(len);
+            }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr_array_returns(left);
                 self.collect_expr_array_returns(right);
@@ -1882,6 +1890,10 @@ impl<'a> CGenerator<'a> {
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_closures(owner, inner)
             }
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_expr_closures(owner, ptr);
+                self.collect_expr_closures(owner, len);
+            }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_ty_closure(concrete_ty);
                 self.collect_expr_closures(owner, expr);
@@ -2293,6 +2305,11 @@ impl<'a> CGenerator<'a> {
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_dynamic(inner)
             }
+            TExprKind::RawSliceFromPtr { ptr, len, elem_ty } => {
+                self.collect_expr_dynamic(ptr);
+                self.collect_expr_dynamic(len);
+                self.collect_ty_dynamic(elem_ty);
+            }
             TExprKind::Field { base, .. } | TExprKind::Arrow { base, .. } => {
                 self.collect_expr_dynamic(base)
             }
@@ -2570,6 +2587,10 @@ impl<'a> CGenerator<'a> {
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_locations(inner)
             }
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_expr_locations(ptr);
+                self.collect_expr_locations(len);
+            }
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_locations(expr),
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
@@ -2838,6 +2859,10 @@ impl<'a> CGenerator<'a> {
             TExprKind::RetainClosure { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_string_literals(inner)
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_expr_string_literals(ptr);
+                self.collect_expr_string_literals(len);
             }
             TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_string_literals(expr),
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
@@ -3171,6 +3196,11 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr_slices(inner)
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, elem_ty } => {
+                self.collect_ty_slice(elem_ty);
+                self.collect_expr_slices(ptr);
+                self.collect_expr_slices(len);
             }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_ty_slice(concrete_ty);
@@ -5507,6 +5537,21 @@ impl<'a> CGenerator<'a> {
                 };
                 format!(
                     "({}){{ .ptr = {source}.ptr, .len = {source}.len }}",
+                    self.c_type(&expr.ty)
+                )
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, elem_ty } => {
+                let len_code = self.gen_expr_with_lowering(len, stmt_indent)?;
+                if elem_ty.is_erased_value() {
+                    return Ok(format!(
+                        "({}){{ .ptr = NULL, .len = {len_code} }}",
+                        self.c_type(&expr.ty)
+                    ));
+                }
+                let ptr_code = self.gen_expr_with_lowering(ptr, stmt_indent)?;
+                let elem_ptr_ty = self.c_pointer_type(elem_ty);
+                format!(
+                    "({}){{ .ptr = ({elem_ptr_ty})({ptr_code}), .len = {len_code} }}",
                     self.c_type(&expr.ty)
                 )
             }
@@ -14050,6 +14095,9 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         TExprKind::Closure { captures, .. } => !captures.is_empty(),
         TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
             expr_needs_stmt_lowering(inner)
+        }
+        TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+            expr_needs_stmt_lowering(ptr) || expr_needs_stmt_lowering(len)
         }
         TExprKind::DynamicInterfaceCall { receiver, args, .. }
         | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {

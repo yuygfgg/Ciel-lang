@@ -366,6 +366,11 @@ pub enum TExprKind {
     },
     ArrayToSlice(Box<TExpr>),
     SliceToConst(Box<TExpr>),
+    RawSliceFromPtr {
+        ptr: Box<TExpr>,
+        len: Box<TExpr>,
+        elem_ty: Ty,
+    },
     MakeDynamicInterface {
         expr: Box<TExpr>,
         concrete_ty: Ty,
@@ -695,6 +700,10 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+            visitor.visit_expr(ptr);
+            visitor.visit_expr(len);
+        }
         TExprKind::Await { future: inner } => visitor.visit_expr(inner),
         TExprKind::AsyncSelect { arms, .. } => {
             for arm in arms {

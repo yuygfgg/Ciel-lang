@@ -319,6 +319,10 @@ impl<'a> FunctionAnalyzer<'a> {
             | TExprKind::RetainClosure { expr: inner, .. }
             | TExprKind::SliceToConst(inner) => self.scan_expr(inner),
             TExprKind::ArrayToSlice(expr) => self.scan_expr(expr),
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.scan_expr(ptr);
+                self.scan_expr(len);
+            }
             TExprKind::MakeDynamicInterface { expr, .. } => {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
@@ -486,6 +490,10 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::Move(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_storage_sources(inner, out)
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, .. } => {
+                self.collect_storage_sources(ptr, out);
+                self.collect_storage_sources(len, out);
             }
             TExprKind::Slice { base, .. } => {
                 if matches!(base.ty, Ty::Array { .. })

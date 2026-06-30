@@ -53,46 +53,35 @@ CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void *ciel_realloc(void *old,
     return ptr;
 }
 
-CielSlice_u8 ciel_runtime_u8_alloc_slice(size_t len) {
-    CielSlice_u8 out;
-    out.ptr = (uint8_t *)ciel_alloc_atomic_array(sizeof(uint8_t), len);
-    out.len = len;
-    return out;
-}
-
-CielSlice_char ciel_runtime_char_alloc_slice(size_t len) {
-    CielSlice_char out;
-    out.ptr = (char *)ciel_alloc_atomic_array(sizeof(char), len);
-    out.len = len;
-    return out;
-}
-
-CielSlice_u8 ciel_runtime_u8_realloc_slice(CielSlice_u8 old, size_t len) {
-    CielSlice_u8 out;
-    out.ptr = (uint8_t *)ciel_alloc_atomic_array(sizeof(uint8_t), len);
-    out.len = len;
-    size_t copy = old.len < len ? old.len : len;
-    if (old.ptr != NULL && copy > 0)
-        memcpy(out.ptr, old.ptr, copy);
-    return out;
-}
-
-void *ciel_map_alloc_buckets(size_t capacity) {
-    void **buckets = (void **)ciel_alloc_array(sizeof(void *), capacity);
-    memset(buckets, 0, sizeof(void *) * capacity);
-    return buckets;
-}
-
-void *ciel_map_bucket_get(void *buckets, size_t index) {
-    if (buckets == NULL)
+void *ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity) {
+    (void)align;
+    if (elem_size != 0 && capacity > SIZE_MAX / elem_size) {
+        errno = EOVERFLOW;
         return NULL;
-    return ((void **)buckets)[index];
+    }
+    size_t bytes = elem_size * capacity;
+    // GC_MALLOC clears pointerful objects, so we don't need manual memset here.
+    return ciel_alloc(bytes == 0 ? 1 : bytes);
 }
 
-void ciel_map_bucket_set(void *buckets, size_t index, void *value) {
-    if (buckets == NULL)
-        return;
-    ((void **)buckets)[index] = value;
+void *ciel_raw_realloc_zeroed(void *old, size_t elem_size, size_t align,
+                              size_t initialized, size_t next_capacity) {
+    (void)align;
+    if (initialized > next_capacity) {
+        errno = EINVAL;
+        return NULL;
+    }
+    if (elem_size != 0 && (next_capacity > SIZE_MAX / elem_size ||
+                           initialized > SIZE_MAX / elem_size)) {
+        errno = EOVERFLOW;
+        return NULL;
+    }
+    size_t bytes = elem_size * next_capacity;
+    size_t init_bytes = elem_size * initialized;
+    void *out = ciel_alloc(bytes == 0 ? 1 : bytes);
+    if (init_bytes > 0 && old != NULL)
+        memcpy(out, old, init_bytes);
+    return out;
 }
 
 CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE1 CIEL_RETURNS_NONNULL void *

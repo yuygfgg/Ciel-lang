@@ -2,10 +2,7 @@
 export import /std/result;
 import /std/bytes as bytes;
 import /std/message;
-
-unsafe extern "C" {
-    []char ciel_runtime_char_alloc_slice(usize len);
-}
+import /std/storage as storage;
 
 // Immutable runtime-backed text value stored as owned bytes.
 export struct Text {
@@ -45,7 +42,8 @@ export Result<bytes::Bytes, Error> text_to_bytes(Text text) = .to_bytes {
 // Copies Text contents into a mutable character slice allocation.
 export Result<[]char, Error> text_to_chars(Text text) = .to_chars {
     usize len = text_len(text);
-    []char out = unsafe { ciel_runtime_char_alloc_slice(len) };
+    storage::RawStorage<char> @raw_storage = unsafe { storage::raw_zeroed<char>(len)? };
+    []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
     usize copied = bytes::bytes_copy_to_chars(text.bytes, out)?;
     if (copied != len) {
         return Err(text_error("short text copy"));

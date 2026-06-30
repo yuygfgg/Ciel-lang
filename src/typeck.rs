@@ -10175,6 +10175,64 @@ impl TypeChecker {
         }
     }
 
+    fn check_raw_storage_from_ptr_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        sig: &FunctionSig,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        self.require_unsafe(
+            span,
+            format!("call to unsafe function `{}` requires unsafe block", sig.name),
+        );
+        if type_args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "raw_from_ptr requires exactly one type argument",
+            ));
+            return None;
+        }
+        if args.len() != 2 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("raw_from_ptr expects 2 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+
+        let subst = self.current_type_subst();
+        let elem_ty = self.lower_type_with_subst(&type_args[0], &subst);
+        let elem_ty = self.normalize_meta_repr_markers(&elem_ty, type_args[0].span);
+        let elem_ty = self.resolve_type_holes(&elem_ty);
+        self.ensure_struct_instance(&elem_ty);
+        self.ensure_enum_instance(&elem_ty);
+
+        let ptr_ty = Ty::Pointer {
+            nullable: false,
+            mutability: ViewMutability::Writable,
+            inner: Box::new(Ty::Void),
+        };
+        let ptr = self.check_consumed_expr(scopes, &args[0], Some(&ptr_ty), false)?;
+        self.require_assignable(&ptr_ty, &ptr.ty, args[0].span);
+        let len = self.check_consumed_expr(scopes, &args[1], Some(&Ty::Usize), false)?;
+        self.require_assignable(&Ty::Usize, &len.ty, args[1].span);
+
+        Some(TExpr {
+            span,
+            ty: Ty::Slice {
+                mutability: ViewMutability::Writable,
+                elem: Box::new(elem_ty.clone()),
+            },
+            kind: TExprKind::RawSliceFromPtr {
+                ptr: Box::new(ptr),
+                len: Box::new(len),
+                elem_ty,
+            },
+        })
+    }
+
     fn check_direct_function_call(
         &mut self,
         scopes: &mut LocalScopes,
@@ -10231,6 +10289,14 @@ impl TypeChecker {
             || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_align")
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
+        }
+        if std_id::is_std_storage_function(
+            &self.ctx.resolved,
+            sig.module,
+            &sig.name,
+            "raw_from_ptr",
+        ) {
+            return self.check_raw_storage_from_ptr_call(scopes, span, &sig, type_args, args);
         }
         if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "spawn") {
             return self.check_async_spawn_call(scopes, span, type_args, args, expected);

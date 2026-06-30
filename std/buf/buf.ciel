@@ -2,23 +2,22 @@
 export import /std/result;
 import /std/c as c;
 import /std/message;
+import /std/storage as storage;
 
 unsafe extern "C" {
-    []u8 ciel_runtime_u8_alloc_slice(usize len);
-    []u8 ciel_runtime_u8_realloc_slice([]u8 storage, usize len);
     c::c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
 }
 
 // Growable GC-backed byte buffer. Safe code must construct it with byte_buf_new.
 export unsafe struct ByteBuf {
-    []u8 storage;
+    storage::RawStorage<u8> storage;
     usize len;
 }
 
 // Creates an empty ByteBuf with at least the requested initial capacity.
 export Result<ByteBuf, Error> byte_buf_new(usize capacity) {
-    []u8 storage = unsafe { ciel_runtime_u8_alloc_slice(capacity) };
-    return Ok(unsafe { { storage: storage, len: 0 } });
+    storage::RawStorage<u8> raw = unsafe { storage::raw_zeroed<u8>(capacity)? };
+    return Ok(unsafe { { storage: raw, len: 0 } });
 }
 
 // Returns the number of initialized bytes in the buffer.
@@ -35,16 +34,19 @@ export void byte_buf_clear(*ByteBuf buf) = .clear {
 
 // Returns a read-only view of the initialized byte prefix.
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice {
-    return unsafe { buf->storage[..buf->len] };
+    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
+    return unsafe { storage_view[..buf->len] };
 }
 
 // Returns a mutable view of the initialized byte prefix.
 export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice {
-    return unsafe { buf->storage[..buf->len] };
+    []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
+    return unsafe { storage_view[..buf->len] };
 }
 
 usize byte_buf_capacity(*const ByteBuf buf) {
-    return unsafe { buf->storage.len };
+    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
+    return storage_view.len;
 }
 
 Error overflow_error() {
@@ -85,7 +87,9 @@ export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .r
     }
 
     usize next_cap = grown_capacity(cap, needed);
-    []u8 next = unsafe { ciel_runtime_u8_realloc_slice(buf->storage, next_cap) };
+    storage::RawStorage<u8> next = unsafe {
+        storage::raw_realloc_zeroed<u8>(buf->storage, len, next_cap)?
+    };
     unsafe {
         buf->storage = next;
         buf->len = len;
@@ -98,7 +102,8 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = 
     byte_buf_reserve(buf, data.len)?;
     usize len = byte_buf_len(buf);
     if (data.len > 0) {
-        c::c_int rc = unsafe { ciel_u8_copy(&buf->storage[len], data.ptr, data.len) };
+        []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
+        c::c_int rc = unsafe { ciel_u8_copy(&storage_view[len], data.ptr, data.len) };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }
@@ -113,7 +118,8 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = 
 export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
     byte_buf_reserve(buf, additional)?;
     usize len = byte_buf_len(buf);
-    return Ok(unsafe { buf->storage[len..(len + additional)] });
+    []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
+    return Ok(storage_view[len..(len + additional)]);
 }
 
 // Marks additional bytes previously written through byte_buf_spare_mut_slice as initialized.
@@ -140,7 +146,8 @@ export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) = 
     }
     usize remaining = len - count;
     if (remaining > 0) {
-        c::c_int rc = unsafe { ciel_u8_copy(buf->storage.ptr, &buf->storage[count], remaining) };
+        []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
+        c::c_int rc = unsafe { ciel_u8_copy(storage_view.ptr, &storage_view[count], remaining) };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }

@@ -636,6 +636,11 @@ impl MonoContext {
             TExprKind::SliceToConst(inner) => {
                 TExprKind::SliceToConst(Box::new(self.rewrite_expr(*inner)?))
             }
+            TExprKind::RawSliceFromPtr { ptr, len, elem_ty } => TExprKind::RawSliceFromPtr {
+                ptr: Box::new(self.rewrite_expr(*ptr)?),
+                len: Box::new(self.rewrite_expr(*len)?),
+                elem_ty: self.lower_opaque_returns_in_ty(&elem_ty),
+            },
             TExprKind::MakeDynamicInterface {
                 expr: inner,
                 concrete_ty,
@@ -1671,6 +1676,11 @@ impl<'a> AggregateCollector<'a> {
             }
             TExprKind::ArrayToSlice(inner) | TExprKind::SliceToConst(inner) => {
                 self.collect_expr(inner)
+            }
+            TExprKind::RawSliceFromPtr { ptr, len, elem_ty } => {
+                self.collect_expr(ptr);
+                self.collect_expr(len);
+                self.collect_ty(elem_ty);
             }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
                 self.collect_expr(expr);

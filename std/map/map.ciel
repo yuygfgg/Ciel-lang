@@ -3,12 +3,10 @@ export import /std/result;
 import /std/message;
 import /std/meta as meta;
 import /std/panic;
+import /std/storage as storage;
 
 unsafe extern "C" {
     ?*void ciel_box_copy(usize size, usize align, *const void source);
-    *void ciel_map_alloc_buckets(usize capacity);
-    ?*void ciel_map_bucket_get(*void buckets, usize index);
-    void ciel_map_bucket_set(*void buckets, usize index, ?*void value);
 }
 
 // Computes a seeded hash for keys used by HashMap.
@@ -29,7 +27,7 @@ struct Node<K, V> {
 
 // Actor-local mutable hash table. Safe code must construct it with hash_map_new.
 export unsafe struct HashMap<K, V> {
-    *void buckets;
+    storage::RawStorage<?*void> buckets;
     usize capacity;
     usize len;
     u64 seed;
@@ -162,12 +160,14 @@ Error map_runtime_error() {
 }
 
 ?*Node<K, V> bucket_head<K, V>(*const HashMap<K, V> map, usize index) {
-    ?*void raw = unsafe { ciel_map_bucket_get(map->buckets, index) };
+    []const ?*void buckets = unsafe { storage::raw_const_slice<?*void>(&map->buckets) };
+    ?*void raw = buckets[index];
     return raw_to_node<K, V>(raw);
 }
 
 void set_bucket_head<K, V>(*HashMap<K, V> map, usize index, ?*Node<K, V> node) {
-    unsafe { ciel_map_bucket_set(map->buckets, index, node_to_raw<K, V>(node)) };
+    []?*void buckets = unsafe { storage::raw_slice<?*void>(&map->buckets) };
+    buckets[index] = node_to_raw<K, V>(node);
 }
 
 Result<*Node<K, V>, Error> make_node<K, V>(
@@ -196,13 +196,16 @@ Result<void, Error> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize req
         capacity = initial_capacity();
     }
 
-    *void next_buckets = unsafe { ciel_map_alloc_buckets(capacity) };
-    *void old_buckets = unsafe { map->buckets };
+    storage::RawStorage<?*void> @next_buckets =
+        unsafe { storage::raw_zeroed<?*void>(capacity)? };
+    storage::RawStorage<?*void> old_buckets = unsafe { map->buckets };
     usize old_capacity = unsafe { map->capacity };
+    []const ?*void old_slice = unsafe { storage::raw_const_slice<?*void>(&old_buckets) };
+    []?*void next_slice = unsafe { storage::raw_slice<?*void>(&next_buckets) };
 
     usize @i = 0;
     while (i < old_capacity) {
-        ?*void @raw = unsafe { ciel_map_bucket_get(old_buckets, i) };
+        ?*void @raw = old_slice[i];
         while (true) {
             if (raw == null) {
                 break;
@@ -210,11 +213,9 @@ Result<void, Error> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize req
             *Node<K, V> node = expect_raw_node<K, V>(raw);
             ?*Node<K, V> next = node->next;
             usize index = start_index(node->hash, capacity);
-            ?*Node<K, V> head = raw_to_node<K, V>(unsafe {
-                ciel_map_bucket_get(next_buckets, index)
-            });
+            ?*Node<K, V> head = raw_to_node<K, V>(next_slice[index]);
             node->next = head;
-            unsafe { ciel_map_bucket_set(next_buckets, index, node as ?*void) };
+            next_slice[index] = node as ?*void;
             raw = node_to_raw<K, V>(next);
         }
         i = i + 1;
@@ -247,7 +248,7 @@ Result<void, Error> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
 // Creates an empty actor-local hash map.
 export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>() {
     usize capacity = initial_capacity();
-    *void buckets = unsafe { ciel_map_alloc_buckets(capacity) };
+    storage::RawStorage<?*void> buckets = unsafe { storage::raw_zeroed<?*void>(capacity)? };
     return Ok(unsafe { { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() } });
 }
 
@@ -262,7 +263,8 @@ export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear {
     if (capacity == 0) {
         capacity = initial_capacity();
     }
-    *void buckets = unsafe { ciel_map_alloc_buckets(capacity) };
+    storage::RawStorage<?*void> buckets =
+        must(unsafe { storage::raw_zeroed<?*void>(capacity) });
     unsafe {
         map->buckets = buckets;
         map->capacity = capacity;

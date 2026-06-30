@@ -11,6 +11,7 @@ const STD_MESSAGE_EXPORT: &str = "/std/message";
 const STD_RESOURCE_EXPORT: &str = "/std/resource";
 const STD_ACTOR_EXPORT: &str = "/std/actor";
 const STD_META_EXPORT: &str = "/std/meta";
+const STD_STORAGE_EXPORT: &str = "/std/storage";
 const STD_ASYNC_EXPORT: &str = "/std/async";
 const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
 const STD_ASYNC_IO_EXPORT: &str = "/std/async_io";
@@ -170,6 +171,15 @@ pub fn is_std_meta_function(
     expected_name: &str,
 ) -> bool {
     name == expected_name && module_export_matches(resolved, module, STD_META_EXPORT)
+}
+
+pub fn is_std_storage_function(
+    resolved: &ResolvedProgram,
+    module: ModuleId,
+    name: &str,
+    expected_name: &str,
+) -> bool {
+    name == expected_name && module_export_matches(resolved, module, STD_STORAGE_EXPORT)
 }
 
 pub fn is_std_async_function(

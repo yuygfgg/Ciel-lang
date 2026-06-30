@@ -8,11 +8,13 @@ import /std/resource as resource;
 import /std/result;
 
 Result<io::File, Error> return_from_nested_scope(io::File @file) {
-    return resource::scoped<io::File>(|| {
-        return resource::scoped<io::File>(|| {
+    io::File returned = resource::scoped<io::File, Error>(|| {
+        io::File inner = resource::scoped<io::File, Error>(|| {
             return Ok(file);
-        });
-    });
+        })?;
+        return Ok(inner);
+    })?;
+    return Ok(returned);
 }
 
 i32 main() {

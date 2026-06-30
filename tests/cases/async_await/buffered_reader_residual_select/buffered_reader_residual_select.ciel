@@ -9,12 +9,12 @@ import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> bytes_len_result(Result<anet::Bytes, Error> result) {
+Result<usize, Error> bytes_len_result(Result<anet::Bytes, anet::AsyncNetError> result) {
     anet::Bytes bytes = result?;
     return Ok(anet::bytes_len(bytes));
 }
 
-Result<usize, Error> timeout_tag(Result<void, Error> result) {
+Result<usize, Error> timeout_tag(Result<void, async::AsyncError> result) {
     result?;
     return Ok(99);
 }

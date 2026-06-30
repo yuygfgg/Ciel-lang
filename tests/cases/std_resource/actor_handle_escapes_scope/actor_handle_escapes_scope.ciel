@@ -49,12 +49,13 @@ Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command comma
 }
 
 Result<Actor<Command>, Error> spawn_inside_scope(Channel<usize> out) {
-    return resource::scoped<Actor<Command>>(|| {
+    Actor<Command> actor = resource::scoped<Actor<Command>>(|| {
         return spawn_actor_state<OwnedState, Command>(
             || init_state(out),
             handle
         );
-    });
+    })?;
+    return Ok(actor);
 }
 
 i32 main() {

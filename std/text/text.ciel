@@ -9,6 +9,24 @@ export struct Text {
     bytes::Bytes bytes;
 }
 
+// Errors produced by Text operations.
+export enum TextError {
+    Bytes(bytes::BytesError),
+    Storage,
+    ShortCopy,
+}
+
+impl format_error(*const TextError error) {
+    switch (*error) {
+        case Bytes(inner):
+            return format_error(&inner);
+        case Storage:
+            return "text storage allocation failed";
+        case ShortCopy:
+            return "short text copy";
+    }
+}
+
 unsafe impl clone_message(*const Text value) {
     bytes::Bytes copied = clone_message(&value->bytes)?;
     return Ok({ bytes: copied });
@@ -19,13 +37,23 @@ unsafe impl share_handle_marker(*const Text value) {
 }
 
 // Returns an empty Text value.
-export Result<Text, Error> text_empty() {
-    return Ok({ bytes: bytes::bytes_empty()? });
+export Result<Text, TextError> text_empty() {
+    switch (bytes::bytes_empty()) {
+        case Ok(value):
+            return Ok({ bytes: value });
+        case Err(error):
+            return Err(Bytes(error));
+    }
 }
 
 // Copies a character slice into an owned Text value.
-export Result<Text, Error> text_copy([]const char text) {
-    return Ok({ bytes: bytes::bytes_from_text(text)? });
+export Result<Text, TextError> text_copy([]const char text) {
+    switch (bytes::bytes_from_text(text)) {
+        case Ok(value):
+            return Ok({ bytes: value });
+        case Err(error):
+            return Err(Bytes(error));
+    }
 }
 
 // Returns the byte length of the Text value.
@@ -34,25 +62,36 @@ export usize text_len(Text text) = .len {
 }
 
 // Returns a cloned owned Bytes handle for the Text contents.
-export Result<bytes::Bytes, Error> text_to_bytes(Text text) = .to_bytes {
-    bytes::Bytes copied = clone_message(&text.bytes)?;
-    return Ok(copied);
+export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes {
+    return Ok(text.bytes);
 }
 
 // Copies Text contents into a mutable character slice allocation.
-export Result<[]char, Error> text_to_chars(Text text) = .to_chars {
+export Result<[]char, TextError> text_to_chars(Text text) = .to_chars {
     usize len = text_len(text);
-    storage::RawStorage<char> @raw_storage = unsafe { storage::raw_zeroed<char>(len)? };
+    storage::RawStorage<char> @raw_storage;
+    switch (unsafe { storage::raw_zeroed<char>(len) }) {
+        case Ok(storage):
+            raw_storage = storage;
+        case Err(_):
+            return Err(Storage);
+    }
     []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
-    usize copied = bytes::bytes_copy_to_chars(text.bytes, out)?;
+    usize @copied = 0;
+    switch (bytes::bytes_copy_to_chars(text.bytes, out)) {
+        case Ok(value):
+            copied = value;
+        case Err(error):
+            return Err(Bytes(error));
+    }
     if (copied != len) {
-        return Err(text_error("short text copy"));
+        return Err(ShortCopy);
     }
     return Ok(out);
 }
 
 // Copies Text contents into a read-only character slice.
-export Result<[]const char, Error> text_to_slice(Text text) = .slice {
+export Result<[]const char, TextError> text_to_slice(Text text) = .slice {
     []char chars = text_to_chars(text)?;
     return Ok(chars);
 }

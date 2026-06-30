@@ -45,7 +45,7 @@ i32 main() {
         return Ok;
     }));
 
-    TransferResult transfer = must(resource::scoped<TransferResult>(|| {
+    TransferResult transfer = must(resource::scoped<TransferResult, Error>(|| {
         io::File file = io::open_read(path)?;
         HandleParts old_file = parts_from_handle(unsafe { &file.handle });
         io::File moved = transfer_to_parent(&file)?;

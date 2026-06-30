@@ -9,7 +9,7 @@ struct Add {
     i64 delta;
 }
 
-impl update_value<i64, i64>(*const Add updater, i64 value) {
+impl update_value<i64, i64, SyncError>(*const Add updater, i64 value) {
     Update<i64, i64> next = {
         value: value + updater->delta,
         result: value,

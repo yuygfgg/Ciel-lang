@@ -21,7 +21,7 @@ bool same_text([]const char left, []const char right) {
     return true;
 }
 
-bool is_arg_error(Result<[]const char, Error> value) {
+bool is_arg_error(Result<[]const char, env::EnvError> value) {
     switch (value) {
         case Ok(_):
             return false;

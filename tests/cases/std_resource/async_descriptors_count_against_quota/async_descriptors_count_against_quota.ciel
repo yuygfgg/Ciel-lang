@@ -23,7 +23,7 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void>(limits, || {
+    must(resource::scoped_with_limits<void, Error>(limits, || {
         aio::AsyncFd first = aio::open_async_read(path)?;
         net::SocketAddr addr = net::parse_addr("127.0.0.1:0")?;
         switch (anet::listen_async(addr)) {

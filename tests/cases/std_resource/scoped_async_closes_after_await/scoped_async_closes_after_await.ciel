@@ -41,7 +41,7 @@ i32 main() {
         return Ok;
     }));
 
-    HandleParts parts = must(async::block_on(resource::scoped_async<HandleParts>(async || {
+    HandleParts parts = must(async::block_on(resource::scoped_async<HandleParts, Error>(async || {
         await async_time::sleep_ms(0)?;
         io::File file = io::open_read(env::arg(1)?)?;
         return Ok(parts_from_handle(unsafe { file.handle }));

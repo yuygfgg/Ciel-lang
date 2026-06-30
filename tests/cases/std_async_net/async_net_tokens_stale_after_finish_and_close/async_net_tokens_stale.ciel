@@ -55,7 +55,7 @@ anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-bool connect_finish_is_err(Result<anet::AsyncTcpStream, Error> value) {
+bool connect_finish_is_err(Result<anet::AsyncTcpStream, anet::AsyncNetError> value) {
     switch (value) {
         case Ok(stream):
             _ close_stream_result = anet::close_stream(stream);
@@ -65,7 +65,7 @@ bool connect_finish_is_err(Result<anet::AsyncTcpStream, Error> value) {
     }
 }
 
-bool addr_is_err(Result<net::SocketAddr, Error> value) {
+bool addr_is_err(Result<net::SocketAddr, anet::AsyncNetError> value) {
     switch (value) {
         case Ok(_):
             return false;

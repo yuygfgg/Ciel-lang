@@ -85,7 +85,7 @@ Result<[]const char, Error> required_flag([]const char flag) {
     usize @i = 1;
     while ((i + 1) < len) {
         if (same_text(env::arg(i)?, flag)) {
-            return env::arg(i + 1);
+            return Ok(env::arg(i + 1)?);
         }
         i = i + 2;
     }

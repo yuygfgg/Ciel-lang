@@ -24,7 +24,8 @@ unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
 
 Result<void, Error> post<T: Message>(*const Channel<Envelope<T>> channel, Step<T> step) {
     Envelope<T> envelope = { result: Ok(step) };
-    return channel_send(channel, envelope);
+    channel_send(channel, envelope)?;
+    return Ok;
 }
 
 i64 main() {

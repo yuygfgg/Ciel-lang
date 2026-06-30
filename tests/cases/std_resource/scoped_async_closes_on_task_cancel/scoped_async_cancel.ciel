@@ -40,13 +40,14 @@ io::File file_from_parts(HandleParts parts) {
 }
 
 async Result<void, Error> scoped_worker(async::Sender<HandleParts> sender) {
-    return await resource::scoped_async<void>(async || {
+    await resource::scoped_async<void, Error>(async || {
         []const char path = env::arg(1)?;
         io::File file = io::open_read(path)?;
         async::try_send<HandleParts>(sender, parts_from_handle(unsafe { file.handle }))?;
         await async_time::sleep_ms(10000)?;
         return Ok;
-    });
+    })?;
+    return Ok;
 }
 
 i32 main() {

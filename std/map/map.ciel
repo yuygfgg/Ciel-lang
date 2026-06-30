@@ -57,6 +57,42 @@ export enum PopResult<K, V> {
     Empty,
 }
 
+// Errors produced by hash-map operations.
+export enum MapError {
+    KeyNotFound,
+    CapacityOverflow,
+    Runtime(i64),
+    MessageClone(Error),
+}
+
+// Errors produced while running a hash-map scoped callback.
+export enum MapWithError<E> {
+    Map(MapError),
+    Body(E),
+}
+
+impl format_error(*const MapError error) {
+    switch (*error) {
+        case KeyNotFound:
+            return "hash map key not found";
+        case CapacityOverflow:
+            return "hash map capacity overflow";
+        case Runtime(_):
+            return "hash map runtime error";
+        case MessageClone(inner):
+            return format_error(&inner);
+    }
+}
+
+impl<E: ErrorTrait> format_error(*const MapWithError<E> error) {
+    switch (*error) {
+        case Map(inner):
+            return format_error(&inner);
+        case Body(inner):
+            return format_error(&inner);
+    }
+}
+
 unsafe impl<V: Message> clone_message(*const InsertResult<V> value) {
     switch (*value) {
         case Inserted:
@@ -118,16 +154,8 @@ u64 default_seed() {
     return 0x123456789abcdef as u64;
 }
 
-Error map_missing_error() {
-    return text_error("hash map key not found");
-}
-
-Error map_overflow_error() {
-    return text_error("hash map capacity overflow");
-}
-
-Error map_runtime_error() {
-    return code_error(5);
+MapError map_runtime_error() {
+    return Runtime(5);
 }
 
 ?*void node_to_raw<K, V>(?*Node<K, V> node) {
@@ -170,7 +198,7 @@ void set_bucket_head<K, V>(*HashMap<K, V> map, usize index, ?*Node<K, V> node) {
     buckets[index] = node_to_raw<K, V>(node);
 }
 
-Result<*Node<K, V>, Error> make_node<K, V>(
+Result<*Node<K, V>, MapError> make_node<K, V>(
     u64 hash,
     K key,
     V value,
@@ -190,14 +218,19 @@ Result<*Node<K, V>, Error> make_node<K, V>(
     return Ok(unsafe { raw as *Node<K, V> });
 }
 
-Result<void, Error> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize requested_capacity) {
+Result<void, MapError> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize requested_capacity) {
     usize @capacity = requested_capacity;
     if (capacity < initial_capacity()) {
         capacity = initial_capacity();
     }
 
-    storage::RawStorage<?*void> @next_buckets =
-        unsafe { storage::raw_zeroed<?*void>(capacity)? };
+    storage::RawStorage<?*void> @next_buckets;
+    switch (unsafe { storage::raw_zeroed<?*void>(capacity) }) {
+        case Ok(storage):
+            next_buckets = storage;
+        case Err(_):
+            return Err(map_runtime_error());
+    }
     storage::RawStorage<?*void> old_buckets = unsafe { map->buckets };
     usize old_capacity = unsafe { map->capacity };
     []const ?*void old_slice = unsafe { storage::raw_const_slice<?*void>(&old_buckets) };
@@ -228,7 +261,7 @@ Result<void, Error> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize req
     return Ok;
 }
 
-Result<void, Error> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
+Result<void, MapError> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return hash_map_rehash<K, V>(map, initial_capacity());
@@ -240,15 +273,21 @@ Result<void, Error> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
         return Ok;
     }
     if (capacity > ((~(0 as usize)) / (2 as usize))) {
-        return Err(map_overflow_error());
+        return Err(CapacityOverflow);
     }
     return hash_map_rehash<K, V>(map, capacity * 2);
 }
 
 // Creates an empty actor-local hash map.
-export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>() {
+export Result<HashMap<K, V>, MapError> hash_map_new<K: map_key, V>() {
     usize capacity = initial_capacity();
-    storage::RawStorage<?*void> buckets = unsafe { storage::raw_zeroed<?*void>(capacity)? };
+    storage::RawStorage<?*void> @buckets;
+    switch (unsafe { storage::raw_zeroed<?*void>(capacity) }) {
+        case Ok(storage):
+            buckets = storage;
+        case Err(_):
+            return Err(map_runtime_error());
+    }
     return Ok(unsafe { { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() } });
 }
 
@@ -273,7 +312,7 @@ export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear {
 }
 
 // Returns whether the map currently contains key.
-export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
+export Result<bool, MapError> hash_map_contains_key<K: map_key, V>(
     *const HashMap<K, V> map,
     K key
 ) = .contains_key {
@@ -297,7 +336,7 @@ export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
 }
 
 // Looks up key and returns a cloned Message value when present.
-export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
+export Result<GetResult<V>, MapError> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
 ) = .get {
@@ -314,7 +353,13 @@ export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
         }
         *Node<K, V> node = expect_node<K, V>(current);
         if (node->hash == hash && key_eq(&node->key, &key)) {
-            V copied = clone_message(&node->value)?;
+            V @copied;
+            switch (clone_message(&node->value)) {
+                case Ok(value):
+                    copied = value;
+                case Err(error):
+                    return Err(MessageClone(error));
+            }
             return Ok(GetResult::Found(copied));
         }
         current = node->next;
@@ -322,7 +367,7 @@ export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
 }
 
 // Inserts or replaces a value for key, returning any replaced value.
-export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
+export Result<InsertResult<V>, MapError> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
     V value
@@ -356,7 +401,7 @@ export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
 }
 
 // Removes key and returns the stored value when present.
-export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
+export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
 ) = .remove {
@@ -393,7 +438,7 @@ export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
 }
 
 // Removes and returns an arbitrary entry, or Empty when the map has no entries.
-export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
+export Result<PopResult<K, V>, MapError> hash_map_pop_any<K: map_key, V>(
     *HashMap<K, V> map
 ) = .pop_any {
     usize capacity = unsafe { map->capacity };
@@ -418,25 +463,30 @@ export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
 }
 
 // Gives body scoped mutable access to an existing value for key.
-export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
+export Result<R, MapWithError<E>> hash_map_with<K: map_key, V, R: Message, E: ErrorTrait>(
     *HashMap<K, V> map,
     K key,
-    Result<R, Error> |(*V)| body
+    Result<R, E> |(*V)| body
 ) = .with {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
-        return Err(map_missing_error());
+        return Err(Map(KeyNotFound));
     }
 
     u64 hash = hash_key(&key, unsafe { map->seed });
     ?*Node<K, V> @current = bucket_head<K, V>(map, start_index(hash, capacity));
     while (true) {
         if (current == null) {
-            return Err(map_missing_error());
+            return Err(Map(KeyNotFound));
         }
         *Node<K, V> node = expect_node<K, V>(current);
         if (node->hash == hash && key_eq(&node->key, &key)) {
-            return body(&node->value);
+            switch (body(&node->value)) {
+                case Ok(value):
+                    return Ok(value);
+                case Err(error):
+                    return Err(Body(error));
+            }
         }
         current = node->next;
     }

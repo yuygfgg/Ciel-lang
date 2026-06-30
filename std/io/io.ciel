@@ -32,15 +32,75 @@ export enum OpenMode {
     Append,
 }
 
+// Errors produced by blocking I/O operations.
+export enum IoError {
+    Resource(resource::ResourceError),
+    Runtime(i64),
+    WriteZero,
+}
+
+// Errors produced by scoped blocking I/O helpers.
+export enum IoWithError<E> {
+    Io(IoError),
+    ResourceCleanup(resource::ResourceError),
+    Body(E),
+}
+
+impl format_error(*const IoError error) {
+    switch (*error) {
+        case Resource(inner):
+            return format_error(&inner);
+        case Runtime(_):
+            return "io runtime error";
+        case WriteZero:
+            return "write returned zero";
+    }
+}
+
+impl<E: ErrorTrait> format_error(*const IoWithError<E> error) {
+    switch (*error) {
+        case Io(inner):
+            return format_error(&inner);
+        case ResourceCleanup(inner):
+            return format_error(&inner);
+        case Body(inner):
+            return format_error(&inner);
+    }
+}
+
 // Converts a value to a printable character slice.
 export interface<T> []const char to_string(*const T value);
 
 // Constraint alias for values accepted by formatting and printing helpers.
 export interface printable = to_string;
 
-// Returns the current runtime errno/error code as a standard Error.
-export Error last_error() {
-    return code_error(unsafe { ciel_errno() } as i64);
+// Returns the current runtime errno/error code.
+export IoError last_error() {
+    return Runtime(unsafe { ciel_errno() } as i64);
+}
+
+IoError resource_error(resource::ResourceError error) {
+    return Resource(error);
+}
+
+IoWithError<E> io_scoped_error<E>(resource::ScopedError<IoWithError<E>> error) {
+    switch (error) {
+        case resource::Resource(inner):
+            return ResourceCleanup(inner);
+        case resource::Body(inner):
+            return inner;
+    }
+}
+
+Result<R, IoWithError<E>> io_scoped_result<R, E>(
+    Result<R, resource::ScopedError<IoWithError<E>>> result
+) {
+    switch (result) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(io_scoped_error<E>(error));
+    }
 }
 
 c::c_int open_mode_code(OpenMode mode) {
@@ -73,18 +133,23 @@ File file_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
 }
 
 // Closes file and invalidates copied handle tokens.
-export Result<void, Error> close(File @file) {
-    return unsafe { resource::close_handle_in_place(file_handle_mut(&file)) };
+export Result<void, IoError> close(File @file) {
+    switch (unsafe { resource::close_handle_in_place(file_handle_mut(&file)) }) {
+        case Ok:
+            return Ok;
+        case Err(error):
+            return Err(resource_error(error));
+    }
 }
 
-Result<File, Error> open_file([]const char path, OpenMode mode) {
+Result<File, IoError> open_file([]const char path, OpenMode mode) {
     *char c_path = unsafe { ciel_cstr_from_slice(path.ptr, path.len) };
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_file_open(open_mode_code(mode), c_path, &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(file_from_parts(owner_id, resource_id, generation));
 }
@@ -93,24 +158,24 @@ void close_scoped_file(File @file) {
     unsafe { resource::close_handle_in_place(file_handle_mut(&file)) };
 }
 
-Result<File, Error> stdout_file() {
+Result<File, IoError> stdout_file() {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_file_stdout(&owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(file_from_parts(owner_id, resource_id, generation));
 }
 
-Result<File, Error> stderr_file() {
+Result<File, IoError> stderr_file() {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_file_stderr(&owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(file_from_parts(owner_id, resource_id, generation));
 }
@@ -132,58 +197,69 @@ impl transfer_to_current(*const File value) {
 }
 
 // Opens path for reading in the current resource owner.
-export Result<File, Error> open_read([]const char path) {
+export Result<File, IoError> open_read([]const char path) {
     return open_file(path, Read);
 }
 
 // Opens path for writing/truncation in the current resource owner.
-export Result<File, Error> create([]const char path) {
+export Result<File, IoError> create([]const char path) {
     return open_file(path, Write);
 }
 
 // Opens path for appending in the current resource owner.
-export Result<File, Error> append([]const char path) {
+export Result<File, IoError> append([]const char path) {
     return open_file(path, Append);
 }
 
 // Opens path in mode, passes a scoped File token to body, and closes on return.
-export Result<R, Error> with_open<R>(
+export Result<R, IoWithError<E>> with_open<R, E: ErrorTrait>(
     []const char path,
     OpenMode mode,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_open {
-    return resource::scoped<R>(|| {
-        File file = open_file(path, mode)?;
-        return body(file);
-    });
+    return io_scoped_result<R, E>(resource::scoped<R, IoWithError<E>>(|| {
+        File @file;
+        switch (open_file(path, mode)) {
+            case Ok(value):
+                file = value;
+            case Err(error):
+                return Err(Io(error));
+        }
+        switch (body(file)) {
+            case Ok(value):
+                return Ok(value);
+            case Err(error):
+                return Err(Body(error));
+        }
+    }));
 }
 
 // Opens path for reading and closes it after body returns.
-export Result<R, Error> with_open_read<R>(
+export Result<R, IoWithError<E>> with_open_read<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_open_read {
     return with_open(path, Read, body);
 }
 
 // Opens path for writing/truncation and closes it after body returns.
-export Result<R, Error> with_create<R>(
+export Result<R, IoWithError<E>> with_create<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_create {
     return with_open(path, Write, body);
 }
 
 // Opens path for appending and closes it after body returns.
-export Result<R, Error> with_append<R>(
+export Result<R, IoWithError<E>> with_append<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_append {
     return with_open(path, Append, body);
 }
 
 // Reads up to out.len bytes from a scoped File token.
-export Result<usize, Error> read(*const File file, []u8 out) = .read {
+export Result<usize, IoError> read(*const File file, []u8 out) = .read {
     *const resource::Handle handle = file_handle(file);
     c::c_ssize_t n = unsafe {
         ciel_file_read(
@@ -201,7 +277,7 @@ export Result<usize, Error> read(*const File file, []u8 out) = .read {
 }
 
 // Writes up to data.len bytes to a scoped File token.
-export Result<usize, Error> write(*const File file, []const u8 data) = .write {
+export Result<usize, IoError> write(*const File file, []const u8 data) = .write {
     *const resource::Handle handle = file_handle(file);
     c::c_ssize_t n = unsafe {
         ciel_file_write(
@@ -219,7 +295,7 @@ export Result<usize, Error> write(*const File file, []const u8 data) = .write {
 }
 
 // Writes up to text.len bytes to a scoped File token without retrying short writes.
-export Result<usize, Error> write_text_once(*const File file, []const char text) = .write_text_once {
+export Result<usize, IoError> write_text_once(*const File file, []const char text) = .write_text_once {
     *const resource::Handle handle = file_handle(file);
     c::c_ssize_t n = unsafe {
         ciel_file_write(
@@ -237,12 +313,12 @@ export Result<usize, Error> write_text_once(*const File file, []const char text)
 }
 
 // Writes the full byte slice, retrying short writes until complete.
-export Result<void, Error> write_all(*const File file, []const u8 data) = .write_all {
+export Result<void, IoError> write_all(*const File file, []const u8 data) = .write_all {
     usize @offset = 0;
     while (offset < data.len) {
         usize n = write(file, data[offset..])?;
         if (n == 0) {
-            return Err(text_error("write returned zero"));
+            return Err(WriteZero);
         }
         offset = offset + n;
     }
@@ -250,12 +326,12 @@ export Result<void, Error> write_all(*const File file, []const u8 data) = .write
 }
 
 // Writes the full character slice, retrying short writes until complete.
-export Result<void, Error> write_text(*const File file, []const char text) = .write_text {
+export Result<void, IoError> write_text(*const File file, []const char text) = .write_text {
     usize @offset = 0;
     while (offset < text.len) {
         usize n = write_text_once(file, text[offset..])?;
         if (n == 0) {
-            return Err(text_error("write returned zero"));
+            return Err(WriteZero);
         }
         offset = offset + n;
     }
@@ -341,13 +417,13 @@ impl to_string(*const Error value) {
 }
 
 // Writes a printable value to a scoped File token.
-export Result<void, Error> write_value<T: printable>(*const File file, T value) = .write_value {
+export Result<void, IoError> write_value<T: printable>(*const File file, T value) = .write_value {
     T local = value;
     return write_text(file, to_string(&local));
 }
 
 // Writes fmt to file, replacing each "{}" placeholder with the next printable value.
-export Result<void, Error> write_format(*const File file, []const char fmt, []printable values) = .write_format {
+export Result<void, IoError> write_format(*const File file, []const char fmt, []printable values) = .write_format {
     usize @start = 0;
     usize @i = 0;
     usize @value_index = 0;
@@ -373,52 +449,52 @@ export Result<void, Error> write_format(*const File file, []const char fmt, []pr
 }
 
 // Writes a printable value to stdout.
-export Result<void, Error> print_value<T: printable>(T value) {
+export Result<void, IoError> print_value<T: printable>(T value) {
     File file = stdout_file()?;
     return write_value(&file, value);
 }
 
 // Writes a printable value to stderr.
-export Result<void, Error> eprint_value<T: printable>(T value) {
+export Result<void, IoError> eprint_value<T: printable>(T value) {
     File file = stderr_file()?;
     return write_value(&file, value);
 }
 
 // Writes a printable value plus newline to stdout.
-export Result<void, Error> println_value<T: printable>(T value) {
+export Result<void, IoError> println_value<T: printable>(T value) {
     File file = stdout_file()?;
     write_value(&file, value)?;
     return write_text(&file, "\n");
 }
 
 // Writes a printable value plus newline to stderr.
-export Result<void, Error> eprintln_value<T: printable>(T value) {
+export Result<void, IoError> eprintln_value<T: printable>(T value) {
     File file = stderr_file()?;
     write_value(&file, value)?;
     return write_text(&file, "\n");
 }
 
 // Writes a formatted message to stdout.
-export Result<void, Error> print([]const char fmt, []printable values) {
+export Result<void, IoError> print([]const char fmt, []printable values) {
     File file = stdout_file()?;
     return write_format(&file, fmt, values);
 }
 
 // Writes a formatted message to stderr.
-export Result<void, Error> eprint([]const char fmt, []printable values) {
+export Result<void, IoError> eprint([]const char fmt, []printable values) {
     File file = stderr_file()?;
     return write_format(&file, fmt, values);
 }
 
 // Writes a formatted message plus newline to stdout.
-export Result<void, Error> println([]const char fmt, []printable values) {
+export Result<void, IoError> println([]const char fmt, []printable values) {
     File file = stdout_file()?;
     write_format(&file, fmt, values)?;
     return write_text(&file, "\n");
 }
 
 // Writes a formatted message plus newline to stderr.
-export Result<void, Error> eprintln([]const char fmt, []printable values) {
+export Result<void, IoError> eprintln([]const char fmt, []printable values) {
     File file = stderr_file()?;
     write_format(&file, fmt, values)?;
     return write_text(&file, "\n");

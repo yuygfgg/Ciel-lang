@@ -17,7 +17,7 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpSplit halves = anet::split(client)?;
     anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
 
-    Result<anet::Bytes, Error> picked = await select {
+    Result<anet::Bytes, anet::AsyncNetError> picked = await select {
         case first = anet::read_buffered(&reader, 1): first;
         case second = anet::read_buffered(&reader, 1): second;
     };

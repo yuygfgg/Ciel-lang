@@ -9,13 +9,13 @@ import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> tag_stream(Result<anet::AsyncTcpStream, Error> result, usize value) {
+Result<usize, Error> tag_stream(Result<anet::AsyncTcpStream, anet::AsyncNetError> result, usize value) {
     anet::AsyncTcpStream stream = result?;
     anet::close_stream(stream)?;
     return Ok(value);
 }
 
-Result<usize, Error> tag_sleep(Result<void, Error> result, usize value) {
+Result<usize, Error> tag_sleep(Result<void, async::AsyncError> result, usize value) {
     result?;
     return Ok(value);
 }

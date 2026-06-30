@@ -33,7 +33,7 @@ net::TcpListener listener_from_parts(HandleParts parts) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-bool is_void_err(Result<void, Error> result) {
+bool is_void_err(Result<void, net::NetError> result) {
     switch (result) {
         case Ok(_):
             return false;
@@ -42,7 +42,7 @@ bool is_void_err(Result<void, Error> result) {
     }
 }
 
-bool is_stream_err(Result<net::TcpStream, Error> result) {
+bool is_stream_err(Result<net::TcpStream, net::NetError> result) {
     switch (result) {
         case Ok(_):
             return false;

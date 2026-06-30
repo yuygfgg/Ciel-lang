@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: cannot erase resource-affine type `FileError` into `Error`
+
+import /std/io as io;
+import /std/result;
+
+resource struct FileError {
+    io::File file;
+}
+
+impl format_error(*const FileError error) {
+    return "file error";
+}
+
+Result<void, FileError> fail(io::File @file) {
+    return Err({ file: file });
+}
+
+Result<void, Error> drive(io::File @file) {
+    fail(file)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

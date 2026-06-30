@@ -1,31 +1,41 @@
 import /std/result;
 import /std/meta as meta;
 
+// Errors produced by fixed-width codec operations.
+export enum CodecError {
+    OutputTooShort,
+    InputTooShort,
+    UnsupportedIntegerWidth,
+}
+
+impl format_error(*const CodecError error) {
+    switch (*error) {
+        case OutputTooShort:
+            return "codec output buffer too short";
+        case InputTooShort:
+            return "codec input buffer too short";
+        case UnsupportedIntegerWidth:
+            return "unsupported codec integer width";
+    }
+}
+
 // Returns the encoded byte length for a fixed-width integer-like value.
 export interface<T> usize encoded_len(T value);
 
 // Writes a value in big-endian byte order into an existing output slice.
-export interface<T> Result<void, Error> put_be([]u8 out, T value);
+export interface<T> Result<void, CodecError> put_be([]u8 out, T value);
 
 // Writes a value in little-endian byte order into an existing output slice.
-export interface<T> Result<void, Error> put_le([]u8 out, T value);
+export interface<T> Result<void, CodecError> put_le([]u8 out, T value);
 
 // Reads a value of T from big-endian bytes using a type witness.
-export interface<T> Result<T, Error> get_be(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, CodecError> get_be(meta::Type<T> tag, []const u8 data);
 
 // Reads a value of T from little-endian bytes using a type witness.
-export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
-
-Error short_output_error() {
-    return text_error("codec output buffer too short");
-}
-
-Error short_input_error() {
-    return text_error("codec input buffer too short");
-}
+export interface<T> Result<T, CodecError> get_le(meta::Type<T> tag, []const u8 data);
 
 // Allocates the fixed-width big-endian encoding for value.
-export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value) {
+export Result<[]u8, CodecError> encode_be<T: encoded_len + put_be>(T value) {
     usize len = encoded_len(value);
     if (len == 1) {
         [1]u8 @out = [0;];
@@ -47,11 +57,11 @@ export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value) {
         put_be(out[..], value)?;
         return Ok(out[..]);
     }
-    return Err(text_error("unsupported codec integer width"));
+    return Err(UnsupportedIntegerWidth);
 }
 
 // Allocates the fixed-width little-endian encoding for value.
-export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value) {
+export Result<[]u8, CodecError> encode_le<T: encoded_len + put_le>(T value) {
     usize len = encoded_len(value);
     if (len == 1) {
         [1]u8 @out = [0;];
@@ -73,7 +83,7 @@ export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value) {
         put_le(out[..], value)?;
         return Ok(out[..]);
     }
-    return Err(text_error("unsupported codec integer width"));
+    return Err(UnsupportedIntegerWidth);
 }
 
 impl encoded_len(u8 value) {
@@ -98,7 +108,7 @@ impl encoded_len(usize value) {
 
 impl put_be([]u8 out, u8 value) {
     if (out.len < 1) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = value;
     return Ok;
@@ -106,7 +116,7 @@ impl put_be([]u8 out, u8 value) {
 
 impl put_le([]u8 out, u8 value) {
     if (out.len < 1) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = value;
     return Ok;
@@ -114,21 +124,21 @@ impl put_le([]u8 out, u8 value) {
 
 impl get_be(meta::Type<u8> tag, []const u8 data) {
     if (data.len < 1) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(data[0]);
 }
 
 impl get_le(meta::Type<u8> tag, []const u8 data) {
     if (data.len < 1) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(data[0]);
 }
 
 impl put_be([]u8 out, u16 value) {
     if (out.len < 2) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value >> (8 as u8)) as u8;
     out[1] = (value & (0xff as u16)) as u8;
@@ -137,7 +147,7 @@ impl put_be([]u8 out, u16 value) {
 
 impl put_le([]u8 out, u16 value) {
     if (out.len < 2) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value & (0xff as u16)) as u8;
     out[1] = (value >> (8 as u8)) as u8;
@@ -146,21 +156,21 @@ impl put_le([]u8 out, u16 value) {
 
 impl get_be(meta::Type<u16> tag, []const u8 data) {
     if (data.len < 2) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(((data[0] as u16) << (8 as u8)) | (data[1] as u16));
 }
 
 impl get_le(meta::Type<u16> tag, []const u8 data) {
     if (data.len < 2) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(((data[1] as u16) << (8 as u8)) | (data[0] as u16));
 }
 
 impl put_be([]u8 out, u32 value) {
     if (out.len < 4) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value >> (24 as u8)) as u8;
     out[1] = ((value >> (16 as u8)) & (0xff as u32)) as u8;
@@ -171,7 +181,7 @@ impl put_be([]u8 out, u32 value) {
 
 impl put_le([]u8 out, u32 value) {
     if (out.len < 4) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value & (0xff as u32)) as u8;
     out[1] = ((value >> (8 as u8)) & (0xff as u32)) as u8;
@@ -182,7 +192,7 @@ impl put_le([]u8 out, u32 value) {
 
 impl get_be(meta::Type<u32> tag, []const u8 data) {
     if (data.len < 4) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(
         ((data[0] as u32) << (24 as u8)) |
@@ -194,7 +204,7 @@ impl get_be(meta::Type<u32> tag, []const u8 data) {
 
 impl get_le(meta::Type<u32> tag, []const u8 data) {
     if (data.len < 4) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(
         ((data[3] as u32) << (24 as u8)) |
@@ -206,7 +216,7 @@ impl get_le(meta::Type<u32> tag, []const u8 data) {
 
 impl put_be([]u8 out, u64 value) {
     if (out.len < 8) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value >> (56 as u8)) as u8;
     out[1] = ((value >> (48 as u8)) & (0xff as u64)) as u8;
@@ -221,7 +231,7 @@ impl put_be([]u8 out, u64 value) {
 
 impl put_le([]u8 out, u64 value) {
     if (out.len < 8) {
-        return Err(short_output_error());
+        return Err(OutputTooShort);
     }
     out[0] = (value & (0xff as u64)) as u8;
     out[1] = ((value >> (8 as u8)) & (0xff as u64)) as u8;
@@ -236,7 +246,7 @@ impl put_le([]u8 out, u64 value) {
 
 impl get_be(meta::Type<u64> tag, []const u8 data) {
     if (data.len < 8) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(
         ((data[0] as u64) << (56 as u8)) |
@@ -252,7 +262,7 @@ impl get_be(meta::Type<u64> tag, []const u8 data) {
 
 impl get_le(meta::Type<u64> tag, []const u8 data) {
     if (data.len < 8) {
-        return Err(short_input_error());
+        return Err(InputTooShort);
     }
     return Ok(
         ((data[7] as u64) << (56 as u8)) |

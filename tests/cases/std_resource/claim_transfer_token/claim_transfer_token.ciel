@@ -64,7 +64,7 @@ i32 main() {
     }));
 
     resource::TransferToken token =
-        must(resource::scoped<resource::TransferToken>(|| {
+        must(resource::scoped<resource::TransferToken, Error>(|| {
             io::File file = io::open_read(path)?;
             return Ok(resource::transfer_handle_to_parent_token(
                 unsafe { file.handle }
@@ -72,7 +72,7 @@ i32 main() {
         }));
     HandleParts stale_parts = parts_from_handle(unsafe { &token.handle });
 
-    must(resource::scoped<void>(|| {
+    must(resource::scoped<void, Error>(|| {
         claim_and_read(token)?;
         return Ok;
     }));

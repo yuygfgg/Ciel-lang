@@ -827,20 +827,20 @@ export interface Abortable = abort_future;
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
 export T block_on<T, A: Awaitable<T> + Abortable>(A future);
-export Future<Result<Out, Error>> future_from_op<Op, Out>(Op op);
+export Future<Result<Out, AsyncError>> future_from_op<Op, Out>(Op op);
 
-export Error timeout_error();
-export Error channel_closed_error();
+export AsyncError timeout_error();
+export AsyncError channel_closed_error();
 
 export struct Task<T> {
     *void handle;
 }
 
-export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
+export Result<Task<T>, AsyncError> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
     A body
 );
-export Result<void, Error> cancel<T>(*const Task<T> task);
-export Result<bool, Error> is_finished<T>(*const Task<T> task);
+export Result<void, AsyncError> cancel<T>(*const Task<T> task);
+export Result<bool, AsyncError> is_finished<T>(*const Task<T> task);
 
 export struct Sender<T> {
     *void handle;
@@ -859,26 +859,35 @@ export struct ChannelPair<T> {
     Receiver<T> receiver;
 }
 
-export Result<ChannelPair<T>, Error> channel<T>(usize capacity);
-export async Result<void, Error> send<T>(Sender<T> sender, T value);
-export Result<void, Error> try_send<T>(Sender<T> sender, T value);
-export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender);
-export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value);
-export async Result<T, Error> recv<T>(Receiver<T> receiver);
-export Result<void, Error> close<T>(Sender<T> sender);
-export Result<void, Error> close_receiver<T>(Receiver<T> receiver);
+export Result<ChannelPair<T>, AsyncError> channel<T>(usize capacity);
+export async Result<void, AsyncError> send<T>(Sender<T> sender, T value);
+export Result<void, AsyncError> try_send<T>(Sender<T> sender, T value);
+export async Result<SendPermit<T>, AsyncError> reserve<T>(Sender<T> sender);
+export Result<void, AsyncError> permit_send<T>(SendPermit<T> permit, T value);
+export async Result<T, AsyncError> recv<T>(Receiver<T> receiver);
+export Result<void, AsyncError> close<T>(Sender<T> sender);
+export Result<void, AsyncError> close_receiver<T>(Receiver<T> receiver);
 
 export struct TaskGroup<T> {
     *void handle;
 }
 
-export Result<TaskGroup<T>, Error> task_group<T>();
-export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task);
+export Result<TaskGroup<T>, AsyncError> task_group<T>();
+export Result<void, AsyncError> group_add<T>(*const TaskGroup<T> group, Task<T> task);
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group);
-export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group);
-export Result<void, Error> group_close<T>(*const TaskGroup<T> group);
+export Result<void, AsyncError> group_cancel_all<T>(*const TaskGroup<T> group);
+export Result<void, AsyncError> group_close<T>(*const TaskGroup<T> group);
+export enum TaskGroupError<E> {
+    TaskGroupAsync(AsyncError),
+    TaskGroupBody(E),
+    TaskGroupCleanup(AsyncError),
+    TaskGroupBodyCleanup(E, AsyncError),
+}
+export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
+    Future<Result<R, E>> |(*const TaskGroup<T>)| body
+);
 
-export async Result<Out, Error> timeout<Out, A: SelectableFuture<Out>>(
+export async Result<Out, AsyncError> timeout<Out, A: SelectableFuture<Out>>(
     A future,
     u64 ms
 );
@@ -896,9 +905,17 @@ Task and channel handles are trusted synchronized handles. Safe code can copy
 or pass them through exported APIs, but cannot forge handles, dereference
 runtime state, or reach into another task's async frame.
 
-Async-specific failures use ordinary `Error` values such as `timeout_error` and
-`channel_closed_error`, so `?` propagation stays uniform across task await,
-channel receive, timeout, and cancellation paths.
+Async-specific primitive failures use `AsyncError` values such as
+`timeout_error` and `channel_closed_error`. User task bodies still return
+`Result<T, Error>`, so the compiler erases `AsyncError` into an
+application-boundary `Error` when `?`, `Err(error)`, or a function argument is
+checked against an expected `Error`.
+
+`with_task_group` is generic over the body error type. Group creation and
+normal cleanup failures are reported through `TaskGroupAsync` or
+`TaskGroupCleanup`; callback failures are reported as `TaskGroupBody(E)`, and a
+body failure followed by cleanup failure is represented as
+`TaskGroupBodyCleanup(E, AsyncError)`.
 
 `awaitable_future`, `cancel_safe_marker`, and `abort_future` are for the
 compiler, stdlib, and advanced generic abstractions. Ordinary async code
@@ -919,8 +936,8 @@ move owned `Bytes` into futures and return owned buffers in results.
 `/std/async_io` exposes awaitable file-descriptor operations:
 
 ```ciel
-export async Result<Bytes, Error> read_bytes(AsyncFd fd, usize max_len);
-export async Result<usize, Error> write_bytes(AsyncFd fd, Bytes data);
+export async Result<Bytes, AsyncIoError> read_bytes(AsyncFd fd, usize max_len);
+export async Result<usize, AsyncIoError> write_bytes(AsyncFd fd, Bytes data);
 ```
 
 The high-level async functions are the normal API. Low-level `*_async`,
@@ -937,21 +954,21 @@ preserve state.
 `/std/async_net` exposes awaitable TCP operations:
 
 ```ciel
-export async Result<AsyncTcpStream, Error> accept(AsyncTcpListener listener);
-export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
-export async Result<AsyncTcpStream, Error> connect_timeout(
+export async Result<AsyncTcpStream, AsyncNetError> accept(AsyncTcpListener listener);
+export async Result<AsyncTcpStream, AsyncNetError> connect(net::SocketAddr addr);
+export async Result<AsyncTcpStream, AsyncNetError> connect_timeout(
     net::SocketAddr addr,
     u64 ms
 );
-export async Result<Bytes, Error> read(AsyncTcpStream stream, usize max_len);
-export async Result<ReadIntoResult, Error> read_into(
+export async Result<Bytes, AsyncNetError> read(AsyncTcpStream stream, usize max_len);
+export async Result<ReadIntoResult, AsyncNetError> read_into(
     AsyncTcpStream stream,
     Bytes buffer
 );
-export async Result<usize, Error> write(AsyncTcpStream stream, Bytes data);
-export async Result<usize, Error> write_half(AsyncTcpWriteHalf half, Bytes data);
-export async Result<void, Error> write_all(AsyncTcpStream stream, Bytes data);
-export async Result<void, Error> write_all_half(
+export async Result<usize, AsyncNetError> write(AsyncTcpStream stream, Bytes data);
+export async Result<usize, AsyncNetError> write_half(AsyncTcpWriteHalf half, Bytes data);
+export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream stream, Bytes data);
+export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(
     AsyncTcpWriteHalf half,
     Bytes data
 );
@@ -998,19 +1015,19 @@ export struct BufferedStreamReader {
     *void handle;
 }
 
-export Result<AsyncTcpSplit, Error> split(AsyncTcpStream stream);
-export Result<BufferedStreamReader, Error> buffered_reader(
+export Result<AsyncTcpSplit, AsyncNetError> split(AsyncTcpStream stream);
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader(
     AsyncTcpReadHalf half,
     usize capacity
 );
-export Result<AsyncTcpReadHalf, Error> into_read_half(
+export Result<AsyncTcpReadHalf, AsyncNetError> into_read_half(
     BufferedStreamReader reader
 );
-export async Result<Bytes, Error> read_buffered(
+export async Result<Bytes, AsyncNetError> read_buffered(
     BufferedStreamReader reader,
     usize max_len
 );
-export async Result<Bytes, Error> read_exact_buffered(
+export async Result<Bytes, AsyncNetError> read_exact_buffered(
     BufferedStreamReader reader,
     usize len
 );
@@ -1046,7 +1063,7 @@ the buffered reader helpers.
 `/std/async_time` exposes awaitable timers:
 
 ```ciel
-export async Result<void, Error> sleep_ms(u64 ms);
+export async Result<void, AsyncError> sleep_ms(u64 ms);
 ```
 
 `sleep_ms` is `CancelSafe + Abortable`. Timeouts are expressed through future

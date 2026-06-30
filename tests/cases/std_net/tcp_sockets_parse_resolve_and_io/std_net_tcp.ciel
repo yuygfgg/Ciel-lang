@@ -24,7 +24,7 @@ bool is_ip6(net::AddressFamily family) {
     return false;
 }
 
-bool is_addr_err(Result<net::SocketAddr, Error> result) {
+bool is_addr_err(Result<net::SocketAddr, net::NetError> result) {
     switch (result) {
         case Ok(_):
             return false;
@@ -142,7 +142,7 @@ Result<i32, Error> with_api_body(net::TcpListener listener) {
 }
 
 i32 test_with_apis() {
-    i32 result = must(net::with_tcp_listen<i32>(must(net::parse_addr("127.0.0.1:0")), with_api_body));
+    i32 result = must(net::with_tcp_listen<i32, Error>(must(net::parse_addr("127.0.0.1:0")), with_api_body));
     if (result != 0) {
         return result;
     }

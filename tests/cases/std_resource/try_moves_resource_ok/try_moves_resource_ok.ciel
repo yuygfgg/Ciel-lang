@@ -6,7 +6,7 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-Result<io::File, Error> pass_through(Result<io::File, Error> input) {
+Result<io::File, io::IoError> pass_through(Result<io::File, io::IoError> input) {
     io::File file = input?;
     return Ok(file);
 }

@@ -33,7 +33,7 @@ atime::AsyncSleep sleep_from_parts(HandleParts parts) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-bool is_err(Result<void, Error> value) {
+bool is_err(Result<void, atime::AsyncTimeError> value) {
     switch (value) {
         case Ok(_):
             return false;

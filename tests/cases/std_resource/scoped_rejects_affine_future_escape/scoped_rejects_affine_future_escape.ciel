@@ -9,13 +9,15 @@ import /std/resource as resource;
 import /std/result;
 
 async Result<io::File, Error> open_later([]const char path) {
-    return io::open_read(path);
+    io::File file = io::open_read(path)?;
+    return Ok(file);
 }
 
 Result<async::Future<Result<io::File, Error>>, Error> future_from_child_owner([]const char path) {
-    return resource::scoped<async::Future<Result<io::File, Error>>>(|| {
+    async::Future<Result<io::File, Error>> future = resource::scoped<async::Future<Result<io::File, Error>>, Error>(|| {
         return Ok(open_later(path));
-    });
+    })?;
+    return Ok(future);
 }
 
 i32 main() {

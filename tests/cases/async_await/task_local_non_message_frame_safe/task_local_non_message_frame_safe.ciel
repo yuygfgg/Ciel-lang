@@ -9,7 +9,7 @@ import /std/panic;
 import /std/result;
 
 struct LocalState {
-    async::Future<Result<void, Error>> pending;
+    async::Future<Result<void, async::AsyncError>> pending;
     usize value;
 }
 

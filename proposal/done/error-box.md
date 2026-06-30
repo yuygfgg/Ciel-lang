@@ -151,24 +151,24 @@ This proposal adds one special standard-library rule:
 Result<T, E> ? inside Result<U, Error>
 
 Allowed when E implements ErrorTrait.
-On Err(e), return Err(error_box(e)).
+On Err(e), return Err(<compiler error-box coercion>(e)).
 ```
 
 Conceptual lowering:
 
-```ciel
+```text
 Result<T, E> temp = expr;
 switch (temp) {
     case Ok(value):
         value
     case Err(error):
-        return Err(error_box(error));
+        return Err(<compiler error-box coercion>(error));
 }
 ```
 
-The call to `error_box(error)` is type checked like an ordinary function call.
-Its parameter expects `ErrorTrait`, so the existing dynamic interface conversion
-performs the owned erasure from `E` to `ErrorTrait`.
+The compiler coercion uses the same owned dynamic-interface erasure as an
+ordinary `ErrorTrait` conversion, but source code does not need to call
+`error_box()` in `Err(...)` paths.
 
 Example:
 
@@ -331,21 +331,18 @@ through `error_box`.
 
 Conceptual Ciel lowering:
 
-```ciel
+```text
 Result<T, E> temp = inner;
 switch (temp) {
     case Ok(value):
         value
     case Err(error):
-        return Err(error_box(error));
+        return Err(<compiler error-box coercion>(error));
 }
 ```
 
-The compiler can implement this either by:
-
-1. representing the inserted `error_box(error)` as a typed expression in THIR,
-   then reusing normal call lowering; or
-2. emitting a specialized C helper call after monomorphization.
+The compiler represents this as a dedicated typed IR node and emits the same
+dynamic interface conversion used by `error_box(ErrorTrait error)`.
 
 The first option is preferable because it keeps dynamic interface coercion,
 generic instantiation, and source diagnostics on the ordinary expression path.
@@ -395,8 +392,8 @@ in this proposal. It is deferred to metaprogramming.
 2. Add `format_error` implementations for the current standard error values.
 3. Teach `?` type checking to accept `E: ErrorTrait` when the enclosing return
    error type is `/std/error.Error`.
-4. Represent the inserted `error_box(error)` in typed IR or add a dedicated
-   lowering path that still reuses dynamic interface conversion.
+4. Represent the inserted error-box coercion in typed IR and reuse dynamic
+   interface conversion.
 5. Add fixtures for:
    - exact error propagation still working;
    - concrete error propagation into `Error`;

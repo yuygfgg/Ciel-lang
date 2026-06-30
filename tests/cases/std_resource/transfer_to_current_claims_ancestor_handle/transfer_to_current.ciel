@@ -63,13 +63,14 @@ i32 main() {
         return Ok;
     }));
 
-    io::File parent_file = must(resource::scoped<io::File>(|| {
+    io::File parent_file = must(resource::scoped<io::File, Error>(|| {
         io::File file = io::open_read(path)?;
-        return resource::transfer_to_parent(&file);
+        io::File moved = resource::transfer_to_parent(&file)?;
+        return Ok(moved);
     }));
     HandleParts parent_parts = parts_from_handle(unsafe { &parent_file.handle });
 
-    must(resource::scoped<void>(|| {
+    must(resource::scoped<void, Error>(|| {
         claim_and_read(parent_parts)?;
         return Ok;
     }));

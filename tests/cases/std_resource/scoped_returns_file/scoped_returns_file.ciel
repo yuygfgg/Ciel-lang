@@ -8,10 +8,11 @@ import /std/resource as resource;
 import /std/result;
 
 Result<io::File, Error> open_in_child_owner([]const char path) {
-    return resource::scoped<io::File>(|| {
+    io::File file = resource::scoped<io::File>(|| {
         io::File file = io::open_read(path)?;
         return Ok(file);
-    });
+    })?;
+    return Ok(file);
 }
 
 i32 main() {

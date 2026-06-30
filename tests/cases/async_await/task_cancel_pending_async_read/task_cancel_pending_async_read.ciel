@@ -26,7 +26,7 @@ Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
     }
     *write_fd_out = fds[1];
     fd::RawFd raw = unsafe { fd::from_raw_fd(fds[0]) };
-    return unsafe { aio::async_from_raw_fd(raw) };
+    return Ok(unsafe { aio::async_from_raw_fd(raw)? });
 }
 
 async Result<usize, Error> read_until_cancelled(aio::AsyncFd read_fd) {

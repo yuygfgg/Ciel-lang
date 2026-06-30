@@ -83,5 +83,6 @@ import /std/time as sync_time;
 
 // Compatibility wrapper for blocking sleep exposed by the standard facade.
 export Result<void, Error> sleep_ms(u64 ms) {
-    return sync_time::sleep_ms(ms);
+    sync_time::sleep_ms(ms)?;
+    return Ok;
 }

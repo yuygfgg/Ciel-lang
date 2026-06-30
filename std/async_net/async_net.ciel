@@ -169,6 +169,33 @@ export struct ReadIntoResult {
     usize read;
 }
 
+// Errors produced by async TCP operation-token APIs.
+export enum AsyncNetError {
+    Runtime(i64),
+    Bytes(BytesError),
+    MessageClone(Error),
+    Async(AsyncError),
+    Timeout,
+    WriteZero,
+}
+
+impl format_error(*const AsyncNetError error) {
+    switch (*error) {
+        case Runtime(_):
+            return "async network runtime error";
+        case Bytes(inner):
+            return format_error(&inner);
+        case MessageClone(inner):
+            return format_error(&inner);
+        case Async(inner):
+            return format_error(&inner);
+        case Timeout:
+            return "async network timeout";
+        case WriteZero:
+            return "tcp write returned zero";
+    }
+}
+
 unsafe impl cancel_safe_marker(*const AsyncAccept op) {
     return true;
 }
@@ -190,12 +217,50 @@ unsafe impl share_handle_marker(*const ReadIntoResult value) {
     return true;
 }
 
-Error runtime_error() {
+AsyncNetError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };
     if ((code as i64) == 0) {
-        return code_error(5);
+        return Runtime(5);
     }
-    return code_error(code as i64);
+    return Runtime(code as i64);
+}
+
+Result<Out, AsyncNetError> async_result<Out>(Result<Out, AsyncError> result) {
+    switch (result) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(Async(error));
+    }
+}
+
+Result<Out, AsyncNetError> timeout_result<Out>(Result<Result<Out, AsyncNetError>, AsyncError> result) {
+    switch (result) {
+        case Ok(value):
+            return value;
+        case Err(error):
+            switch (error) {
+                case Timeout:
+                    return Err(Timeout);
+                case Runtime(_):
+                    return Err(Async(error));
+                case ChannelClosed:
+                    return Err(Async(error));
+                case MessageClone(_):
+                    return Err(Async(error));
+                case Operation(_):
+                    return Err(Async(error));
+            }
+    }
+}
+
+Result<Bytes, AsyncNetError> bytes_value_result(Result<Bytes, BytesError> result) {
+    switch (result) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(AsyncNetError::Bytes(error));
+    }
 }
 
 *CielSocketAddr raw_addr(net::SocketAddr addr) {
@@ -514,23 +579,23 @@ impl transfer_to_current(*const AsyncBufferedRead value) {
     return Ok(buffered_read_from_handle(handle));
 }
 
-Result<resource::Handle, Error> register_async_fd(*CielAsyncFd raw) {
+Result<resource::Handle, AsyncNetError> register_async_fd(*CielAsyncFd raw) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_resource_register_async_fd_handle(raw, &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(handle_from_parts(owner_id, resource_id, generation));
 }
 
-Result<resource::Handle, Error> register_async_fd_shared(*CielAsyncFd raw) {
+Result<resource::Handle, AsyncNetError> register_async_fd_shared(*CielAsyncFd raw) {
     c::c_int retain_rc = unsafe { ciel_async_fd_retain(raw) };
     if ((retain_rc as i64) != 0) {
-        return Err(code_error(retain_rc as i64));
+        return Err(Runtime(retain_rc as i64));
     }
-    Result<resource::Handle, Error> result = register_async_fd(raw);
+    Result<resource::Handle, AsyncNetError> result = register_async_fd(raw);
     switch (result) {
         case Ok(handle):
             return Ok(handle);
@@ -540,24 +605,24 @@ Result<resource::Handle, Error> register_async_fd_shared(*CielAsyncFd raw) {
     }
 }
 
-Result<resource::Handle, Error> register_async_listener(*CielAsyncTcpListener raw) {
+Result<resource::Handle, AsyncNetError> register_async_listener(*CielAsyncTcpListener raw) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_resource_register_async_listener_handle(raw, &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(handle_from_parts(owner_id, resource_id, generation));
 }
 
-Result<resource::Handle, Error> register_async_op(*CielAsyncOp raw) {
+Result<resource::Handle, AsyncNetError> register_async_op(*CielAsyncOp raw) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
     c::c_int rc = unsafe { ciel_resource_register_async_op_handle(raw, &owner_id, &resource_id, &generation) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok(handle_from_parts(owner_id, resource_id, generation));
 }
@@ -576,8 +641,8 @@ c::c_int close_handle(*resource::Handle handle) {
     return rc;
 }
 
-Result<resource::Handle, Error> register_async_fd_owned(*CielAsyncFd raw) {
-    Result<resource::Handle, Error> result = register_async_fd(raw);
+Result<resource::Handle, AsyncNetError> register_async_fd_owned(*CielAsyncFd raw) {
+    Result<resource::Handle, AsyncNetError> result = register_async_fd(raw);
     switch (result) {
         case Ok(handle):
             return Ok(handle);
@@ -587,8 +652,8 @@ Result<resource::Handle, Error> register_async_fd_owned(*CielAsyncFd raw) {
     }
 }
 
-Result<resource::Handle, Error> register_async_listener_owned(*CielAsyncTcpListener raw) {
-    Result<resource::Handle, Error> result = register_async_listener(raw);
+Result<resource::Handle, AsyncNetError> register_async_listener_owned(*CielAsyncTcpListener raw) {
+    Result<resource::Handle, AsyncNetError> result = register_async_listener(raw);
     switch (result) {
         case Ok(handle):
             return Ok(handle);
@@ -598,8 +663,8 @@ Result<resource::Handle, Error> register_async_listener_owned(*CielAsyncTcpListe
     }
 }
 
-Result<resource::Handle, Error> register_async_op_owned(*CielAsyncOp raw) {
-    Result<resource::Handle, Error> result = register_async_op(raw);
+Result<resource::Handle, AsyncNetError> register_async_op_owned(*CielAsyncOp raw) {
+    Result<resource::Handle, AsyncNetError> result = register_async_op(raw);
     switch (result) {
         case Ok(handle):
             return Ok(handle);
@@ -609,16 +674,16 @@ Result<resource::Handle, Error> register_async_op_owned(*CielAsyncOp raw) {
     }
 }
 
-Result<resource::Handle, Error> register_finished_async_fd(
+Result<resource::Handle, AsyncNetError> register_finished_async_fd(
     *CielAsyncFd raw,
     *resource::Handle op_handle
 ) {
-    Result<resource::Handle, Error> result = register_async_fd(raw);
+    Result<resource::Handle, AsyncNetError> result = register_async_fd(raw);
     switch (result) {
         case Ok(handle):
             c::c_int close_rc = close_handle(op_handle);
             if ((close_rc as i64) != 0) {
-                return Err(code_error(close_rc as i64));
+                return Err(Runtime(close_rc as i64));
             }
             return Ok(handle);
         case Err(error):
@@ -652,7 +717,7 @@ unsafe c::c_int register_finished_async_fd_out(
     return 0 as c::c_int;
 }
 
-Result<*CielAsyncFd, Error> raw_async_fd(*const resource::Handle handle) {
+Result<*CielAsyncFd, AsyncNetError> raw_async_fd(*const resource::Handle handle) {
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe {
         ciel_resource_async_fd_snapshot_handle(
@@ -663,15 +728,15 @@ Result<*CielAsyncFd, Error> raw_async_fd(*const resource::Handle handle) {
         )
     };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(unsafe { raw as *CielAsyncFd });
 }
 
-Result<*CielAsyncTcpListener, Error> raw_listener(*const AsyncTcpListener listener) {
+Result<*CielAsyncTcpListener, AsyncNetError> raw_listener(*const AsyncTcpListener listener) {
     *const resource::Handle handle = listener_handle(listener);
     ?*CielAsyncTcpListener @raw = null;
     c::c_int rc = unsafe {
@@ -683,30 +748,30 @@ Result<*CielAsyncTcpListener, Error> raw_listener(*const AsyncTcpListener listen
         )
     };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(unsafe { raw as *CielAsyncTcpListener });
 }
 
-Result<*CielAsyncFd, Error> raw_stream(*const AsyncTcpStream stream) {
+Result<*CielAsyncFd, AsyncNetError> raw_stream(*const AsyncTcpStream stream) {
     return raw_async_fd(stream_handle(stream));
 }
 
-Result<*CielAsyncFd, Error> raw_read_half(*const AsyncTcpReadHalf half) {
+Result<*CielAsyncFd, AsyncNetError> raw_read_half(*const AsyncTcpReadHalf half) {
     return raw_async_fd(read_half_handle(half));
 }
 
-Result<*CielAsyncFd, Error> raw_write_half(*const AsyncTcpWriteHalf half) {
+Result<*CielAsyncFd, AsyncNetError> raw_write_half(*const AsyncTcpWriteHalf half) {
     return raw_async_fd(write_half_handle(half));
 }
 
-Result<*CielBufferedReader, Error> raw_buffered_reader(*const BufferedStreamReader reader) {
+Result<*CielBufferedReader, AsyncNetError> raw_buffered_reader(*const BufferedStreamReader reader) {
     ?*CielBufferedReader raw = unsafe { reader->handle };
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(raw);
 }
@@ -723,14 +788,14 @@ c::c_int snapshot_async_op(*const resource::Handle handle, *?*CielAsyncOp out) {
     return rc;
 }
 
-Result<*CielAsyncOp, Error> raw_async_op(*const resource::Handle handle) {
+Result<*CielAsyncOp, AsyncNetError> raw_async_op(*const resource::Handle handle) {
     ?*CielAsyncOp @raw = null;
     c::c_int rc = snapshot_async_op(handle, &raw);
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(unsafe { raw as *CielAsyncOp });
 }
@@ -768,27 +833,27 @@ unsafe impl raw_operation(*const AsyncBufferedRead op) {
     return raw_async_op_or_null(buffered_read_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_accept(*const AsyncAccept op) {
+Result<*CielAsyncOp, AsyncNetError> raw_accept(*const AsyncAccept op) {
     return raw_async_op(accept_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_connect(*const AsyncConnect op) {
+Result<*CielAsyncOp, AsyncNetError> raw_connect(*const AsyncConnect op) {
     return raw_async_op(connect_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_read(*const AsyncTcpRead op) {
+Result<*CielAsyncOp, AsyncNetError> raw_read(*const AsyncTcpRead op) {
     return raw_async_op(read_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_read_into(*const AsyncTcpReadInto op) {
+Result<*CielAsyncOp, AsyncNetError> raw_read_into(*const AsyncTcpReadInto op) {
     return raw_async_op(read_into_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_write(*const AsyncTcpWrite op) {
+Result<*CielAsyncOp, AsyncNetError> raw_write(*const AsyncTcpWrite op) {
     return raw_async_op(write_handle(op));
 }
 
-Result<*CielAsyncOp, Error> raw_buffered_read(*const AsyncBufferedRead op) {
+Result<*CielAsyncOp, AsyncNetError> raw_buffered_read(*const AsyncBufferedRead op) {
     return raw_async_op(buffered_read_handle(op));
 }
 
@@ -796,18 +861,24 @@ Result<*CielAsyncOp, Error> raw_buffered_read(*const AsyncBufferedRead op) {
     return unsafe { bytes.handle as *CielBytes };
 }
 
-Result<*void, Error> box_message<M: Message>(M message) {
+Result<*void, AsyncNetError> box_message<M: Message>(M message) {
     M local = message;
-    M cloned = clone_message(&local)?;
+    M @cloned;
+    switch (clone_message(&local)) {
+        case Ok(value):
+            cloned = value;
+        case Err(error):
+            return Err(MessageClone(error));
+    }
     ?*void boxed = unsafe { ciel_actor_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
     if (boxed == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(boxed);
 }
 
 // Opens an async TCP listener bound to addr.
-export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) = .listen_async {
+export Result<AsyncTcpListener, AsyncNetError> listen_async(net::SocketAddr addr) = .listen_async {
     ?*CielAsyncTcpListener raw = unsafe { ciel_async_tcp_listen(raw_addr(addr)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -816,29 +887,29 @@ export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) = .lis
 }
 
 // Returns the local address bound to an async listener.
-export Result<net::SocketAddr, Error> listener_addr(*const AsyncTcpListener listener) = .addr {
+export Result<net::SocketAddr, AsyncNetError> listener_addr(*const AsyncTcpListener listener) = .addr {
     ?*CielSocketAddr @raw = null;
     c::c_int rc = unsafe { ciel_async_tcp_listener_addr(raw_listener(listener)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
 }
 
 // Closes an async listener handle.
-export Result<void, Error> close_listener(AsyncTcpListener @listener) = .close {
+export Result<void, AsyncNetError> close_listener(AsyncTcpListener @listener) = .close {
     c::c_int rc = close_handle(listener_handle_mut(&listener));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Starts an async accept operation and returns its low-level token.
-export Result<AsyncAccept, Error> accept_async(*const AsyncTcpListener listener) = .accept_async {
+export Result<AsyncAccept, AsyncNetError> accept_async(*const AsyncTcpListener listener) = .accept_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_accept(raw_listener(listener)?) };
     if (raw == null) {
         return Err(runtime_error());
@@ -847,7 +918,7 @@ export Result<AsyncAccept, Error> accept_async(*const AsyncTcpListener listener)
 }
 
 // Starts an async connect operation and returns its low-level token.
-export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connect_async {
+export Result<AsyncConnect, AsyncNetError> connect_async(net::SocketAddr addr) = .connect_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_connect(raw_addr(addr)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -856,16 +927,16 @@ export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connec
 }
 
 // Closes an async stream handle.
-export Result<void, Error> close_stream(AsyncTcpStream @stream) = .close {
+export Result<void, AsyncNetError> close_stream(AsyncTcpStream @stream) = .close {
     c::c_int rc = close_handle(stream_handle_mut(&stream));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Splits a stream into read and write halves that share the same runtime stream.
-export Result<AsyncTcpSplit, Error> split(AsyncTcpStream @stream) = .split {
+export Result<AsyncTcpSplit, AsyncNetError> split(AsyncTcpStream @stream) = .split {
     *CielAsyncFd raw = raw_stream(&stream)?;
     resource::Handle write_handle_value = register_async_fd_shared(raw)?;
     resource::Handle read_handle_value =
@@ -877,7 +948,7 @@ export Result<AsyncTcpSplit, Error> split(AsyncTcpStream @stream) = .split {
 }
 
 // Splits a stream and wraps the read half in a cancel-safe buffered reader.
-export Result<AsyncTcpBufferedSplit, Error> buffered_split(
+export Result<AsyncTcpBufferedSplit, AsyncNetError> buffered_split(
     AsyncTcpStream @stream,
     usize capacity
 ) = .buffered_split {
@@ -900,69 +971,69 @@ export Result<AsyncTcpBufferedSplit, Error> buffered_split(
 }
 
 // Shuts down the read half of a stream.
-export Result<void, Error> shutdown_read(*const AsyncTcpStream stream) = .shutdown_read {
+export Result<void, AsyncNetError> shutdown_read(*const AsyncTcpStream stream) = .shutdown_read {
     c::c_int rc = unsafe { ciel_async_tcp_shutdown_read(raw_stream(stream)?) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Shuts down a split read half.
-export Result<void, Error> shutdown_read_half(*const AsyncTcpReadHalf half) = .shutdown_read {
+export Result<void, AsyncNetError> shutdown_read_half(*const AsyncTcpReadHalf half) = .shutdown_read {
     c::c_int rc = unsafe { ciel_async_tcp_shutdown_read(raw_read_half(half)?) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Shuts down the write half of a stream.
-export Result<void, Error> shutdown_write(*const AsyncTcpStream stream) = .shutdown_write {
+export Result<void, AsyncNetError> shutdown_write(*const AsyncTcpStream stream) = .shutdown_write {
     c::c_int rc = unsafe { ciel_async_tcp_shutdown_write(raw_stream(stream)?) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Shuts down a split write half.
-export Result<void, Error> shutdown_write_half(*const AsyncTcpWriteHalf half) = .shutdown_write {
+export Result<void, AsyncNetError> shutdown_write_half(*const AsyncTcpWriteHalf half) = .shutdown_write {
     c::c_int rc = unsafe { ciel_async_tcp_shutdown_write(raw_write_half(half)?) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Returns the local address of an async stream.
-export Result<net::SocketAddr, Error> stream_local_addr(*const AsyncTcpStream stream) = .local_addr {
+export Result<net::SocketAddr, AsyncNetError> stream_local_addr(*const AsyncTcpStream stream) = .local_addr {
     ?*CielSocketAddr @raw = null;
     c::c_int rc = unsafe { ciel_async_tcp_stream_local_addr(raw_stream(stream)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
 }
 
 // Returns the peer address of an async stream.
-export Result<net::SocketAddr, Error> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr {
+export Result<net::SocketAddr, AsyncNetError> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr {
     ?*CielSocketAddr @raw = null;
     c::c_int rc = unsafe { ciel_async_tcp_stream_peer_addr(raw_stream(stream)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
 }
 
 // Starts an async TCP read operation and returns its low-level token.
-export Result<AsyncTcpRead, Error> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async {
+export Result<AsyncTcpRead, AsyncNetError> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_read_bytes(raw_stream(stream)?, max_len) };
     if (raw == null) {
         return Err(runtime_error());
@@ -971,7 +1042,7 @@ export Result<AsyncTcpRead, Error> read_bytes(*const AsyncTcpStream stream, usiz
 }
 
 // Starts an async TCP write operation and returns its low-level token.
-export Result<AsyncTcpWrite, Error> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async {
+export Result<AsyncTcpWrite, AsyncNetError> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_write_bytes(raw_stream(stream)?, raw_bytes(data)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -980,7 +1051,7 @@ export Result<AsyncTcpWrite, Error> write_bytes(*const AsyncTcpStream stream, By
 }
 
 // Starts an async TCP read into an owned buffer and returns its token.
-export Result<AsyncTcpReadInto, Error> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async {
+export Result<AsyncTcpReadInto, AsyncNetError> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_read_into(raw_stream(stream)?, raw_bytes(buffer)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -989,7 +1060,7 @@ export Result<AsyncTcpReadInto, Error> read_into_async(*const AsyncTcpStream str
 }
 
 // Starts an async TCP write on a split write half and returns its token.
-export Result<AsyncTcpWrite, Error> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async {
+export Result<AsyncTcpWrite, AsyncNetError> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async {
     ?*CielAsyncOp raw = unsafe { ciel_async_tcp_write_bytes(raw_write_half(half)?, raw_bytes(data)) };
     if (raw == null) {
         return Err(runtime_error());
@@ -998,7 +1069,7 @@ export Result<AsyncTcpWrite, Error> write_half_bytes(*const AsyncTcpWriteHalf ha
 }
 
 // Creates a cancel-safe buffered reader from a split read half.
-export Result<BufferedStreamReader, Error> buffered_reader(AsyncTcpReadHalf @half, usize capacity) = .buffered_reader {
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader(AsyncTcpReadHalf @half, usize capacity) = .buffered_reader {
     ?*CielBufferedReader raw =
         unsafe { ciel_async_tcp_buffered_reader_new(raw_read_half(&half)?, capacity) };
     if (raw == null) {
@@ -1010,7 +1081,7 @@ export Result<BufferedStreamReader, Error> buffered_reader(AsyncTcpReadHalf @hal
 }
 
 // Consumes split halves and creates a cancel-safe buffered reader from the read half.
-export Result<BufferedStreamReader, Error> buffered_reader_from_split(
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader_from_split(
     AsyncTcpSplit @split,
     usize capacity
 ) = .buffered_reader {
@@ -1022,7 +1093,7 @@ export Result<BufferedStreamReader, Error> buffered_reader_from_split(
 }
 
 // Consumes a stream and creates a cancel-safe buffered reader from its read half.
-export Result<BufferedStreamReader, Error> buffered_reader_from_stream(
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader_from_stream(
     AsyncTcpStream @stream,
     usize capacity
 ) = .buffered_reader {
@@ -1037,7 +1108,7 @@ export Result<BufferedStreamReader, Error> buffered_reader_from_stream(
 }
 
 // Consumes a buffered reader and returns its underlying read half.
-export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader @reader) = .into_read_half {
+export Result<AsyncTcpReadHalf, AsyncNetError> into_read_half(BufferedStreamReader @reader) = .into_read_half {
     ?*CielAsyncFd raw =
         unsafe { ciel_async_tcp_buffered_reader_into_read_half(raw_buffered_reader(&reader)?) };
     if (raw == null) {
@@ -1050,13 +1121,13 @@ export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader @read
 
 // Takes the buffered reader out of a buffered split without exposing partial
 // resource field moves to user code.
-export Result<BufferedStreamReader, Error> take_buffered_split_reader(
+export Result<BufferedStreamReader, AsyncNetError> take_buffered_split_reader(
     *AsyncTcpBufferedSplit split_value
 ) {
     *BufferedStreamReader reader = buffered_split_reader_mut(split_value);
     ?*CielBufferedReader raw = unsafe { reader->handle };
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     resource::Handle handle = unsafe { resource::take_handle_in_place(&reader->fd_handle) };
     unsafe { reader->handle = null; };
@@ -1065,7 +1136,7 @@ export Result<BufferedStreamReader, Error> take_buffered_split_reader(
 
 // Takes the write half out of a buffered split without exposing partial
 // resource field moves to user code.
-export Result<AsyncTcpWriteHalf, Error> take_buffered_split_write(
+export Result<AsyncTcpWriteHalf, AsyncNetError> take_buffered_split_write(
     *AsyncTcpBufferedSplit split_value
 ) {
     *AsyncTcpWriteHalf write = buffered_split_write_mut(split_value);
@@ -1076,7 +1147,7 @@ export Result<AsyncTcpWriteHalf, Error> take_buffered_split_write(
 }
 
 // Starts a cancel-safe buffered read operation and returns its token.
-export Result<AsyncBufferedRead, Error> read_buffered_async(
+export Result<AsyncBufferedRead, AsyncNetError> read_buffered_async(
     *const BufferedStreamReader reader,
     usize max_len
 ) = .read_async {
@@ -1089,7 +1160,7 @@ export Result<AsyncBufferedRead, Error> read_buffered_async(
 }
 
 // Starts a cancel-safe buffered read that completes only after len bytes or EOF/error.
-export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
+export Result<AsyncBufferedRead, AsyncNetError> read_exact_buffered_async(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact_async {
@@ -1102,49 +1173,48 @@ export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
 }
 
 // Awaits the next incoming async TCP connection.
-export async Result<AsyncTcpStream, Error> accept(*const AsyncTcpListener listener) = .accept {
+export async Result<AsyncTcpStream, AsyncNetError> accept(*const AsyncTcpListener listener) = .accept {
     AsyncAccept op = accept_async(listener)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits an async TCP connection to addr.
-export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr) {
+export async Result<AsyncTcpStream, AsyncNetError> connect(net::SocketAddr addr) {
     AsyncConnect op = connect_async(addr)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Connects to addr with a timeout.
-export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout {
-    Result<AsyncTcpStream, Error> connected = await async::timeout(connect(addr), ms)?;
-    return connected;
+export async Result<AsyncTcpStream, AsyncNetError> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout {
+    return timeout_result(await async::timeout(connect(addr), ms));
 }
 
 // Awaits a TCP read and returns owned Bytes; zero-length Bytes means EOF.
-export async Result<Bytes, Error> read(*const AsyncTcpStream stream, usize max_len) = .read {
+export async Result<Bytes, AsyncNetError> read(*const AsyncTcpStream stream, usize max_len) = .read {
     AsyncTcpRead op = read_bytes(stream, max_len)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits a TCP read into an owned buffer and returns the buffer plus bytes read.
-export async Result<ReadIntoResult, Error> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into {
+export async Result<ReadIntoResult, AsyncNetError> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into {
     AsyncTcpReadInto op = read_into_async(stream, buffer)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits a TCP write and returns bytes written.
-export async Result<usize, Error> write(*const AsyncTcpStream stream, Bytes data) = .write {
+export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, Bytes data) = .write {
     AsyncTcpWrite op = write_bytes(stream, data)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits a TCP write on a split write half and returns bytes written.
-export async Result<usize, Error> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write {
+export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write {
     AsyncTcpWrite op = write_half_bytes(half, data)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Writes all bytes on a stream, retrying short async writes until complete.
-export async Result<AsyncTcpStream, Error> write_all(AsyncTcpStream @stream, Bytes data) = .write_all {
+export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, Bytes data) = .write_all {
     usize total = bytes_len(data);
     usize @offset = 0;
     while (offset < total) {
@@ -1152,11 +1222,11 @@ export async Result<AsyncTcpStream, Error> write_all(AsyncTcpStream @stream, Byt
         if (offset == 0) {
             chunk = data;
         } else {
-            chunk = bytes_slice(data, offset, total - offset)?;
+            chunk = bytes_value_result(bytes_slice(data, offset, total - offset))?;
         }
         usize written = await write(&stream, chunk)?;
         if (written == 0) {
-            return Err(text_error("tcp write returned zero"));
+            return Err(WriteZero);
         }
         offset = offset + written;
     }
@@ -1164,7 +1234,7 @@ export async Result<AsyncTcpStream, Error> write_all(AsyncTcpStream @stream, Byt
 }
 
 // Writes all bytes on a split write half, retrying short async writes until complete.
-export async Result<AsyncTcpWriteHalf, Error> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all {
+export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all {
     usize total = bytes_len(data);
     usize @offset = 0;
     while (offset < total) {
@@ -1172,11 +1242,11 @@ export async Result<AsyncTcpWriteHalf, Error> write_all_half(AsyncTcpWriteHalf @
         if (offset == 0) {
             chunk = data;
         } else {
-            chunk = bytes_slice(data, offset, total - offset)?;
+            chunk = bytes_value_result(bytes_slice(data, offset, total - offset))?;
         }
         usize written = await write_half(&half, chunk)?;
         if (written == 0) {
-            return Err(text_error("tcp write returned zero"));
+            return Err(WriteZero);
         }
         offset = offset + written;
     }
@@ -1184,25 +1254,25 @@ export async Result<AsyncTcpWriteHalf, Error> write_all_half(AsyncTcpWriteHalf @
 }
 
 // Awaits a cancel-safe buffered read.
-export async Result<Bytes, Error> read_buffered(
+export async Result<Bytes, AsyncNetError> read_buffered(
     *const BufferedStreamReader reader,
     usize max_len
 ) = .read {
     AsyncBufferedRead op = read_buffered_async(reader, max_len)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits exactly len buffered bytes unless EOF or error is reached first.
-export async Result<Bytes, Error> read_exact_buffered(
+export async Result<Bytes, AsyncNetError> read_exact_buffered(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact {
     AsyncBufferedRead op = read_exact_buffered_async(reader, len)?;
-    return await async_core::future_from_op(op);
+    return async_result(await async_core::future_from_op(op));
 }
 
 // Sends message to actor_handle when an accept operation completes.
-export Result<void, Error> notify_accept_done<M: Message>(
+export Result<void, AsyncNetError> notify_accept_done<M: Message>(
     *const AsyncAccept op,
     *const actor::Actor<M> actor_handle,
     M message
@@ -1210,13 +1280,13 @@ export Result<void, Error> notify_accept_done<M: Message>(
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_tcp_notify_accept(raw_accept(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Sends message to actor_handle when a connect operation completes.
-export Result<void, Error> notify_connect_done<M: Message>(
+export Result<void, AsyncNetError> notify_connect_done<M: Message>(
     *const AsyncConnect op,
     *const actor::Actor<M> actor_handle,
     M message
@@ -1224,13 +1294,13 @@ export Result<void, Error> notify_connect_done<M: Message>(
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_tcp_notify_connect(raw_connect(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Sends message to actor_handle when a TCP read operation completes.
-export Result<void, Error> notify_read_done<M: Message>(
+export Result<void, AsyncNetError> notify_read_done<M: Message>(
     *const AsyncTcpRead op,
     *const actor::Actor<M> actor_handle,
     M message
@@ -1238,13 +1308,13 @@ export Result<void, Error> notify_read_done<M: Message>(
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_notify_read(raw_read(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Sends message to actor_handle when a TCP read-into operation completes.
-export Result<void, Error> notify_read_into_done<M: Message>(
+export Result<void, AsyncNetError> notify_read_into_done<M: Message>(
     *const AsyncTcpReadInto op,
     *const actor::Actor<M> actor_handle,
     M message
@@ -1252,13 +1322,13 @@ export Result<void, Error> notify_read_into_done<M: Message>(
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_notify_read(raw_read_into(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Sends message to actor_handle when a TCP write operation completes.
-export Result<void, Error> notify_write_done<M: Message>(
+export Result<void, AsyncNetError> notify_write_done<M: Message>(
     *const AsyncTcpWrite op,
     *const actor::Actor<M> actor_handle,
     M message
@@ -1266,162 +1336,168 @@ export Result<void, Error> notify_write_done<M: Message>(
     *void boxed = box_message(message)?;
     c::c_int rc = unsafe { ciel_async_notify_write(raw_write(op)?, actor_handle->handle as *CielActor, boxed) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Finishes a completed accept operation and returns the accepted stream.
-export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept @op) = .finish {
+export Result<AsyncTcpStream, AsyncNetError> finish_accept(AsyncAccept @op) = .finish {
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe { ciel_async_tcp_finish_accept(raw_accept(&op)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(stream_from_handle(register_finished_async_fd(unsafe { raw as *CielAsyncFd }, accept_handle_mut(&op))?));
 }
 
 // Finishes a completed connect operation and returns the connected stream.
-export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect @op) = .finish {
+export Result<AsyncTcpStream, AsyncNetError> finish_connect(AsyncConnect @op) = .finish {
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe { ciel_async_tcp_finish_connect(raw_connect(&op)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     return Ok(stream_from_handle(register_finished_async_fd(unsafe { raw as *CielAsyncFd }, connect_handle_mut(&op))?));
 }
 
 // Finishes a completed TCP read operation and returns owned Bytes.
-export Result<Bytes, Error> finish_read(AsyncTcpRead @op) = .finish {
+export Result<Bytes, AsyncNetError> finish_read(AsyncTcpRead @op) = .finish {
     ?*CielBytes @raw = null;
     c::c_int rc = unsafe { ciel_async_finish_read(raw_read(&op)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     c::c_int close_rc = close_handle(read_handle_mut(&op));
     if ((close_rc as i64) != 0) {
-        return Err(code_error(close_rc as i64));
+        return Err(Runtime(close_rc as i64));
     }
     return Ok({ handle: raw as *void });
 }
 
 // Finishes a completed TCP read-into operation and returns the buffer plus bytes read.
-export Result<ReadIntoResult, Error> finish_read_into(AsyncTcpReadInto @op) = .finish {
+export Result<ReadIntoResult, AsyncNetError> finish_read_into(AsyncTcpReadInto @op) = .finish {
     ?*CielBytes @raw = null;
     c::c_int rc = unsafe { ciel_async_finish_read(raw_read_into(&op)?, &raw) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     if (raw == null) {
-        return Err(code_error(5));
+        return Err(Runtime(5));
     }
     c::c_int close_rc = close_handle(read_into_handle_mut(&op));
     if ((close_rc as i64) != 0) {
-        return Err(code_error(close_rc as i64));
+        return Err(Runtime(close_rc as i64));
     }
     Bytes bytes = { handle: raw as *void };
     return Ok({ bytes: bytes, read: bytes_len(bytes) });
 }
 
 // Finishes a completed TCP write operation and returns bytes written.
-export Result<usize, Error> finish_write(AsyncTcpWrite @op) = .finish {
+export Result<usize, AsyncNetError> finish_write(AsyncTcpWrite @op) = .finish {
     usize @written = 0;
     c::c_int rc = unsafe { ciel_async_finish_write(raw_write(&op)?, &written) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     c::c_int close_rc = close_handle(write_handle_mut(&op));
     if ((close_rc as i64) != 0) {
-        return Err(code_error(close_rc as i64));
+        return Err(Runtime(close_rc as i64));
     }
     return Ok(written);
 }
 
 // Cancels a pending accept operation.
-export Result<void, Error> cancel_accept(AsyncAccept @op) = .cancel {
+export Result<void, AsyncNetError> cancel_accept(AsyncAccept @op) = .cancel {
     c::c_int rc = close_handle(accept_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Cancels a pending connect operation.
-export Result<void, Error> cancel_connect(AsyncConnect @op) = .cancel {
+export Result<void, AsyncNetError> cancel_connect(AsyncConnect @op) = .cancel {
     c::c_int rc = close_handle(connect_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Cancels a pending raw TCP read operation.
-export Result<void, Error> cancel_read(AsyncTcpRead @op) = .cancel {
+export Result<void, AsyncNetError> cancel_read(AsyncTcpRead @op) = .cancel {
     c::c_int rc = close_handle(read_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Cancels a pending raw TCP read-into operation.
-export Result<void, Error> cancel_read_into(AsyncTcpReadInto @op) = .cancel {
+export Result<void, AsyncNetError> cancel_read_into(AsyncTcpReadInto @op) = .cancel {
     c::c_int rc = close_handle(read_into_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Cancels a pending raw TCP write operation.
-export Result<void, Error> cancel_write(AsyncTcpWrite @op) = .cancel {
+export Result<void, AsyncNetError> cancel_write(AsyncTcpWrite @op) = .cancel {
     c::c_int rc = close_handle(write_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Cancels a pending buffered read operation without discarding preserved bytes.
-export Result<void, Error> cancel_buffered_read(AsyncBufferedRead @op) = .cancel {
+export Result<void, AsyncNetError> cancel_buffered_read(AsyncBufferedRead @op) = .cancel {
     c::c_int rc = close_handle(buffered_read_handle_mut(&op));
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncAccept op) {
-    return cancel_accept(*op);
+    cancel_accept(*op)?;
+    return Ok;
 }
 
 unsafe impl abort_future(*AsyncConnect op) {
-    return cancel_connect(*op);
+    cancel_connect(*op)?;
+    return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpRead op) {
-    return cancel_read(*op);
+    cancel_read(*op)?;
+    return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpReadInto op) {
-    return cancel_read_into(*op);
+    cancel_read_into(*op)?;
+    return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpWrite op) {
-    return cancel_write(*op);
+    cancel_write(*op)?;
+    return Ok;
 }
 
 unsafe impl abort_future(*AsyncBufferedRead op) {
-    return cancel_buffered_read(*op);
+    cancel_buffered_read(*op)?;
+    return Ok;
 }
 
 impl<M: Message> notify_done(
@@ -1429,11 +1505,12 @@ impl<M: Message> notify_done(
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_accept_done(&op, &actor_handle, message);
+    notify_accept_done(&op, &actor_handle, message)?;
+    return Ok;
 }
 
 impl finish<AsyncTcpStream>(AsyncAccept op) {
-    return finish_accept(op);
+    return Ok(finish_accept(op)?);
 }
 
 unsafe impl poll_done<AsyncTcpStream>(*AsyncAccept op, *AsyncTcpStream out) {
@@ -1466,11 +1543,12 @@ impl<M: Message> notify_done(
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_connect_done(&op, &actor_handle, message);
+    notify_connect_done(&op, &actor_handle, message)?;
+    return Ok;
 }
 
 impl finish<AsyncTcpStream>(AsyncConnect op) {
-    return finish_connect(op);
+    return Ok(finish_connect(op)?);
 }
 
 unsafe impl poll_done<AsyncTcpStream>(*AsyncConnect op, *AsyncTcpStream out) {
@@ -1503,11 +1581,12 @@ impl<M: Message> notify_done(
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_read_done(&op, &actor_handle, message);
+    notify_read_done(&op, &actor_handle, message)?;
+    return Ok;
 }
 
 impl finish<Bytes>(AsyncTcpRead op) {
-    return finish_read(op);
+    return Ok(finish_read(op)?);
 }
 
 unsafe impl poll_done<Bytes>(*AsyncTcpRead op, *Bytes out) {
@@ -1539,11 +1618,12 @@ impl<M: Message> notify_done(
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_read_into_done(&op, &actor_handle, message);
+    notify_read_into_done(&op, &actor_handle, message)?;
+    return Ok;
 }
 
 impl finish<ReadIntoResult>(AsyncTcpReadInto op) {
-    return finish_read_into(op);
+    return Ok(finish_read_into(op)?);
 }
 
 unsafe impl poll_done<ReadIntoResult>(*AsyncTcpReadInto op, *ReadIntoResult out) {
@@ -1601,11 +1681,12 @@ impl<M: Message> notify_done(
     actor::Actor<M> actor_handle,
     M message
 ) {
-    return notify_write_done(&op, &actor_handle, message);
+    notify_write_done(&op, &actor_handle, message)?;
+    return Ok;
 }
 
 impl finish<usize>(AsyncTcpWrite op) {
-    return finish_write(op);
+    return Ok(finish_write(op)?);
 }
 
 unsafe impl poll_done<usize>(*AsyncTcpWrite op, *usize out) {

@@ -45,7 +45,7 @@ i32 main() {
     aio::AsyncFd output = must(aio::create_async(output_path));
     Result<usize, Error> result = async::block_on(copy_file(input, output));
     usize written = must(result);
-    must(io::with_open_read<void>(output_path, |file| {
+    must(io::with_open_read<void, Error>(output_path, |file| {
         [4]u8 @got = [0;];
         usize copied_len = io::read(&file, got[..])?;
         [4]u8 want = [112 as u8, 105 as u8, 110 as u8, 103 as u8];

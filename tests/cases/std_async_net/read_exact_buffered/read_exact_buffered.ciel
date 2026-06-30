@@ -9,7 +9,7 @@ import /std/net as net;
 import /std/panic;
 import /std/result;
 
-bool is_err_bytes(Result<anet::Bytes, Error> value) {
+bool is_err_bytes(Result<anet::Bytes, anet::AsyncNetError> value) {
     switch (value) {
         case Ok(_):
             return false;

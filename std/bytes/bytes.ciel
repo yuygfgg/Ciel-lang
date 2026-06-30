@@ -5,30 +5,36 @@ import /std/result;
 import /std/storage as storage;
 
 // Returns an empty owned Bytes value.
-export Result<raw::Bytes, Error> bytes_empty() {
+export Result<raw::Bytes, raw::BytesError> bytes_empty() {
     [1]u8 empty = [0;];
     return raw::bytes_copy(empty[..0]);
 }
 
 // Copies UTF-8/text bytes into an owned Bytes value.
-export Result<raw::Bytes, Error> bytes_from_text([]const char text) {
+export Result<raw::Bytes, raw::BytesError> bytes_from_text([]const char text) {
     return raw::bytes_copy_chars(text);
 }
 
 // Copies an owned Bytes value into a mutable byte slice allocation.
-export Result<[]u8, Error> bytes_to_slice(raw::Bytes bytes) = .to_slice {
+export Result<[]u8, raw::BytesError> bytes_to_slice(raw::Bytes bytes) = .to_slice {
     usize len = raw::bytes_len(bytes);
-    storage::RawStorage<u8> @raw_storage = unsafe { storage::raw_zeroed<u8>(len)? };
+    storage::RawStorage<u8> @raw_storage;
+    switch (unsafe { storage::raw_zeroed<u8>(len) }) {
+        case Ok(storage):
+            raw_storage = storage;
+        case Err(_):
+            return Err(raw::Runtime(5));
+    }
     []u8 out = unsafe { storage::raw_slice<u8>(&raw_storage) };
     usize copied = raw::bytes_copy_to(bytes, out)?;
     if (copied != len) {
-        return Err(text_error("short bytes copy"));
+        return Err(raw::ShortCopy);
     }
     return Ok(out);
 }
 
 // Appends two owned Bytes values and returns a new owned Bytes value.
-export Result<raw::Bytes, Error> bytes_append(raw::Bytes left, raw::Bytes right) = .append {
+export Result<raw::Bytes, raw::BytesError> bytes_append(raw::Bytes left, raw::Bytes right) = .append {
     []u8 left_slice = bytes_to_slice(left)?;
     []u8 right_slice = bytes_to_slice(right)?;
     return raw::bytes_concat(left_slice, right_slice);

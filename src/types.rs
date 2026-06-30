@@ -1173,6 +1173,20 @@ pub fn std_error_code_ty() -> Ty {
     }
 }
 
+pub fn std_async_error_ty() -> Ty {
+    Ty::Named {
+        name: "AsyncError".to_string(),
+        args: Vec::new(),
+    }
+}
+
+pub fn std_resource_error_ty() -> Ty {
+    Ty::Named {
+        name: "ResourceError".to_string(),
+        args: Vec::new(),
+    }
+}
+
 pub fn std_result_ty(ok_ty: Ty, err_ty: Ty) -> Ty {
     Ty::Named {
         name: "Result".to_string(),

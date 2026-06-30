@@ -1,0 +1,40 @@
+// ciel-test: error
+// expect-error: cannot erase resource-affine type `FileError`
+
+import /std/error/context;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+resource struct FileError {
+    io::File file;
+}
+
+impl format_error(*const FileError error) {
+    return "file error";
+}
+
+Result<void, FileError> fail(io::File @file) {
+    return Err({ file: file });
+}
+
+Result<void, Error> drive(io::File @file) {
+    return error_context_void<FileError>(fail(file), "context");
+}
+
+io::File dummy_file() {
+    resource::Handle handle = unsafe {
+        { owner_id: 0, resource_id: 0, generation: 0 }
+    };
+    return unsafe { { handle: handle } };
+}
+
+i32 main() {
+    switch (drive(dummy_file())) {
+        case Ok:
+            return 0;
+        case Err(_):
+            return 1;
+    }
+    return 0;
+}

@@ -25,12 +25,12 @@ bool same_bytes([]u8 got, []const u8 want) {
     return true;
 }
 
-Result<usize, Error> sleep_winner(Result<void, Error> value) {
+Result<usize, Error> sleep_winner(Result<void, async::AsyncError> value) {
     value?;
     return Ok(1);
 }
 
-Result<usize, Error> read_loser(Result<anet::Bytes, Error> value) {
+Result<usize, Error> read_loser(Result<anet::Bytes, anet::AsyncNetError> value) {
     value?;
     return Ok(2);
 }

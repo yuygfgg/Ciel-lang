@@ -4,12 +4,19 @@
 import /std/buf as buf;
 import /std/result;
 
-bool is_err_void(Result<void, Error> value) {
+bool is_discard_error(Result<void, buf::BufError> value) {
     switch (value) {
         case Ok:
             return false;
-        case Err(_):
-            return true;
+        case Err(error):
+            switch (error) {
+                case buf::DiscardOutOfBounds:
+                    return true;
+                case buf::CapacityOverflow:
+                    return false;
+                case buf::Runtime(_):
+                    return false;
+            }
     }
 }
 
@@ -65,7 +72,7 @@ i64 main() {
         return 10;
     }
 
-    if (!is_err_void(bytes.buf::discard_prefix(3))) {
+    if (!is_discard_error(bytes.buf::discard_prefix(3))) {
         return 11;
     }
 

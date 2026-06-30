@@ -20,12 +20,12 @@ export enum AuthError {
     TagLengthMismatch(usize),
 }
 
-export Error protocol_error(ProtocolError error) {
-    return error_box(error);
+export ProtocolError protocol_error(ProtocolError error) {
+    return error;
 }
 
-export Error auth_error(AuthError error) {
-    return error_box(error);
+export AuthError auth_error(AuthError error) {
+    return error;
 }
 
 impl format_error(*const ProtocolError error) {

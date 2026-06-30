@@ -26,6 +26,21 @@ export enum SharedMapPop<K, V> {
     Empty,
 }
 
+// Errors produced by SharedMap operations.
+export enum SharedMapError {
+    Map(map::MapError),
+    Sync(sync::SyncError),
+}
+
+impl format_error(*const SharedMapError error) {
+    switch (*error) {
+        case Map(inner):
+            return format_error(&inner);
+        case Sync(inner):
+            return format_error(&inner);
+    }
+}
+
 unsafe impl<V: Message> clone_message(*const SharedMapGet<V> value) {
     switch (*value) {
         case Found(found):
@@ -63,32 +78,68 @@ unsafe impl<K: Message, V: Message> share_handle_marker(*const SharedMap<K, V> v
 // Constraint alias for keys that can be hashed and sent across concurrency boundaries.
 export interface shared_map_key = map::map_key + Message;
 
+SharedMapError map_error(map::MapError error) {
+    return Map(error);
+}
+
+SharedMapError sync_error(sync::SyncError error) {
+    return Sync(error);
+}
+
+SharedMapError sync_map_error(sync::SyncWithError<map::MapError> error) {
+    switch (error) {
+        case sync::Sync(inner):
+            return Sync(inner);
+        case sync::Body(inner):
+            return Map(inner);
+    }
+}
+
 // Creates an empty shared map whose keys and values are Message values.
-export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Message>() {
-    map::HashMap<K, V> inner = map::hash_map_new<K, V>()?;
+export Result<SharedMap<K, V>, SharedMapError> shared_map_new<K: shared_map_key, V: Message>() {
+    map::HashMap<K, V> @inner;
+    switch (map::hash_map_new<K, V>()) {
+        case Ok(value):
+            inner = value;
+        case Err(error):
+            return Err(map_error(error));
+    }
     SharedMapState<K, V> state = unsafe { { inner: inner } };
-    _ mutex = sync::make_mutex<SharedMapState<K, V>>(state)?;
+    sync::Mutex<SharedMapState<K, V>> @mutex;
+    switch (sync::make_mutex<SharedMapState<K, V>>(state)) {
+        case Ok(value):
+            mutex = value;
+        case Err(error):
+            return Err(sync_error(error));
+    }
     return Ok({ state: mutex });
 }
 
 // Inserts or replaces a value under key while holding the map lock.
-export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, V: Message>(
+export Result<map::InsertResult<V>, SharedMapError> shared_map_insert<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key,
     V value
 ) = .insert {
-    return sync::mutex_with<SharedMapState<K, V>, map::InsertResult<V>>(
+    switch (sync::mutex_with<SharedMapState<K, V>, map::InsertResult<V>, map::MapError>(
         &shared.state,
-        |state| map::hash_map_insert<K, V>(unsafe { &state->inner }, key, value)
-    );
+        |state| {
+            return Ok(map::hash_map_insert<K, V>(unsafe { &state->inner }, key, value)?);
+        }
+    )) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
 }
 
 // Looks up key while holding the lock and returns a cloned value when present.
-export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
+export Result<SharedMapGet<V>, SharedMapError> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
 ) = .get {
-    return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
+    switch (sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>, map::MapError>(
         &shared.state,
         |state| {
             _ item = map::hash_map_get<K, V>(unsafe { &state->inner }, key)?;
@@ -99,15 +150,20 @@ export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Messa
                     return Ok(SharedMapGet::Missing);
             }
         }
-    );
+    )) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
 }
 
 // Removes key while holding the lock and returns the stored value when present.
-export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
+export Result<SharedMapGet<V>, SharedMapError> shared_map_remove<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
 ) = .remove {
-    return sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>>(
+    switch (sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>, map::MapError>(
         &shared.state,
         |state| {
             _ removed = map::hash_map_remove<K, V>(unsafe { &state->inner }, key)?;
@@ -118,14 +174,19 @@ export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Me
                     return Ok(SharedMapGet::Missing);
             }
         }
-    );
+    )) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
 }
 
 // Removes and returns an arbitrary entry while holding the lock.
-export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
+export Result<SharedMapPop<K, V>, SharedMapError> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) = .pop_any {
-    return sync::mutex_with<SharedMapState<K, V>, SharedMapPop<K, V>>(
+    switch (sync::mutex_with<SharedMapState<K, V>, SharedMapPop<K, V>, map::MapError>(
         &shared.state,
         |state| {
             _ popped = map::hash_map_pop_any<K, V>(unsafe { &state->inner })?;
@@ -136,15 +197,25 @@ export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V
                     return Ok(SharedMapPop::Empty);
             }
         }
-    );
+    )) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
 }
 
 // Returns the current entry count while holding the lock.
-export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
+export Result<usize, SharedMapError> shared_map_len<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) = .len {
-    return sync::mutex_with<SharedMapState<K, V>, usize>(
+    switch (sync::mutex_with<SharedMapState<K, V>, usize, map::MapError>(
         &shared.state,
         |state| Ok(map::hash_map_len<K, V>(unsafe { &state->inner }))
-    );
+    )) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
 }

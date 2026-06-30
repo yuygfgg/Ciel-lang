@@ -21,7 +21,7 @@ i32 main() {
         max_descriptors: 1,
     };
 
-    must(resource::scoped_with_limits<void>(limits, || {
+    must(resource::scoped_with_limits<void, Error>(limits, || {
         io::File file = io::open_read(path)?;
         resource::scoped<void>(|| {
             if (false) {

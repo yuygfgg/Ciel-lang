@@ -8,13 +8,13 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<usize, Error> send_reserved(Result<async::SendPermit<usize>, Error> result) {
+Result<usize, Error> send_reserved(Result<async::SendPermit<usize>, async::AsyncError> result) {
     async::SendPermit<usize> permit = result?;
     async::permit_send<usize>(permit, 99)?;
     return Ok(9);
 }
 
-Result<usize, Error> timer_value(Result<void, Error> result) {
+Result<usize, Error> timer_value(Result<void, async::AsyncError> result) {
     result?;
     return Ok(2);
 }

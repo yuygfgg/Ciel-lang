@@ -8,6 +8,11 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
+Result<usize, Error> recv_value(Result<usize, async::AsyncError> result) {
+    usize value = result?;
+    return Ok(value);
+}
+
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> left = async::channel<usize>(1)?;
     async::ChannelPair<usize> right = async::channel<usize>(1)?;
@@ -15,13 +20,13 @@ async Result<usize, Error> drive() {
     async::try_send<usize>(right.sender, 20)?;
 
     Result<usize, Error> picked = await select {
-        case left_value = async::recv<usize>(left.receiver): left_value;
-        case right_value = async::recv<usize>(right.receiver): right_value;
+        case left_value = async::recv<usize>(left.receiver): recv_value(left_value);
+        case right_value = async::recv<usize>(right.receiver): recv_value(right_value);
     };
     usize first = picked?;
     usize @second = 0;
     if (first == 10) {
-        Result<void, Error> sent = async::try_send<usize>(right.sender, 99);
+        Result<void, async::AsyncError> sent = async::try_send<usize>(right.sender, 99);
         switch (sent) {
             case Ok:
                 return Err(code_error(91));
@@ -30,7 +35,7 @@ async Result<usize, Error> drive() {
         }
         second = await async::recv<usize>(right.receiver)?;
     } else if (first == 20) {
-        Result<void, Error> sent = async::try_send<usize>(left.sender, 99);
+        Result<void, async::AsyncError> sent = async::try_send<usize>(left.sender, 99);
         switch (sent) {
             case Ok:
                 return Err(code_error(92));

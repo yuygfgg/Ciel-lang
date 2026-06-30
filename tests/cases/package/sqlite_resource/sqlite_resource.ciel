@@ -53,7 +53,7 @@ sqlite::Statement statement_from_parts(HandleParts parts) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-Result<void, Error> expect_void_error(Result<void, Error> result) {
+Result<void, Error> expect_void_error(Result<void, sqlite::SqliteError> result) {
     switch (result) {
         case Ok:
             return Err(text_error("expected sqlite resource error"));
@@ -63,7 +63,7 @@ Result<void, Error> expect_void_error(Result<void, Error> result) {
     return Err(text_error("bad sqlite result"));
 }
 
-Result<void, Error> expect_step_error(Result<sqlite::Step, Error> result) {
+Result<void, Error> expect_step_error(Result<sqlite::Step, sqlite::SqliteError> result) {
     switch (result) {
         case Ok(_):
             return Err(text_error("expected sqlite statement error"));

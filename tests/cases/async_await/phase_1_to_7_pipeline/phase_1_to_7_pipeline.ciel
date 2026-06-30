@@ -12,7 +12,7 @@ struct Packet {
     usize value;
 }
 
-Result<usize, Error> packet_value(Result<Packet, Error> result) {
+Result<usize, Error> packet_value(Result<Packet, async::AsyncError> result) {
     Packet packet = result?;
     return Ok(packet.value);
 }
@@ -59,9 +59,9 @@ async Result<usize, Error> drive() {
     usize second_group = await async::group_next<usize>(&group)?;
     async::group_close<usize>(&group)?;
 
-    Result<Result<void, Error>, Error> timed =
+    Result<Result<void, async::AsyncError>, async::AsyncError> timed =
         await async::timeout(async_time::sleep_ms(0), 100);
-    Result<void, Error> inner = timed?;
+    Result<void, async::AsyncError> inner = timed?;
     inner?;
 
     return Ok(

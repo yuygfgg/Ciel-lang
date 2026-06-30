@@ -20,7 +20,7 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void>(limits, || {
+    must(resource::scoped_with_limits<void, Error>(limits, || {
         io::File first = io::open_read(path)?;
         switch (io::open_read(path)) {
             case Ok(second):

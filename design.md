@@ -2542,11 +2542,11 @@ struct Actor<M> { *void handle; }
 Their safe APIs expose operations:
 
 ```ciel
-Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value);
-Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch);
+Result<void, ChannelError> channel_send<T: Message>(*const Channel<T> ch, T value);
+Result<T, ChannelError> channel_recv<T: Message>(*const Channel<T> ch);
 
-Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> value, MemoryOrder order);
-Result<void, Error> atomic_store<T: AtomicValue>(
+Result<T, AtomicError> atomic_load<T: AtomicValue>(*const Atomic<T> value, MemoryOrder order);
+Result<void, AtomicError> atomic_store<T: AtomicValue>(
     *const Atomic<T> value,
     T next,
     MemoryOrder order
@@ -2570,9 +2570,17 @@ struct Update<T, R> {
     R result;
 }
 
-interface<F, T -> R> Result<Update<T, R>, Error> update_value(*const F f, T value);
+enum SyncWithError<E> {
+    Sync(SyncError),
+    Body(E),
+}
 
-Result<R, Error> mutex_update<T, F: update_value<T, R = _>>(
+interface<F, T -> R, E> Result<Update<T, R>, E> update_value(*const F f, T value);
+
+Result<R, SyncWithError<E>> mutex_update<
+    T,
+    F: update_value<T, R = _, E = _: ErrorTrait>
+>(
     *const Mutex<T> mutex,
     *const F f
 );
@@ -2580,8 +2588,10 @@ Result<R, Error> mutex_update<T, F: update_value<T, R = _>>(
 
 `mutex_update` takes the current value, calls `update_value`, stores the
 replacement value, unlocks, and returns the result. The updater and protected
-value type determine the result type `R`, so callers do not pass `R` as a
-separate source type argument. Implementations may optimize the storage path
+value type determine the result type `R` and body error type `E`, so callers do
+not pass those as separate source type arguments. Lock/runtime failures are
+reported as `SyncWithError::Sync`; updater failures are reported as
+`SyncWithError::Body(E)`. Implementations may optimize the storage path
 internally, but the safe API exposes value replacement rather than a borrowed
 interior pointer.
 
@@ -2753,6 +2763,13 @@ export Error text_error([]const char text);
 export Error code_error(i64 code);
 ```
 
+Any concrete type that implements `format_error` can be converted to
+`/std/error.Error` in an expected-type context. The compiler inserts the
+erasing conversion for `?`, `return Err(concrete)`, nested `Result` payloads,
+function arguments, and local initializers. Ordinary source code should prefer
+returning concrete error enums from reusable APIs and let the compiler erase
+them only at application boundaries.
+
 ```ciel
 // /std/error/context
 export Result<T, Error> error_context<T, E: ErrorTrait>(
@@ -2873,31 +2890,36 @@ export struct Limits {
     usize max_descriptors;
 }
 
-export interface<T> Result<T, Error> transfer_to_parent(*const T value);
-export interface<T> Result<T, Error> transfer_to_current(*const T value);
+export interface<T> Result<T, ResourceError> transfer_to_parent(*const T value);
+export interface<T> Result<T, ResourceError> transfer_to_current(*const T value);
+
+export enum ScopedError<E> {
+    Resource(ResourceError),
+    Body(E),
+}
 
 export Limits default_limits();
 export unsafe Handle take_handle_in_place(*Handle handle);
-export unsafe Result<void, Error> close_handle_in_place(*Handle handle);
-export Result<void, Error> close(Handle @handle);
-export unsafe Result<Handle, Error> transfer_handle_to_parent_in_place(*Handle handle);
-export Result<Handle, Error> transfer_handle_to_parent(Handle @handle);
-export unsafe Result<Handle, Error> transfer_handle_to_current_in_place(*Handle handle);
-export Result<Handle, Error> transfer_handle_to_current(Handle @handle);
-export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle);
-export unsafe Result<Handle, Error> claim_transfer_token_in_place(*TransferToken token);
-export Result<Handle, Error> claim_transfer_token(TransferToken @token);
-export Result<R, Error> scoped<R>(Result<R, Error> |()| body) = .scoped;
-export Result<R, Error> scoped_with_limits<R>(
+export unsafe Result<void, ResourceError> close_handle_in_place(*Handle handle);
+export Result<void, ResourceError> close(Handle @handle);
+export unsafe Result<Handle, ResourceError> transfer_handle_to_parent_in_place(*Handle handle);
+export Result<Handle, ResourceError> transfer_handle_to_parent(Handle @handle);
+export unsafe Result<Handle, ResourceError> transfer_handle_to_current_in_place(*Handle handle);
+export Result<Handle, ResourceError> transfer_handle_to_current(Handle @handle);
+export Result<TransferToken, ResourceError> transfer_handle_to_parent_token(Handle handle);
+export unsafe Result<Handle, ResourceError> claim_transfer_token_in_place(*TransferToken token);
+export Result<Handle, ResourceError> claim_transfer_token(TransferToken @token);
+export Result<R, ScopedError<E>> scoped<R, E: ErrorTrait>(Result<R, E> |()| body) = .scoped;
+export Result<R, ScopedError<E>> scoped_with_limits<R, E: ErrorTrait>(
     Limits limits,
-    Result<R, Error> |()| body
+    Result<R, E> |()| body
 ) = .scoped_with_limits;
-export async Result<R, Error> scoped_async<R>(
-    async_core::Future<Result<R, Error>> |()| body
+export async Result<R, ScopedError<E>> scoped_async<R, E: ErrorTrait>(
+    async_core::Future<Result<R, E>> |()| body
 );
-export async Result<R, Error> scoped_async_with_limits<R>(
+export async Result<R, ScopedError<E>> scoped_async_with_limits<R, E: ErrorTrait>(
     Limits limits,
-    async_core::Future<Result<R, Error>> |()| body
+    async_core::Future<Result<R, E>> |()| body
 );
 ```
 
@@ -2914,11 +2936,15 @@ live in the child owner are closed. A resource-affine value returned from the
 body is an ordinary move-out; the compiler reattaches the moved resource
 handles to the caller's owner before closing the child owner.
 
-`scoped_async` accepts the same callable shape returning
-`async_core::Future<Result<R, Error>>`; an `async || { ... }` closure matches
-that API and the scoped owner is preserved across `await`. Its source
-implementation uses a private compiler hook. The source hook is a deliberate
-no-op fallback, and code generation rewrites it for affine `R` into a
+`scoped` and `scoped_async` keep the body error type generic and wrap owner
+setup or cleanup failures as `ScopedError::Resource`. Body failures are
+returned as `ScopedError::Body(E)`, so reusable code does not need to erase
+callback errors into `/std/error.Error`. `scoped_async` accepts the same
+callable shape returning `async_core::Future<Result<R, E>>`; an `async || {
+... }` closure matches that API and the scoped owner is preserved across
+`await`. Its source implementation uses a private compiler hook. The source
+hook is a deliberate no-op fallback, and code generation rewrites it for
+affine `R` into a
 structural transfer of all live returned handles to the parent owner before the
 child owner closes.
 
@@ -2968,52 +2994,58 @@ export resource unsafe struct File {
 export interface<T> []const char to_string(*const T value);
 export interface printable = to_string;
 
-export Error last_error();
-export Result<File, Error> open_read([]const char path);
-export Result<File, Error> create([]const char path);
-export Result<File, Error> append([]const char path);
-export Result<void, Error> close(File @file);
+export enum IoWithError<E> {
+    Io(IoError),
+    ResourceCleanup(resource::ResourceError),
+    Body(E),
+}
 
-export Result<R, Error> with_open<R>(
+export IoError last_error();
+export Result<File, IoError> open_read([]const char path);
+export Result<File, IoError> create([]const char path);
+export Result<File, IoError> append([]const char path);
+export Result<void, IoError> close(File @file);
+
+export Result<R, IoWithError<E>> with_open<R, E: ErrorTrait>(
     []const char path,
     OpenMode mode,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_open;
 
-export Result<R, Error> with_open_read<R>(
+export Result<R, IoWithError<E>> with_open_read<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_open_read;
 
-export Result<R, Error> with_create<R>(
+export Result<R, IoWithError<E>> with_create<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_create;
 
-export Result<R, Error> with_append<R>(
+export Result<R, IoWithError<E>> with_append<R, E: ErrorTrait>(
     []const char path,
-    Result<R, Error> |(File)| body
+    Result<R, E> |(File)| body
 ) = .with_append;
 
-export Result<usize, Error> read(*const File file, []u8 out) = .read;
-export Result<usize, Error> write(*const File file, []const u8 data) = .write;
-export Result<usize, Error> write_text_once(*const File file, []const char text) = .write_text_once;
-export Result<void, Error> write_all(*const File file, []const u8 data) = .write_all;
-export Result<void, Error> write_text(*const File file, []const char text) = .write_text;
+export Result<usize, IoError> read(*const File file, []u8 out) = .read;
+export Result<usize, IoError> write(*const File file, []const u8 data) = .write;
+export Result<usize, IoError> write_text_once(*const File file, []const char text) = .write_text_once;
+export Result<void, IoError> write_all(*const File file, []const u8 data) = .write_all;
+export Result<void, IoError> write_text(*const File file, []const char text) = .write_text;
 
 export []const char f32_to_string(f32 value);
 export []const char f64_to_string(f64 value);
 
-export Result<void, Error> write_value<T: printable>(File file, T value) = .write_value;
-export Result<void, Error> write_format(File file, []const char fmt, []printable values) = .write_format;
-export Result<void, Error> print_value<T: printable>(T value);
-export Result<void, Error> println_value<T: printable>(T value);
-export Result<void, Error> eprint_value<T: printable>(T value);
-export Result<void, Error> eprintln_value<T: printable>(T value);
-export Result<void, Error> print([]const char fmt, []printable values);
-export Result<void, Error> println([]const char fmt, []printable values);
-export Result<void, Error> eprint([]const char fmt, []printable values);
-export Result<void, Error> eprintln([]const char fmt, []printable values);
+export Result<void, IoError> write_value<T: printable>(*const File file, T value) = .write_value;
+export Result<void, IoError> write_format(*const File file, []const char fmt, []printable values) = .write_format;
+export Result<void, IoError> print_value<T: printable>(T value);
+export Result<void, IoError> println_value<T: printable>(T value);
+export Result<void, IoError> eprint_value<T: printable>(T value);
+export Result<void, IoError> eprintln_value<T: printable>(T value);
+export Result<void, IoError> print([]const char fmt, []printable values);
+export Result<void, IoError> println([]const char fmt, []printable values);
+export Result<void, IoError> eprint([]const char fmt, []printable values);
+export Result<void, IoError> eprintln([]const char fmt, []printable values);
 ```
 
 `/std/io` is a blocking I/O API over the current resource owner. `open_read`,
@@ -3022,6 +3054,9 @@ revocable `File` token. `close` closes the registry entry early and revokes all
 token copies. The scoped helpers use `resource::scoped`, so resources opened
 deep in the callback are closed when the helper returns unless they are moved
 out through the helper result.
+
+The scoped helpers return `IoWithError<E>` so open/setup failures, resource
+cleanup failures, and callback body failures can be matched separately.
 
 Every blocking I/O operation validates the file token through the common
 resource registry before touching the OS descriptor. This prevents stale tokens
@@ -3214,10 +3249,10 @@ export struct Channel<T> {
     *void handle;
 }
 
-export Result<Channel<T>, Error> make_channel<T: Message>();
-export Result<void, Error> channel_send<T: Message>(*const Channel<T> ch, T value) = .send;
-export Result<T, Error> channel_recv<T: Message>(*const Channel<T> ch) = .recv;
-export Result<void, Error> channel_close<T: Message>(*const Channel<T> ch) = .close;
+export Result<Channel<T>, ChannelError> make_channel<T: Message>();
+export Result<void, ChannelError> channel_send<T: Message>(*const Channel<T> ch, T value) = .send;
+export Result<T, ChannelError> channel_recv<T: Message>(*const Channel<T> ch) = .recv;
+export Result<void, ChannelError> channel_close<T: Message>(*const Channel<T> ch) = .close;
 ```
 
 ```ciel
@@ -3249,34 +3284,34 @@ export interface AtomicValue = atomic_value_marker;
 export unsafe interface<T> bool atomic_integer_marker(*const T value);
 export interface AtomicInteger = atomic_integer_marker;
 
-export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial);
-export Result<T, Error> atomic_load<T: AtomicValue>(
+export Result<Atomic<T>, AtomicError> make_atomic<T: AtomicValue>(T initial);
+export Result<T, AtomicError> atomic_load<T: AtomicValue>(
     *const Atomic<T> atomic,
     MemoryOrder order
 ) = .load;
-export Result<void, Error> atomic_store<T: AtomicValue>(
+export Result<void, AtomicError> atomic_store<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) = .store;
-export Result<T, Error> atomic_exchange<T: AtomicValue>(
+export Result<T, AtomicError> atomic_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) = .exchange;
-export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
+export Result<CompareExchange<T>, AtomicError> atomic_compare_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T expected,
     T desired,
     MemoryOrder success,
     MemoryOrder failure
 ) = .compare_exchange;
-export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
+export Result<T, AtomicError> atomic_fetch_add<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
 ) = .fetch_add;
-export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
+export Result<T, AtomicError> atomic_fetch_sub<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
@@ -3298,19 +3333,27 @@ export struct Update<T, R> {
     R result;
 }
 
-export interface<F, T -> R> Result<Update<T, R>, Error> update_value(
+export enum SyncWithError<E> {
+    Sync(SyncError),
+    Body(E),
+}
+
+export interface<F, T -> R, E> Result<Update<T, R>, E> update_value(
     *const F f,
     T value
 );
 
-export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial);
-export Result<R, Error> mutex_update<T: Message, F: update_value<T, R = _>>(
+export Result<Mutex<T>, SyncError> make_mutex<T: Message>(T initial);
+export Result<R, SyncWithError<E>> mutex_update<
+    T: Message,
+    F: update_value<T, R = _, E = _: ErrorTrait>
+>(
     *const Mutex<T> mutex,
     *const F f
 ) = .update;
-export Result<R, Error> mutex_with<T, R: Message>(
+export Result<R, SyncWithError<E>> mutex_with<T, R: Message, E: ErrorTrait>(
     *const Mutex<T> mutex,
-    Result<R, Error> |(*T)| body
+    Result<R, E> |(*T)| body
 ) = .with;
 ```
 
@@ -3353,13 +3396,13 @@ import /std/result;
 import /std/meta as meta;
 
 export interface<T> usize encoded_len(T value);
-export interface<T> Result<void, Error> put_be([]u8 out, T value);
-export interface<T> Result<void, Error> put_le([]u8 out, T value);
-export interface<T> Result<T, Error> get_be(meta::Type<T> tag, []const u8 data);
-export interface<T> Result<T, Error> get_le(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<void, CodecError> put_be([]u8 out, T value);
+export interface<T> Result<void, CodecError> put_le([]u8 out, T value);
+export interface<T> Result<T, CodecError> get_be(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, CodecError> get_le(meta::Type<T> tag, []const u8 data);
 
-export Result<[]u8, Error> encode_be<T: encoded_len + put_be>(T value);
-export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value);
+export Result<[]u8, CodecError> encode_be<T: encoded_len + put_be>(T value);
+export Result<[]u8, CodecError> encode_le<T: encoded_len + put_le>(T value);
 ```
 
 ```ciel
@@ -3420,19 +3463,19 @@ export unsafe struct ByteBuf {
     usize len;
 }
 
-export Result<ByteBuf, Error> byte_buf_new(usize capacity);
+export Result<ByteBuf, BufError> byte_buf_new(usize capacity);
 export usize byte_buf_len(*const ByteBuf buf) = .len;
 export void byte_buf_clear(*ByteBuf buf) = .clear;
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice;
 export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice;
-export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve;
-export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice;
-export Result<[]u8, Error> byte_buf_spare_mut_slice(
+export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve;
+export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice;
+export Result<[]u8, BufError> byte_buf_spare_mut_slice(
     *ByteBuf buf,
     usize additional
 ) = .spare_mut_slice;
-export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail;
-export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix;
+export Result<void, BufError> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail;
+export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix;
 ```
 
 `/std/buf` provides a GC-backed growable byte buffer. `ByteBuf` is an unsafe
@@ -3562,33 +3605,38 @@ export enum PopResult<K, V> {
     Empty,
 }
 
-export Result<HashMap<K, V>, Error> hash_map_new<K: map_key, V>();
+export Result<HashMap<K, V>, MapError> hash_map_new<K: map_key, V>();
 export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) = .len;
 export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear;
-export Result<bool, Error> hash_map_contains_key<K: map_key, V>(
+export Result<bool, MapError> hash_map_contains_key<K: map_key, V>(
     *const HashMap<K, V> map,
     K key
 ) = .contains_key;
-export Result<GetResult<V>, Error> hash_map_get<K: map_key, V: Message>(
+export Result<GetResult<V>, MapError> hash_map_get<K: map_key, V: Message>(
     *const HashMap<K, V> map,
     K key
 ) = .get;
-export Result<InsertResult<V>, Error> hash_map_insert<K: map_key, V>(
+export Result<InsertResult<V>, MapError> hash_map_insert<K: map_key, V>(
     *HashMap<K, V> map,
     K key,
     V value
 ) = .insert;
-export Result<RemoveResult<V>, Error> hash_map_remove<K: map_key, V>(
+export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
     *HashMap<K, V> map,
     K key
 ) = .remove;
-export Result<PopResult<K, V>, Error> hash_map_pop_any<K: map_key, V>(
+export Result<PopResult<K, V>, MapError> hash_map_pop_any<K: map_key, V>(
     *HashMap<K, V> map
 ) = .pop_any;
-export Result<R, Error> hash_map_with<K: map_key, V, R: Message>(
+export enum MapWithError<E> {
+    Map(MapError),
+    Body(E),
+}
+
+export Result<R, MapWithError<E>> hash_map_with<K: map_key, V, R: Message, E: ErrorTrait>(
     *HashMap<K, V> map,
     K key,
-    Result<R, Error> |(*V)| body
+    Result<R, E> |(*V)| body
 ) = .with;
 ```
 
@@ -3645,24 +3693,24 @@ export enum SharedMapPop<K, V> {
 
 export interface shared_map_key = map::map_key + Message;
 
-export Result<SharedMap<K, V>, Error> shared_map_new<K: shared_map_key, V: Message>();
-export Result<map::InsertResult<V>, Error> shared_map_insert<K: shared_map_key, V: Message>(
+export Result<SharedMap<K, V>, SharedMapError> shared_map_new<K: shared_map_key, V: Message>();
+export Result<map::InsertResult<V>, SharedMapError> shared_map_insert<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key,
     V value
 ) = .insert;
-export Result<SharedMapGet<V>, Error> shared_map_get<K: shared_map_key, V: Message>(
+export Result<SharedMapGet<V>, SharedMapError> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
 ) = .get;
-export Result<SharedMapGet<V>, Error> shared_map_remove<K: shared_map_key, V: Message>(
+export Result<SharedMapGet<V>, SharedMapError> shared_map_remove<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
 ) = .remove;
-export Result<SharedMapPop<K, V>, Error> shared_map_pop_any<K: shared_map_key, V: Message>(
+export Result<SharedMapPop<K, V>, SharedMapError> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) = .pop_any;
-export Result<usize, Error> shared_map_len<K: shared_map_key, V: Message>(
+export Result<usize, SharedMapError> shared_map_len<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) = .len;
 ```
@@ -3754,8 +3802,8 @@ depend on nested private adapter structs.
 // /std/time
 import /std/result;
 
-export Result<u64, Error> monotonic_ms();
-export Result<void, Error> sleep_ms(u64 ms);
+export Result<u64, TimeError> monotonic_ms();
+export Result<void, TimeError> sleep_ms(u64 ms);
 ```
 
 `/std/time` provides blocking wall-clock-independent timing helpers. The
@@ -3770,13 +3818,13 @@ tasks and actor continuations that must stay non-blocking should use
 // /std/env
 import /std/result;
 
-export Result<usize, Error> args_len();
-export Result<[]const char, Error> arg(usize index);
+export Result<usize, EnvError> args_len();
+export Result<[]const char, EnvError> arg(usize index);
 ```
 
 `/std/env` exposes process command-line arguments as stable read-only character
 slices. Index `0` is the host-provided executable argument. `arg` returns a
-standard `Error` when the index is outside the current `args_len`. Environment
+`EnvError` when the index is outside the current `args_len`. Environment
 variables, working-directory access, process spawning, and path search are
 reserved for later modules.
 
@@ -3813,47 +3861,47 @@ export enum MacAlgorithm {
 export []const char hash_algorithm_name(HashAlgorithm algorithm) = .name;
 export []const char mac_algorithm_name(MacAlgorithm algorithm) = .name;
 
-export Result<void, Error> random_bytes([]u8 out);
-export Result<SystemRng, Error> system_rng();
-export Result<void, Error> rng_random_bytes(SystemRng rng, []u8 out) = .random_bytes;
+export Result<void, CryptoError> random_bytes([]u8 out);
+export Result<SystemRng, CryptoError> system_rng();
+export Result<void, CryptoError> rng_random_bytes(SystemRng rng, []u8 out) = .random_bytes;
 
-export Result<usize, Error> hash_once(
+export Result<usize, CryptoError> hash_once(
     []const char algorithm,
     []const u8 data,
     []u8 out
 );
 
-export Result<usize, Error> hash_once_alg(
+export Result<usize, CryptoError> hash_once_alg(
     HashAlgorithm algorithm,
     []const u8 data,
     []u8 out
 ) = .hash_once;
 
-export Result<Hash, Error> hash_new([]const char algorithm);
-export Result<Hash, Error> hash_new_alg(HashAlgorithm algorithm) = .new_hash;
-export Result<void, Error> hash_update(Hash hash, []const u8 data) = .update;
-export Result<usize, Error> hash_finish(Hash hash, []u8 out) = .finish;
-export Result<void, Error> hash_clear(Hash hash) = .clear;
+export Result<Hash, CryptoError> hash_new([]const char algorithm);
+export Result<Hash, CryptoError> hash_new_alg(HashAlgorithm algorithm) = .new_hash;
+export Result<void, CryptoError> hash_update(Hash hash, []const u8 data) = .update;
+export Result<usize, CryptoError> hash_finish(Hash hash, []u8 out) = .finish;
+export Result<void, CryptoError> hash_clear(Hash hash) = .clear;
 
-export Result<usize, Error> mac_once(
+export Result<usize, CryptoError> mac_once(
     []const char algorithm,
     []const u8 key,
     []const u8 data,
     []u8 out
 );
 
-export Result<usize, Error> mac_once_alg(
+export Result<usize, CryptoError> mac_once_alg(
     MacAlgorithm algorithm,
     []const u8 key,
     []const u8 data,
     []u8 out
 ) = .mac_once;
 
-export Result<Mac, Error> mac_new([]const char algorithm, []const u8 key);
-export Result<Mac, Error> mac_new_alg(MacAlgorithm algorithm, []const u8 key) = .new_mac;
-export Result<void, Error> mac_update(Mac mac, []const u8 data) = .update;
-export Result<usize, Error> mac_finish(Mac mac, []u8 out) = .finish;
-export Result<void, Error> mac_clear(Mac mac) = .clear;
+export Result<Mac, CryptoError> mac_new([]const char algorithm, []const u8 key);
+export Result<Mac, CryptoError> mac_new_alg(MacAlgorithm algorithm, []const u8 key) = .new_mac;
+export Result<void, CryptoError> mac_update(Mac mac, []const u8 data) = .update;
+export Result<usize, CryptoError> mac_finish(Mac mac, []u8 out) = .finish;
+export Result<void, CryptoError> mac_clear(Mac mac) = .clear;
 
 export bool constant_time_eq([]const u8 left, []const u8 right);
 ```
@@ -3862,7 +3910,7 @@ export bool constant_time_eq([]const u8 left, []const u8 right);
 C FFI in the first runtime. `random_bytes` uses the system CSPRNG directly.
 `SystemRng` is an explicit reusable CSPRNG handle. One-shot and streaming hash
 and MAC APIs write into caller-provided output buffers and return the number of
-bytes written. A too-small output buffer returns a standard `Error`.
+bytes written. A too-small output buffer returns `CryptoError`.
 
 The recommended algorithm names are `SHA-256`, `SHA-384`, `SHA-512`,
 `HMAC(SHA-256)`, `HMAC(SHA-384)`, and `HMAC(SHA-512)`. Application code should
@@ -3872,7 +3920,7 @@ surfaces and compatibility with older peers; after rejecting empty names,
 embedded NUL bytes, and overly long algorithm names, the runtime passes the
 algorithm name through to Botan. HMAC keys shorter than 16 bytes are rejected.
 When Botan reports an error, `/std/crypto` surfaces Botan's error description as
-a standard text error.
+`CryptoError::Backend`.
 
 `SystemRng` implements `Message` as a shareable handle because Botan's system
 RNG is thread-safe. `Hash` and `Mac` are unsafe runtime-backed handle structs
@@ -3903,43 +3951,49 @@ export resource unsafe struct TcpStream {
     resource::Handle handle;
 }
 
-export Result<SocketAddr, Error> parse_addr([]const char text) = .parse_addr;
-export Result<SocketAddr, Error> resolve_tcp([]const char host, u16 port) = .resolve_tcp;
-export Result<AddressFamily, Error> addr_family(SocketAddr addr) = .family;
-export Result<u16, Error> addr_port(SocketAddr addr) = .port;
-export Result<usize, Error> addr_write(SocketAddr addr, []char out) = .write;
-export Result<[]const char, Error> addr_to_string(SocketAddr addr) = .to_string;
+export Result<SocketAddr, NetError> parse_addr([]const char text) = .parse_addr;
+export Result<SocketAddr, NetError> resolve_tcp([]const char host, u16 port) = .resolve_tcp;
+export Result<AddressFamily, NetError> addr_family(SocketAddr addr) = .family;
+export Result<u16, NetError> addr_port(SocketAddr addr) = .port;
+export Result<usize, NetError> addr_write(SocketAddr addr, []char out) = .write;
+export Result<[]const char, NetError> addr_to_string(SocketAddr addr) = .to_string;
 
-export Result<TcpListener, Error> tcp_listen(SocketAddr addr) = .listen;
-export Result<TcpStream, Error> tcp_accept(TcpListener listener) = .accept;
-export Result<TcpStream, Error> tcp_connect(SocketAddr addr) = .connect;
-export Result<TcpStream, Error> tcp_connect_host([]const char host, u16 port);
-export Result<usize, Error> tcp_read(*const TcpStream stream, []u8 out) = .read;
-export Result<usize, Error> tcp_write(*const TcpStream stream, []const u8 data) = .write;
-export Result<void, Error> tcp_write_all(*const TcpStream stream, []const u8 data) = .write_all;
-export Result<void, Error> tcp_shutdown_read(*const TcpStream stream) = .shutdown_read;
-export Result<void, Error> tcp_shutdown_write(*const TcpStream stream) = .shutdown_write;
-export Result<void, Error> tcp_shutdown(*const TcpStream stream) = .shutdown;
-export Result<void, Error> tcp_close(TcpStream stream) = .close;
-export Result<void, Error> listener_close(TcpListener listener) = .close;
-export Result<SocketAddr, Error> listener_addr(*const TcpListener listener) = .addr;
-export Result<SocketAddr, Error> stream_local_addr(*const TcpStream stream) = .local_addr;
-export Result<SocketAddr, Error> stream_peer_addr(*const TcpStream stream) = .peer_addr;
+export Result<TcpListener, NetError> tcp_listen(SocketAddr addr) = .listen;
+export Result<TcpStream, NetError> tcp_accept(*const TcpListener listener) = .accept;
+export Result<TcpStream, NetError> tcp_connect(SocketAddr addr) = .connect;
+export Result<TcpStream, NetError> tcp_connect_host([]const char host, u16 port);
+export Result<usize, NetError> tcp_read(*const TcpStream stream, []u8 out) = .read;
+export Result<usize, NetError> tcp_write(*const TcpStream stream, []const u8 data) = .write;
+export Result<void, NetError> tcp_write_all(*const TcpStream stream, []const u8 data) = .write_all;
+export Result<void, NetError> tcp_shutdown_read(*const TcpStream stream) = .shutdown_read;
+export Result<void, NetError> tcp_shutdown_write(*const TcpStream stream) = .shutdown_write;
+export Result<void, NetError> tcp_shutdown(*const TcpStream stream) = .shutdown;
+export Result<void, NetError> tcp_close(TcpStream @stream) = .close;
+export Result<void, NetError> listener_close(TcpListener @listener) = .close;
+export Result<SocketAddr, NetError> listener_addr(*const TcpListener listener) = .addr;
+export Result<SocketAddr, NetError> stream_local_addr(*const TcpStream stream) = .local_addr;
+export Result<SocketAddr, NetError> stream_peer_addr(*const TcpStream stream) = .peer_addr;
 
-export Result<R, Error> with_tcp_connect<R>(
+export enum NetWithError<E> {
+    Net(NetError),
+    ResourceCleanup(resource::ResourceError),
+    Body(E),
+}
+
+export Result<R, NetWithError<E>> with_tcp_connect<R, E: ErrorTrait>(
     SocketAddr addr,
-    Result<R, Error> |(TcpStream)| body
+    Result<R, E> |(TcpStream)| body
 ) = .with_connect;
 
-export Result<R, Error> with_tcp_connect_host<R>(
+export Result<R, NetWithError<E>> with_tcp_connect_host<R, E: ErrorTrait>(
     []const char host,
     u16 port,
-    Result<R, Error> |(TcpStream)| body
+    Result<R, E> |(TcpStream)| body
 ) = .with_tcp_connect;
 
-export Result<R, Error> with_tcp_listen<R>(
+export Result<R, NetWithError<E>> with_tcp_listen<R, E: ErrorTrait>(
     SocketAddr addr,
-    Result<R, Error> |(TcpListener)| body
+    Result<R, E> |(TcpListener)| body
 ) = .with_listen;
 ```
 
@@ -3959,6 +4013,9 @@ operate on a reused descriptor. The scoped `with_tcp_*` helpers follow the
 `/std/io` pattern and close resources that remain in the helper's child owner
 on normal and error returns from the body.
 
+The scoped `with_tcp_*` helpers return `NetWithError<E>` so network setup,
+resource cleanup, and body failures remain separate matchable domains.
+
 ```ciel
 // /std/async/bytes
 export import /std/result;
@@ -3967,15 +4024,15 @@ export struct Bytes {
     *void handle;
 }
 
-export Result<Bytes, Error> bytes_copy([]const u8 data);
-export Result<Bytes, Error> bytes_copy_chars([]const char text);
-export Result<Bytes, Error> bytes_concat([]const u8 left, []const u8 right);
-export Result<Bytes, Error> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend;
-export Result<Bytes, Error> bytes_slice(Bytes bytes, usize offset, usize len) = .slice;
+export Result<Bytes, BytesError> bytes_copy([]const u8 data);
+export Result<Bytes, BytesError> bytes_copy_chars([]const char text);
+export Result<Bytes, BytesError> bytes_concat([]const u8 left, []const u8 right);
+export Result<Bytes, BytesError> bytes_prepend([]const u8 prefix, Bytes bytes) = bytes.prepend;
+export Result<Bytes, BytesError> bytes_slice(Bytes bytes, usize offset, usize len) = .slice;
 export usize bytes_len(Bytes bytes) = .len;
 export usize bytes_capacity(Bytes bytes) = .capacity;
-export Result<usize, Error> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to;
-export Result<usize, Error> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars;
+export Result<usize, BytesError> bytes_copy_to(Bytes bytes, []u8 out) = .copy_to;
+export Result<usize, BytesError> bytes_copy_to_chars(Bytes bytes, []char out) = .copy_to_chars;
 ```
 
 `/std/async/bytes` is the implementation module for immutable runtime-backed
@@ -3989,10 +4046,10 @@ such as async TCP `read_into`, where a returned buffer can be reused.
 // /std/bytes
 export import /std/async/bytes;
 
-export Result<Bytes, Error> bytes_empty();
-export Result<Bytes, Error> bytes_from_text([]const char text);
-export Result<[]u8, Error> bytes_to_slice(Bytes bytes) = .to_slice;
-export Result<Bytes, Error> bytes_append(Bytes left, Bytes right) = .append;
+export Result<Bytes, BytesError> bytes_empty();
+export Result<Bytes, BytesError> bytes_from_text([]const char text);
+export Result<[]u8, BytesError> bytes_to_slice(Bytes bytes) = .to_slice;
+export Result<Bytes, BytesError> bytes_append(Bytes left, Bytes right) = .append;
 ```
 
 `Bytes` is the general immutable owned byte buffer used by async file and TCP
@@ -4010,12 +4067,12 @@ export struct Text {
     bytes::Bytes bytes;
 }
 
-export Result<Text, Error> text_empty();
-export Result<Text, Error> text_copy([]const char text);
+export Result<Text, TextError> text_empty();
+export Result<Text, TextError> text_copy([]const char text);
 export usize text_len(Text text) = .len;
-export Result<bytes::Bytes, Error> text_to_bytes(Text text) = .to_bytes;
-export Result<[]char, Error> text_to_chars(Text text) = .to_chars;
-export Result<[]const char, Error> text_to_slice(Text text) = .slice;
+export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes;
+export Result<[]char, TextError> text_to_chars(Text text) = .to_chars;
+export Result<[]const char, TextError> text_to_slice(Text text) = .slice;
 ```
 
 `/std/text` wraps immutable owned bytes as text-oriented data. It does not yet
@@ -4044,20 +4101,20 @@ export interface Abortable = abort_future;
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
 export Out block_on<A: Awaitable<Out = _> + Abortable>(A future);
-export Future<Result<Out, Error>> future_from_op<Op: adapter::OperationFuture<Out = _>>(Op op);
+export Future<Result<Out, AsyncError>> future_from_op<Op: adapter::OperationFuture<Out = _>>(Op op);
 
-export Error timeout_error();
-export Error channel_closed_error();
+export AsyncError timeout_error();
+export AsyncError channel_closed_error();
 
 export struct Task<T> {
     *void handle;
 }
 
-export Result<Task<T>, Error> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
+export Result<Task<T>, AsyncError> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
     A body
 );
-export Result<void, Error> cancel<T>(*const Task<T> task) = .cancel;
-export Result<bool, Error> is_finished<T>(*const Task<T> task) = .is_finished;
+export Result<void, AsyncError> cancel<T>(*const Task<T> task) = .cancel;
+export Result<bool, AsyncError> is_finished<T>(*const Task<T> task) = .is_finished;
 
 export struct Sender<T> {
     *void handle;
@@ -4076,29 +4133,37 @@ export struct ChannelPair<T> {
     Receiver<T> receiver;
 }
 
-export Result<ChannelPair<T>, Error> channel<T>(usize capacity);
-export async Result<void, Error> send<T>(Sender<T> sender, T value) = .send;
-export Result<void, Error> try_send<T>(Sender<T> sender, T value) = .try_send;
-export async Result<SendPermit<T>, Error> reserve<T>(Sender<T> sender) = .reserve;
-export Result<void, Error> permit_send<T>(SendPermit<T> permit, T value) = .send;
-export async Result<T, Error> recv<T>(Receiver<T> receiver) = .recv;
-export Result<void, Error> close<T>(Sender<T> sender) = .close;
-export Result<void, Error> close_receiver<T>(Receiver<T> receiver) = .close;
+export Result<ChannelPair<T>, AsyncError> channel<T>(usize capacity);
+export async Result<void, AsyncError> send<T>(Sender<T> sender, T value) = .send;
+export Result<void, AsyncError> try_send<T>(Sender<T> sender, T value) = .try_send;
+export async Result<SendPermit<T>, AsyncError> reserve<T>(Sender<T> sender) = .reserve;
+export Result<void, AsyncError> permit_send<T>(SendPermit<T> permit, T value) = .send;
+export async Result<T, AsyncError> recv<T>(Receiver<T> receiver) = .recv;
+export Result<void, AsyncError> close<T>(Sender<T> sender) = .close;
+export Result<void, AsyncError> close_receiver<T>(Receiver<T> receiver) = .close;
 
 export struct TaskGroup<T> {
     *void handle;
 }
 
-export Result<TaskGroup<T>, Error> task_group<T>();
-export Result<void, Error> group_add<T>(*const TaskGroup<T> group, Task<T> task) = .add;
+export Result<TaskGroup<T>, AsyncError> task_group<T>();
+export Result<void, AsyncError> group_add<T>(*const TaskGroup<T> group, Task<T> task) = .add;
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next;
-export Result<void, Error> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
-export Result<void, Error> group_close<T>(*const TaskGroup<T> group) = .close;
-export async Result<R, Error> with_task_group<T: Message, R>(
-    Future<Result<R, Error>> |(*const TaskGroup<T>)| body
+export Result<void, AsyncError> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
+export Result<void, AsyncError> group_close<T>(*const TaskGroup<T> group) = .close;
+
+export enum TaskGroupError<E> {
+    TaskGroupAsync(AsyncError),
+    TaskGroupBody(E),
+    TaskGroupCleanup(AsyncError),
+    TaskGroupBodyCleanup(E, AsyncError),
+}
+
+export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
+    Future<Result<R, E>> |(*const TaskGroup<T>)| body
 ) = .with_task_group;
 
-export async Result<Out, Error> timeout<A: SelectableFuture<Out = _>>(
+export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
     A future,
     u64 ms
 );
@@ -4135,7 +4200,10 @@ results in completion order without cancelling unfinished tasks. `group_cancel_a
 aborts unfinished tasks through `Abortable`, and `group_close` releases the
 remaining group handle state. `with_task_group` creates a group for an async
 body and closes it on return or cancellation, cancelling unfinished tasks before
-closing the group.
+closing the group. On normal return paths it reports group creation and async
+runtime failures as `TaskGroupAsync`, body failures as `TaskGroupBody`, cleanup
+failures as `TaskGroupCleanup`, and the combination of body plus cleanup
+failure as `TaskGroupBodyCleanup`.
 
 `timeout` races a selectable future with a timer. Timing out cancels only the
 waiter future; it does not assume that an arbitrary underlying protocol can
@@ -4195,32 +4263,32 @@ export resource unsafe struct AsyncWrite {
     resource::Handle handle;
 }
 
-export Result<AsyncFd, Error> open_async([]const char path, io::OpenMode mode) = .open_async;
-export Result<AsyncFd, Error> open_async_read([]const char path) = .open_async_read;
-export Result<AsyncFd, Error> create_async([]const char path) = .create_async;
-export Result<AsyncFd, Error> append_async([]const char path) = .append_async;
-export unsafe Result<AsyncFd, Error> async_from_raw_fd(os_fd::RawFd fd);
-export Result<void, Error> close_async(AsyncFd @fd) = .close;
+export Result<AsyncFd, AsyncIoError> open_async([]const char path, io::OpenMode mode) = .open_async;
+export Result<AsyncFd, AsyncIoError> open_async_read([]const char path) = .open_async_read;
+export Result<AsyncFd, AsyncIoError> create_async([]const char path) = .create_async;
+export Result<AsyncFd, AsyncIoError> append_async([]const char path) = .append_async;
+export unsafe Result<AsyncFd, AsyncIoError> async_from_raw_fd(os_fd::RawFd fd);
+export Result<void, AsyncIoError> close_async(AsyncFd @fd) = .close;
 
-export Result<AsyncRead, Error> read_bytes_async(*const AsyncFd fd, usize max_len) = .read_async;
-export Result<AsyncWrite, Error> write_bytes_async(*const AsyncFd fd, Bytes data) = .write_async;
-export async Result<Bytes, Error> read_bytes(*const AsyncFd fd, usize max_len) = .read;
-export async Result<usize, Error> write_bytes(*const AsyncFd fd, Bytes data) = .write;
+export Result<AsyncRead, AsyncIoError> read_bytes_async(*const AsyncFd fd, usize max_len) = .read_async;
+export Result<AsyncWrite, AsyncIoError> write_bytes_async(*const AsyncFd fd, Bytes data) = .write_async;
+export async Result<Bytes, AsyncIoError> read_bytes(*const AsyncFd fd, usize max_len) = .read;
+export async Result<usize, AsyncIoError> write_bytes(*const AsyncFd fd, Bytes data) = .write;
 
-export Result<void, Error> notify_read_done<M: Message>(
+export Result<void, AsyncIoError> notify_read_done<M: Message>(
     *const AsyncRead op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> notify_write_done<M: Message>(
+export Result<void, AsyncIoError> notify_write_done<M: Message>(
     *const AsyncWrite op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<Bytes, Error> finish_read(AsyncRead op) = .finish;
-export Result<usize, Error> finish_write(AsyncWrite op) = .finish;
-export Result<void, Error> cancel_read(AsyncRead op) = .cancel;
-export Result<void, Error> cancel_write(AsyncWrite op) = .cancel;
+export Result<Bytes, AsyncIoError> finish_read(AsyncRead op) = .finish;
+export Result<usize, AsyncIoError> finish_write(AsyncWrite op) = .finish;
+export Result<void, AsyncIoError> cancel_read(AsyncRead op) = .cancel;
+export Result<void, AsyncIoError> cancel_write(AsyncWrite op) = .cancel;
 ```
 
 `/std/async_io` provides awaitable file-descriptor operations over the current
@@ -4303,112 +4371,112 @@ export struct ReadIntoResult {
     usize read;
 }
 
-export Result<AsyncTcpListener, Error> listen_async(net::SocketAddr addr) = .listen_async;
-export Result<net::SocketAddr, Error> listener_addr(*const AsyncTcpListener listener) = .addr;
-export Result<void, Error> close_listener(AsyncTcpListener @listener) = .close;
-export Result<AsyncAccept, Error> accept_async(*const AsyncTcpListener listener) = .accept_async;
-export Result<AsyncConnect, Error> connect_async(net::SocketAddr addr) = .connect_async;
-export async Result<AsyncTcpStream, Error> accept(*const AsyncTcpListener listener) = .accept;
-export async Result<AsyncTcpStream, Error> connect(net::SocketAddr addr);
-export async Result<AsyncTcpStream, Error> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout;
+export Result<AsyncTcpListener, AsyncNetError> listen_async(net::SocketAddr addr) = .listen_async;
+export Result<net::SocketAddr, AsyncNetError> listener_addr(*const AsyncTcpListener listener) = .addr;
+export Result<void, AsyncNetError> close_listener(AsyncTcpListener @listener) = .close;
+export Result<AsyncAccept, AsyncNetError> accept_async(*const AsyncTcpListener listener) = .accept_async;
+export Result<AsyncConnect, AsyncNetError> connect_async(net::SocketAddr addr) = .connect_async;
+export async Result<AsyncTcpStream, AsyncNetError> accept(*const AsyncTcpListener listener) = .accept;
+export async Result<AsyncTcpStream, AsyncNetError> connect(net::SocketAddr addr);
+export async Result<AsyncTcpStream, AsyncNetError> connect_timeout(net::SocketAddr addr, u64 ms) = .connect_timeout;
 
-export Result<void, Error> close_stream(AsyncTcpStream @stream) = .close;
-export Result<AsyncTcpSplit, Error> split(AsyncTcpStream @stream) = .split;
-export Result<AsyncTcpBufferedSplit, Error> buffered_split(
+export Result<void, AsyncNetError> close_stream(AsyncTcpStream @stream) = .close;
+export Result<AsyncTcpSplit, AsyncNetError> split(AsyncTcpStream @stream) = .split;
+export Result<AsyncTcpBufferedSplit, AsyncNetError> buffered_split(
     AsyncTcpStream @stream,
     usize capacity
 ) = .buffered_split;
-export Result<void, Error> shutdown_read(*const AsyncTcpStream stream) = .shutdown_read;
-export Result<void, Error> shutdown_read_half(*const AsyncTcpReadHalf half) = .shutdown_read;
-export Result<void, Error> shutdown_write(*const AsyncTcpStream stream) = .shutdown_write;
-export Result<void, Error> shutdown_write_half(*const AsyncTcpWriteHalf half) = .shutdown_write;
-export Result<net::SocketAddr, Error> stream_local_addr(*const AsyncTcpStream stream) = .local_addr;
-export Result<net::SocketAddr, Error> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr;
+export Result<void, AsyncNetError> shutdown_read(*const AsyncTcpStream stream) = .shutdown_read;
+export Result<void, AsyncNetError> shutdown_read_half(*const AsyncTcpReadHalf half) = .shutdown_read;
+export Result<void, AsyncNetError> shutdown_write(*const AsyncTcpStream stream) = .shutdown_write;
+export Result<void, AsyncNetError> shutdown_write_half(*const AsyncTcpWriteHalf half) = .shutdown_write;
+export Result<net::SocketAddr, AsyncNetError> stream_local_addr(*const AsyncTcpStream stream) = .local_addr;
+export Result<net::SocketAddr, AsyncNetError> stream_peer_addr(*const AsyncTcpStream stream) = .peer_addr;
 
-export Result<AsyncTcpRead, Error> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async;
-export Result<AsyncTcpReadInto, Error> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
-export Result<AsyncTcpWrite, Error> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async;
-export Result<AsyncTcpWrite, Error> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async;
-export async Result<Bytes, Error> read(*const AsyncTcpStream stream, usize max_len) = .read;
-export async Result<ReadIntoResult, Error> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into;
-export async Result<usize, Error> write(*const AsyncTcpStream stream, Bytes data) = .write;
-export async Result<usize, Error> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write;
-export async Result<AsyncTcpStream, Error> write_all(AsyncTcpStream @stream, Bytes data) = .write_all;
-export async Result<AsyncTcpWriteHalf, Error> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all;
+export Result<AsyncTcpRead, AsyncNetError> read_bytes(*const AsyncTcpStream stream, usize max_len) = .read_async;
+export Result<AsyncTcpReadInto, AsyncNetError> read_into_async(*const AsyncTcpStream stream, Bytes buffer) = .read_into_async;
+export Result<AsyncTcpWrite, AsyncNetError> write_bytes(*const AsyncTcpStream stream, Bytes data) = .write_async;
+export Result<AsyncTcpWrite, AsyncNetError> write_half_bytes(*const AsyncTcpWriteHalf half, Bytes data) = .write_async;
+export async Result<Bytes, AsyncNetError> read(*const AsyncTcpStream stream, usize max_len) = .read;
+export async Result<ReadIntoResult, AsyncNetError> read_into(*const AsyncTcpStream stream, Bytes buffer) = .read_into;
+export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, Bytes data) = .write;
+export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, Bytes data) = .write;
+export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, Bytes data) = .write_all;
+export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWriteHalf @half, Bytes data) = .write_all;
 
-export Result<BufferedStreamReader, Error> buffered_reader(
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader(
     AsyncTcpReadHalf @half,
     usize capacity
 ) = .buffered_reader;
-export Result<BufferedStreamReader, Error> buffered_reader_from_split(
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader_from_split(
     AsyncTcpSplit @split,
     usize capacity
 ) = .buffered_reader;
-export Result<BufferedStreamReader, Error> buffered_reader_from_stream(
+export Result<BufferedStreamReader, AsyncNetError> buffered_reader_from_stream(
     AsyncTcpStream @stream,
     usize capacity
 ) = .buffered_reader;
-export Result<AsyncTcpReadHalf, Error> into_read_half(BufferedStreamReader @reader) = .into_read_half;
-export Result<BufferedStreamReader, Error> take_buffered_split_reader(
+export Result<AsyncTcpReadHalf, AsyncNetError> into_read_half(BufferedStreamReader @reader) = .into_read_half;
+export Result<BufferedStreamReader, AsyncNetError> take_buffered_split_reader(
     *AsyncTcpBufferedSplit split_value
 );
-export Result<AsyncTcpWriteHalf, Error> take_buffered_split_write(
+export Result<AsyncTcpWriteHalf, AsyncNetError> take_buffered_split_write(
     *AsyncTcpBufferedSplit split_value
 );
-export Result<AsyncBufferedRead, Error> read_buffered_async(
+export Result<AsyncBufferedRead, AsyncNetError> read_buffered_async(
     *const BufferedStreamReader reader,
     usize max_len
 ) = .read_async;
-export Result<AsyncBufferedRead, Error> read_exact_buffered_async(
+export Result<AsyncBufferedRead, AsyncNetError> read_exact_buffered_async(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact_async;
-export async Result<Bytes, Error> read_buffered(
+export async Result<Bytes, AsyncNetError> read_buffered(
     *const BufferedStreamReader reader,
     usize max_len
 ) = .read;
-export async Result<Bytes, Error> read_exact_buffered(
+export async Result<Bytes, AsyncNetError> read_exact_buffered(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact;
 
-export Result<void, Error> notify_accept_done<M: Message>(
+export Result<void, AsyncNetError> notify_accept_done<M: Message>(
     *const AsyncAccept op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> notify_connect_done<M: Message>(
+export Result<void, AsyncNetError> notify_connect_done<M: Message>(
     *const AsyncConnect op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> notify_read_done<M: Message>(
+export Result<void, AsyncNetError> notify_read_done<M: Message>(
     *const AsyncTcpRead op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> notify_read_into_done<M: Message>(
+export Result<void, AsyncNetError> notify_read_into_done<M: Message>(
     *const AsyncTcpReadInto op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> notify_write_done<M: Message>(
+export Result<void, AsyncNetError> notify_write_done<M: Message>(
     *const AsyncTcpWrite op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
 
-export Result<AsyncTcpStream, Error> finish_accept(AsyncAccept op) = .finish;
-export Result<AsyncTcpStream, Error> finish_connect(AsyncConnect op) = .finish;
-export Result<Bytes, Error> finish_read(AsyncTcpRead op) = .finish;
-export Result<ReadIntoResult, Error> finish_read_into(AsyncTcpReadInto op) = .finish;
-export Result<usize, Error> finish_write(AsyncTcpWrite op) = .finish;
-export Result<void, Error> cancel_accept(AsyncAccept op) = .cancel;
-export Result<void, Error> cancel_connect(AsyncConnect op) = .cancel;
-export Result<void, Error> cancel_read(AsyncTcpRead op) = .cancel;
-export Result<void, Error> cancel_read_into(AsyncTcpReadInto op) = .cancel;
-export Result<void, Error> cancel_write(AsyncTcpWrite op) = .cancel;
-export Result<void, Error> cancel_buffered_read(AsyncBufferedRead op) = .cancel;
+export Result<AsyncTcpStream, AsyncNetError> finish_accept(AsyncAccept op) = .finish;
+export Result<AsyncTcpStream, AsyncNetError> finish_connect(AsyncConnect op) = .finish;
+export Result<Bytes, AsyncNetError> finish_read(AsyncTcpRead op) = .finish;
+export Result<ReadIntoResult, AsyncNetError> finish_read_into(AsyncTcpReadInto op) = .finish;
+export Result<usize, AsyncNetError> finish_write(AsyncTcpWrite op) = .finish;
+export Result<void, AsyncNetError> cancel_accept(AsyncAccept op) = .cancel;
+export Result<void, AsyncNetError> cancel_connect(AsyncConnect op) = .cancel;
+export Result<void, AsyncNetError> cancel_read(AsyncTcpRead op) = .cancel;
+export Result<void, AsyncNetError> cancel_read_into(AsyncTcpReadInto op) = .cancel;
+export Result<void, AsyncNetError> cancel_write(AsyncTcpWrite op) = .cancel;
+export Result<void, AsyncNetError> cancel_buffered_read(AsyncBufferedRead op) = .cancel;
 ```
 
 `/std/async_net` provides awaitable TCP operations over nonblocking runtime
@@ -4469,15 +4537,15 @@ export resource unsafe struct AsyncSleep {
     resource::Handle handle;
 }
 
-export Result<AsyncSleep, Error> sleep_ms_async(u64 ms);
-export async Result<void, Error> sleep_ms(u64 ms);
-export Result<void, Error> notify_sleep_done<M: Message>(
+export Result<AsyncSleep, AsyncTimeError> sleep_ms_async(u64 ms);
+export async Result<void, AsyncError> sleep_ms(u64 ms);
+export Result<void, AsyncTimeError> notify_sleep_done<M: Message>(
     *const AsyncSleep op,
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done;
-export Result<void, Error> finish_sleep(AsyncSleep op) = .finish;
-export Result<void, Error> cancel_sleep(AsyncSleep op) = .cancel;
+export Result<void, AsyncTimeError> finish_sleep(AsyncSleep op) = .finish;
+export Result<void, AsyncTimeError> cancel_sleep(AsyncSleep op) = .cancel;
 ```
 
 `/std/async_time` provides monotonic awaitable timers. Low-level `AsyncSleep`

@@ -6,12 +6,12 @@ import /std/async_time as async_time;
 import /std/panic;
 import /std/result;
 
-Result<Out, Error> drive_timeout<A: async::SelectableFuture<Out = _>>(A future) {
+Result<Out, async::AsyncError> drive_timeout<A: async::SelectableFuture<Out = _>>(A future) {
     return async::block_on(async::timeout(future, 100));
 }
 
 i32 main() {
-    Result<void, Error> slept = must(drive_timeout(async_time::sleep_ms(0)));
+    Result<void, async::AsyncError> slept = must(drive_timeout(async_time::sleep_ms(0)));
     must(slept);
     return 0;
 }

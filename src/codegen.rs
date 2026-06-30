@@ -26,14 +26,14 @@ use crate::{
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, clone_message_capability,
-        generated_future_output_ty, generated_future_ty_with_affine_state,
-        is_clone_message_capability, mangle_constraint_ref, mangle_ty_fragment, map_ty_children,
-        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_error_ty,
-        std_future_ty, std_meta_repr_marker_ty, std_result_ty, std_send_permit_ty, std_task_ty,
-        unify_ty,
+        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
+        clone_message_capability, generated_future_output_ty,
+        generated_future_ty_with_affine_state, is_clone_message_capability, mangle_constraint_ref,
+        mangle_ty_fragment, map_ty_children, meta_array_split_len, meta_named, meta_product_ty,
+        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
+        meta_sum_ty, retained_closure_capabilities, std_async_error_ty, std_error_code_ty,
+        std_error_trait_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
+        std_resource_error_ty, std_result_ty, std_send_permit_ty, std_task_ty, unify_ty,
     },
 };
 
@@ -641,7 +641,8 @@ impl<'a> CGenerator<'a> {
             | TExprKind::AsyncOpFuture { op: inner, .. }
             | TExprKind::AsyncSpawn { body: inner, .. }
             | TExprKind::RetainClosure { expr: inner, .. }
-            | TExprKind::MakeDynamicInterface { expr: inner, .. } => {
+            | TExprKind::MakeDynamicInterface { expr: inner, .. }
+            | TExprKind::ErrorBox { expr: inner, .. } => {
                 self.collect_resource_cleanup_expr(inner);
             }
             TExprKind::RawSliceFromPtr { ptr, len, .. } => {
@@ -690,6 +691,17 @@ impl<'a> CGenerator<'a> {
                     && let Some(Ty::Pointer { inner, .. }) = args.first().map(|arg| &arg.ty)
                 {
                     self.collect_resource_cleanup_ty(inner);
+                }
+                if let Some(scoped) = self.std_resource_scoped_call(callee) {
+                    let body_arg = match scoped {
+                        ResourceScopedCall::Default => args.first(),
+                        ResourceScopedCall::WithLimits => args.get(1),
+                    };
+                    if let Some(body_arg) = body_arg
+                        && let Some((body_ret_ty, _)) = callable_ret_params_ty(&body_arg.ty)
+                    {
+                        self.collect_resource_cleanup_ty(&body_ret_ty);
+                    }
                 }
                 self.collect_resource_cleanup_expr(callee);
                 for arg in args {
@@ -1377,6 +1389,10 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_array_returns(expr);
                 self.collect_ty_array_returns(concrete_ty);
             }
+            TExprKind::ErrorBox { expr, concrete_ty } => {
+                self.collect_expr_array_returns(expr);
+                self.collect_ty_array_returns(concrete_ty);
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_array_returns(receiver);
@@ -1423,7 +1439,7 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::AsyncOpFuture { op, output_ty } => {
                 self.collect_expr_array_returns(op);
-                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+                let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
                 self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
                 self.collect_ty_array_returns(&result_ty);
                 self.collect_ty_array_returns(output_ty);
@@ -1436,14 +1452,14 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_array_returns(sender);
                 self.collect_expr_array_returns(value);
                 self.collect_ty_array_returns(payload_ty);
-                let result_ty = std_result_ty(Ty::Void, std_error_ty());
+                let result_ty = std_result_ty(Ty::Void, std_async_error_ty());
                 self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
                 self.collect_ty_array_returns(&result_ty);
             }
             TExprKind::AsyncChannelReserve { sender, payload_ty } => {
                 self.collect_expr_array_returns(sender);
                 let result_ty =
-                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_error_ty());
+                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_async_error_ty());
                 self.collect_ty_array_returns(payload_ty);
                 self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
                 self.collect_ty_array_returns(&result_ty);
@@ -1453,7 +1469,7 @@ impl<'a> CGenerator<'a> {
                 payload_ty,
             } => {
                 self.collect_expr_array_returns(receiver);
-                let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+                let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
                 self.collect_ty_array_returns(payload_ty);
                 self.collect_ty_array_returns(&std_future_ty(result_ty.clone()));
                 self.collect_ty_array_returns(&result_ty);
@@ -1466,7 +1482,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_array_returns(sender);
                 self.collect_expr_array_returns(value);
                 self.collect_ty_array_returns(payload_ty);
-                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_async_error_ty()));
             }
             TExprKind::AsyncChannelPermitSend {
                 permit,
@@ -1476,7 +1492,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_array_returns(permit);
                 self.collect_expr_array_returns(value);
                 self.collect_ty_array_returns(payload_ty);
-                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_array_returns(&std_result_ty(Ty::Void, std_async_error_ty()));
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -1486,7 +1502,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_array_returns(&std_task_ty(task_output_ty.clone()));
                 self.collect_ty_array_returns(&std_result_ty(
                     std_task_ty(task_output_ty.clone()),
-                    std_error_ty(),
+                    std_async_error_ty(),
                 ));
             }
             TExprKind::AsyncTaskCancel {
@@ -1898,6 +1914,10 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_closure(concrete_ty);
                 self.collect_expr_closures(owner, expr);
             }
+            TExprKind::ErrorBox { expr, concrete_ty } => {
+                self.collect_ty_closure(concrete_ty);
+                self.collect_expr_closures(owner, expr);
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_closures(owner, receiver);
@@ -2159,6 +2179,22 @@ impl<'a> CGenerator<'a> {
                     );
                 }
             }
+            TExprKind::ErrorBox {
+                expr: inner,
+                concrete_ty,
+            } => {
+                self.collect_expr_dynamic(inner);
+                let dyn_ty = std_error_trait_ty();
+                self.collect_ty_dynamic(&dyn_ty);
+                self.collect_ty_dynamic(concrete_ty);
+                self.plan.dynamic_impls.insert(
+                    self.dynamic_impl_key(&dyn_ty, concrete_ty),
+                    DynamicImplUse {
+                        dyn_ty,
+                        concrete_ty: concrete_ty.clone(),
+                    },
+                );
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_dynamic(receiver);
@@ -2208,7 +2244,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_standard_error_code_dynamic();
                 self.collect_expr_dynamic(op);
                 self.collect_ty_dynamic(output_ty);
-                self.collect_ty_dynamic(&std_result_ty(output_ty.clone(), std_error_ty()));
+                self.collect_ty_dynamic(&std_result_ty(output_ty.clone(), std_async_error_ty()));
             }
             TExprKind::AsyncChannelSend {
                 sender,
@@ -2224,7 +2260,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_dynamic(sender);
                 self.collect_expr_dynamic(value);
                 self.collect_ty_dynamic(payload_ty);
-                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_async_error_ty()));
             }
             TExprKind::AsyncChannelReserve { sender, payload_ty } => {
                 self.collect_standard_error_code_dynamic();
@@ -2232,7 +2268,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_ty_dynamic(payload_ty);
                 self.collect_ty_dynamic(&std_result_ty(
                     std_send_permit_ty(payload_ty.clone()),
-                    std_error_ty(),
+                    std_async_error_ty(),
                 ));
             }
             TExprKind::AsyncChannelRecv {
@@ -2242,7 +2278,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_standard_error_code_dynamic();
                 self.collect_expr_dynamic(receiver);
                 self.collect_ty_dynamic(payload_ty);
-                self.collect_ty_dynamic(&std_result_ty(payload_ty.clone(), std_error_ty()));
+                self.collect_ty_dynamic(&std_result_ty(payload_ty.clone(), std_async_error_ty()));
             }
             TExprKind::AsyncChannelPermitSend {
                 permit,
@@ -2253,7 +2289,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_dynamic(permit);
                 self.collect_expr_dynamic(value);
                 self.collect_ty_dynamic(payload_ty);
-                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_dynamic(&std_result_ty(Ty::Void, std_async_error_ty()));
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -2591,7 +2627,9 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_locations(ptr);
                 self.collect_expr_locations(len);
             }
-            TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_locations(expr),
+            TExprKind::MakeDynamicInterface { expr, .. } | TExprKind::ErrorBox { expr, .. } => {
+                self.collect_expr_locations(expr)
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_locations(receiver);
@@ -2864,7 +2902,9 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_string_literals(ptr);
                 self.collect_expr_string_literals(len);
             }
-            TExprKind::MakeDynamicInterface { expr, .. } => self.collect_expr_string_literals(expr),
+            TExprKind::MakeDynamicInterface { expr, .. } | TExprKind::ErrorBox { expr, .. } => {
+                self.collect_expr_string_literals(expr)
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr_string_literals(receiver);
@@ -3080,7 +3120,7 @@ impl<'a> CGenerator<'a> {
             TExprKind::AsyncOpFuture { op, output_ty } => {
                 self.collect_expr_slices(op);
                 self.collect_ty_slice(output_ty);
-                let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+                let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.collect_ty_slice(&result_ty);
                 self.collect_ty_slice(&std_error_code_ty());
@@ -3094,7 +3134,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(sender);
                 self.collect_expr_slices(value);
                 self.collect_ty_slice(payload_ty);
-                let result_ty = std_result_ty(Ty::Void, std_error_ty());
+                let result_ty = std_result_ty(Ty::Void, std_async_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.collect_ty_slice(&result_ty);
                 self.collect_ty_slice(&std_error_code_ty());
@@ -3104,7 +3144,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(sender);
                 self.collect_ty_slice(payload_ty);
                 let result_ty =
-                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_error_ty());
+                    std_result_ty(std_send_permit_ty(payload_ty.clone()), std_async_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.collect_ty_slice(&result_ty);
                 self.collect_ty_slice(&std_error_code_ty());
@@ -3116,7 +3156,7 @@ impl<'a> CGenerator<'a> {
             } => {
                 self.collect_expr_slices(receiver);
                 self.collect_ty_slice(payload_ty);
-                let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+                let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
                 self.collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.collect_ty_slice(&result_ty);
                 self.collect_ty_slice(&std_error_code_ty());
@@ -3130,7 +3170,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(sender);
                 self.collect_expr_slices(value);
                 self.collect_ty_slice(payload_ty);
-                self.collect_ty_slice(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_slice(&std_result_ty(Ty::Void, std_async_error_ty()));
                 self.collect_ty_slice(&std_error_code_ty());
                 self.collect_ty_slice(&std_error_trait_ty());
             }
@@ -3142,7 +3182,7 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(permit);
                 self.collect_expr_slices(value);
                 self.collect_ty_slice(payload_ty);
-                self.collect_ty_slice(&std_result_ty(Ty::Void, std_error_ty()));
+                self.collect_ty_slice(&std_result_ty(Ty::Void, std_async_error_ty()));
                 self.collect_ty_slice(&std_error_code_ty());
                 self.collect_ty_slice(&std_error_trait_ty());
             }
@@ -3203,6 +3243,11 @@ impl<'a> CGenerator<'a> {
                 self.collect_expr_slices(len);
             }
             TExprKind::MakeDynamicInterface { expr, concrete_ty } => {
+                self.collect_ty_slice(concrete_ty);
+                self.collect_expr_slices(expr);
+            }
+            TExprKind::ErrorBox { expr, concrete_ty } => {
+                self.collect_ty_slice(&std_error_trait_ty());
                 self.collect_ty_slice(concrete_ty);
                 self.collect_expr_slices(expr);
             }
@@ -3574,10 +3619,8 @@ impl<'a> CGenerator<'a> {
             let ctx_name = self.async_sleep_context_name(&output_ty);
             let run_name = self.async_sleep_run_name(&output_ty);
             let cleanup_name = self.async_sleep_cleanup_name(&output_ty);
-            let layout = self.result_layout(
-                &output_ty,
-                crate::span::Span::new(crate::span::FileId(0), 0, 0),
-            )?;
+            let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
+            let layout = self.result_layout(&output_ty, span)?;
             self.line(&format!(
                 "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
             ));
@@ -3603,11 +3646,12 @@ impl<'a> CGenerator<'a> {
                 &format!("*out = {};", self.result_ok_literal(&layout, None)),
             );
             self.line_indent(1, "} else {");
+            let error_literal = self.async_error_runtime_literal("rc", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                    self.result_err_from_error_literal(&layout, &error_literal)
                 ),
             );
             self.line_indent(1, "}");
@@ -3677,7 +3721,7 @@ impl<'a> CGenerator<'a> {
             let ctx_name = self.async_op_context_name(&context.op_ty, &context.output_ty);
             let run_name = self.async_op_run_name(&context.op_ty, &context.output_ty);
             let cleanup_name = self.async_op_cleanup_name(&context.op_ty, &context.output_ty);
-            let result_ty = std_result_ty(context.output_ty.clone(), std_error_ty());
+            let result_ty = std_result_ty(context.output_ty.clone(), std_async_error_ty());
             let layout = self.result_layout(&result_ty, span)?;
             let raw_impl = self.async_op_impl_name("raw_operation", &[], &context.op_ty)?;
             let poll_impl = self.async_op_impl_name(
@@ -3706,7 +3750,10 @@ impl<'a> CGenerator<'a> {
                 3,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("EIO"))
+                    self.result_err_from_error_literal(
+                        &layout,
+                        &self.async_error_runtime_literal("EIO", span)?
+                    )
                 ),
             );
             self.line_indent(3, "return 0;");
@@ -3749,11 +3796,12 @@ impl<'a> CGenerator<'a> {
                 );
             }
             self.line_indent(1, "} else {");
+            let error_literal = self.async_error_runtime_literal("rc", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                    self.result_err_from_error_literal(&layout, &error_literal)
                 ),
             );
             self.line_indent(1, "}");
@@ -3891,7 +3939,7 @@ impl<'a> CGenerator<'a> {
             .cloned()
             .collect::<Vec<_>>()
         {
-            let result_ty = std_result_ty(Ty::Void, std_error_ty());
+            let result_ty = std_result_ty(Ty::Void, std_async_error_ty());
             let layout = self.result_layout(&result_ty, span)?;
             let ctx_name = self.async_channel_send_context_name(&payload_ty);
             let run_name = self.async_channel_send_run_name(&payload_ty);
@@ -3909,11 +3957,12 @@ impl<'a> CGenerator<'a> {
                 ),
             );
             self.line_indent(1, "if (ctx->init_failed) {");
+            let init_error = self.async_error_message_clone_literal("ctx->init_error", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, "ctx->init_error")
+                    self.result_err_from_error_literal(&layout, &init_error)
                 ),
             );
             self.line_indent(2, "return 0;");
@@ -3936,11 +3985,12 @@ impl<'a> CGenerator<'a> {
                 &format!("*out = {};", self.result_ok_literal(&layout, None)),
             );
             self.line_indent(1, "} else {");
+            let error_literal = self.async_error_channel_or_runtime_literal("rc", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                    self.result_err_from_error_literal(&layout, &error_literal)
                 ),
             );
             self.line_indent(1, "}");
@@ -3962,7 +4012,7 @@ impl<'a> CGenerator<'a> {
             .collect::<Vec<_>>()
         {
             let permit_ty = std_send_permit_ty(payload_ty.clone());
-            let result_ty = std_result_ty(permit_ty.clone(), std_error_ty());
+            let result_ty = std_result_ty(permit_ty.clone(), std_async_error_ty());
             let layout = self.result_layout(&result_ty, span)?;
             let ctx_name = self.async_channel_reserve_context_name(&payload_ty);
             let run_name = self.async_channel_reserve_run_name(&payload_ty);
@@ -3998,11 +4048,12 @@ impl<'a> CGenerator<'a> {
                 ),
             );
             self.line_indent(1, "} else {");
+            let error_literal = self.async_error_channel_or_runtime_literal("rc", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                    self.result_err_from_error_literal(&layout, &error_literal)
                 ),
             );
             self.line_indent(1, "}");
@@ -4023,7 +4074,7 @@ impl<'a> CGenerator<'a> {
             .cloned()
             .collect::<Vec<_>>()
         {
-            let result_ty = std_result_ty(payload_ty.clone(), std_error_ty());
+            let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
             let layout = self.result_layout(&result_ty, span)?;
             let ctx_name = self.async_channel_recv_context_name(&payload_ty);
             let run_name = self.async_channel_recv_run_name(&payload_ty);
@@ -4071,11 +4122,12 @@ impl<'a> CGenerator<'a> {
                 );
             }
             self.line_indent(1, "} else {");
+            let error_literal = self.async_error_channel_or_runtime_literal("rc", span)?;
             self.line_indent(
                 2,
                 &format!(
                     "*out = {};",
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal("rc"))
+                    self.result_err_from_error_literal(&layout, &error_literal)
                 ),
             );
             self.line_indent(1, "}");
@@ -5470,8 +5522,11 @@ impl<'a> CGenerator<'a> {
                     return self.emit_array_call_value(expr, call, stmt_indent);
                 }
                 if let Some(scoped) = self.std_resource_scoped_call(callee)
-                    && result_args(&self.program.checked.resolved, &expr.ty)
-                        .is_some_and(|(ok_ty, _)| self.type_is_affine(ok_ty))
+                    && result_args(&self.program.checked.resolved, &expr.ty).is_some_and(
+                        |(ok_ty, scoped_err_ty)| {
+                            self.type_is_affine(ok_ty) || self.type_is_affine(scoped_err_ty)
+                        },
+                    )
                 {
                     let Some(indent) = stmt_indent else {
                         return Err(vec![Diagnostic::new(
@@ -5566,6 +5621,19 @@ impl<'a> CGenerator<'a> {
                     )]);
                 };
                 self.emit_dynamic_interface_value(expr, inner, concrete_ty, indent)?
+            }
+            TExprKind::ErrorBox {
+                expr: inner,
+                concrete_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "error boxing needs statement lowering",
+                    )]);
+                };
+                let value = self.gen_expr_in_stmt(inner, indent)?;
+                self.emit_error_boxed_value(&value, concrete_ty, indent, expr.span)?
             }
             TExprKind::DynamicInterfaceCall {
                 interface_name,
@@ -8023,8 +8091,7 @@ impl<'a> CGenerator<'a> {
             self.emit_all_defers(indent + 1);
             if result_args(&self.program.checked.resolved, &return_ty).is_some() {
                 let layout = self.result_layout(&return_ty, span)?;
-                let err_value =
-                    self.result_err_from_error_literal(&layout, &self.error_code_literal(rc));
+                let err_value = self.result_err_from_runtime_literal(&layout, rc, span)?;
                 self.emit_async_output_store(&return_ty, &out_raw, &err_value, indent + 1);
                 self.line_indent(indent + 1, "return 0;");
             } else {
@@ -8343,8 +8410,7 @@ impl<'a> CGenerator<'a> {
         {
             self.line_indent(indent, &format!("if ({rc} != 0) {{"));
             let layout = self.result_layout(&expr.ty, expr.span)?;
-            let err_value =
-                self.result_err_from_error_literal(&layout, &self.error_code_literal(&rc));
+            let err_value = self.result_err_from_runtime_literal(&layout, &rc, expr.span)?;
             self.line_indent(indent + 1, &format!("{output} = {err_value};"));
             self.line_indent(indent, "}");
         } else {
@@ -8429,7 +8495,7 @@ impl<'a> CGenerator<'a> {
         self.emit_value_copy(&format!("{ctx}->op_value"), &op_value, &op.ty, indent);
 
         let raw = self.next_temp("async_op_future");
-        let result_ty = std_result_ty(output_ty.clone(), std_error_ty());
+        let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
         let (size_expr, align_expr) = self.future_result_layout_args(&result_ty);
         self.line_indent(
             indent,
@@ -8617,7 +8683,7 @@ impl<'a> CGenerator<'a> {
             indent,
             expr.span,
         )?;
-        self.emit_clone_error_jump(
+        self.emit_async_clone_error_jump(
             &result_temp,
             &result_layout,
             &clone,
@@ -8643,7 +8709,14 @@ impl<'a> CGenerator<'a> {
                 "int32_t {rc} = ciel_async_channel_try_send((CielAsyncSender *){sender_value}.handle, {value_arg});"
             ),
         );
-        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.emit_async_channel_result_from_rc(
+            &result_temp,
+            &result_layout,
+            &rc,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
         self.line_indent(indent, &format!("{done_label}:;"));
         Ok(result_temp)
     }
@@ -8667,7 +8740,7 @@ impl<'a> CGenerator<'a> {
             indent,
             expr.span,
         )?;
-        self.emit_clone_error_jump(
+        self.emit_async_clone_error_jump(
             &result_temp,
             &result_layout,
             &clone,
@@ -8693,7 +8766,14 @@ impl<'a> CGenerator<'a> {
                 "int32_t {rc} = ciel_async_send_permit_send((CielAsyncSendPermit *){permit_value}.handle, {value_arg});"
             ),
         );
-        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.emit_async_channel_result_from_rc(
+            &result_temp,
+            &result_layout,
+            &rc,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
         self.line_indent(indent, &format!("{done_label}:;"));
         Ok(result_temp)
     }
@@ -8753,10 +8833,11 @@ impl<'a> CGenerator<'a> {
             indent + 1,
             &format!(
                 "{result_temp} = {};",
-                self.result_err_from_error_literal(
+                self.result_err_from_runtime_literal(
                     &result_layout,
-                    &self.error_code_literal("errno == 0 ? EIO : errno")
-                )
+                    "errno == 0 ? EIO : errno",
+                    expr.span
+                )?
             ),
         );
         self.line_indent(indent + 1, &format!("goto {done_label};"));
@@ -8818,7 +8899,14 @@ impl<'a> CGenerator<'a> {
             indent,
             &format!("int32_t {rc} = ciel_task_cancel(({task_ptr})->handle);"),
         );
-        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.emit_async_runtime_result_from_rc(
+            &result_temp,
+            &result_layout,
+            &rc,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
         self.line_indent(
             indent,
             &format!(
@@ -8848,7 +8936,14 @@ impl<'a> CGenerator<'a> {
             indent,
             &format!("int32_t {rc} = ciel_task_is_finished(({task_ptr})->handle, &{finished});"),
         );
-        self.emit_runtime_result_from_rc(&result_temp, &result_layout, &rc, &done_label, indent);
+        self.emit_async_runtime_result_from_rc(
+            &result_temp,
+            &result_layout,
+            &rc,
+            &done_label,
+            indent,
+            expr.span,
+        )?;
         self.line_indent(
             indent,
             &format!(
@@ -8974,6 +9069,257 @@ impl<'a> CGenerator<'a> {
         } else {
             format!("({}){{ .tag = {} }}", layout.c_type, layout.err_index)
         }
+    }
+
+    fn enum_variant_literal(
+        &self,
+        enum_ty: &Ty,
+        variant_name: &str,
+        payloads: &[String],
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let c_type = self.c_type(enum_ty);
+        let Some(enm) = self
+            .program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == c_type)
+        else {
+            return Err(vec![Diagnostic::new(
+                span,
+                format!("internal error: missing enum layout for `{enum_ty}`"),
+            )]);
+        };
+        let Some((variant_index, variant)) = enm
+            .variants
+            .iter()
+            .enumerate()
+            .find(|(_, variant)| variant.name == variant_name)
+        else {
+            return Err(vec![Diagnostic::new(
+                span,
+                format!("internal error: enum `{enum_ty}` has no variant `{variant_name}`"),
+            )]);
+        };
+        if payloads.len() != variant.payload.len() {
+            return Err(vec![Diagnostic::new(
+                span,
+                format!(
+                    "internal error: enum variant `{variant_name}` expects {} payloads, got {}",
+                    variant.payload.len(),
+                    payloads.len()
+                ),
+            )]);
+        }
+        if payloads.is_empty() {
+            return Ok(format!("({c_type}){{ .tag = {variant_index} }}"));
+        }
+        let payload = payloads
+            .iter()
+            .zip(variant.payload.iter())
+            .enumerate()
+            .map(|(idx, (payload, payload_ty))| {
+                let payload = self.value_or_initializer_from_expr(payload_ty, payload);
+                format!("._{idx} = {payload}")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        Ok(format!(
+            "({c_type}){{ .tag = {variant_index}, .as.{variant_name} = {{ {payload} }} }}"
+        ))
+    }
+
+    fn enum_has_variant_with_payload(
+        &self,
+        enum_ty: &Ty,
+        variant_name: &str,
+        payload: &[Ty],
+    ) -> bool {
+        let c_type = self.c_type(enum_ty);
+        self.program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == c_type)
+            .and_then(|enm| {
+                enm.variants
+                    .iter()
+                    .find(|variant| variant.name == variant_name)
+            })
+            .is_some_and(|variant| variant.payload == payload)
+    }
+
+    fn async_error_runtime_literal(
+        &self,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        self.enum_variant_literal(
+            &std_async_error_ty(),
+            "Runtime",
+            &[format!("(int64_t)({code})")],
+            span,
+        )
+    }
+
+    fn async_error_message_clone_literal(
+        &self,
+        error: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        self.enum_variant_literal(
+            &std_async_error_ty(),
+            "MessageClone",
+            &[error.to_string()],
+            span,
+        )
+    }
+
+    fn async_error_channel_or_runtime_literal(
+        &self,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let closed =
+            self.enum_variant_literal(&std_async_error_ty(), "ChannelClosed", &[], span)?;
+        let runtime = self.async_error_runtime_literal(code, span)?;
+        Ok(format!(
+            "(({code}) == ciel_async_channel_closed_errno() ? {closed} : {runtime})"
+        ))
+    }
+
+    fn resource_error_runtime_literal(
+        &self,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        self.enum_variant_literal(
+            &std_resource_error_ty(),
+            "Runtime",
+            &[format!("(int64_t)({code})")],
+            span,
+        )
+    }
+
+    fn resource_scoped_resource_literal(
+        &self,
+        scoped_error_ty: &Ty,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let inner = self.resource_error_runtime_literal(code, span)?;
+        self.enum_variant_literal(scoped_error_ty, "Resource", &[inner], span)
+    }
+
+    fn resource_scoped_body_literal(
+        &self,
+        scoped_error_ty: &Ty,
+        body_error: Option<&str>,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let payloads = body_error
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        self.enum_variant_literal(scoped_error_ty, "Body", &payloads, span)
+    }
+
+    fn runtime_error_payload_for_result(
+        &self,
+        layout: &ResultLayout,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let Some(err_ty) = layout.err_payload_ty.as_ref() else {
+            return Ok("0".to_string());
+        };
+        if err_ty == &std_error_ty() {
+            return Ok(self.error_code_literal(code));
+        }
+        if err_ty == &std_async_error_ty() {
+            return self.async_error_runtime_literal(code, span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
+            let inner = self.async_error_runtime_literal(code, span)?;
+            return self.enum_variant_literal(err_ty, "Async", &[inner], span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "TaskGroupAsync", &[std_async_error_ty()]) {
+            let inner = self.async_error_runtime_literal(code, span)?;
+            return self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "Runtime", &[Ty::I64]) {
+            return self.enum_variant_literal(
+                err_ty,
+                "Runtime",
+                &[format!("(int64_t)({code})")],
+                span,
+            );
+        }
+        if self.enum_has_variant_with_payload(err_ty, "Resource", &[std_resource_error_ty()]) {
+            let inner = self.resource_error_runtime_literal(code, span)?;
+            return self.enum_variant_literal(err_ty, "Resource", &[inner], span);
+        }
+        Err(vec![Diagnostic::new(
+            span,
+            format!(
+                "internal error: cannot synthesize async runtime error for Result error type `{err_ty}`"
+            ),
+        )])
+    }
+
+    fn message_clone_payload_for_result(
+        &self,
+        layout: &ResultLayout,
+        error: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let Some(err_ty) = layout.err_payload_ty.as_ref() else {
+            return Ok("0".to_string());
+        };
+        if err_ty == &std_error_ty() {
+            return Ok(error.to_string());
+        }
+        if err_ty == &std_async_error_ty() {
+            return self.async_error_message_clone_literal(error, span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "MessageClone", &[std_error_ty()]) {
+            return self.enum_variant_literal(err_ty, "MessageClone", &[error.to_string()], span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
+            let inner = self.async_error_message_clone_literal(error, span)?;
+            return self.enum_variant_literal(err_ty, "Async", &[inner], span);
+        }
+        if self.enum_has_variant_with_payload(err_ty, "TaskGroupAsync", &[std_async_error_ty()]) {
+            let inner = self.async_error_message_clone_literal(error, span)?;
+            return self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span);
+        }
+        Err(vec![Diagnostic::new(
+            span,
+            format!(
+                "internal error: cannot synthesize async message-clone error for Result error type `{err_ty}`"
+            ),
+        )])
+    }
+
+    fn result_err_from_runtime_literal(
+        &self,
+        layout: &ResultLayout,
+        code: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let payload = self.runtime_error_payload_for_result(layout, code, span)?;
+        Ok(self.result_err_from_error_literal(layout, &payload))
+    }
+
+    fn result_err_from_message_clone_literal(
+        &self,
+        layout: &ResultLayout,
+        error: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let payload = self.message_clone_payload_for_result(layout, error, span)?;
+        Ok(self.result_err_from_error_literal(layout, &payload))
     }
 
     fn emit_error_boxed_value(
@@ -9781,6 +10127,31 @@ impl<'a> CGenerator<'a> {
         Ok(())
     }
 
+    fn emit_async_clone_error_jump(
+        &mut self,
+        result_temp: &str,
+        result_layout: &ResultLayout,
+        clone_result: &str,
+        cloned_ty: &Ty,
+        done_label: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<()> {
+        let clone_layout =
+            self.result_layout(&std_result_ty(cloned_ty.clone(), std_error_ty()), span)?;
+        self.line_indent(
+            indent,
+            &format!("if ({clone_result}.tag == {}) {{", clone_layout.err_index),
+        );
+        let clone_error = format!("{clone_result}.as.{}._0", clone_layout.err_name);
+        let err_value =
+            self.result_err_from_message_clone_literal(result_layout, &clone_error, span)?;
+        self.line_indent(indent + 1, &format!("{result_temp} = {err_value};"));
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
+        Ok(())
+    }
+
     fn emit_runtime_result_from_rc(
         &mut self,
         result_temp: &str,
@@ -9806,6 +10177,75 @@ impl<'a> CGenerator<'a> {
                 self.result_ok_literal(result_layout, None)
             ),
         );
+    }
+
+    fn emit_async_runtime_result_from_rc(
+        &mut self,
+        result_temp: &str,
+        result_layout: &ResultLayout,
+        rc: &str,
+        done_label: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<()> {
+        self.line_indent(indent, &format!("if ({rc} != 0) {{"));
+        let err_value = self.result_err_from_runtime_literal(result_layout, rc, span)?;
+        self.line_indent(indent + 1, &format!("{result_temp} = {err_value};"));
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
+        self.line_indent(
+            indent,
+            &format!(
+                "{result_temp} = {};",
+                self.result_ok_literal(result_layout, None)
+            ),
+        );
+        Ok(())
+    }
+
+    fn emit_async_channel_result_from_rc(
+        &mut self,
+        result_temp: &str,
+        result_layout: &ResultLayout,
+        rc: &str,
+        done_label: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<()> {
+        self.line_indent(indent, &format!("if ({rc} != 0) {{"));
+        let Some(err_ty) = result_layout.err_payload_ty.as_ref() else {
+            return Err(vec![Diagnostic::new(
+                span,
+                "internal error: async channel Result must have an Err payload",
+            )]);
+        };
+        let payload = if err_ty == &std_async_error_ty() {
+            self.async_error_channel_or_runtime_literal(rc, span)?
+        } else if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
+            let inner = self.async_error_channel_or_runtime_literal(rc, span)?;
+            self.enum_variant_literal(err_ty, "Async", &[inner], span)?
+        } else if self.enum_has_variant_with_payload(
+            err_ty,
+            "TaskGroupAsync",
+            &[std_async_error_ty()],
+        ) {
+            let inner = self.async_error_channel_or_runtime_literal(rc, span)?;
+            self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span)?
+        } else {
+            self.runtime_error_payload_for_result(result_layout, rc, span)?
+        };
+        let err_value = self.result_err_from_error_literal(result_layout, &payload);
+        self.line_indent(indent + 1, &format!("{result_temp} = {err_value};"));
+        self.line_indent(indent + 1, &format!("goto {done_label};"));
+        self.line_indent(indent, "}");
+        self.line_indent(
+            indent,
+            &format!(
+                "{result_temp} = {};",
+                self.result_ok_literal(result_layout, None)
+            ),
+        );
+        Ok(())
     }
 
     fn emit_actor_handle(&mut self, actor: &TExpr, indent: usize) -> DiagResult<String> {
@@ -9890,16 +10330,9 @@ impl<'a> CGenerator<'a> {
                 &format!("int32_t {transfer_rc} = {helper}({value});"),
             );
             self.line_indent(indent, &format!("if ({transfer_rc} != 0) {{"));
-            self.line_indent(
-                indent + 1,
-                &format!(
-                    "{result} = {};",
-                    self.result_err_from_error_literal(
-                        &layout,
-                        &self.error_code_literal(&transfer_rc)
-                    )
-                ),
-            );
+            let err_value =
+                self.result_err_from_runtime_literal(&layout, &transfer_rc, expr.span)?;
+            self.line_indent(indent + 1, &format!("{result} = {err_value};"));
             self.line_indent(indent, "}");
         } else {
             self.line_indent(indent, &format!("(void)({value});"));
@@ -9914,7 +10347,8 @@ impl<'a> CGenerator<'a> {
         scoped: ResourceScopedCall,
         indent: usize,
     ) -> DiagResult<String> {
-        let Some((ok_ty, _)) = result_args(&self.program.checked.resolved, &expr.ty) else {
+        let Some((ok_ty, scoped_err_ty)) = result_args(&self.program.checked.resolved, &expr.ty)
+        else {
             return Err(vec![Diagnostic::new(
                 expr.span,
                 "internal error: resource scoped call must return Result",
@@ -9954,6 +10388,59 @@ impl<'a> CGenerator<'a> {
         } else {
             None
         };
+        let Some((body_ret_ty, body_params)) = callable_ret_params_ty(&body_arg.ty) else {
+            return Err(vec![Diagnostic::new(
+                body_arg.span,
+                "internal error: resource scoped body is not callable",
+            )]);
+        };
+        if !body_params.is_empty() {
+            return Err(vec![Diagnostic::new(
+                body_arg.span,
+                "internal error: resource scoped body must not take arguments",
+            )]);
+        }
+        let Some((body_ok_ty, body_err_ty)) =
+            result_args(&self.program.checked.resolved, &body_ret_ty)
+        else {
+            return Err(vec![Diagnostic::new(
+                body_arg.span,
+                "internal error: resource scoped body must return Result",
+            )]);
+        };
+        if body_ok_ty != ok_ty {
+            return Err(vec![Diagnostic::new(
+                body_arg.span,
+                format!(
+                    "internal error: resource scoped body returns `{body_ok_ty}`, but scoped call returns `{ok_ty}`"
+                ),
+            )]);
+        }
+        if !self.enum_has_variant_with_payload(
+            scoped_err_ty,
+            "Resource",
+            &[std_resource_error_ty()],
+        ) {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                format!(
+                    "internal error: resource scoped error type `{scoped_err_ty}` has no Resource(ResourceError) variant"
+                ),
+            )]);
+        }
+        if !self.enum_has_variant_with_payload(
+            scoped_err_ty,
+            "Body",
+            std::slice::from_ref(body_err_ty),
+        ) {
+            return Err(vec![Diagnostic::new(
+                expr.span,
+                format!(
+                    "internal error: resource scoped error type `{scoped_err_ty}` has no Body({body_err_ty}) variant"
+                ),
+            )]);
+        }
+        let body_layout = self.result_layout(&body_ret_ty, body_arg.span)?;
 
         self.line_indent(
             indent,
@@ -9961,7 +10448,7 @@ impl<'a> CGenerator<'a> {
         );
         self.line_indent(
             indent,
-            &format!("{} = {{0}};", self.c_decl(&expr.ty, &body_result)),
+            &format!("{} = {{0}};", self.c_decl(&body_ret_ty, &body_result)),
         );
         match limits {
             Some(limits) => self.line_indent(
@@ -9976,11 +10463,13 @@ impl<'a> CGenerator<'a> {
             ),
         }
         self.line_indent(indent, &format!("if ({push_rc} != 0) {{"));
+        let push_error =
+            self.resource_scoped_resource_literal(scoped_err_ty, &push_rc, expr.span)?;
         self.line_indent(
             indent + 1,
             &format!(
                 "{result} = {};",
-                self.result_err_from_error_literal(&layout, &self.error_code_literal(&push_rc))
+                self.result_err_from_error_literal(&layout, &push_error)
             ),
         );
         self.line_indent(indent + 1, &format!("goto {done};"));
@@ -9988,53 +10477,77 @@ impl<'a> CGenerator<'a> {
 
         let body_call = self.callable_call_expr(&body_arg.ty, &body, &[])?;
         self.line_indent(indent, &format!("{body_result} = {body_call};"));
+        if self.type_is_affine(&body_ret_ty) {
+            let transfer_helper = self.resource_transfer_to_parent_name(&body_ret_ty);
+            self.line_indent(
+                indent,
+                &format!("int32_t {transfer_rc} = {transfer_helper}(&{body_result});"),
+            );
+        } else {
+            self.line_indent(indent, &format!("int32_t {transfer_rc} = 0;"));
+        }
         self.line_indent(
             indent,
-            &format!("if ({body_result}.tag == {}) {{", layout.ok_index),
-        );
-        let ok_value = format!("{body_result}.as.{}._0", layout.ok_name);
-        let transfer_helper = self.resource_transfer_to_parent_name(ok_ty);
-        self.line_indent(
-            indent + 1,
-            &format!("int32_t {transfer_rc} = {transfer_helper}(&{ok_value});"),
-        );
-        self.line_indent(
-            indent + 1,
             &format!("int32_t {close_rc} = ciel_resource_scope_close_current();"),
         );
-        self.line_indent(indent + 1, &format!("if ({transfer_rc} != 0) {{"));
-        let cleanup = self.resource_cleanup_call(ok_ty, &ok_value);
-        self.line_indent(indent + 2, &format!("{cleanup};"));
+        self.line_indent(indent, &format!("if ({transfer_rc} != 0) {{"));
+        self.line_indent(indent + 1, &format!("(void){close_rc};"));
+        let body_cleanup = self.resource_cleanup_call(&body_ret_ty, &body_result);
+        self.line_indent(indent + 1, &format!("{body_cleanup};"));
+        let transfer_error =
+            self.resource_scoped_resource_literal(scoped_err_ty, &transfer_rc, expr.span)?;
         self.line_indent(
-            indent + 2,
+            indent + 1,
             &format!(
                 "{result} = {};",
-                self.result_err_from_error_literal(&layout, &self.error_code_literal(&transfer_rc))
+                self.result_err_from_error_literal(&layout, &transfer_error)
             ),
         );
-        self.line_indent(indent + 2, &format!("goto {done};"));
-        self.line_indent(indent + 1, "}");
+        self.line_indent(indent + 1, &format!("goto {done};"));
+        self.line_indent(indent, "}");
+        self.line_indent(
+            indent,
+            &format!("if ({body_result}.tag == {}) {{", body_layout.ok_index),
+        );
+        let ok_value = body_layout
+            .ok_has_payload
+            .then(|| format!("{body_result}.as.{}._0", body_layout.ok_name));
         self.line_indent(indent + 1, &format!("if ({close_rc} != 0) {{"));
-        let cleanup = self.resource_cleanup_call(ok_ty, &ok_value);
-        self.line_indent(indent + 2, &format!("{cleanup};"));
+        self.line_indent(indent + 2, &format!("{body_cleanup};"));
+        let close_error =
+            self.resource_scoped_resource_literal(scoped_err_ty, &close_rc, expr.span)?;
         self.line_indent(
             indent + 2,
             &format!(
                 "{result} = {};",
-                self.result_err_from_error_literal(&layout, &self.error_code_literal(&close_rc))
+                self.result_err_from_error_literal(&layout, &close_error)
             ),
         );
         self.line_indent(indent + 2, &format!("goto {done};"));
         self.line_indent(indent + 1, "}");
-        self.line_indent(indent + 1, &format!("{result} = {body_result};"));
+        self.line_indent(
+            indent + 1,
+            &format!(
+                "{result} = {};",
+                self.result_ok_literal(&layout, ok_value.as_deref())
+            ),
+        );
         self.line_indent(indent + 1, &format!("goto {done};"));
         self.line_indent(indent, "} else {");
+        self.line_indent(indent + 1, &format!("(void){close_rc};"));
+        let body_error = if body_layout.err_has_payload {
+            let body_payload = format!("{body_result}.as.{}._0", body_layout.err_name);
+            self.resource_scoped_body_literal(scoped_err_ty, Some(&body_payload), expr.span)?
+        } else {
+            self.resource_scoped_body_literal(scoped_err_ty, None, expr.span)?
+        };
         self.line_indent(
             indent + 1,
-            &format!("int32_t {close_rc} = ciel_resource_scope_close_current();"),
+            &format!(
+                "{result} = {};",
+                self.result_err_from_error_literal(&layout, &body_error)
+            ),
         );
-        self.line_indent(indent + 1, &format!("(void){close_rc};"));
-        self.line_indent(indent + 1, &format!("{result} = {body_result};"));
         self.line_indent(indent + 1, &format!("goto {done};"));
         self.line_indent(indent, "}");
         self.line_indent(indent, &format!("{done}:;"));
@@ -11970,7 +12483,7 @@ impl<'a> CGenerator<'a> {
                         indent,
                         capture_expr.span,
                     )?;
-                    self.emit_clone_error_jump(
+                    self.emit_async_clone_error_jump(
                         result_temp,
                         result_layout,
                         &cloned,
@@ -12019,15 +12532,17 @@ impl<'a> CGenerator<'a> {
         if let (Some(result_temp), Some(result_layout), Some(done_label)) =
             (result_temp, result_layout, done_label)
         {
+            let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
             self.line_indent(indent, &format!("if ({raw} == NULL) {{"));
             self.line_indent(
                 indent + 1,
                 &format!(
                     "{result_temp} = {};",
-                    self.result_err_from_error_literal(
+                    self.result_err_from_runtime_literal(
                         result_layout,
-                        &self.error_code_literal("errno == 0 ? EIO : errno")
-                    )
+                        "errno == 0 ? EIO : errno",
+                        span
+                    )?
                 ),
             );
             self.line_indent(indent + 1, &format!("goto {done_label};"));
@@ -14056,6 +14571,7 @@ fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::Slice { .. }
         | TExprKind::Move(_)
         | TExprKind::MakeDynamicInterface { .. }
+        | TExprKind::ErrorBox { .. }
         | TExprKind::MetaAsRefRepr { .. }
         | TExprKind::MetaIntoRepr { .. }
         | TExprKind::MetaFromRepr { .. }

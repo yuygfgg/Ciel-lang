@@ -58,7 +58,7 @@ Result<void, Error> expect_row(sqlite::Step step) {
     return Err(text_error("bad sqlite step"));
 }
 
-Result<void, Error> expect_void_error(Result<void, Error> result) {
+Result<void, Error> expect_void_error(Result<void, sqlite::SqliteError> result) {
     switch (result) {
         case Ok:
             return Err(text_error("expected sqlite void error"));
@@ -68,7 +68,7 @@ Result<void, Error> expect_void_error(Result<void, Error> result) {
     return Err(text_error("bad sqlite error result"));
 }
 
-Result<void, Error> expect_usize_error(Result<usize, Error> result) {
+Result<void, Error> expect_usize_error(Result<usize, sqlite::SqliteError> result) {
     switch (result) {
         case Ok(_):
             return Err(text_error("expected sqlite usize error"));
@@ -78,7 +78,7 @@ Result<void, Error> expect_usize_error(Result<usize, Error> result) {
     return Err(text_error("bad sqlite error result"));
 }
 
-Result<void, Error> expect_i32_error(Result<i32, Error> result) {
+Result<void, Error> expect_i32_error<E>(Result<i32, E> result) {
     switch (result) {
         case Ok(_):
             return Err(text_error("expected sqlite i32 error"));
@@ -423,14 +423,15 @@ Result<void, Error> check_query(*const sqlite::Connection db) {
 }
 
 Result<i64, Error> count_items(*const sqlite::Connection db) {
-    return sqlite::with_statement<i64>(db, "SELECT count(*) FROM items", |stmt| {
+    i64 count = sqlite::with_statement<i64, Error>(db, "SELECT count(*) FROM items", |stmt| {
         expect_row(sqlite::step(&stmt)?)?;
         return Ok(sqlite::column_i64(&stmt, 0)?);
-    });
+    })?;
+    return Ok(count);
 }
 
 Result<void, Error> check_transactions(*const sqlite::Connection db) {
-    i32 tx = sqlite::with_transaction<i32>(db, |conn| {
+    i32 tx = sqlite::with_transaction<i32, Error>(db, |conn| {
         sqlite::exec(conn, "INSERT INTO items(id, name, score, payload, note) VALUES(10, 'delta', 1.0, X'01', NULL)")?;
         return Ok(33);
     })?;
@@ -438,7 +439,7 @@ Result<void, Error> check_transactions(*const sqlite::Connection db) {
         return Err(text_error("bad committed transaction"));
     }
 
-    expect_i32_error(sqlite::with_transaction<i32>(db, |conn| {
+    expect_i32_error(sqlite::with_transaction<i32, Error>(db, |conn| {
         sqlite::exec(conn, "INSERT INTO items(id, name, score, payload, note) VALUES(11, 'rollback', 2.0, X'02', NULL)")?;
         return Err(text_error("force rollback"));
     }))?;
@@ -449,7 +450,31 @@ Result<void, Error> check_transactions(*const sqlite::Connection db) {
 }
 
 Result<void, Error> check_error_paths(*const sqlite::Connection db) {
-    expect_void_error(sqlite::busy_timeout(db, -1))?;
+    switch (sqlite::busy_timeout(db, -1)) {
+        case Ok:
+            return Err(text_error("negative sqlite busy timeout accepted"));
+        case Err(error):
+            switch (error) {
+                case sqlite::NegativeBusyTimeout:
+                    {}
+                case sqlite::Resource(_):
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::Text(_):
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::Bytes(_):
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::MessageText(_):
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::Runtime(_):
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::Storage:
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::ShortCopy:
+                    return Err(text_error("expected negative sqlite busy timeout"));
+                case sqlite::InvalidState:
+                    return Err(text_error("expected negative sqlite busy timeout"));
+            }
+    }
     expect_void_error(sqlite::exec(db, "INSERT INTO missing_table VALUES(1)"))?;
     sqlite::Statement stmt = sqlite::prepare(db, "SELECT :ok")?;
     expect_usize_error(sqlite::bind_parameter_index(&stmt, ":missing"))?;
@@ -465,7 +490,7 @@ Result<i32, Error> check_memory_database() {
     sqlite::Connection detached = sqlite::open_memory()?;
     sqlite::close(detached)?;
 
-    return sqlite::with_memory<i32>(|db| {
+    i32 result = sqlite::with_memory<i32, Error>(|db| {
         if (sqlite::version().len == 0) {
             return Ok(10);
         }
@@ -510,11 +535,12 @@ Result<i32, Error> check_memory_database() {
         }
         sqlite::interrupt(&db);
         return Ok(0);
-    });
+    })?;
+    return Ok(result);
 }
 
 Result<void, Error> check_file_database([]const char path) {
-    sqlite::with_open<void>(path, |db| {
+    sqlite::with_open<void, Error>(path, |db| {
         create_items(&db)?;
         sqlite::exec(&db, "INSERT INTO items(id, name, score, payload, note) VALUES(1, 'file', 1.0, X'00', NULL)")?;
         return Ok;

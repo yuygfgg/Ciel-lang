@@ -327,6 +327,10 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
             }
+            TExprKind::ErrorBox { expr, .. } => {
+                self.scan_expr(expr);
+                self.escape_sources(expr);
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.scan_expr(receiver);
@@ -611,6 +615,7 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::Call { .. }
             | TExprKind::UnsafeBlock { value: None, .. }
             | TExprKind::MakeDynamicInterface { .. }
+            | TExprKind::ErrorBox { .. }
             | TExprKind::DynamicInterfaceCall { .. }
             | TExprKind::RetainedClosureInterfaceCall { .. }
             | TExprKind::CloneMessage { .. }

@@ -123,11 +123,11 @@ export Result<void, Error> stream_registry_close_all(StreamRegistry registry) {
 }
 
 export Result<[]const char, Error> auth_config_route(*const AuthConfig config) {
-    return config->route.text::slice();
+    return Ok(config->route.text::slice()?);
 }
 
 export Result<[]u8, Error> auth_config_psk(*const AuthConfig config) {
-    return config->psk.bytes::to_slice();
+    return Ok(config->psk.bytes::to_slice()?);
 }
 
 export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
@@ -135,12 +135,10 @@ export Result<[]u8, Error> bytes_to_slice(anet::Bytes bytes) {
     if (len > frame::max_payload_len()) {
         return Err(tunnel_error::protocol_error(tunnel_error::OversizedPayload(len)));
     }
-    return bytes::bytes_to_slice(bytes);
+    return Ok(bytes::bytes_to_slice(bytes)?);
 }
 
-export Result<anet::Bytes, Error> map_exact_frame_read(
-    Result<anet::Bytes, Error> read
-) {
+export Result<anet::Bytes, Error> map_exact_frame_read<E>(Result<anet::Bytes, E> read) {
     switch (read) {
         case Ok(bytes):
             return Ok(bytes);
@@ -183,7 +181,7 @@ export Result<FrameReadResult, Error> frame_reader_next(*FrameReader reader) {
 
 export Result<anet::Bytes, Error> empty_bytes() {
     [1]u8 empty = [0;];
-    return anet::bytes_copy(empty[..0]);
+    return Ok(anet::bytes_copy(empty[..0])?);
 }
 
 export void close_stream_silent(anet::AsyncTcpStream stream) {
@@ -205,7 +203,7 @@ export Result<anet::Bytes, Error> encode_frame_from_slice(
         length: payload.len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    return anet::bytes_concat(encoded_header, payload);
+    return Ok(anet::bytes_concat(encoded_header, payload)?);
 }
 
 export Result<anet::Bytes, Error> encode_frame_from_bytes(
@@ -222,7 +220,7 @@ export Result<anet::Bytes, Error> encode_frame_from_bytes(
         length: len as u32
     };
     []u8 encoded_header = tunnel_codec::encode_header(header)?;
-    return payload.anet::prepend(encoded_header);
+    return Ok(payload.anet::prepend(encoded_header)?);
 }
 
 export async Result<void, Error> send_control_bytes(
@@ -296,7 +294,12 @@ export Result<Result<void, Error>, Error> try_send_stream_event(
     async::Sender<meta::Repr<StreamEvent>> events,
     StreamEvent event
 ) {
-    return Ok(async::try_send<meta::Repr<StreamEvent>>(events, meta::into_repr(&event)));
+    switch (async::try_send<meta::Repr<StreamEvent>>(events, meta::into_repr(&event))) {
+        case Ok:
+            return Ok(Ok);
+        case Err(error):
+            return Ok(Err(error));
+    }
 }
 
 export Result<void, Error> notify_stream_local_closed(async::Sender<meta::Repr<StreamEvent>> events) {
@@ -360,7 +363,7 @@ export Result<async::Task<void>, Error> spawn_local_reader(
     async::Sender<anet::Bytes> control,
     async::Sender<meta::Repr<StreamEvent>> events
 ) {
-    return async::spawn<void>(local_stream_reader(stream_id, reader, control, events));
+    return Ok(async::spawn<void>(local_stream_reader(stream_id, reader, control, events))?);
 }
 
 export StreamEvent stream_event_from_message(meta::Repr<StreamEvent> message) {

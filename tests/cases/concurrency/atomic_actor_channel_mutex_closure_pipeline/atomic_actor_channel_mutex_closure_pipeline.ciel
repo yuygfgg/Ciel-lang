@@ -39,14 +39,14 @@ unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
     return Ok(*value);
 }
 
-impl update_value<i64, i64>(*const SetLast updater, i64 value) {
+impl update_value<i64, i64, SyncError>(*const SetLast updater, i64 value) {
     return Ok({
         value: updater->value,
         result: value,
     });
 }
 
-impl update_value<i64, i64>(*const ReadLast updater, i64 value) {
+impl update_value<i64, i64, SyncError>(*const ReadLast updater, i64 value) {
     return Ok({
         value: value,
         result: value,

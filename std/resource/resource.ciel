@@ -70,20 +70,47 @@ struct OwnerScope {
     u64 previous_owner_id;
 }
 
+// Errors produced by resource-owner and handle operations.
+export enum ResourceError {
+    Runtime(i64),
+}
+
+// Errors produced by scoped resource-owner helpers.
+export enum ScopedError<E> {
+    Resource(ResourceError),
+    Body(E),
+}
+
+impl format_error(*const ResourceError error) {
+    switch (*error) {
+        case Runtime(_):
+            return "resource runtime error";
+    }
+}
+
+impl<E: ErrorTrait> format_error(*const ScopedError<E> error) {
+    switch (*error) {
+        case Resource(inner):
+            return format_error(&inner);
+        case Body(inner):
+            return format_error(&inner);
+    }
+}
+
 // Transfers a resource-bearing value to the parent owner and returns a fresh token.
-export interface<T> Result<T, Error> transfer_to_parent(*const T value);
+export interface<T> Result<T, ResourceError> transfer_to_parent(*const T value);
 
 // Transfers a resource-bearing value from an ancestor owner to the current
 // owner. Transfer fails if the source owner is not an ancestor of the current
 // owner. If the resource is already owned by the current owner, the runtime
 // validates the handle and returns it unchanged.
-export interface<T> Result<T, Error> transfer_to_current(*const T value);
+export interface<T> Result<T, ResourceError> transfer_to_current(*const T value);
 
-Error resource_error(c::c_int code) {
+ResourceError resource_error(c::c_int code) {
     if ((code as i64) != 0) {
-        return code_error(code as i64);
+        return Runtime(code as i64);
     }
-    return code_error(5);
+    return Runtime(5);
 }
 
 // Creates conservative default owner limits for a scoped resource owner.
@@ -110,7 +137,7 @@ export unsafe Handle take_handle_in_place(*Handle handle) {
 // Unsafe hole: closes the resource entry referenced by handle, revokes
 // existing copies, and clears the source slot. Callers must pass the unique
 // owning slot for a live handle.
-export unsafe Result<void, Error> close_handle_in_place(*Handle handle) {
+export unsafe Result<void, ResourceError> close_handle_in_place(*Handle handle) {
     c::c_int rc = unsafe {
         ciel_resource_close_handle(
             unsafe { handle->owner_id },
@@ -126,14 +153,14 @@ export unsafe Result<void, Error> close_handle_in_place(*Handle handle) {
 }
 
 // Closes the resource entry referenced by handle and revokes existing copies.
-export Result<void, Error> close(Handle @handle) {
+export Result<void, ResourceError> close(Handle @handle) {
     return unsafe { close_handle_in_place(&handle) };
 }
 
 // Unsafe hole: transfers a raw resource handle to the parent owner and clears
 // the source slot on success. Callers must pass the unique owning slot for a
 // live handle, not an arbitrary copied Handle value.
-export unsafe Result<Handle, Error> transfer_handle_to_parent_in_place(*Handle handle) {
+export unsafe Result<Handle, ResourceError> transfer_handle_to_parent_in_place(*Handle handle) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
@@ -157,7 +184,7 @@ export unsafe Result<Handle, Error> transfer_handle_to_parent_in_place(*Handle h
 }
 
 // Transfers a raw resource handle to the parent owner.
-export Result<Handle, Error> transfer_handle_to_parent(Handle @handle) {
+export Result<Handle, ResourceError> transfer_handle_to_parent(Handle @handle) {
     return unsafe { transfer_handle_to_parent_in_place(&handle) };
 }
 
@@ -167,7 +194,7 @@ export Result<Handle, Error> transfer_handle_to_parent(Handle @handle) {
 // Transfer fails for stale handles or handles owned by a non-ancestor owner.
 // If the handle is already owned by the current owner, this validates and
 // returns it unchanged.
-export unsafe Result<Handle, Error> transfer_handle_to_current_in_place(*Handle handle) {
+export unsafe Result<Handle, ResourceError> transfer_handle_to_current_in_place(*Handle handle) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
@@ -191,13 +218,13 @@ export unsafe Result<Handle, Error> transfer_handle_to_current_in_place(*Handle 
 }
 
 // Transfers a raw resource handle from an ancestor owner to the current owner.
-export Result<Handle, Error> transfer_handle_to_current(Handle @handle) {
+export Result<Handle, ResourceError> transfer_handle_to_current(Handle @handle) {
     return unsafe { transfer_handle_to_current_in_place(&handle) };
 }
 
 // Transfers a raw resource handle to the parent owner and wraps the fresh
 // parent-owned handle in an affine transfer token.
-export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handle) {
+export Result<TransferToken, ResourceError> transfer_handle_to_parent_token(Handle handle) {
     Handle moved = transfer_handle_to_parent(handle)?;
     return Ok(unsafe { { handle: moved } });
 }
@@ -206,12 +233,12 @@ export Result<TransferToken, Error> transfer_handle_to_parent_token(Handle handl
 // the token's in-place handle slot. Callers must consume the affine token and
 // rebuild exactly one typed owner from the returned raw handle. Stale tokens
 // return Error.
-export unsafe Result<Handle, Error> claim_transfer_token_in_place(*TransferToken token) {
+export unsafe Result<Handle, ResourceError> claim_transfer_token_in_place(*TransferToken token) {
     return unsafe { transfer_handle_to_current_in_place(&token->handle) };
 }
 
 // Claims a transfer token into the current resource owner.
-export Result<Handle, Error> claim_transfer_token(TransferToken @token) {
+export Result<Handle, ResourceError> claim_transfer_token(TransferToken @token) {
     return unsafe { claim_transfer_token_in_place(&token) };
 }
 
@@ -223,7 +250,7 @@ impl transfer_to_current(*const Handle value) {
     return transfer_handle_to_current(unsafe { *value });
 }
 
-Result<OwnerScope, Error> enter_child_owner(Limits limits) {
+Result<OwnerScope, ResourceError> enter_child_owner(Limits limits) {
     u64 @owner_id = 0;
     u64 @previous_owner_id = 0;
     c::c_int rc = unsafe {
@@ -242,7 +269,7 @@ Result<OwnerScope, Error> enter_child_owner(Limits limits) {
     return Ok({ owner_id: owner_id, previous_owner_id: previous_owner_id });
 }
 
-Result<void, Error> restore_owner(u64 owner_id) {
+Result<void, ResourceError> restore_owner(u64 owner_id) {
     c::c_int rc = unsafe { ciel_resource_restore_owner(owner_id) };
     if ((rc as i64) != 0) {
         return Err(resource_error(rc));
@@ -250,7 +277,7 @@ Result<void, Error> restore_owner(u64 owner_id) {
     return Ok;
 }
 
-Result<void, Error> close_owner(u64 owner_id) {
+Result<void, ResourceError> close_owner(u64 owner_id) {
     c::c_int rc = unsafe { ciel_resource_owner_close_id(owner_id) };
     if ((rc as i64) != 0) {
         return Err(resource_error(rc));
@@ -266,84 +293,146 @@ void close_owner_best_effort(u64 owner_id) {
 // Source fallback is a no-op by design. Codegen rewrites this private call for
 // affine T into a structural transfer of every live resource handle to the
 // parent owner before the child owner is closed. scoped_async calls this on its
-// whole Result<R, Error> so Result<void, Error> remains a valid no-op.
-Result<void, Error> transfer_to_parent_before_owner_close<T>(*const T value) {
+// whole Result<R, E> so Result<void, E> remains a valid no-op.
+Result<void, ResourceError> transfer_to_parent_before_owner_close<T>(*const T value) {
     return Ok;
 }
 
 // Runs body under a child resource owner and closes that owner on return.
-export Result<R, Error> scoped<R>(Result<R, Error> |()| body) = .scoped {
+export Result<R, ScopedError<E>> scoped<R, E: ErrorTrait>(Result<R, E> |()| body) = .scoped {
     c::c_int push_rc = unsafe { ciel_resource_scope_push_default() };
     if ((push_rc as i64) != 0) {
-        return Err(resource_error(push_rc));
+        return Err(Resource(resource_error(push_rc)));
     }
-    Result<R, Error> @result = body();
+    Result<R, E> @result = body();
     c::c_int close_rc = unsafe { ciel_resource_scope_close_current() };
     switch (result) {
         case Ok(value):
             if ((close_rc as i64) != 0) {
-                return Err(resource_error(close_rc));
+                return Err(Resource(resource_error(close_rc)));
             }
             return Ok(value);
         case Err(error):
-            return Err(error);
+            return Err(Body(error));
     }
 }
 
 // Runs an async body under a child resource owner and closes that owner on completion or cancellation.
-export async Result<R, Error> scoped_async<R>(
-    async_core::Future<Result<R, Error>> |()| body
+export async Result<R, ScopedError<E>> scoped_async<R, E: ErrorTrait>(
+    async_core::Future<Result<R, E>> |()| body
 ) {
-    OwnerScope scope = enter_child_owner(default_limits())?;
+    OwnerScope @scope;
+    switch (enter_child_owner(default_limits())) {
+        case Ok(value):
+            scope = value;
+        case Err(error):
+            return Err(Resource(error));
+    }
     defer close_owner_best_effort(scope.owner_id);
-    async_core::Future<Result<R, Error>> @future = body();
-    restore_owner(scope.previous_owner_id)?;
-    Result<R, Error> @result = await future;
-    restore_owner(scope.owner_id)?;
-    Result<void, Error> @transfer_result =
+    async_core::Future<Result<R, E>> @future = body();
+    switch (restore_owner(scope.previous_owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
+    Result<R, E> @result = await future;
+    switch (restore_owner(scope.owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
+    Result<void, ResourceError> @transfer_result =
         transfer_to_parent_before_owner_close(&result);
-    restore_owner(scope.previous_owner_id)?;
-    transfer_result?;
+    switch (restore_owner(scope.previous_owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
+    switch (transfer_result) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
     switch (result) {
         case Ok(value):
-            close_owner(scope.owner_id)?;
+            switch (close_owner(scope.owner_id)) {
+                case Ok(_):
+                    {}
+                case Err(error):
+                    return Err(Resource(error));
+            }
             return Ok(value);
         case Err(error):
             close_owner(scope.owner_id);
-            return Err(error);
+            return Err(Body(error));
     }
 }
 
 // Runs an async body under a child resource owner with explicit quota limits.
-export async Result<R, Error> scoped_async_with_limits<R>(
+export async Result<R, ScopedError<E>> scoped_async_with_limits<R, E: ErrorTrait>(
     Limits limits,
-    async_core::Future<Result<R, Error>> |()| body
+    async_core::Future<Result<R, E>> |()| body
 ) {
-    OwnerScope scope = enter_child_owner(limits)?;
+    OwnerScope @scope;
+    switch (enter_child_owner(limits)) {
+        case Ok(value):
+            scope = value;
+        case Err(error):
+            return Err(Resource(error));
+    }
     defer close_owner_best_effort(scope.owner_id);
-    async_core::Future<Result<R, Error>> @future = body();
-    restore_owner(scope.previous_owner_id)?;
+    async_core::Future<Result<R, E>> @future = body();
+    switch (restore_owner(scope.previous_owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
 
-    Result<R, Error> @result = await future;
-    restore_owner(scope.owner_id)?;
-    Result<void, Error> @transfer_result =
+    Result<R, E> @result = await future;
+    switch (restore_owner(scope.owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
+    Result<void, ResourceError> @transfer_result =
         transfer_to_parent_before_owner_close(&result);
-    restore_owner(scope.previous_owner_id)?;
-    transfer_result?;
+    switch (restore_owner(scope.previous_owner_id)) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
+    switch (transfer_result) {
+        case Ok(_):
+            {}
+        case Err(error):
+            return Err(Resource(error));
+    }
     switch (result) {
         case Ok(value):
-            close_owner(scope.owner_id)?;
+            switch (close_owner(scope.owner_id)) {
+                case Ok(_):
+                    {}
+                case Err(error):
+                    return Err(Resource(error));
+            }
             return Ok(value);
         case Err(error):
             close_owner(scope.owner_id);
-            return Err(error);
+            return Err(Body(error));
     }
 }
 
 // Runs body under a child resource owner with explicit quota limits.
-export Result<R, Error> scoped_with_limits<R>(
+export Result<R, ScopedError<E>> scoped_with_limits<R, E: ErrorTrait>(
     Limits limits,
-    Result<R, Error> |()| body
+    Result<R, E> |()| body
 ) = .scoped_with_limits {
     c::c_int push_rc = unsafe {
         ciel_resource_scope_push_limits_raw(
@@ -354,17 +443,17 @@ export Result<R, Error> scoped_with_limits<R>(
         )
     };
     if ((push_rc as i64) != 0) {
-        return Err(resource_error(push_rc));
+        return Err(Resource(resource_error(push_rc)));
     }
-    Result<R, Error> @result = body();
+    Result<R, E> @result = body();
     c::c_int close_rc = unsafe { ciel_resource_scope_close_current() };
     switch (result) {
         case Ok(value):
             if ((close_rc as i64) != 0) {
-                return Err(resource_error(close_rc));
+                return Err(Resource(resource_error(close_rc)));
             }
             return Ok(value);
         case Err(error):
-            return Err(error);
+            return Err(Body(error));
     }
 }

@@ -1,0 +1,90 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+
+enum DirectError {
+    DirectReturn,
+    NestedReturn,
+    Argument,
+    LocalInit,
+}
+
+impl format_error(*const DirectError error) {
+    switch (*error) {
+        case DirectReturn:
+            return "direct return";
+        case NestedReturn:
+            return "nested return";
+        case Argument:
+            return "argument";
+        case LocalInit:
+            return "local init";
+    }
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+bool result_error_text(Result<void, Error> result, []const char expected) {
+    switch (result) {
+        case Ok:
+            return false;
+        case Err(error):
+            return same_text(error_message(&error), expected);
+    }
+}
+
+Result<void, Error> accept_error(Error error) {
+    return Err(error);
+}
+
+Result<void, Error> fail_direct() {
+    return Err(DirectReturn);
+}
+
+Result<Result<void, Error>, Error> fail_nested() {
+    return Ok(Err(NestedReturn));
+}
+
+Result<void, Error> fail_argument() {
+    return accept_error(Argument);
+}
+
+Result<void, Error> fail_local_init() {
+    Error error = LocalInit;
+    return Err(error);
+}
+
+i64 main() {
+    if (!result_error_text(fail_direct(), "direct return")) {
+        return 1;
+    }
+    Result<Result<void, Error>, Error> nested = fail_nested();
+    switch (nested) {
+        case Ok(inner):
+            if (!result_error_text(inner, "nested return")) {
+                return 2;
+            }
+        case Err(_):
+            return 3;
+    }
+    if (!result_error_text(fail_argument(), "argument")) {
+        return 4;
+    }
+    if (!result_error_text(fail_local_init(), "local init")) {
+        return 5;
+    }
+    return 0;
+}

@@ -9,7 +9,7 @@ import /std/panic;
 import /std/result;
 
 i32 main() {
-    Result<Result<void, Error>, Error> result =
+    Result<Result<void, async::AsyncError>, async::AsyncError> result =
         async::block_on(async::timeout(async_time::sleep_ms(50), 0));
     switch (result) {
         case Err(_):

@@ -49,6 +49,21 @@ export struct CompareExchange<T> {
     T previous;
 }
 
+// Errors produced by atomic operations.
+export enum AtomicError {
+    Runtime(i64),
+    InvalidMemoryOrder,
+}
+
+impl format_error(*const AtomicError error) {
+    switch (*error) {
+        case Runtime(_):
+            return "atomic runtime error";
+        case InvalidMemoryOrder:
+            return "invalid atomic memory order";
+    }
+}
+
 // Unsafe policy marker: implement only for plain value types whose bitwise
 // runtime storage and atomic loads/stores are valid.
 export unsafe interface<T> bool atomic_value_marker(*const T value);
@@ -99,16 +114,16 @@ unsafe impl<T> share_handle_marker(*const Atomic<T> value) {
     return true;
 }
 
-Error runtime_error() {
+AtomicError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };
     if ((code as i64) == 0) {
-        return code_error(5);
+        return Runtime(5);
     }
-    return code_error(code as i64);
+    return Runtime(code as i64);
 }
 
-Error invalid_memory_order() {
-    return code_error(22);
+AtomicError invalid_memory_order() {
+    return InvalidMemoryOrder;
 }
 
 c::c_int memory_order_code(MemoryOrder order) {
@@ -202,7 +217,7 @@ bool valid_compare_failure_order(MemoryOrder success, MemoryOrder failure) {
 }
 
 // Creates an atomic handle initialized with the provided supported value.
-export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
+export Result<Atomic<T>, AtomicError> make_atomic<T: AtomicValue>(T initial) {
     T local = initial;
     ?*CielAtomic raw = unsafe { ciel_atomic_make(type_size<T>(), type_align<T>(), &local as *const void) };
     if (raw == null) {
@@ -212,7 +227,7 @@ export Result<Atomic<T>, Error> make_atomic<T: AtomicValue>(T initial) {
 }
 
 // Atomically loads and returns the current value.
-export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) = .load {
+export Result<T, AtomicError> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, MemoryOrder order) = .load {
     if (valid_load_order(order) == false) {
         return Err(invalid_memory_order());
     }
@@ -225,7 +240,7 @@ export Result<T, Error> atomic_load<T: AtomicValue>(*const Atomic<T> atomic, Mem
 }
 
 // Atomically stores a new value. Release and SeqCst-style store orders are valid.
-export Result<void, Error> atomic_store<T: AtomicValue>(
+export Result<void, AtomicError> atomic_store<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
@@ -236,13 +251,13 @@ export Result<void, Error> atomic_store<T: AtomicValue>(
     T local = value;
     c::c_int rc = unsafe { ciel_atomic_store(raw_atomic(atomic), &local as *const void, memory_order_code(order)) };
     if ((rc as i64) != 0) {
-        return Err(code_error(rc as i64));
+        return Err(Runtime(rc as i64));
     }
     return Ok;
 }
 
 // Atomically replaces the value and returns the previous value.
-export Result<T, Error> atomic_exchange<T: AtomicValue>(
+export Result<T, AtomicError> atomic_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
@@ -258,7 +273,7 @@ export Result<T, Error> atomic_exchange<T: AtomicValue>(
 
 // Atomically compares with expected, stores desired on success, and returns
 // whether the exchange happened plus the previous value.
-export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>(
+export Result<CompareExchange<T>, AtomicError> atomic_compare_exchange<T: AtomicValue>(
     *const Atomic<T> atomic,
     T expected,
     T desired,
@@ -290,7 +305,7 @@ export Result<CompareExchange<T>, Error> atomic_compare_exchange<T: AtomicValue>
 }
 
 // Atomically adds value and returns the previous integer value.
-export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
+export Result<T, AtomicError> atomic_fetch_add<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order
@@ -305,7 +320,7 @@ export Result<T, Error> atomic_fetch_add<T: AtomicInteger>(
 }
 
 // Atomically subtracts value and returns the previous integer value.
-export Result<T, Error> atomic_fetch_sub<T: AtomicInteger>(
+export Result<T, AtomicError> atomic_fetch_sub<T: AtomicInteger>(
     *const Atomic<T> atomic,
     T value,
     MemoryOrder order

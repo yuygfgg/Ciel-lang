@@ -29,8 +29,38 @@ export struct Update<T, R> {
     R result;
 }
 
-// Functional update policy consumed by mutex_update. R is determined by updater and value type.
-export interface<F, T -> R> Result<Update<T, R>, Error> update_value(*const F updater, T value);
+// Errors produced by synchronized handle operations.
+export enum SyncError {
+    Runtime(i64),
+    MessageClone(Error),
+}
+
+// Errors produced while running a mutex scoped callback.
+export enum SyncWithError<E> {
+    Sync(SyncError),
+    Body(E),
+}
+
+impl format_error(*const SyncError error) {
+    switch (*error) {
+        case Runtime(_):
+            return "sync runtime error";
+        case MessageClone(inner):
+            return format_error(&inner);
+    }
+}
+
+impl<E: ErrorTrait> format_error(*const SyncWithError<E> error) {
+    switch (*error) {
+        case Sync(inner):
+            return format_error(&inner);
+        case Body(inner):
+            return format_error(&inner);
+    }
+}
+
+// Functional update policy consumed by mutex_update. R and E are determined by updater and value type.
+export interface<F, T -> R, E> Result<Update<T, R>, E> update_value(*const F updater, T value);
 
 unsafe impl<T> clone_message(*const Mutex<T> value) {
     return Ok(*value);
@@ -40,12 +70,12 @@ unsafe impl<T> share_handle_marker(*const Mutex<T> value) {
     return true;
 }
 
-Error runtime_error() {
+SyncError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };
     if ((code as i64) == 0) {
-        return code_error(5);
+        return Runtime(5);
     }
-    return code_error(code as i64);
+    return Runtime(code as i64);
 }
 
 void unlock_mutex(*CielMutex mutex) {
@@ -53,9 +83,15 @@ void unlock_mutex(*CielMutex mutex) {
 }
 
 // Creates a mutex by cloning the initial Message value into synchronized storage.
-export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
+export Result<Mutex<T>, SyncError> make_mutex<T: Message>(T initial) {
     T local = initial;
-    T cloned = clone_message(&local)?;
+    T @cloned;
+    switch (clone_message(&local)) {
+        case Ok(value):
+            cloned = value;
+        case Err(error):
+            return Err(MessageClone(error));
+    }
     ?*CielMutex raw = unsafe { ciel_mutex_make(type_size<T>(), type_align<T>(), &cloned as *const void) };
     if (raw == null) {
         return Err(runtime_error());
@@ -65,38 +101,64 @@ export Result<Mutex<T>, Error> make_mutex<T: Message>(T initial) {
 
 // Locks the mutex, clones the current value, applies update_value, and stores
 // the returned replacement before unlocking.
-export Result<R, Error> mutex_update<T: Message, F: update_value<T, R = _>>(
+export Result<R, SyncWithError<E>> mutex_update<
+    T: Message,
+    F: update_value<T, R = _, E = _: ErrorTrait>
+>(
     *const Mutex<T> mutex,
     *const F updater
 ) = .update {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {
-        return Err(runtime_error());
+        return Err(Sync(runtime_error()));
     }
     defer unlock_mutex(raw_mutex);
 
     *T slot = unsafe { raw_slot as *T };
-    T current = clone_message(slot)?;
-    Update<T, R> next = update_value<T, R>(updater, current)?;
+    T @current;
+    switch (clone_message(slot)) {
+        case Ok(value):
+            current = value;
+        case Err(error):
+            return Err(Sync(MessageClone(error)));
+    }
+    Update<T, R> @next;
+    switch (update_value<T, R, E>(updater, current)) {
+        case Ok(value):
+            next = value;
+        case Err(error):
+            return Err(Body(error));
+    }
     T replacement_source = next.value;
-    T replacement = clone_message(&replacement_source)?;
+    T @replacement;
+    switch (clone_message(&replacement_source)) {
+        case Ok(value):
+            replacement = value;
+        case Err(error):
+            return Err(Sync(MessageClone(error)));
+    }
     *slot = replacement;
     return Ok(next.result);
 }
 
 // Locks the mutex and gives the body scoped mutable access to the protected value.
-export Result<R, Error> mutex_with<T, R: Message>(
+export Result<R, SyncWithError<E>> mutex_with<T, R: Message, E: ErrorTrait>(
     *const Mutex<T> mutex,
-    Result<R, Error> |(*T)| body
+    Result<R, E> |(*T)| body
 ) = .with {
     *CielMutex raw_mutex = unsafe { mutex->handle as *CielMutex };
     ?*void raw_slot = unsafe { ciel_mutex_lock(raw_mutex) };
     if (raw_slot == null) {
-        return Err(runtime_error());
+        return Err(Sync(runtime_error()));
     }
     defer unlock_mutex(raw_mutex);
 
     *T slot = unsafe { raw_slot as *T };
-    return body(slot);
+    switch (body(slot)) {
+        case Ok(value):
+            return Ok(value);
+        case Err(error):
+            return Err(Body(error));
+    }
 }

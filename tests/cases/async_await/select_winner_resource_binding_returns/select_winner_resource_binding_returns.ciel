@@ -10,7 +10,7 @@ import /std/result;
 
 async Result<io::File, Error> open_file() {
     []const char path = env::arg(1)?;
-    return io::open_read(path);
+    return Ok(io::open_read(path)?);
 }
 
 async Result<io::File, Error> select_file() {

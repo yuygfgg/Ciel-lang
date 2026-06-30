@@ -9,9 +9,10 @@ import /std/result;
 
 Result<io::File, Error> open_via_scoped_capture([]const char path) {
     io::File file = io::open_read(path)?;
-    return resource::scoped<io::File>(|| {
+    io::File returned = resource::scoped<io::File, Error>(|| {
         return Ok(file);
-    });
+    })?;
+    return Ok(returned);
 }
 
 i32 main() {

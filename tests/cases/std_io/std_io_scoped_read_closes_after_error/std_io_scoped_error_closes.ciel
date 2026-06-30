@@ -7,7 +7,7 @@ import /std/io;
 
 i32 main() {
     []const char path = must(env::arg(1));
-    Result<void, Error> failed = with_create<void>(path, |file| {
+    Result<void, IoWithError<Error>> failed = with_create<void, Error>(path, |file| {
         write_text(&file, "closed")?;
         return Err(code_error(9));
     });

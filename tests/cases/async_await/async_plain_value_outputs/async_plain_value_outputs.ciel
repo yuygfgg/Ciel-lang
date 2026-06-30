@@ -13,7 +13,7 @@ async usize immediate() {
 }
 
 async usize delayed() {
-    Result<void, Error> slept = await async_time::sleep_ms(0);
+    Result<void, async::AsyncError> slept = await async_time::sleep_ms(0);
     switch (slept) {
         case Ok:
             return 9;

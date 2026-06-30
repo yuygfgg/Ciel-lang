@@ -46,7 +46,7 @@ anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-bool addr_is_err(Result<net::SocketAddr, Error> value) {
+bool addr_is_err(Result<net::SocketAddr, anet::AsyncNetError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -59,7 +59,7 @@ async Result<usize, Error> drive() {
     async::ChannelPair<HandleParts> old_streams =
         async::channel<HandleParts>(1)?;
     anet::AsyncTcpStream accepted =
-        await resource::scoped_async<anet::AsyncTcpStream>(async || {
+        await resource::scoped_async<anet::AsyncTcpStream, Error>(async || {
         anet::AsyncTcpListener listener =
             anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
         net::SocketAddr bound = anet::listener_addr(&listener)?;

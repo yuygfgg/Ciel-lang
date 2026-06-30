@@ -12,9 +12,11 @@ async Result<usize, Error> delayed_value() {
 }
 
 Result<async::Task<usize>, Error> spawn_inside_scope() {
-    return resource::scoped<async::Task<usize>>(|| {
-        return async::spawn<usize>(delayed_value());
-    });
+    async::Task<usize> task = resource::scoped<async::Task<usize>>(|| {
+        async::Task<usize> task = async::spawn<usize>(delayed_value())?;
+        return Ok(task);
+    })?;
+    return Ok(task);
 }
 
 i32 main() {

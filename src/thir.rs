@@ -375,6 +375,10 @@ pub enum TExprKind {
         expr: Box<TExpr>,
         concrete_ty: Ty,
     },
+    ErrorBox {
+        expr: Box<TExpr>,
+        concrete_ty: Ty,
+    },
     DynamicInterfaceCall {
         interface_name: String,
         receiver: Box<TExpr>,
@@ -699,7 +703,8 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::AsyncBlockOn { future: inner }
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
-        | TExprKind::MakeDynamicInterface { expr: inner, .. } => visitor.visit_expr(inner),
+        | TExprKind::MakeDynamicInterface { expr: inner, .. }
+        | TExprKind::ErrorBox { expr: inner, .. } => visitor.visit_expr(inner),
         TExprKind::RawSliceFromPtr { ptr, len, .. } => {
             visitor.visit_expr(ptr);
             visitor.visit_expr(len);

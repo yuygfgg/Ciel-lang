@@ -35,14 +35,14 @@ i64 main() {
         return 1;
     }
 
-    i64 value = must(hash_map_with(&table, same, |slot| {
+    i64 value = must(hash_map_with<Pair, i64, i64, MapError>(&table, same, |slot| {
         return Ok(*slot);
     }));
     if (value != 12) {
         return 2;
     }
 
-    i64 other_value = must(hash_map_with(&table, other, |slot| {
+    i64 other_value = must(hash_map_with<Pair, i64, i64, MapError>(&table, other, |slot| {
         *slot = *slot + 10;
         return Ok(*slot);
     }));

@@ -46,7 +46,7 @@ async Result<usize, Error> drive() {
     anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 2)?;
     await async_time::sleep_ms(20)?;
 
-    Result<Result<anet::Bytes, Error>, Error> timed =
+    Result<Result<anet::Bytes, anet::AsyncNetError>, async::AsyncError> timed =
         await async::timeout(anet::read_exact_buffered(&reader, 6), 20);
     switch (timed) {
         case Err(_):

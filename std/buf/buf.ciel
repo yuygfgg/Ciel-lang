@@ -14,9 +14,33 @@ export unsafe struct ByteBuf {
     usize len;
 }
 
+// Errors produced by ByteBuf operations.
+export enum BufError {
+    CapacityOverflow,
+    DiscardOutOfBounds,
+    Runtime(i64),
+}
+
+impl format_error(*const BufError error) {
+    switch (*error) {
+        case CapacityOverflow:
+            return "byte buffer capacity overflow";
+        case DiscardOutOfBounds:
+            return "byte buffer discard exceeds length";
+        case Runtime(_):
+            return "byte buffer runtime error";
+    }
+}
+
 // Creates an empty ByteBuf with at least the requested initial capacity.
-export Result<ByteBuf, Error> byte_buf_new(usize capacity) {
-    storage::RawStorage<u8> raw = unsafe { storage::raw_zeroed<u8>(capacity)? };
+export Result<ByteBuf, BufError> byte_buf_new(usize capacity) {
+    storage::RawStorage<u8> @raw;
+    switch (unsafe { storage::raw_zeroed<u8>(capacity) }) {
+        case Ok(storage):
+            raw = storage;
+        case Err(_):
+            return Err(Runtime(5));
+    }
     return Ok(unsafe { { storage: raw, len: 0 } });
 }
 
@@ -49,15 +73,11 @@ usize byte_buf_capacity(*const ByteBuf buf) {
     return storage_view.len;
 }
 
-Error overflow_error() {
-    return text_error("byte buffer capacity overflow");
-}
-
-Error copy_error(c::c_int code) {
+BufError copy_error(c::c_int code) {
     if ((code as i64) != 0) {
-        return code_error(code as i64);
+        return Runtime(code as i64);
     }
-    return code_error(5);
+    return Runtime(5);
 }
 
 usize grown_capacity(usize current, usize needed) {
@@ -75,11 +95,11 @@ usize grown_capacity(usize current, usize needed) {
 }
 
 // Ensures room for additional bytes after the initialized prefix.
-export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve {
+export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > ((~(0 as usize)) - len)) {
-        return Err(overflow_error());
+        return Err(CapacityOverflow);
     }
     usize needed = len + additional;
     if (needed <= cap) {
@@ -87,9 +107,13 @@ export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .r
     }
 
     usize next_cap = grown_capacity(cap, needed);
-    storage::RawStorage<u8> next = unsafe {
-        storage::raw_realloc_zeroed<u8>(buf->storage, len, next_cap)?
-    };
+    storage::RawStorage<u8> @next;
+    switch (unsafe { storage::raw_realloc_zeroed<u8>(buf->storage, len, next_cap) }) {
+        case Ok(storage):
+            next = storage;
+        case Err(_):
+            return Err(Runtime(5));
+    }
     unsafe {
         buf->storage = next;
         buf->len = len;
@@ -98,7 +122,7 @@ export Result<void, Error> byte_buf_reserve(*ByteBuf buf, usize additional) = .r
 }
 
 // Appends a byte slice to the initialized prefix, growing as needed.
-export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice {
+export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice {
     byte_buf_reserve(buf, data.len)?;
     usize len = byte_buf_len(buf);
     if (data.len > 0) {
@@ -115,7 +139,7 @@ export Result<void, Error> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = 
 }
 
 // Reserves additional uninitialized tail space and returns a mutable view to it.
-export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
+export Result<[]u8, BufError> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
     byte_buf_reserve(buf, additional)?;
     usize len = byte_buf_len(buf);
     []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
@@ -123,11 +147,11 @@ export Result<[]u8, Error> byte_buf_spare_mut_slice(*ByteBuf buf, usize addition
 }
 
 // Marks additional bytes previously written through byte_buf_spare_mut_slice as initialized.
-export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail {
+export Result<void, BufError> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > (cap - len)) {
-        return Err(overflow_error());
+        return Err(CapacityOverflow);
     }
     unsafe {
         buf->len = len + additional;
@@ -136,10 +160,10 @@ export Result<void, Error> byte_buf_commit_tail(*ByteBuf buf, usize additional) 
 }
 
 // Removes count initialized bytes from the front and shifts the remaining bytes down.
-export Result<void, Error> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix {
+export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix {
     usize len = byte_buf_len(buf);
     if (count > len) {
-        return Err(text_error("byte buffer discard exceeds length"));
+        return Err(DiscardOutOfBounds);
     }
     if (count == 0) {
         return Ok;

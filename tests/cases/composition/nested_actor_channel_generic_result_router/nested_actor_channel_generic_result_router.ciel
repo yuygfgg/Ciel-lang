@@ -14,7 +14,8 @@ unsafe impl<T: Message> clone_message(*const Route<T> value) {
 }
 
 Result<void, Error> flush_value<T: Message>(*const Channel<T> out, T value) {
-    return channel_send(out, value);
+    channel_send(out, value)?;
+    return Ok;
 }
 
 i64 main() {

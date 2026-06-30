@@ -25,7 +25,8 @@ unsafe impl adapter::poll_done<aio::Bytes>(*WrappedRead op, *aio::Bytes out) {
 }
 
 unsafe impl abort_future(*WrappedRead op) {
-    return aio::cancel_read(unsafe { op->inner });
+    aio::cancel_read(unsafe { op->inner })?;
+    return Ok;
 }
 
 async Result<usize, Error> read_with_wrapper(*const aio::AsyncFd file) {

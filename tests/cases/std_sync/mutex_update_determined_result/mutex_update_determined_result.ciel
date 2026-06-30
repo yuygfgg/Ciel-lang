@@ -9,12 +9,12 @@ struct Add {
 
 struct WasPositive {}
 
-impl update_value<i64, i64>(*const Add updater, i64 value) {
+impl update_value<i64, i64, SyncError>(*const Add updater, i64 value) {
     i64 next = value + updater->amount;
     return Ok({ value: next, result: next });
 }
 
-impl update_value<i64, bool>(*const WasPositive updater, i64 value) {
+impl update_value<i64, bool, SyncError>(*const WasPositive updater, i64 value) {
     return Ok({ value: value, result: value > 0 });
 }
 

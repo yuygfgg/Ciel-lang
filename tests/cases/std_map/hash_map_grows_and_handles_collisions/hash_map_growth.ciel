@@ -73,7 +73,7 @@ i64 main() {
     }
 
     BadKey probe = { id: 65 };
-    i64 value = must(hash_map_with(&table, probe, |slot| {
+    i64 value = must(hash_map_with<BadKey, i64, i64, MapError>(&table, probe, |slot| {
         return Ok(*slot);
     }));
     if (value != 130) {

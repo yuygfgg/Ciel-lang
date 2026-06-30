@@ -30,7 +30,7 @@ bool any_nonzero([]const u8 data) {
     return false;
 }
 
-bool is_err_usize(Result<usize, Error> value) {
+bool is_err_usize(Result<usize, crypto::CryptoError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -39,7 +39,7 @@ bool is_err_usize(Result<usize, Error> value) {
     }
 }
 
-bool is_err_void(Result<void, Error> value) {
+bool is_err_void(Result<void, crypto::CryptoError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -176,12 +176,12 @@ i64 test_hash() {
     if (!is_err_usize(crypto::hash_once("SHA-256", abc[..], short_out[..]))) {
         return 13;
     }
-    Result<usize, Error> unknown_hash = crypto::hash_once("NO-SUCH-HASH", abc[..], out[..]);
+    Result<usize, crypto::CryptoError> unknown_hash = crypto::hash_once("NO-SUCH-HASH", abc[..], out[..]);
     switch (unknown_hash) {
         case Ok(_):
             return 14;
         case Err(error):
-            []const char message = error_message(&error);
+            []const char message = format_error(&error);
             if (message.len == 0 || numeric_error_text(message)) {
                 return 19;
             }

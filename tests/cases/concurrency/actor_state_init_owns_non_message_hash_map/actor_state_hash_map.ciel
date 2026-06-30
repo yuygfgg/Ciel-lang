@@ -37,7 +37,7 @@ Result<void, Error> handle(
     switch (command_value) {
         case Add(key, delta):
             if (map::hash_map_contains_key(&state->table, key)?) {
-                map::hash_map_with<u32, i64, void>(&state->table, key, |value| {
+                map::hash_map_with<u32, i64, void, Error>(&state->table, key, |value| {
                     *value = *value + delta;
                     return Ok;
                 })?;
@@ -46,7 +46,7 @@ Result<void, Error> handle(
             }
             return Ok;
         case Flush(_):
-            i64 total = map::hash_map_with(&state->table, 7 as u32, |value| {
+            i64 total = map::hash_map_with<u32, i64, i64, Error>(&state->table, 7 as u32, |value| {
                 return Ok(*value);
             })?;
             channel_send(&state->out, total)?;

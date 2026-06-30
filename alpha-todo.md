@@ -133,6 +133,9 @@ Policy:
 - Application-facing convenience helpers may return `/std/error.Error`.
 - `?` remains the ergonomic conversion path from concrete errors into
   `/std/error.Error`.
+- Assigning, returning, or passing a concrete `format_error` error where
+  `/std/error.Error` is expected is a compiler-inserted conversion, not a
+  source-level `error_box()` call.
 - A module must not expose a mixed public API where some functions return a new
   concrete module error and comparable functions still return erased `Error`.
 
@@ -148,6 +151,15 @@ Alpha-required concrete errors:
 - `IoError`
 - `NetError`
 - `AsyncError`
+- `AsyncIoError`
+- `AsyncNetError`
+- `TimeError`
+- `AsyncTimeError`
+- `ChannelError`
+- `SyncError`
+- `AtomicError`
+- `SharedMapError`
+- `EnvError`
 - `CryptoError`
 - `SqliteError`
 
@@ -181,6 +193,9 @@ Done criteria:
 - Every concrete module error implements `format_error`.
 - Tests cover `?` conversion from every concrete alpha error type into
   `/std/error.Error`.
+- Tests cover direct expected-type conversion from concrete errors into
+  `/std/error.Error` for return, argument, nested `Result`, and local
+  initialization contexts.
 - Tests cover direct matching on each concrete error enum where the error is
   recoverable.
 - Existing `text_error` and `code_error` uses inside reusable modules are
@@ -188,6 +203,21 @@ Done criteria:
 - If an operation can fail due to cleanup after a successful user result, its
   return type models both domains explicitly instead of collapsing everything
   into erased `Error`.
+
+Implementation status:
+
+- Completed for low-level, reusable, scoped, and callback APIs in the
+  alpha-supported modules and `/sqlite`: public fallible APIs now return
+  concrete module or combined error enums and those enums implement
+  `format_error`.
+- Remaining public `Result<_, Error>` surfaces are intentional boundaries:
+  `/std/lib` compatibility facades, `/std/error` helpers, task body results,
+  message cloning and internal async operation adapters, internal
+  `/std/storage`, and `/std/actor` outside the alpha scope.
+- Tests cover direct matching, `?` conversion, and direct expected-type
+  conversion into `/std/error.Error` for the alpha std concrete errors and
+  callback combined errors, and `/sqlite` tests cover `SqliteError` plus
+  scoped/transaction combined errors through application-facing drivers.
 
 ### 5. Fix Scoped And Callback Error Shapes
 
@@ -209,6 +239,20 @@ Done criteria:
 - Cleanup failure is not silently erased into an unrelated body error type.
 - Tests cover body failure, setup failure, cleanup failure, and successful
   cleanup after body failure.
+
+Implementation status:
+
+- Completed for `/std/resource`, `/std/io`, `/std/net`, `/std/map`,
+  `/std/sync`, `/std/shared_map`, `/std/async::with_task_group`, and `/sqlite`
+  scoped/transaction helpers.
+- Public helper body errors are generic where they can be generic. Helpers that
+  combine setup/body/cleanup domains expose concrete combined enums such as
+  `ScopedError<E>`, `IoWithError<E>`, `NetWithError<E>`,
+  `TaskGroupError<E>`, `MapWithError<E>`, `SyncWithError<E>`,
+  `SqliteWithError<E>`, and `SqliteTransactionError<E>`.
+- Task body and actor handler protocols still use `/std/error.Error` as
+  explicit runtime/application boundaries and remain outside this callback
+  cleanup migration.
 
 ### 6. Replace The `Bytes` Runtime Handle Public Shape
 

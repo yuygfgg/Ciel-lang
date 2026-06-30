@@ -5,7 +5,7 @@ import /std/lib;
 
 struct AddOne {}
 
-impl update_value<i64, i64>(*const AddOne updater, i64 value) {
+impl update_value<i64, i64, SyncError>(*const AddOne updater, i64 value) {
     return Ok({
         value: value + 1,
         result: value + 1,
@@ -81,11 +81,11 @@ i64 main() {
 
     Mutex<i64> mutex = make_mutex<i64>(5).must();
     AddOne updater = {};
-    Result<i64, Error> updated_result = mutex.update(&updater);
+    Result<i64, SyncWithError<SyncError>> updated_result = mutex.update(&updater);
     if (updated_result.must() != 6) {
         return 17;
     }
-    Result<i64, Error> with_result = mutex.with(|slot| {
+    Result<i64, SyncWithError<SyncError>> with_result = mutex.with(|slot| {
         *slot = *slot + 2;
         return Ok(*slot);
     });

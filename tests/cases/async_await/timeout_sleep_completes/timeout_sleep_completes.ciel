@@ -11,7 +11,7 @@ import /std/panic;
 import /std/result;
 
 async Result<usize, Error> run_timer() {
-    Result<void, Error> inner = await async::timeout(async_time::sleep_ms(0), 100)?;
+    Result<void, async::AsyncError> inner = await async::timeout(async_time::sleep_ms(0), 100)?;
     inner?;
     return Ok(7);
 }

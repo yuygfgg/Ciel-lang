@@ -11,7 +11,7 @@ import /std/result;
 
 async Result<io::File, Error> open_file() {
     []const char path = env::arg(1)?;
-    return io::open_read(path);
+    return Ok(io::open_read(path)?);
 }
 
 async Result<usize, Error> choose_without_consuming() {
@@ -35,7 +35,7 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void>(limits, || {
+    must(resource::scoped_with_limits<void, Error>(limits, || {
         if (must(async::block_on(choose_without_consuming())) != 0) {
             return Err(text_error("unexpected selected arm"));
         }

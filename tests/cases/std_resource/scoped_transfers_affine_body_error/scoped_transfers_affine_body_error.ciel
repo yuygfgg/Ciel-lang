@@ -1,0 +1,58 @@
+// ciel-test: run
+// expect-exit: 0
+// run-arg: @tmp/std_resource_scoped_affine_body_error.txt
+
+import /std/env as env;
+import /std/io as io;
+import /std/resource as resource;
+import /std/result;
+
+resource struct FileError {
+    io::File file;
+}
+
+impl format_error(*const FileError error) {
+    return "file error";
+}
+
+Result<void, FileError> fail_with_file([]const char path) {
+    switch (io::open_read(path)) {
+        case Ok(file):
+            return Err({ file: file });
+        case Err(_):
+            return Ok;
+    }
+}
+
+i32 main() {
+    []const char path = must(env::arg(1));
+    must(io::with_create<void>(path, |file| {
+        io::write_text(&file, "body-error")?;
+        return Ok;
+    }));
+
+    Result<void, resource::ScopedError<FileError>> result =
+        resource::scoped<void, FileError>(|| {
+            return fail_with_file(path);
+        });
+    switch (result) {
+        case Ok:
+            return 1;
+        case Err(error):
+            switch (error) {
+                case resource::Resource(_):
+                    return 2;
+                case resource::Body(body):
+                    [10]u8 @buffer = [0;];
+                    switch (io::read(&body.file, buffer[..])) {
+                        case Ok(n):
+                            if (n == 10) {
+                                return 0;
+                            }
+                            return 3;
+                        case Err(_):
+                            return 4;
+                    }
+            }
+    }
+}

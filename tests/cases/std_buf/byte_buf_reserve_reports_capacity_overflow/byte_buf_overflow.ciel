@@ -4,19 +4,26 @@
 import /std/buf as buf;
 import /std/result;
 
-bool is_err(Result<void, Error> value) {
+bool is_capacity_overflow(Result<void, buf::BufError> value) {
     switch (value) {
         case Ok(_):
             return false;
-        case Err(_):
-            return true;
+        case Err(error):
+            switch (error) {
+                case buf::CapacityOverflow:
+                    return true;
+                case buf::DiscardOutOfBounds:
+                    return false;
+                case buf::Runtime(_):
+                    return false;
+            }
     }
 }
 
 i64 main() {
     buf::ByteBuf @bytes = must(buf::byte_buf_new(1));
     must(buf::byte_buf_push_slice(&bytes, [1 as u8]));
-    if (!is_err(buf::byte_buf_reserve(&bytes, ~(0 as usize)))) {
+    if (!is_capacity_overflow(buf::byte_buf_reserve(&bytes, ~(0 as usize)))) {
         return 1;
     }
     []const u8 view = buf::byte_buf_slice(&bytes);

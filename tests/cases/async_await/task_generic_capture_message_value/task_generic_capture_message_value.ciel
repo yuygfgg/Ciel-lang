@@ -7,7 +7,7 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<async::Task<T>, Error> spawn_identity<T>(T value) {
+Result<async::Task<T>, async::AsyncError> spawn_identity<T>(T value) {
     return async::spawn<T>(async || {
         return Ok(value);
     });

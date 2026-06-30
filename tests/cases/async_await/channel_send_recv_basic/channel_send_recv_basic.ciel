@@ -13,7 +13,8 @@ async Result<usize, Error> producer(async::Sender<usize> sender) {
 }
 
 async Result<usize, Error> consumer(async::Receiver<usize> receiver) {
-    return await async::recv<usize>(receiver);
+    usize value = await async::recv<usize>(receiver)?;
+    return Ok(value);
 }
 
 async Result<usize, Error> drive() {

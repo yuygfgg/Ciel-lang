@@ -1,0 +1,654 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_io as aio;
+import /std/async_net as anet;
+import /std/async_time as atime;
+import /std/atomic as atomic;
+import /std/buf as buf;
+import /std/bytes as bytes;
+import /std/channel as channel;
+import /std/codec as codec;
+import /std/crypto as crypto;
+import /std/env as env;
+import /std/io as io;
+import /std/map as map;
+import /std/net as net;
+import /std/resource as resource;
+import /std/result;
+import /std/shared_map as smap;
+import /std/sync as sync;
+import /std/text as text;
+import /std/time as time;
+import /std/vec as vec;
+
+Result<void, vec::VecError> fail_vec() {
+    return Err(vec::CapacityOverflow);
+}
+
+Result<void, buf::BufError> fail_buf() {
+    return Err(buf::CapacityOverflow);
+}
+
+Result<void, bytes::BytesError> fail_bytes() {
+    return Err(bytes::ShortCopy);
+}
+
+Result<void, text::TextError> fail_text() {
+    return Err(text::ShortCopy);
+}
+
+Result<void, codec::CodecError> fail_codec() {
+    return Err(codec::InputTooShort);
+}
+
+Result<void, map::MapError> fail_map() {
+    return Err(map::KeyNotFound);
+}
+
+Result<void, map::MapWithError<map::MapError>> fail_map_with() {
+    return Err(map::Body(map::KeyNotFound));
+}
+
+Result<void, resource::ResourceError> fail_resource() {
+    return Err(resource::Runtime(5));
+}
+
+Result<void, io::IoError> fail_io() {
+    return Err(io::WriteZero);
+}
+
+Result<void, net::NetError> fail_net() {
+    return Err(net::InvalidAddressFamily);
+}
+
+Result<void, async::AsyncError> fail_async() {
+    return Err(async::Timeout);
+}
+
+Result<void, aio::AsyncIoError> fail_async_io() {
+    return Err(aio::Runtime(5));
+}
+
+Result<void, anet::AsyncNetError> fail_async_net() {
+    return Err(anet::Timeout);
+}
+
+Result<void, time::TimeError> fail_time() {
+    return Err(time::Runtime(5));
+}
+
+Result<void, atime::AsyncTimeError> fail_async_time() {
+    return Err(atime::Runtime(5));
+}
+
+Result<void, channel::ChannelError> fail_channel() {
+    return Err(channel::Runtime(5));
+}
+
+Result<void, sync::SyncError> fail_sync() {
+    return Err(sync::Runtime(5));
+}
+
+Result<void, sync::SyncWithError<sync::SyncError>> fail_sync_with() {
+    return Err(sync::Body(sync::Runtime(5)));
+}
+
+Result<void, atomic::AtomicError> fail_atomic() {
+    return Err(atomic::InvalidMemoryOrder);
+}
+
+Result<void, smap::SharedMapError> fail_shared_map() {
+    return Err(smap::Map(map::KeyNotFound));
+}
+
+Result<void, crypto::CryptoError> fail_crypto() {
+    return Err(crypto::Backend("crypto backend"));
+}
+
+Result<void, env::EnvError> fail_env() {
+    return Err(env::Runtime(5));
+}
+
+Result<void, Error> box_vec() {
+    fail_vec()?;
+    return Ok;
+}
+
+Result<void, Error> box_buf() {
+    fail_buf()?;
+    return Ok;
+}
+
+Result<void, Error> box_bytes() {
+    fail_bytes()?;
+    return Ok;
+}
+
+Result<void, Error> box_text() {
+    fail_text()?;
+    return Ok;
+}
+
+Result<void, Error> box_codec() {
+    fail_codec()?;
+    return Ok;
+}
+
+Result<void, Error> box_map() {
+    fail_map()?;
+    return Ok;
+}
+
+Result<void, Error> box_map_with() {
+    fail_map_with()?;
+    return Ok;
+}
+
+Result<void, Error> box_resource() {
+    fail_resource()?;
+    return Ok;
+}
+
+Result<void, Error> box_io() {
+    fail_io()?;
+    return Ok;
+}
+
+Result<void, Error> box_net() {
+    fail_net()?;
+    return Ok;
+}
+
+Result<void, Error> box_async() {
+    fail_async()?;
+    return Ok;
+}
+
+Result<void, Error> box_async_io() {
+    fail_async_io()?;
+    return Ok;
+}
+
+Result<void, Error> box_async_net() {
+    fail_async_net()?;
+    return Ok;
+}
+
+Result<void, Error> box_time() {
+    fail_time()?;
+    return Ok;
+}
+
+Result<void, Error> box_async_time() {
+    fail_async_time()?;
+    return Ok;
+}
+
+Result<void, Error> box_channel() {
+    fail_channel()?;
+    return Ok;
+}
+
+Result<void, Error> box_sync() {
+    fail_sync()?;
+    return Ok;
+}
+
+Result<void, Error> box_sync_with() {
+    fail_sync_with()?;
+    return Ok;
+}
+
+Result<void, Error> box_atomic() {
+    fail_atomic()?;
+    return Ok;
+}
+
+Result<void, Error> box_shared_map() {
+    fail_shared_map()?;
+    return Ok;
+}
+
+Result<void, Error> box_crypto() {
+    fail_crypto()?;
+    return Ok;
+}
+
+Result<void, Error> box_env() {
+    fail_env()?;
+    return Ok;
+}
+
+bool is_error(Result<void, Error> value) {
+    switch (value) {
+        case Ok:
+            return false;
+        case Err(_):
+            return true;
+    }
+    return false;
+}
+
+bool matches_vec() {
+    switch (fail_vec()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::CapacityOverflow:
+                    return true;
+                case vec::IndexOutOfBounds(_, _):
+                    return false;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_buf() {
+    switch (fail_buf()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case buf::CapacityOverflow:
+                    return true;
+                case buf::DiscardOutOfBounds:
+                    return false;
+                case buf::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_bytes() {
+    switch (fail_bytes()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case bytes::ShortCopy:
+                    return true;
+                case bytes::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_text() {
+    switch (fail_text()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case text::ShortCopy:
+                    return true;
+                case text::Bytes(_):
+                    return false;
+                case text::Storage:
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_codec() {
+    switch (fail_codec()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case codec::InputTooShort:
+                    return true;
+                case codec::OutputTooShort:
+                    return false;
+                case codec::UnsupportedIntegerWidth:
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_map() {
+    switch (fail_map()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case map::KeyNotFound:
+                    return true;
+                case map::CapacityOverflow:
+                    return false;
+                case map::Runtime(_):
+                    return false;
+                case map::MessageClone(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_map_with() {
+    switch (fail_map_with()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case map::Map(_):
+                    return false;
+                case map::Body(inner):
+                    switch (inner) {
+                        case map::KeyNotFound:
+                            return true;
+                        case map::CapacityOverflow:
+                            return false;
+                        case map::Runtime(_):
+                            return false;
+                        case map::MessageClone(_):
+                            return false;
+                    }
+            }
+    }
+    return false;
+}
+
+bool matches_resource() {
+    switch (fail_resource()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case resource::Runtime(_):
+                    return true;
+            }
+    }
+    return false;
+}
+
+bool matches_io() {
+    switch (fail_io()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case io::WriteZero:
+                    return true;
+                case io::Resource(_):
+                    return false;
+                case io::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_net() {
+    switch (fail_net()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case net::InvalidAddressFamily:
+                    return true;
+                case net::Resource(_):
+                    return false;
+                case net::Runtime(_):
+                    return false;
+                case net::WriteZero:
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_async() {
+    switch (fail_async()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case async::Timeout:
+                    return true;
+                case async::Runtime(_):
+                    return false;
+                case async::ChannelClosed:
+                    return false;
+                case async::MessageClone(_):
+                    return false;
+                case async::Operation(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_async_io() {
+    switch (fail_async_io()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case aio::Runtime(_):
+                    return true;
+                case aio::MessageClone(_):
+                    return false;
+                case aio::Async(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_async_net() {
+    switch (fail_async_net()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case anet::Timeout:
+                    return true;
+                case anet::Runtime(_):
+                    return false;
+                case anet::Bytes(_):
+                    return false;
+                case anet::MessageClone(_):
+                    return false;
+                case anet::Async(_):
+                    return false;
+                case anet::WriteZero:
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_time() {
+    switch (fail_time()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case time::Runtime(_):
+                    return true;
+            }
+    }
+    return false;
+}
+
+bool matches_async_time() {
+    switch (fail_async_time()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case atime::Runtime(_):
+                    return true;
+                case atime::MessageClone(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_channel() {
+    switch (fail_channel()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case channel::Runtime(_):
+                    return true;
+                case channel::MessageClone(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_sync() {
+    switch (fail_sync()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case sync::Runtime(_):
+                    return true;
+                case sync::MessageClone(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_sync_with() {
+    switch (fail_sync_with()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case sync::Sync(_):
+                    return false;
+                case sync::Body(inner):
+                    switch (inner) {
+                        case sync::Runtime(_):
+                            return true;
+                        case sync::MessageClone(_):
+                            return false;
+                    }
+            }
+    }
+    return false;
+}
+
+bool matches_atomic() {
+    switch (fail_atomic()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case atomic::InvalidMemoryOrder:
+                    return true;
+                case atomic::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_shared_map() {
+    switch (fail_shared_map()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case smap::Map(_):
+                    return true;
+                case smap::Sync(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_crypto() {
+    switch (fail_crypto()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case crypto::Backend(_):
+                    return true;
+                case crypto::Runtime(_):
+                    return false;
+            }
+    }
+    return false;
+}
+
+bool matches_env() {
+    switch (fail_env()) {
+        case Ok:
+            return false;
+        case Err(error):
+            switch (error) {
+                case env::Runtime(_):
+                    return true;
+                case env::IndexOutOfBounds(_, _):
+                    return false;
+            }
+    }
+    return false;
+}
+
+i32 main() {
+    if (!is_error(box_vec())) { return 1; }
+    if (!is_error(box_buf())) { return 2; }
+    if (!is_error(box_bytes())) { return 3; }
+    if (!is_error(box_text())) { return 4; }
+    if (!is_error(box_codec())) { return 5; }
+    if (!is_error(box_map())) { return 6; }
+    if (!is_error(box_map_with())) { return 61; }
+    if (!is_error(box_resource())) { return 7; }
+    if (!is_error(box_io())) { return 8; }
+    if (!is_error(box_net())) { return 9; }
+    if (!is_error(box_async())) { return 10; }
+    if (!is_error(box_async_io())) { return 11; }
+    if (!is_error(box_async_net())) { return 12; }
+    if (!is_error(box_time())) { return 13; }
+    if (!is_error(box_async_time())) { return 14; }
+    if (!is_error(box_channel())) { return 15; }
+    if (!is_error(box_sync())) { return 16; }
+    if (!is_error(box_sync_with())) { return 161; }
+    if (!is_error(box_atomic())) { return 17; }
+    if (!is_error(box_shared_map())) { return 18; }
+    if (!is_error(box_crypto())) { return 19; }
+    if (!is_error(box_env())) { return 20; }
+    if (!matches_vec()) { return 21; }
+    if (!matches_buf()) { return 22; }
+    if (!matches_bytes()) { return 23; }
+    if (!matches_text()) { return 24; }
+    if (!matches_codec()) { return 25; }
+    if (!matches_map()) { return 26; }
+    if (!matches_map_with()) { return 261; }
+    if (!matches_resource()) { return 27; }
+    if (!matches_io()) { return 28; }
+    if (!matches_net()) { return 29; }
+    if (!matches_async()) { return 30; }
+    if (!matches_async_io()) { return 31; }
+    if (!matches_async_net()) { return 32; }
+    if (!matches_time()) { return 33; }
+    if (!matches_async_time()) { return 34; }
+    if (!matches_channel()) { return 35; }
+    if (!matches_sync()) { return 36; }
+    if (!matches_sync_with()) { return 361; }
+    if (!matches_atomic()) { return 37; }
+    if (!matches_shared_map()) { return 38; }
+    if (!matches_crypto()) { return 39; }
+    if (!matches_env()) { return 40; }
+    return 0;
+}

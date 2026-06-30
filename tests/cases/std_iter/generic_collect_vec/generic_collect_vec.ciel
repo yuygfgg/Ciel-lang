@@ -1,0 +1,292 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/iter as iter;
+import /std/meta as meta;
+import /std/vec as vec;
+
+struct AddOne {}
+
+struct Even {}
+
+struct LessThanSix {}
+
+struct TwoOnce {
+    iter::Once<i64> first;
+    iter::Once<i64> second;
+    usize index;
+}
+
+enum SinkError {
+    Full,
+}
+
+struct LimitSink {
+    usize len;
+    usize limit;
+    i64 total;
+}
+
+impl format_error(*const SinkError error) {
+    switch (*error) {
+        case Full:
+            return "sink full";
+    }
+}
+
+impl iter::map_call<i64, i64>(*AddOne mapper, i64 value) {
+    return value + 1;
+}
+
+impl iter::filter_accept<i64>(*Even predicate, *const i64 value) {
+    return ((*value) % 2) == 0;
+}
+
+impl iter::filter_accept<i64>(*LessThanSix predicate, *const i64 value) {
+    return *value < 6;
+}
+
+impl iter::next<iter::Once<i64>>(*TwoOnce iter) {
+    if (iter->index == 0) {
+        iter->index = 1;
+        return iter::Item(iter->first);
+    }
+    if (iter->index == 1) {
+        iter->index = 2;
+        return iter::Item(iter->second);
+    }
+    return iter::Done;
+}
+
+impl iter::collect_new<i64, SinkError>(meta::Type<LimitSink> sink, usize capacity) {
+    return Ok({ len: 0, limit: 2, total: 0 });
+}
+
+impl iter::collect_push<i64, SinkError>(*LimitSink sink, i64 value) {
+    if (sink->len >= sink->limit) {
+        return Err(Full);
+    }
+    sink->len = sink->len + 1;
+    sink->total = sink->total + value;
+    return Ok;
+}
+
+bool is_vec_new_overflow(Result<vec::Vec<u64>, vec::VecError> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::CapacityOverflow:
+                    return true;
+                case vec::IndexOutOfBounds(_, _):
+                    return false;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+}
+
+bool is_sink_full(Result<LimitSink, SinkError> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case Full:
+                    return true;
+            }
+    }
+}
+
+i64 sum_i64_vec(*const vec::Vec<i64> values) {
+    []const i64 items = values.vec::slice();
+    i64 @total = 0;
+    usize @i = 0;
+    while (i < items.len) {
+        total = total + items[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+i64 sum_pair_vec(*const vec::Vec<iter::Pair<i64, i64>> values) {
+    []const iter::Pair<i64, i64> items = values.vec::slice();
+    i64 @total = 0;
+    usize @i = 0;
+    while (i < items.len) {
+        total = total + items[i].left + items[i].right;
+        i = i + 1;
+    }
+    return total;
+}
+
+i64 sum_enumerated_vec(*const vec::Vec<iter::Enumerated<i64>> values) {
+    []const iter::Enumerated<i64> items = values.vec::slice();
+    i64 @total = 0;
+    usize @i = 0;
+    while (i < items.len) {
+        total = total + (items[i].index as i64) * 10 + items[i].value;
+        i = i + 1;
+    }
+    return total;
+}
+
+i64 main() {
+    AddOne add = {};
+    Even even = {};
+    LessThanSix low = {};
+
+    vec::Vec<i64> @from_range;
+    switch (iter::collect<vec::Vec<i64>>(iter::range(1, 4))) {
+        case Ok(value):
+            from_range = value;
+        case Err(_):
+            return 101;
+    }
+    if (from_range.vec::len() != 3 || sum_i64_vec(&from_range) != 6) {
+        return 1;
+    }
+
+    [4]i64 raw = [3, 4, 5, 6];
+    vec::Vec<i64> @from_slice;
+    switch (iter::collect<vec::Vec<i64>>(iter::slice_iter(raw[..]))) {
+        case Ok(value):
+            from_slice = value;
+        case Err(_):
+            return 102;
+    }
+    if (from_slice.vec::len() != 4 || sum_i64_vec(&from_slice) != 18) {
+        return 2;
+    }
+
+    vec::Vec<i64> @mapped;
+    switch (iter::collect<vec::Vec<i64>>(iter::map(iter::range(0, 3), add))) {
+        case Ok(value):
+            mapped = value;
+        case Err(_):
+            return 103;
+    }
+    if (mapped.vec::len() != 3 || sum_i64_vec(&mapped) != 6) {
+        return 3;
+    }
+
+    Result<vec::Vec<i64>, vec::VecError> filtered_result =
+        iter::filter(iter::range(0, 8), even).iter::collect();
+    vec::Vec<i64> @filtered;
+    switch (filtered_result) {
+        case Ok(value):
+            filtered = value;
+        case Err(_):
+            return 104;
+    }
+    if (filtered.vec::len() != 4 || sum_i64_vec(&filtered) != 12) {
+        return 4;
+    }
+
+    vec::Vec<i64> @taken;
+    switch (iter::range(10, 20).iter::collect<vec::Vec<i64>>()) {
+        case Ok(value):
+            taken = value;
+        case Err(_):
+            return 105;
+    }
+    vec::Vec<i64> @first_three;
+    switch (iter::collect<vec::Vec<i64>>(iter::take(iter::slice_iter(taken.vec::slice()), 3))) {
+        case Ok(value):
+            first_three = value;
+        case Err(_):
+            return 106;
+    }
+    if (first_three.vec::len() != 3 || sum_i64_vec(&first_three) != 33) {
+        return 5;
+    }
+
+    vec::Vec<i64> @chained;
+    switch (iter::collect<vec::Vec<i64>>(iter::chain(iter::range(0, 2), iter::once(5)))) {
+        case Ok(value):
+            chained = value;
+        case Err(_):
+            return 107;
+    }
+    if (chained.vec::len() != 3 || sum_i64_vec(&chained) != 6) {
+        return 6;
+    }
+
+    vec::Vec<iter::Pair<i64, i64>> @zipped;
+    switch (iter::collect<vec::Vec<iter::Pair<i64, i64>>>(
+        iter::zip(iter::range(1, 4), iter::slice_iter(raw[..]))
+    )) {
+        case Ok(value):
+            zipped = value;
+        case Err(_):
+            return 108;
+    }
+    if (zipped.vec::len() != 3 || sum_pair_vec(&zipped) != 18) {
+        return 7;
+    }
+
+    vec::Vec<iter::Enumerated<i64>> @enumerated;
+    switch (iter::collect<vec::Vec<iter::Enumerated<i64>>>(
+        iter::enumerate(iter::range(4, 7))
+    )) {
+        case Ok(value):
+            enumerated = value;
+        case Err(_):
+            return 109;
+    }
+    if (enumerated.vec::len() != 3 || sum_enumerated_vec(&enumerated) != 45) {
+        return 8;
+    }
+
+    iter::Once<i64> first = { state: iter::Item(7) };
+    iter::Once<i64> second = { state: iter::Item(8) };
+    TwoOnce nested = { first: first, second: second, index: 0 };
+    vec::Vec<i64> @flattened;
+    switch (iter::collect<vec::Vec<i64>>(iter::flatten(nested))) {
+        case Ok(value):
+            flattened = value;
+        case Err(_):
+            return 110;
+    }
+    if (flattened.vec::len() != 2 || sum_i64_vec(&flattened) != 15) {
+        return 9;
+    }
+
+    vec::Vec<i64> @empty;
+    switch (iter::collect<vec::Vec<i64>>(iter::empty<i64>())) {
+        case Ok(value):
+            empty = value;
+        case Err(_):
+            return 111;
+    }
+    if (empty.vec::len() != 0) {
+        return 10;
+    }
+
+    LimitSink @ok_sink;
+    switch (iter::collect<LimitSink>(iter::filter(iter::range(0, 2), low))) {
+        case Ok(value):
+            ok_sink = value;
+        case Err(_):
+            return 112;
+    }
+    if (ok_sink.len != 2 || ok_sink.total != 1) {
+        return 11;
+    }
+
+    if (!is_sink_full(iter::collect<LimitSink>(iter::range(0, 3)))) {
+        return 12;
+    }
+
+    meta::Type<vec::Vec<u64>> vec_u64 = {};
+    if (!is_vec_new_overflow(iter::collect_new<u64, vec::VecError>(
+        vec_u64,
+        ~(0 as usize)
+    ))) {
+        return 13;
+    }
+
+    return 0;
+}

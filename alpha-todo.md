@@ -300,6 +300,17 @@ Done criteria:
 - Tests cover successful collection, empty collection, and overflow/error
   propagation.
 
+Implementation status:
+
+- Completed for `/std/iter` and `/std/vec`: `CollectTarget<Item, E>` is backed
+  by `collect_new` on `meta::Type<C>` and `collect_push` on `*C`, with generic
+  `collect` exposed as a function and receiver selector.
+- `Vec<T>` implements the target collection capability and propagates
+  `VecError` from allocation, growth, and capacity overflow paths.
+- Tests cover generic collection into `Vec<T>` from every alpha iterator
+  adapter, empty collection, selector and ordinary-call forms, custom target
+  error propagation, and concrete `VecError` capacity overflow.
+
 ### 8. Add Container Iterator Entrypoints
 
 Containers need a standard way to produce iterators before generic collection is

@@ -3525,6 +3525,8 @@ shareable bytes.
 ```ciel
 // /std/vec
 export import /std/result;
+import /std/iter as iter;
+import /std/meta as meta;
 import /std/storage as storage;
 
 export enum VecError {
@@ -3555,6 +3557,15 @@ export void vec_clear<T>(*Vec<T> vec) = .clear;
 export []const T vec_slice<T>(*const Vec<T> vec) = .slice;
 export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice;
 export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source);
+
+impl<T> iter::collect_new<T, VecError>(meta::Type<Vec<T>> collection, usize capacity) {
+    return vec_new<T>(capacity);
+}
+
+impl<T> iter::collect_push<T, VecError>(*Vec<T> collection, T value) {
+    vec_push<T>(collection, value)?;
+    return Ok;
+}
 ```
 
 `/std/vec` provides a GC-backed growable sequence for arbitrary element types.
@@ -3597,6 +3608,11 @@ can still erase them into `/std/error::Error` at API boundaries.
 implementation allocates a fresh vector and clones each initialized element
 with `clone_message`; `Vec<T>` for non-`Message` element types does not satisfy
 `Message`.
+
+`Vec<T>` is the first standard target collection for `/std/iter::collect`.
+Collection uses the generic `CollectTarget<Item, E>` capability: `collect_new`
+constructs the vector and `collect_push` appends each item. Allocation,
+growth, and capacity overflow failures are returned as `VecError`.
 
 ```ciel
 // /std/map
@@ -3753,6 +3769,10 @@ registries and routing tables shared by async tasks or actors, while
 
 ```ciel
 // /std/iter
+export import /std/result;
+export import /std/error;
+import /std/meta as meta;
+
 export enum Next<Item> {
     Item(Item),
     Done,
@@ -3766,6 +3786,13 @@ export interface Mapper<In, Out> = map_call<In, Out>;
 
 export interface<P, Item> bool filter_accept(*P predicate, *const Item value);
 export interface Predicate<Item> = filter_accept<Item>;
+
+export interface<C, Item -> E> Result<C, E> collect_new(
+    meta::Type<C> collection,
+    usize capacity
+);
+export interface<C, Item -> E> Result<void, E> collect_push(*C collection, Item value);
+export interface CollectTarget<Item, E> = collect_new<Item, E> + collect_push<Item, E>;
 
 export struct Range {
     i64 current;
@@ -3815,6 +3842,10 @@ export _: Iterator<Item> flatten<I: Iterator<Inner = _: Iterator<Item = _>>>(I i
 
 export usize count<I: Iterator<Item = _>>(I iter);
 export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item)| step);
+export Result<C, E> collect<
+    C: CollectTarget<Item = _, E = _: ErrorTrait>,
+    I: Iterator<Item>
+>(I iter) = .collect;
 export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
 export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
 export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate);
@@ -3827,6 +3858,19 @@ determined-parameter coherence rules, and generic `Iterator<Item = _>` bounds
 are solved by the same hidden binding machinery available to user code.
 Adapter constructors return opaque constrained iterator types so callers do not
 depend on nested private adapter structs.
+
+`collect` consumes the remaining items of an iterator into a target collection
+chosen by the expected result type or explicit type argument. A collection
+target implements `CollectTarget<Item, E>` by providing `collect_new` on
+`meta::Type<C>` and `collect_push` on `*C`. The standard implementation for
+`Vec<T>` uses the same interface as any user-defined target collection.
+Creation and push failures propagate as the target's concrete error type `E`;
+for `Vec<T>`, that type is `VecError`. The exported function also has receiver
+selector `.collect`, so both `iter::collect<vec::Vec<i64>>(items)` and
+`items.iter::collect<vec::Vec<i64>>()` use the same operation. `range`,
+`slice_iter`, `map`, `filter`, `take`, `chain`, `zip`, `enumerate`, and
+`flatten` are ordinary `Iterator` values and can be collected through this
+interface.
 
 ```ciel
 // /std/time

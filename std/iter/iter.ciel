@@ -1,3 +1,8 @@
+// Re-exports Result and ErrorTrait for fallible collection APIs.
+export import /std/result;
+export import /std/error;
+import /std/meta as meta;
+
 // Result of advancing an iterator.
 export enum Next<Item> {
     Item(Item),
@@ -21,6 +26,15 @@ export interface<P, Item> bool filter_accept(*P predicate, *const Item value);
 
 // Constraint alias for predicate objects used by filter(), find(), any(), and all().
 export interface Predicate<Item> = filter_accept<Item>;
+
+// Creates a target collection before collection begins.
+export interface<C, Item -> E> Result<C, E> collect_new(meta::Type<C> collection, usize capacity);
+
+// Appends one item to a target collection.
+export interface<C, Item -> E> Result<void, E> collect_push(*C collection, Item value);
+
+// Constraint alias for collection targets used by collect().
+export interface CollectTarget<Item, E> = collect_new<Item, E> + collect_push<Item, E>;
 
 // Half-open integer range [current, end).
 export struct Range {
@@ -315,6 +329,23 @@ export Acc fold<I: Iterator<Item = _>, Acc>(I iter, Acc initial, Acc |(Acc, Item
                 acc = step(acc, value);
             case Done:
                 return acc;
+        }
+    }
+}
+
+// Collects the remaining iterator items into a target collection.
+export Result<C, E> collect<
+    C: CollectTarget<Item = _, E = _: ErrorTrait>,
+    I: Iterator<Item>
+>(I iter) = .collect {
+    meta::Type<C> target = {};
+    C @out = collect_new<Item, E>(target, 0)?;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                collect_push<Item, E>(&out, value)?;
+            case Done:
+                return Ok(out);
         }
     }
 }

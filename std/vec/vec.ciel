@@ -1,6 +1,7 @@
 // Re-exports Result and Error helpers for vector operations.
 export import /std/result;
 import /std/c as c;
+import /std/iter as iter;
 import /std/message;
 import /std/meta as meta;
 import /std/storage as storage;
@@ -197,6 +198,15 @@ export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source) {
         i = i + 1;
     }
     return Ok(out);
+}
+
+impl<T> iter::collect_new<T, VecError>(meta::Type<Vec<T>> collection, usize capacity) {
+    return vec_new<T>(capacity);
+}
+
+impl<T> iter::collect_push<T, VecError>(*Vec<T> collection, T value) {
+    vec_push<T>(collection, value)?;
+    return Ok;
 }
 
 unsafe impl<T: Message> clone_message(*const Vec<T> value) {

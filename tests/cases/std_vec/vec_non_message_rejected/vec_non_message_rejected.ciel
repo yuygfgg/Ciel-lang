@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+struct Local {
+    i64 value;
+}
+
+i64 main() {
+    Vec<Local> @items = must(vec_new<Local>(0));
+    must(items.push({ value: 1 }));
+    Vec<Local> copy = must(clone_message(&items));
+    return copy.len() as i64;
+}

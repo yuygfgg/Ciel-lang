@@ -1,0 +1,212 @@
+// Re-exports Result and Error helpers for vector operations.
+export import /std/result;
+import /std/c as c;
+import /std/message;
+import /std/meta as meta;
+import /std/storage as storage;
+
+unsafe extern "C" {
+    c::c_int ciel_errno();
+}
+
+// Errors produced by Vec operations.
+export enum VecError {
+    CapacityOverflow,
+    IndexOutOfBounds(usize, usize),
+    Runtime(i64),
+}
+
+impl format_error(*const VecError error) {
+    switch (*error) {
+        case CapacityOverflow:
+            return "vector capacity overflow";
+        case IndexOutOfBounds(_, _):
+            return "vector index out of bounds";
+        case Runtime(_):
+            return "vector runtime error";
+    }
+}
+
+// Growable GC-backed sequence. Safe code must construct it with vec_new.
+export unsafe struct Vec<T> {
+    storage::RawStorage<T> storage;
+    usize len;
+}
+
+VecError vec_runtime_error() {
+    c::c_int code = unsafe { ciel_errno() };
+    if ((code as i64) == 0) {
+        return Runtime(5);
+    }
+    return Runtime(code as i64);
+}
+
+bool capacity_overflows<T>(usize capacity) {
+    usize elem_size = meta::type_size<T>();
+    if (elem_size == 0) {
+        return false;
+    }
+    return capacity > ((~(0 as usize)) / elem_size);
+}
+
+Result<storage::RawStorage<T>, VecError> vec_raw_zeroed<T>(usize capacity) {
+    if (capacity_overflows<T>(capacity)) {
+        return Err(CapacityOverflow);
+    }
+    switch (unsafe { storage::raw_zeroed<T>(capacity) }) {
+        case Ok(raw):
+            return Ok(raw);
+        case Err(_):
+            return Err(vec_runtime_error());
+    }
+}
+
+Result<storage::RawStorage<T>, VecError> vec_raw_realloc_zeroed<T>(
+    storage::RawStorage<T> old,
+    usize initialized,
+    usize next_capacity
+) {
+    if (capacity_overflows<T>(next_capacity)) {
+        return Err(CapacityOverflow);
+    }
+    switch (unsafe { storage::raw_realloc_zeroed<T>(old, initialized, next_capacity) }) {
+        case Ok(raw):
+            return Ok(raw);
+        case Err(_):
+            return Err(vec_runtime_error());
+    }
+}
+
+// Creates an empty Vec with at least the requested initial capacity.
+export Result<Vec<T>, VecError> vec_new<T>(usize capacity) {
+    storage::RawStorage<T> raw = vec_raw_zeroed<T>(capacity)?;
+    return Ok(unsafe { { storage: raw, len: 0 } });
+}
+
+// Returns the number of initialized items in the vector.
+export usize vec_len<T>(*const Vec<T> vec) = .len {
+    return unsafe { vec->len };
+}
+
+// Returns the number of items that can be stored without growing.
+export usize vec_capacity<T>(*const Vec<T> vec) = .capacity {
+    []const T storage_view = unsafe { storage::raw_const_slice<T>(&vec->storage) };
+    return storage_view.len;
+}
+
+usize grown_capacity(usize current, usize needed) {
+    usize @next = current;
+    if (next < 8) {
+        next = 8;
+    }
+    while (next < needed) {
+        if (next > ((~(0 as usize)) / (2 as usize))) {
+            return needed;
+        }
+        next = next * (2 as usize);
+    }
+    return next;
+}
+
+// Ensures room for additional initialized items after the current tail.
+export Result<void, VecError> vec_reserve<T>(*Vec<T> vec, usize additional) = .reserve {
+    usize len = vec_len(vec);
+    usize cap = vec_capacity(vec);
+    if (additional > ((~(0 as usize)) - len)) {
+        return Err(CapacityOverflow);
+    }
+    usize needed = len + additional;
+    if (capacity_overflows<T>(needed)) {
+        return Err(CapacityOverflow);
+    }
+    if (needed <= cap) {
+        return Ok;
+    }
+
+    usize next_cap = grown_capacity(cap, needed);
+    storage::RawStorage<T> old = unsafe { vec->storage };
+    storage::RawStorage<T> next = vec_raw_realloc_zeroed<T>(old, len, next_cap)?;
+    unsafe {
+        vec->storage = next;
+        vec->len = len;
+    };
+    return Ok;
+}
+
+// Appends one item to the initialized prefix, growing as needed.
+export Result<void, VecError> vec_push<T>(*Vec<T> vec, T value) = .push {
+    vec_reserve<T>(vec, 1)?;
+    usize len = vec_len(vec);
+    []T storage_view = unsafe { storage::raw_slice<T>(&vec->storage) };
+    storage_view[len] = value;
+    unsafe {
+        vec->len = len + 1;
+    };
+    return Ok;
+}
+
+// Returns a read-only pointer to an initialized item by index.
+export Result<*const T, VecError> vec_at<T>(*const Vec<T> vec, usize index) = .at {
+    usize len = vec_len(vec);
+    if (index >= len) {
+        return Err(IndexOutOfBounds(index, len));
+    }
+    []const T storage_view = unsafe { storage::raw_const_slice<T>(&vec->storage) };
+    return Ok(&storage_view[index]);
+}
+
+// Returns a mutable pointer to an initialized item by index.
+export Result<*T, VecError> vec_mut_at<T>(*Vec<T> vec, usize index) = .mut_at {
+    usize len = vec_len(vec);
+    if (index >= len) {
+        return Err(IndexOutOfBounds(index, len));
+    }
+    []T storage_view = unsafe { storage::raw_slice<T>(&vec->storage) };
+    return Ok(&storage_view[index]);
+}
+
+// Resets the initialized length to zero while keeping capacity reusable.
+export void vec_clear<T>(*Vec<T> vec) = .clear {
+    usize cap = vec_capacity(vec);
+    storage::RawStorage<T> old = unsafe { vec->storage };
+    storage::RawStorage<T> next = must(unsafe { storage::raw_realloc_zeroed<T>(old, 0, cap) });
+    unsafe {
+        vec->storage = next;
+        vec->len = 0;
+    };
+}
+
+// Returns a read-only view of the initialized item prefix.
+export []const T vec_slice<T>(*const Vec<T> vec) = .slice {
+    []const T storage_view = unsafe { storage::raw_const_slice<T>(&vec->storage) };
+    return unsafe { storage_view[..vec->len] };
+}
+
+// Returns a mutable view of the initialized item prefix.
+export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice {
+    []T storage_view = unsafe { storage::raw_slice<T>(&vec->storage) };
+    return unsafe { storage_view[..vec->len] };
+}
+
+// Copies a slice into a new Vec.
+export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source) {
+    Vec<T> @out = vec_new<T>(source.len)?;
+    usize @i = 0;
+    while (i < source.len) {
+        vec_push<T>(&out, source[i])?;
+        i = i + 1;
+    }
+    return Ok(out);
+}
+
+unsafe impl<T: Message> clone_message(*const Vec<T> value) {
+    Vec<T> @out = vec_new<T>(vec_len(value))?;
+    []const T items = vec_slice(value);
+    usize @i = 0;
+    while (i < items.len) {
+        T copied = clone_message(&items[i])?;
+        vec_push<T>(&out, copied)?;
+        i = i + 1;
+    }
+    return Ok(out);
+}

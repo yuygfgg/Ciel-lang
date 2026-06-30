@@ -49,6 +49,9 @@ export import /std/codec;
 // Re-exports growable byte buffers.
 export import /std/buf;
 
+// Re-exports generic growable sequences.
+export import /std/vec;
+
 // Re-exports owned immutable byte buffers.
 export import /std/bytes;
 

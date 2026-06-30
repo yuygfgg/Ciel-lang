@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.vec"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/vec" = "vec.ciel"

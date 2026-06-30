@@ -234,17 +234,13 @@ Done criteria:
 
 ### 7. Add Generic Iterator Collection
 
-Iteration needs collection as a real abstraction, not a single `Vec`-only
-special case.
+Iteration needs collection as a real abstraction.
 
 Minimum API:
 
 - A generic `collect` interface with a target collection capability.
 - A `Vec<T>` implementation of that target collection capability.
-- `collect_vec` may exist as a convenience wrapper, but not as the only
-  collection path.
 - Receiver selector `.collect` for the generic form.
-- Receiver selector `.collect_vec` only if the convenience wrapper remains.
 
 Done criteria:
 

@@ -1,0 +1,38 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/vec as vec;
+
+Result<void, Error> reserve_too_much(*vec::Vec<i64> values) {
+    values.vec::reserve(~(0 as usize))?;
+    return Ok;
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    vec::Vec<i64> @values = must(vec::vec_new<i64>(0));
+    Result<void, Error> failed = reserve_too_much(&values);
+    switch (failed) {
+        case Ok:
+            return 1;
+        case Err(error):
+            if (same_text(error_message(&error), "vector capacity overflow")) {
+                return 0;
+            }
+            return 2;
+    }
+}

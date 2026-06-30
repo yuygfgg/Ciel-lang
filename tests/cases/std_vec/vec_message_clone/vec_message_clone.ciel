@@ -1,0 +1,46 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/message;
+import /std/result;
+import /std/vec as vec;
+
+struct Packet {
+    i64 id;
+}
+
+unsafe impl clone_message(*const Packet value) {
+    return Ok(*value);
+}
+
+i64 main() {
+    vec::Vec<i64> @numbers = must(vec::vec_new<i64>(0));
+    must(numbers.vec::push(3));
+    must(numbers.vec::push(5));
+
+    vec::Vec<i64> number_copy = must(clone_message(&numbers));
+    numbers.vec::mut_slice()[0] = 99;
+    if (number_copy.vec::len() != 2 || number_copy.vec::slice()[0] != 3) {
+        return 1;
+    }
+    if (number_copy.vec::capacity() < 2) {
+        return 2;
+    }
+
+    vec::Vec<Packet> @packets = must(vec::vec_new<Packet>(0));
+    must(packets.vec::push({ id: 7 }));
+    must(packets.vec::push({ id: 9 }));
+
+    vec::Vec<Packet> packet_copy = must(clone_message(&packets));
+    packets.vec::mut_slice()[0] = { id: 100 };
+    if (packet_copy.vec::len() != 2) {
+        return 3;
+    }
+    Packet first = packet_copy.vec::slice()[0];
+    Packet second = packet_copy.vec::slice()[1];
+    if (first.id != 7 || second.id != 9) {
+        return 4;
+    }
+
+    return 0;
+}

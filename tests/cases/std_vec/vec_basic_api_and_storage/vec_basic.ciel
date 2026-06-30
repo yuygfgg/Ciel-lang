@@ -1,0 +1,154 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/vec as vec;
+
+struct Pair {
+    i64 left;
+    i64 right;
+}
+
+struct Cell {
+    i64 value;
+}
+
+enum Item {
+    PairItem(Pair),
+    Count(i64),
+    Empty,
+}
+
+bool is_overflow(Result<void, vec::VecError> value) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::CapacityOverflow:
+                    return true;
+                case vec::IndexOutOfBounds(_, _):
+                    return false;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+}
+
+i64 item_score(Item item) {
+    switch (item) {
+        case PairItem(pair):
+            return pair.left + pair.right;
+        case Count(value):
+            return value;
+        case Empty:
+            return 0;
+    }
+}
+
+i64 main() {
+    vec::Vec<i64> @numbers = must(vec::vec_new<i64>(0));
+    if (numbers.vec::len() != 0 || numbers.vec::capacity() != 0) {
+        return 1;
+    }
+
+    must(numbers.vec::reserve(3));
+    if (numbers.vec::capacity() < 3) {
+        return 2;
+    }
+
+    must(numbers.vec::push(10));
+    must(numbers.vec::push(20));
+    must(numbers.vec::push(30));
+    if (numbers.vec::len() != 3) {
+        return 3;
+    }
+    []const i64 initial = numbers.vec::slice();
+    if (initial.len != 3 || initial[0] != 10 || initial[1] != 20 || initial[2] != 30) {
+        return 4;
+    }
+    *const i64 first_ref = must(numbers.vec::at(0));
+    *const i64 last_ref = must(numbers.vec::at(2));
+    if (*first_ref != 10 || *last_ref != 30) {
+        return 18;
+    }
+
+    []i64 mutable = numbers.vec::mut_slice();
+    mutable[1] = 25;
+    if (numbers.vec::slice()[1] != 25) {
+        return 5;
+    }
+    *i64 middle_ref = must(numbers.vec::mut_at(1));
+    *middle_ref = 26;
+    if (*must(numbers.vec::at(1)) != 26) {
+        return 19;
+    }
+
+    usize kept_capacity = numbers.vec::capacity();
+    numbers.vec::clear();
+    if (numbers.vec::len() != 0 || numbers.vec::capacity() != kept_capacity) {
+        return 6;
+    }
+    must(numbers.vec::push(40));
+    if (numbers.vec::slice()[0] != 40) {
+        return 7;
+    }
+
+    [3]i64 @seed = [1, 2, 3];
+    vec::Vec<i64> copied = must(vec::vec_from_slice<i64>(seed[..]));
+    if (copied.vec::len() != 3 || copied.vec::slice()[2] != 3) {
+        return 8;
+    }
+    seed[2] = 9;
+    if (copied.vec::slice()[2] != 3) {
+        return 9;
+    }
+
+    vec::Vec<Pair> @pairs = must(vec::vec_new<Pair>(1));
+    must(pairs.vec::push({ left: 2, right: 5 }));
+    Pair first_pair = pairs.vec::slice()[0];
+    if (pairs.vec::len() != 1 || first_pair.left != 2 || first_pair.right != 5) {
+        return 10;
+    }
+
+    [3]Item raw_items = [PairItem({ left: 4, right: 6 }), Count(7), Empty];
+    vec::Vec<Item> items = must(vec::vec_from_slice<Item>(raw_items[..]));
+    if (item_score(items.vec::slice()[0]) != 10) {
+        return 11;
+    }
+    if (item_score(items.vec::slice()[1]) != 7 || item_score(items.vec::slice()[2]) != 0) {
+        return 12;
+    }
+
+    Cell @left = { value: 11 };
+    Cell @right = { value: 22 };
+    vec::Vec<?*Cell> @ptrs = must(vec::vec_new<?*Cell>(0));
+    must(ptrs.vec::push(&left));
+    must(ptrs.vec::push(&right));
+    []const ?*Cell ptr_slice = ptrs.vec::slice();
+    ?*Cell left_ptr = ptr_slice[0];
+    ?*Cell right_ptr = ptr_slice[1];
+    if (left_ptr == null) {
+        return 13;
+    }
+    if (right_ptr == null) {
+        return 13;
+    }
+    if (left_ptr->value != 11 || right_ptr->value != 22) {
+        return 14;
+    }
+    ptrs.vec::clear();
+    if (ptrs.vec::len() != 0 || ptrs.vec::capacity() < 2) {
+        return 15;
+    }
+    must(ptrs.vec::push(null));
+    if (ptrs.vec::slice()[0] != null) {
+        return 16;
+    }
+
+    if (!is_overflow(numbers.vec::reserve(~(0 as usize)))) {
+        return 17;
+    }
+
+    return 0;
+}

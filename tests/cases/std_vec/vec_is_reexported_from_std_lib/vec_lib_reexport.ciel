@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 37
+
+import /std/lib;
+
+i64 main() {
+    Vec<i64> @values = must(vec_new<i64>(0));
+    must(values.push(37));
+    return values.slice()[0];
+}

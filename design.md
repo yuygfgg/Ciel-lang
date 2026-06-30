@@ -2695,10 +2695,11 @@ import /std/actor;
 
 `/std/lib` is the standard facade module. It re-exports `/std/error`,
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
-`/std/async_net`, `/std/async_time`, `/std/message`, `/std/meta`,
-`/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`, `/std/codec`,
-`/std/buf`, `/std/bytes`, `/std/text`, `/std/map`, `/std/iter`, `/std/shared_map`,
-`/std/time`, `/std/env`, `/std/crypto`, and `/std/net`.
+`/std/async_net`, `/std/async_time`, `/std/message`, `/std/resource`,
+`/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
+`/std/codec`, `/std/buf`, `/std/vec`, `/std/bytes`, `/std/text`, `/std/map`,
+`/std/iter`, `/std/shared_map`, `/std/time`, `/std/env`, `/std/crypto`, and
+`/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -3324,6 +3325,7 @@ export import /std/async_io;
 export import /std/async_net;
 export import /std/async_time;
 export import /std/message;
+export import /std/resource;
 export import /std/meta;
 export import /std/actor;
 export import /std/channel;
@@ -3331,6 +3333,7 @@ export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
 export import /std/buf;
+export import /std/vec;
 export import /std/bytes;
 export import /std/text;
 export import /std/map;
@@ -3360,11 +3363,60 @@ export Result<[]u8, Error> encode_le<T: encoded_len + put_le>(T value);
 ```
 
 ```ciel
+// /std/storage
+export import /std/result;
+
+export unsafe struct RawStorage<T> {
+    []T storage;
+}
+
+export unsafe []T raw_from_ptr<T>(*void ptr, usize capacity);
+export unsafe Result<RawStorage<T>, Error> raw_zeroed<T>(usize capacity);
+export unsafe Result<RawStorage<T>, Error> raw_realloc_zeroed<T>(
+    RawStorage<T> old,
+    usize initialized,
+    usize next_capacity
+);
+export []T raw_slice<T>(*RawStorage<T> storage);
+export []const T raw_const_slice<T>(*const RawStorage<T> storage);
+```
+
+`/std/storage` is the unsafe growable-storage boundary used by trusted
+standard-library containers. It is not re-exported by `/std/lib`; application
+code should use safe container modules such as `/std/buf`, `/std/vec`, and
+`/std/map`.
+
+`RawStorage<T>` owns a GC-backed allocation whose descriptor length is the raw
+capacity. Zero-capacity storage still has a valid non-null empty slice
+descriptor. `raw_zeroed<T>` allocates `capacity` elements, checks the byte-size
+overflow for `capacity * type_size<T>()`, and returns storage whose bytes are
+zeroed before the storage is visible to Ciel code or the GC. `raw_realloc_zeroed`
+returns a new owner, preserves the first `initialized` elements from `old`, and
+zeros any newly allocated slots. It fails with `Error` when `initialized >
+next_capacity`, when a byte-size overflow is detected, or when the runtime
+allocation primitive reports an error. The unsafe caller must ensure that
+`initialized` is not greater than the initialized prefix actually maintained in
+`old`.
+
+`raw_slice` and `raw_const_slice` expose the full raw capacity. Safe containers
+must separately track their initialized length and must not expose spare raw
+slots as initialized values. A container operation that reallocates raw storage
+may leave older interior pointers or slice views pointing at the previous GC
+allocation; safe container APIs must document view stability and avoid relying
+on such stale views internally.
+
+`raw_from_ptr<T>` is a compiler-recognized intrinsic only for the canonical
+`/std/storage` module. It constructs a typed slice descriptor from a non-null
+runtime allocation pointer and an element capacity; ordinary user code cannot
+define an equivalent trusted slice-construction primitive.
+
+```ciel
 // /std/buf
 import /std/result;
+import /std/storage as storage;
 
 export unsafe struct ByteBuf {
-    []u8 storage;
+    storage::RawStorage<u8> storage;
     usize len;
 }
 
@@ -3398,16 +3450,93 @@ remaining bytes down, which supports frame parsers that retain partial input
 between async reads.
 
 ```ciel
+// /std/vec
+export import /std/result;
+import /std/storage as storage;
+
+export enum VecError {
+    CapacityOverflow,
+    IndexOutOfBounds(usize, usize),
+    Runtime(i64),
+}
+
+export unsafe struct Vec<T> {
+    storage::RawStorage<T> storage;
+    usize len;
+}
+
+export Result<Vec<T>, VecError> vec_new<T>(usize capacity);
+export usize vec_len<T>(*const Vec<T> vec) = .len;
+export usize vec_capacity<T>(*const Vec<T> vec) = .capacity;
+export Result<void, VecError> vec_reserve<T>(
+    *Vec<T> vec,
+    usize additional
+) = .reserve;
+export Result<void, VecError> vec_push<T>(*Vec<T> vec, T value) = .push;
+export Result<*const T, VecError> vec_at<T>(
+    *const Vec<T> vec,
+    usize index
+) = .at;
+export Result<*T, VecError> vec_mut_at<T>(*Vec<T> vec, usize index) = .mut_at;
+export void vec_clear<T>(*Vec<T> vec) = .clear;
+export []const T vec_slice<T>(*const Vec<T> vec) = .slice;
+export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice;
+export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source);
+```
+
+`/std/vec` provides a GC-backed growable sequence for arbitrary element types.
+It is re-exported by `/std/lib`. `Vec<T>` is an unsafe struct so safe
+application code cannot construct a value whose storage descriptor and
+initialized length disagree; callers use `vec_new`, `vec_from_slice`, and the
+exported operations.
+
+The vector length is the initialized prefix. The capacity is the full length of
+the underlying `RawStorage<T>` view. `vec_reserve` ensures room for
+`additional` more initialized elements after the current tail, and `vec_push`
+appends one value, growing with checked capacity arithmetic when needed.
+Capacity arithmetic overflow returns `VecError::CapacityOverflow`. Runtime
+allocation failures are reported as `VecError::Runtime(code)`.
+
+`vec_at` and `vec_mut_at` return read-only and mutable pointers to initialized
+items without forcing callers to first convert the vector into a slice and
+without moving or cloning a generic `T`. Access outside the initialized prefix
+returns `VecError::IndexOutOfBounds(index, len)`, where `len` is the current
+initialized length. Pointers and slices returned from a vector are borrowed
+views into its current backing storage and are stable only until the next
+mutating vector operation that may replace or clear that storage.
+
+`vec_slice` and `vec_mut_slice` expose only the initialized prefix, never spare
+capacity. `vec_clear` resets the initialized length to zero while keeping the
+capacity reusable; for pointer-containing vectors it also clears the backing
+slots so removed elements are not retained by the vector's current storage.
+`vec_from_slice` copies the source slice into a new vector.
+
+`VecError` implements `/std/error::ErrorTrait` through `format_error`, so a
+`Result<T, VecError>` can be propagated with `?` into a `Result<U, Error>` by
+the standard error-boxing rule. The initial messages are
+`"vector capacity overflow"`, `"vector index out of bounds"`, and
+`"vector runtime error"`. New standard-library containers that need structured
+failures should prefer exported module-specific enum errors with `ErrorTrait`
+implementations; the enum variants preserve inspectable details, while callers
+can still erase them into `/std/error::Error` at API boundaries.
+
+`Vec<T>` implements `Message` exactly when `T: Message`. Its `clone_message`
+implementation allocates a fresh vector and clones each initialized element
+with `clone_message`; `Vec<T>` for non-`Message` element types does not satisfy
+`Message`.
+
+```ciel
 // /std/map
 import /std/result;
 import /std/message;
+import /std/storage as storage;
 
 export interface<T> u64 hash_key(*const T value, u64 seed);
 export interface<T> bool key_eq(*const T left, *const T right);
 export interface map_key = hash_key + key_eq;
 
 export unsafe struct HashMap<K, V> {
-    *void buckets;
+    storage::RawStorage<?*void> buckets;
     usize capacity;
     usize len;
     u64 seed;
@@ -3480,7 +3609,7 @@ cloned. `hash_map_pop_any` removes one arbitrary entry, which is useful for
 draining actor-local work queues and for implementing synchronized facades.
 
 `/std/map` provides an actor-local mutable hash table. It uses separate
-chaining with GC-backed nodes and a runtime-allocated bucket array. `HashMap`
+chaining with GC-backed nodes and a `RawStorage<?*void>` bucket array. `HashMap`
 does not implement `Message`; code should send keys, values, snapshots, or
 explicit messages rather than live map storage. Primitive key policies cover
 `bool`, `char`, signed integer types, unsigned integer types, and `usize`.

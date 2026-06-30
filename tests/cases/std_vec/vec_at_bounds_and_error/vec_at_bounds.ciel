@@ -1,0 +1,92 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/vec as vec;
+
+bool is_index_error(Result<*const i64, vec::VecError> value, usize expected_index, usize expected_len) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::CapacityOverflow:
+                    return false;
+                case vec::IndexOutOfBounds(index, len):
+                    return index == expected_index && len == expected_len;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+}
+
+bool is_mut_index_error(Result<*i64, vec::VecError> value, usize expected_index, usize expected_len) {
+    switch (value) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::CapacityOverflow:
+                    return false;
+                case vec::IndexOutOfBounds(index, len):
+                    return index == expected_index && len == expected_len;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+}
+
+bool same_text([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @idx = 0;
+    while (idx < left.len) {
+        if (left[idx] != right[idx]) {
+            return false;
+        }
+        idx = idx + 1;
+    }
+    return true;
+}
+
+Result<i64, Error> read_missing(*const vec::Vec<i64> values) {
+    *const i64 item = values.vec::at(4)?;
+    return Ok(*item);
+}
+
+i64 main() {
+    vec::Vec<i64> @values = must(vec::vec_new<i64>(0));
+    must(values.vec::push(5));
+    must(values.vec::push(8));
+
+    *const i64 first = must(values.vec::at(0));
+    if (*first != 5) {
+        return 1;
+    }
+
+    *i64 second = must(values.vec::mut_at(1));
+    *second = 13;
+    if (*must(values.vec::at(1)) != 13) {
+        return 2;
+    }
+
+    if (!is_index_error(values.vec::at(2), 2, 2)) {
+        return 3;
+    }
+    if (!is_mut_index_error(values.vec::mut_at(9), 9, 2)) {
+        return 4;
+    }
+
+    Result<i64, Error> boxed = read_missing(&values);
+    switch (boxed) {
+        case Ok(_):
+            return 5;
+        case Err(error):
+            if (!same_text(error_message(&error), "vector index out of bounds")) {
+                return 6;
+            }
+    }
+
+    return 0;
+}

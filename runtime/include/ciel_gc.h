@@ -27,9 +27,11 @@ typedef void (*CielFinalizerFn)(void* obj, void* client_data);
 void ciel_register_finalizer(void* obj, CielFinalizerFn finalizer,
                              void* client_data);
 
-void* ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity);
+void* ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity,
+                            bool needs_scan);
 void* ciel_raw_realloc_zeroed(void* old, size_t elem_size, size_t align,
-                              size_t initialized, size_t next_capacity);
+                              size_t initialized, size_t next_capacity,
+                              bool needs_scan);
 
 CIEL_MALLOC_LIKE CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void*
 ciel_box_value(const void* value, size_t size);

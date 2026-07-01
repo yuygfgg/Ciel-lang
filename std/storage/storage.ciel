@@ -5,17 +5,18 @@ import /std/meta as meta;
 
 unsafe extern "C" {
     c::c_int ciel_errno();
-    ?*void ciel_raw_alloc_zeroed(usize elem_size, usize align, usize capacity);
+    ?*void ciel_raw_alloc_zeroed(usize elem_size, usize align, usize capacity, bool needs_scan);
     ?*void ciel_raw_realloc_zeroed(
         ?*void old,
         usize elem_size,
         usize align,
         usize initialized,
-        usize next_capacity
+        usize next_capacity,
+        bool needs_scan
     );
 }
 
-// Owns a GC-backed raw allocation whose full capacity is exposed as a slice.
+// Owns a GC-managed raw allocation whose full capacity is exposed as a slice.
 export unsafe struct RawStorage<T> {
     []T storage;
 }
@@ -35,7 +36,12 @@ export unsafe []T raw_from_ptr<T>(*void ptr, usize capacity);
 // Allocates zeroed storage for capacity elements of T.
 export unsafe Result<RawStorage<T>, Error> raw_zeroed<T>(usize capacity) {
     ?*void raw = unsafe {
-        ciel_raw_alloc_zeroed(meta::type_size<T>(), meta::type_align<T>(), capacity)
+        ciel_raw_alloc_zeroed(
+            meta::type_size<T>(),
+            meta::type_align<T>(),
+            capacity,
+            meta::type_needs_gc_scan<T>()
+        )
     };
     if (raw == null) {
         return Err(runtime_error());
@@ -56,7 +62,8 @@ export unsafe Result<RawStorage<T>, Error> raw_realloc_zeroed<T>(
             meta::type_size<T>(),
             meta::type_align<T>(),
             initialized,
-            next_capacity
+            next_capacity,
+            meta::type_needs_gc_scan<T>()
         )
     };
     if (raw == null) {

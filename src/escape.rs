@@ -380,7 +380,9 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
                 self.scan_expr(actor);
             }
-            TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
+            TExprKind::TypeSize { .. }
+            | TExprKind::TypeAlign { .. }
+            | TExprKind::TypeNeedsGcScan { .. } => {}
             TExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
                     self.scan_expr(value);
@@ -611,7 +613,9 @@ impl<'a> FunctionAnalyzer<'a> {
             TExprKind::ActorStop { actor, .. } | TExprKind::ActorJoin { actor, .. } => {
                 self.collect_storage_sources(actor, out);
             }
-            TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => {}
+            TExprKind::TypeSize { .. }
+            | TExprKind::TypeAlign { .. }
+            | TExprKind::TypeNeedsGcScan { .. } => {}
             TExprKind::Call { .. }
             | TExprKind::UnsafeBlock { value: None, .. }
             | TExprKind::MakeDynamicInterface { .. }

@@ -4,7 +4,7 @@
 // expect-c-contains: static int64_t ciel_dyn_shim_
 // expect-c-contains: .vtable->measure
 // expect-c-contains: Box *box__
-// expect-c-contains: ciel_alloc(sizeof(Box))
+// expect-c-contains: ciel_alloc_atomic(sizeof(Box))
 
 interface<T> i64 measure(*T value);
 

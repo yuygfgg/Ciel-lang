@@ -1,0 +1,31 @@
+// ciel-test: compile
+// expect-c-contains: ciel_raw_alloc_zeroed(sizeof(uint8_t), CIEL_ALIGNOF(uint8_t), capacity, false)
+// expect-c-contains: ciel_raw_alloc_zeroed(sizeof(Cell *), CIEL_ALIGNOF(Cell *), capacity, true)
+// expect-c-contains: ciel_raw_realloc_zeroed(((void *)((old).storage).ptr), sizeof(uint8_t), CIEL_ALIGNOF(uint8_t), initialized, next_capacity, false)
+// expect-c-contains: ciel_raw_realloc_zeroed(((void *)((old).storage).ptr), sizeof(Cell *), CIEL_ALIGNOF(Cell *), initialized, next_capacity, true)
+
+import /std/storage as storage;
+import /std/result;
+
+struct Cell {
+    i64 value;
+}
+
+void use_bytes(storage::RawStorage<u8> value) {
+    value;
+}
+
+void use_ptrs(storage::RawStorage<?*Cell> value) {
+    value;
+}
+
+i64 main() {
+    storage::RawStorage<u8> @bytes = must(unsafe { storage::raw_zeroed<u8>(4) });
+    bytes = must(unsafe { storage::raw_realloc_zeroed<u8>(bytes, 0, 8) });
+    use_bytes(bytes);
+
+    storage::RawStorage<?*Cell> @ptrs = must(unsafe { storage::raw_zeroed<?*Cell>(4) });
+    ptrs = must(unsafe { storage::raw_realloc_zeroed<?*Cell>(ptrs, 0, 8) });
+    use_ptrs(ptrs);
+    return 0;
+}

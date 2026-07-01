@@ -21,7 +21,9 @@ actor-backed: ordinary mutable objects are task-local or actor-local,
 cross-domain communication uses explicit or hidden `Message` obligations, and
 shared identity is exposed only through synchronized handles.
 Allocation placement is a compiler and runtime decision rather than a
-source-level operation.
+source-level operation. When allocating GC-managed storage, the compiler may
+also decide whether the storage needs GC scanning from the concrete runtime
+layout.
 
 The language uses value semantics for structs, enums, and fixed-size arrays.
 Assignment is shallow field-wise or element-wise copy. Memory is GC-managed;
@@ -2690,13 +2692,15 @@ satisfy `Message` by default.
 
 Runtime-backed generic APIs need code generation help only where C cannot
 express monomorphized Ciel types directly. `/std/meta` exposes
-`type_size<T>()` and `type_align<T>()`; the compiler lowers those helpers to C
-`sizeof(T)` and `CIEL_ALIGNOF(T)`. Standard-library modules such as
-`/std/channel` and `/std/sync` pass that metadata to thin runtime hooks from
-ordinary Ciel code. Actor spawning additionally generates dispatch thunks that
-let the runtime call concrete handlers as `Result<S, Error>(S, M)` and store the
-next actor state. The safety check remains ordinary `Message` conversion, not
-an actor-only type-system rule.
+`type_size<T>()`, `type_align<T>()`, and `type_needs_gc_scan<T>()`; the compiler
+lowers those helpers to C `sizeof(T)`, `CIEL_ALIGNOF(T)`, and a boolean layout
+fact describing whether values of `T` may contain GC-managed pointers.
+Standard-library modules such as `/std/channel`, `/std/sync`, and
+`/std/storage` pass that metadata to thin runtime hooks from ordinary Ciel code.
+Actor spawning additionally generates dispatch thunks that let the runtime call
+concrete handlers as `Result<S, Error>(S, M)` and store the next actor state.
+The safety check remains ordinary `Message` conversion, not an actor-only
+type-system rule.
 
 For safe Ciel code, actor-local mutable data is reachable only from its actor,
 cross-actor APIs call `clone_message`, conversion returns a receiver-owned value
@@ -3155,6 +3159,7 @@ export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHa
 // /std/meta
 export usize type_size<T>();
 export usize type_align<T>();
+export bool type_needs_gc_scan<T>();
 
 export struct Type<T> {}
 
@@ -3452,17 +3457,19 @@ standard-library containers. It is not re-exported by `/std/lib`; application
 code should use safe container modules such as `/std/buf`, `/std/vec`, and
 `/std/map`.
 
-`RawStorage<T>` owns a GC-backed allocation whose descriptor length is the raw
-capacity. Zero-capacity storage still has a valid non-null empty slice
-descriptor. `raw_zeroed<T>` allocates `capacity` elements, checks the byte-size
-overflow for `capacity * type_size<T>()`, and returns storage whose bytes are
-zeroed before the storage is visible to Ciel code or the GC. `raw_realloc_zeroed`
-returns a new owner, preserves the first `initialized` elements from `old`, and
-zeros any newly allocated slots. It fails with `Error` when `initialized >
-next_capacity`, when a byte-size overflow is detected, or when the runtime
-allocation primitive reports an error. The unsafe caller must ensure that
-`initialized` is not greater than the initialized prefix actually maintained in
-`old`.
+`RawStorage<T>` owns a GC-managed allocation whose descriptor length is the raw
+capacity. The storage runtime uses `meta::type_needs_gc_scan<T>()` to select
+scanned GC allocation for layouts that may contain GC-managed pointers and
+atomic/no-scan GC allocation for pointer-free layouts. Zero-capacity storage
+still has a valid non-null empty slice descriptor. `raw_zeroed<T>` allocates
+`capacity` elements, checks the byte-size overflow for `capacity *
+type_size<T>()`, and returns storage whose bytes are zeroed before the storage
+is visible to Ciel code or the GC. `raw_realloc_zeroed` returns a new owner,
+preserves the first `initialized` elements from `old`, and zeros any newly
+allocated slots. It fails with `Error` when `initialized > next_capacity`, when
+a byte-size overflow is detected, or when the runtime allocation primitive
+reports an error. The unsafe caller must ensure that `initialized` is not
+greater than the initialized prefix actually maintained in `old`.
 
 `raw_slice` and `raw_const_slice` expose the full raw capacity. Safe containers
 must separately track their initialized length and must not expose spare raw

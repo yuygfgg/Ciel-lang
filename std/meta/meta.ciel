@@ -4,6 +4,10 @@ export usize type_size<T>();
 // Returns the alignment in bytes of the concrete type argument.
 export usize type_align<T>();
 
+// Returns whether the concrete type argument's runtime representation may
+// contain GC-managed pointers and therefore needs scanned storage.
+export bool type_needs_gc_scan<T>();
+
 // Zero-sized type witness used by APIs that need a type as an input value.
 export struct Type<T> {}
 

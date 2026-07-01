@@ -10,7 +10,8 @@ struct CielTaskWaitNode {
 static void ciel_task_schedule_waiters(CielTaskWaitNode *waiters);
 
 static uint8_t *ciel_async_alloc_bytes(size_t capacity) {
-    return (uint8_t *)ciel_raw_alloc_zeroed(sizeof(uint8_t), 1, capacity);
+    return (uint8_t *)ciel_raw_alloc_zeroed(sizeof(uint8_t), 1, capacity,
+                                            false);
 }
 
 struct CielBufferedReader {

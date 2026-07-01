@@ -872,14 +872,15 @@ impl TypeChecker {
         let ty = self.meta_repr_storage_ty(&lowered, type_args[0].span);
         self.ensure_struct_instance(&ty);
         self.ensure_enum_instance(&ty);
-        let kind = match name {
-            "type_size" => TExprKind::TypeSize { ty },
-            "type_align" => TExprKind::TypeAlign { ty },
+        let (ret_ty, kind) = match name {
+            "type_size" => (Ty::Usize, TExprKind::TypeSize { ty }),
+            "type_align" => (Ty::Usize, TExprKind::TypeAlign { ty }),
+            "type_needs_gc_scan" => (Ty::Bool, TExprKind::TypeNeedsGcScan { ty }),
             _ => return None,
         };
         Some(TExpr {
             span,
-            ty: Ty::Usize,
+            ty: ret_ty,
             kind,
         })
     }
@@ -1125,6 +1126,12 @@ impl TypeChecker {
         }
         if std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_size")
             || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_align")
+            || std_id::is_std_meta_function(
+                &self.ctx.resolved,
+                sig.module,
+                &sig.name,
+                "type_needs_gc_scan",
+            )
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }

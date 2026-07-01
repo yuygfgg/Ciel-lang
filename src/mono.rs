@@ -943,6 +943,9 @@ impl MonoContext {
             TExprKind::TypeAlign { ty } => TExprKind::TypeAlign {
                 ty: self.lower_opaque_returns_in_ty(&ty),
             },
+            TExprKind::TypeNeedsGcScan { ty } => TExprKind::TypeNeedsGcScan {
+                ty: self.lower_opaque_returns_in_ty(&ty),
+            },
             TExprKind::StructLiteral { type_name, fields } => {
                 let type_name = match &lowered_expr_ty {
                     Ty::Named { name, args } => aggregate_instance_name(name, args),
@@ -1753,7 +1756,9 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(message_ty);
                 self.collect_ty(&std_error_code_ty());
             }
-            TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => self.collect_ty(ty),
+            TExprKind::TypeSize { ty }
+            | TExprKind::TypeAlign { ty }
+            | TExprKind::TypeNeedsGcScan { ty } => self.collect_ty(ty),
             TExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
                     self.collect_expr(value);

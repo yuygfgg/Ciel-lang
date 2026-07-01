@@ -1,0 +1,49 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+struct Cell {
+    i64 value;
+}
+
+struct Plain {
+    u64 a;
+    [2]u8 b;
+}
+
+struct HoldsPtr {
+    ?*Cell ptr;
+}
+
+enum PlainEnum {
+    Empty,
+    Data(Plain),
+}
+
+enum PointerEnum {
+    Empty,
+    Data(HoldsPtr),
+}
+
+i64 main() {
+    if (meta::type_needs_gc_scan<u8>()) {
+        return 1;
+    }
+    if (meta::type_needs_gc_scan<Plain>()) {
+        return 2;
+    }
+    if (!meta::type_needs_gc_scan<?*Cell>()) {
+        return 3;
+    }
+    if (!meta::type_needs_gc_scan<HoldsPtr>()) {
+        return 4;
+    }
+    if (meta::type_needs_gc_scan<PlainEnum>()) {
+        return 5;
+    }
+    if (!meta::type_needs_gc_scan<PointerEnum>()) {
+        return 6;
+    }
+    return 0;
+}

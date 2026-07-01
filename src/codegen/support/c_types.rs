@@ -167,10 +167,14 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(in crate::codegen) fn ty_can_carry_gc_pointer(&self, ty: &Ty) -> bool {
+        self.ty_can_carry_gc_pointer_inner(ty, &mut HashSet::new())
+    }
+
+    fn ty_can_carry_gc_pointer_inner(&self, ty: &Ty, visiting: &mut HashSet<String>) -> bool {
         if matches!(ty, Ty::OpaqueReturn { .. }) {
             let concrete = self.lower_opaque_returns_in_ty(ty);
             if &concrete != ty {
-                return self.ty_can_carry_gc_pointer(&concrete);
+                return self.ty_can_carry_gc_pointer_inner(&concrete, visiting);
             }
         }
         match ty {
@@ -181,9 +185,46 @@ impl<'a> CGenerator<'a> {
             | Ty::Closure { .. }
             | Ty::ClosureInstance { .. }
             | Ty::GeneratedFuture { .. } => true,
-            Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer(elem),
-            Ty::Named { .. }
-            | Ty::OpaqueReturn { .. }
+            Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer_inner(elem, visiting),
+            Ty::Named { name, args } => {
+                if let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args) {
+                    return self.ty_can_carry_gc_pointer_inner(&repr_ty, visiting);
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                if !visiting.insert(instance_name.clone()) {
+                    return true;
+                }
+                let can_carry = if let Some(strukt) = self
+                    .program
+                    .checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                {
+                    strukt
+                        .fields
+                        .iter()
+                        .any(|(_, ty)| self.ty_can_carry_gc_pointer_inner(ty, visiting))
+                } else if let Some(enm) = self
+                    .program
+                    .checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                {
+                    enm.variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .any(|ty| self.ty_can_carry_gc_pointer_inner(ty, visiting))
+                    })
+                } else {
+                    true
+                };
+                visiting.remove(&instance_name);
+                can_carry
+            }
+            Ty::OpaqueReturn { .. }
             | Ty::CSpelling { .. }
             | Ty::Generic(_)
             | Ty::Hole(_)

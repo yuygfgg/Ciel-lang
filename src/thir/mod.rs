@@ -488,6 +488,9 @@ pub enum TExprKind {
     TypeAlign {
         ty: Ty,
     },
+    TypeNeedsGcScan {
+        ty: Ty,
+    },
 }
 
 #[derive(Clone, Debug)]

@@ -847,6 +847,13 @@ impl<'a> CGenerator<'a> {
                     format!("CIEL_ALIGNOF({})", self.c_sizeof_type(ty))
                 }
             }
+            TExprKind::TypeNeedsGcScan { ty } => {
+                if self.ty_can_carry_gc_pointer(ty) {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                }
+            }
         };
         Ok(code)
     }

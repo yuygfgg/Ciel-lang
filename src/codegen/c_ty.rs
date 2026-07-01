@@ -145,7 +145,9 @@ pub(super) fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         TExprKind::Index { base, index } => {
             expr_needs_stmt_lowering(base) || expr_needs_stmt_lowering(index)
         }
-        TExprKind::TypeSize { .. } | TExprKind::TypeAlign { .. } => false,
+        TExprKind::TypeSize { .. }
+        | TExprKind::TypeAlign { .. }
+        | TExprKind::TypeNeedsGcScan { .. } => false,
         TExprKind::StructLiteral { fields, .. } => fields
             .iter()
             .any(|(_, value)| value.ty.is_erased_value() || expr_needs_stmt_lowering(value)),

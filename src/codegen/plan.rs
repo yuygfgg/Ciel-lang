@@ -977,7 +977,9 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
                 self.builder.collect_ty_array_returns(message_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => {
+            TExprKind::TypeSize { ty }
+            | TExprKind::TypeAlign { ty }
+            | TExprKind::TypeNeedsGcScan { ty } => {
                 self.builder.collect_ty_array_returns(ty);
             }
             _ => walk_expr(self, expr),
@@ -1192,7 +1194,9 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                 self.builder.collect_ty_closure(message_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => {
+            TExprKind::TypeSize { ty }
+            | TExprKind::TypeAlign { ty }
+            | TExprKind::TypeNeedsGcScan { ty } => {
                 self.builder.collect_ty_closure(ty);
             }
             _ => walk_expr(self, expr),
@@ -1539,7 +1543,9 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 self.builder.collect_ty_slice(message_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::TypeSize { ty } | TExprKind::TypeAlign { ty } => {
+            TExprKind::TypeSize { ty }
+            | TExprKind::TypeAlign { ty }
+            | TExprKind::TypeNeedsGcScan { ty } => {
                 self.builder.collect_ty_slice(ty);
             }
             _ => walk_expr(self, expr),

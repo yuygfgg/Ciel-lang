@@ -147,7 +147,8 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::GenericFunction { .. }
         | TExprKind::Literal(_)
         | TExprKind::TypeSize { .. }
-        | TExprKind::TypeAlign { .. } => {}
+        | TExprKind::TypeAlign { .. }
+        | TExprKind::TypeNeedsGcScan { .. } => {}
         TExprKind::StructLiteral { fields, .. } => {
             for (_, value) in fields {
                 visitor.visit_expr(value);

@@ -53,19 +53,23 @@ CIEL_ALLOC_SIZE_ARG2 CIEL_RETURNS_NONNULL void *ciel_realloc(void *old,
     return ptr;
 }
 
-void *ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity) {
+void *ciel_raw_alloc_zeroed(size_t elem_size, size_t align, size_t capacity,
+                            bool needs_scan) {
     (void)align;
     if (elem_size != 0 && capacity > SIZE_MAX / elem_size) {
         errno = EOVERFLOW;
         return NULL;
     }
     size_t bytes = elem_size * capacity;
-    // GC_MALLOC clears pointerful objects, so we don't need manual memset here.
-    return ciel_alloc(bytes == 0 ? 1 : bytes);
+    void *out = needs_scan ? ciel_alloc(bytes == 0 ? 1 : bytes)
+                           : ciel_alloc_atomic(bytes == 0 ? 1 : bytes);
+    memset(out, 0, bytes == 0 ? 1 : bytes);
+    return out;
 }
 
 void *ciel_raw_realloc_zeroed(void *old, size_t elem_size, size_t align,
-                              size_t initialized, size_t next_capacity) {
+                              size_t initialized, size_t next_capacity,
+                              bool needs_scan) {
     (void)align;
     if (initialized > next_capacity) {
         errno = EINVAL;
@@ -78,7 +82,10 @@ void *ciel_raw_realloc_zeroed(void *old, size_t elem_size, size_t align,
     }
     size_t bytes = elem_size * next_capacity;
     size_t init_bytes = elem_size * initialized;
-    void *out = ciel_alloc(bytes == 0 ? 1 : bytes);
+    size_t alloc_bytes = bytes == 0 ? 1 : bytes;
+    void *out =
+        needs_scan ? ciel_alloc(alloc_bytes) : ciel_alloc_atomic(alloc_bytes);
+    memset(out, 0, alloc_bytes);
     if (init_bytes > 0 && old != NULL)
         memcpy(out, old, init_bytes);
     return out;

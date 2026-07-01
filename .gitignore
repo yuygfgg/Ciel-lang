@@ -1,5 +1,7 @@
 /target/
+runtime/build/
 std/**/build/
+libs/**/build/
 .DS_Store
 editors/vscode-ciel/node_modules/
 editors/vscode-ciel/*.vsix

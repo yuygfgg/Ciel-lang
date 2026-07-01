@@ -221,6 +221,7 @@ fn run_cmake_configure(
         .arg(build_dir)
         .arg(format!("-DCMAKE_BUILD_TYPE={build_type}"))
         .arg(format!("-DCMAKE_C_COMPILER={c_compiler}"))
+        .arg("-DCMAKE_EXPORT_COMPILE_COMMANDS=ON")
         .arg(format!(
             "-DCIEL_BUILD_PROFILE={}",
             build_type.to_ascii_lowercase()
@@ -676,6 +677,45 @@ mod tests {
                 "{} must not derive runtime include path from package-relative layout",
                 path.display()
             );
+        }
+    }
+
+    #[test]
+    fn native_cmake_projects_export_compile_commands() {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let mut cmake_files = Vec::new();
+        for root in ["runtime", "std", "libs"] {
+            collect_cmake_files(&repo.join(root), &mut cmake_files);
+        }
+        assert!(
+            !cmake_files.is_empty(),
+            "native CMakeLists.txt discovery must find at least one file"
+        );
+        for path in cmake_files {
+            let contents = fs::read_to_string(&path).unwrap();
+            assert!(
+                contents.contains("CMAKE_EXPORT_COMPILE_COMMANDS"),
+                "{} must export compile_commands.json for clangd",
+                path.display()
+            );
+        }
+    }
+
+    fn collect_cmake_files(dir: &Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_dir() {
+                collect_cmake_files(&path, out);
+            } else if path
+                .file_name()
+                .is_some_and(|name| name == "CMakeLists.txt")
+            {
+                out.push(path);
+            }
         }
     }
 

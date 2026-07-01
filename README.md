@@ -1,0 +1,1 @@
+Ciel is a statically typed AOT language featuring GC-backed value semantics, deterministic resource management, compiler-verified concurrency safety, and expressive generics with structural meta-programming.

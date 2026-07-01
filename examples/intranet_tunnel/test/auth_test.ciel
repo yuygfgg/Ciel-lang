@@ -1,5 +1,6 @@
 import /std/result;
 import ../protocol/auth as auth;
+import ../protocol/error as terr;
 import ../protocol/frame as frame;
 
 bool bytes_eq([]const u8 left, []const u8 right) {
@@ -30,7 +31,7 @@ bool bytes_eq_text([]const u8 left, []const char right) {
     return true;
 }
 
-bool is_err_hello(Result<auth::Hello, Error> value) {
+bool is_err_hello(Result<auth::Hello, terr::AuthCodecError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -39,7 +40,7 @@ bool is_err_hello(Result<auth::Hello, Error> value) {
     }
 }
 
-bool is_err_bytes(Result<[]u8, Error> value) {
+bool is_err_bytes(Result<[]u8, terr::AuthCodecError> value) {
     switch (value) {
         case Ok(_):
             return false;
@@ -48,7 +49,7 @@ bool is_err_bytes(Result<[]u8, Error> value) {
     }
 }
 
-bool is_err_void(Result<void, Error> value) {
+bool is_err_void(Result<void, terr::AuthCodecError> value) {
     switch (value) {
         case Ok:
             return false;
@@ -79,14 +80,14 @@ i32 main() {
         nonce
     ), "auth test PSK must be accepted by /std/crypto HMAC");
 
-    Result<[]u8, Error> payload_result =
+    Result<[]u8, terr::AuthCodecError> payload_result =
         auth::encode_hello_with_nonce("dev", psk[..], nonce);
     if (is_err_bytes(payload_result)) {
         return 101;
     }
     []u8 payload = must(payload_result);
 
-    Result<auth::Hello, Error> hello_result = auth::decode_hello(payload);
+    Result<auth::Hello, terr::AuthCodecError> hello_result = auth::decode_hello(payload);
     if (is_err_hello(hello_result)) {
         return 102;
     }
@@ -103,7 +104,7 @@ i32 main() {
     if (auth::tag_len() != 32) {
         return 4;
     }
-    Result<void, Error> verify_result = auth::verify_hello(hello, "dev", psk[..]);
+    Result<void, terr::AuthCodecError> verify_result = auth::verify_hello(hello, "dev", psk[..]);
     if (is_err_void(verify_result)) {
         return 103;
     }

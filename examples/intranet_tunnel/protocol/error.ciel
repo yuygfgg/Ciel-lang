@@ -1,3 +1,6 @@
+import /std/buf as buf;
+import /std/codec as codec;
+import /std/crypto as crypto;
 import /std/error;
 
 export enum ProtocolError {
@@ -18,6 +21,20 @@ export enum AuthError {
     MalformedHello,
     RouteNameTooLong(usize),
     TagLengthMismatch(usize),
+}
+
+export enum FrameCodecError {
+    FrameProtocol(ProtocolError),
+    FrameStdCodec(codec::CodecError),
+    FrameBuf(buf::BufError),
+}
+
+export enum AuthCodecError {
+    AuthProtocol(ProtocolError),
+    AuthFailure(AuthError),
+    AuthStdCodec(codec::CodecError),
+    AuthBuf(buf::BufError),
+    AuthCrypto(crypto::CryptoError),
 }
 
 export ProtocolError protocol_error(ProtocolError error) {
@@ -63,5 +80,31 @@ impl format_error(*const AuthError error) {
             return "route name too long";
         case TagLengthMismatch(_):
             return "authentication tag length mismatch";
+    }
+}
+
+impl format_error(*const FrameCodecError error) {
+    switch (*error) {
+        case FrameProtocol(inner):
+            return format_error(&inner);
+        case FrameStdCodec(inner):
+            return format_error(&inner);
+        case FrameBuf(inner):
+            return format_error(&inner);
+    }
+}
+
+impl format_error(*const AuthCodecError error) {
+    switch (*error) {
+        case AuthProtocol(inner):
+            return format_error(&inner);
+        case AuthFailure(inner):
+            return format_error(&inner);
+        case AuthStdCodec(inner):
+            return format_error(&inner);
+        case AuthBuf(inner):
+            return format_error(&inner);
+        case AuthCrypto(inner):
+            return format_error(&inner);
     }
 }

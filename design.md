@@ -834,10 +834,12 @@ An `async` function is declared by writing `async` before the ordinary return
 type:
 
 ```ciel
-async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
-    Bytes header = await read_exact(stream, 8)?;
+async Result<bytes::Bytes, async_net::AsyncNetError> read_frame(
+    *const async_net::AsyncTcpStream stream
+) {
+    bytes::Bytes header = await async_net::read(stream, 8)?;
     usize len = decode_len(header)?;
-    return await read_exact(stream, len);
+    return await async_net::read(stream, len);
 }
 ```
 
@@ -1237,11 +1239,11 @@ it does not run the body to completion at the call site. `await future` is valid
 only inside an async body or inside compiler-recognized async bridges such as
 `async::block_on`. The operand must implement `Awaitable`, whose determined
 output is named by the compiler as `Out`; the await expression has type `Out`.
-If `Out` is `Result<T, Error>`, ordinary `?` propagation composes after the
+If `Out` is `Result<T, E>`, ordinary `?` propagation composes after the
 await:
 
 ```ciel
-Bytes bytes = await socket_read(stream)?;
+bytes::Bytes bytes = await async_net::read(&stream, 16384)?;
 ```
 
 The full execution, task, cancellation, and frame-safety rules for async
@@ -2023,23 +2025,25 @@ The written return type of an async function is the value produced when its
 future is awaited:
 
 ```ciel
-async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
-    Bytes header = await async_net::read(stream, 8)?;
+async Result<bytes::Bytes, async_net::AsyncNetError> read_frame(
+    *const async_net::AsyncTcpStream stream
+) {
+    bytes::Bytes header = await async_net::read(stream, 8)?;
     usize len = decode_len(header)?;
     return await async_net::read(stream, len);
 }
 
-_ future = read_frame(stream);
-Bytes frame = await read_frame(stream)?;
+_ future = read_frame(&stream);
+bytes::Bytes frame = await read_frame(&stream)?;
 ```
 
 The concrete future type generated for `read_frame` is opaque. It implements
-`Awaitable<Result<Bytes, Error>>`, with that output determined by the future
-receiver, and may also implement `CancelSafe` or `Abortable` when its body
-proves the corresponding contract. Users can store a future in a local, pass it
-to `async::spawn`, pass it to `select`, pass it to a generic future combinator,
-or await it. Users cannot name the generated frame type, inspect its layout, or
-reach into another task's frame through the future.
+`Awaitable<Result<bytes::Bytes, async_net::AsyncNetError>>`, with that output
+determined by the future receiver, and may also implement `CancelSafe` or
+`Abortable` when its body proves the corresponding contract. Users can store a
+future in a local, pass it to `async::spawn`, pass it to `select`, pass it to a
+generic future combinator, or await it. Users cannot name the generated frame
+type, inspect its layout, or reach into another task's frame through the future.
 
 Compiler-generated futures are single-consumer values. After a generated future
 has completed, awaiting it again is invalid unless the particular future type
@@ -2058,7 +2062,7 @@ the determined output `Out`. The expression has type `Out`, and ordinary `?`
 propagation composes after the await:
 
 ```ciel
-Bytes bytes = await async_net::read(stream, 16384)?;
+bytes::Bytes bytes = await async_net::read(&stream, 16384)?;
 ```
 
 Awaiting a ready future yields its value without parking the task. Awaiting a
@@ -2119,7 +2123,7 @@ representation, or a future unsafe ownership-transfer facility.
 Async tasks communicate through bounded async channels:
 
 ```ciel
-ChannelPair<Bytes> ch = async::channel<Bytes>(1024)?;
+ChannelPair<bytes::Bytes> ch = async::channel<bytes::Bytes>(1024)?;
 Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
 await async::send(ch.sender, payload)?;
 await writer?;

@@ -53,6 +53,14 @@ Result<void, terr::AuthError> fail_precise_auth() {
     return Err(terr::TagMismatch);
 }
 
+Result<void, terr::FrameCodecError> fail_precise_frame_codec() {
+    return Err(terr::FrameProtocol(terr::UnexpectedEof));
+}
+
+Result<void, terr::AuthCodecError> fail_precise_auth_codec() {
+    return Err(terr::AuthFailure(terr::TagMismatch));
+}
+
 Result<void, Error> box_protocol_error() {
     fail_precise_protocol()?;
     return Ok;
@@ -63,11 +71,29 @@ Result<void, Error> box_auth_error() {
     return Ok;
 }
 
+Result<void, Error> box_frame_codec_error() {
+    fail_precise_frame_codec()?;
+    return Ok;
+}
+
+Result<void, Error> box_auth_codec_error() {
+    fail_precise_auth_codec()?;
+    return Ok;
+}
+
 bool protocol_text_nonempty(terr::ProtocolError error) {
     return format_error(&error).len > 0;
 }
 
 bool auth_text_nonempty(terr::AuthError error) {
+    return format_error(&error).len > 0;
+}
+
+bool frame_codec_text_nonempty(terr::FrameCodecError error) {
+    return format_error(&error).len > 0;
+}
+
+bool auth_codec_text_nonempty(terr::AuthCodecError error) {
     return format_error(&error).len > 0;
 }
 
@@ -92,6 +118,12 @@ i32 main() {
     }
     if (is_err_void(box_auth_error()) == false) {
         return 7;
+    }
+    if (is_err_void(box_frame_codec_error()) == false) {
+        return 22;
+    }
+    if (is_err_void(box_auth_codec_error()) == false) {
+        return 23;
     }
 
     if (!protocol_text_nonempty(terr::UnexpectedEof)) {
@@ -135,6 +167,12 @@ i32 main() {
     }
     if (!auth_text_nonempty(terr::TagLengthMismatch(31))) {
         return 21;
+    }
+    if (!frame_codec_text_nonempty(terr::FrameProtocol(terr::UnexpectedEof))) {
+        return 24;
+    }
+    if (!auth_codec_text_nonempty(terr::AuthFailure(terr::TagMismatch))) {
+        return 25;
     }
 
     return 0;

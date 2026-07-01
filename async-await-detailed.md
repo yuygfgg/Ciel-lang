@@ -12,8 +12,10 @@ for the main language specification.
 An async function is declared with `async`:
 
 ```ciel
-async Result<Bytes, Error> read_frame(AsyncTcpStream stream) {
-    Bytes header = await async_net::read(stream, 8)?;
+async Result<bytes::Bytes, async_net::AsyncNetError> read_frame(
+    *const async_net::AsyncTcpStream stream
+) {
+    bytes::Bytes header = await async_net::read(stream, 8)?;
     usize len = decode_len(header)?;
     return await async_net::read(stream, len);
 }
@@ -25,15 +27,16 @@ not run the body to completion and does not start a concurrent task by itself.
 output:
 
 ```ciel
-_ future = read_frame(stream);
-Bytes frame = await read_frame(stream)?;
+_ future = read_frame(&stream);
+bytes::Bytes frame = await read_frame(&stream)?;
 ```
 
 The concrete future type is opaque and compiler-generated. It implements
-`Awaitable<Result<Bytes, Error>>`, and may also implement `CancelSafe` or
-`Abortable` when its body proves those contracts. Users can store it in locals,
-pass it to `select`, pass it to `async::spawn`, pass it to generic future
-combinators, or await it. Users cannot name or inspect the generated frame type.
+`Awaitable<Result<bytes::Bytes, async_net::AsyncNetError>>`, and may also
+implement `CancelSafe` or `Abortable` when its body proves those contracts.
+Users can store it in locals, pass it to `select`, pass it to `async::spawn`,
+pass it to generic future combinators, or await it. Users cannot name or inspect
+the generated frame type.
 
 Compiler-generated futures are single-consumer values. Awaiting a completed
 generated future again is invalid unless that future type explicitly documents
@@ -45,10 +48,10 @@ allowed only through a `CancelSafe` path. Tearing down a pending future because
 its owning task is terminating requires `Abortable`.
 
 `await future` drives the future until it yields its declared output type. If the
-output is `Result<T, Error>`, ordinary `?` propagation composes after the await:
+output is `Result<T, E>`, ordinary `?` propagation composes after the await:
 
 ```ciel
-Bytes frame = await future?;
+bytes::Bytes frame = await future?;
 ```
 
 The runtime remains actor-backed. A future is a safe handle to private
@@ -119,7 +122,7 @@ await completions with `group_next`.
 Async tasks communicate through channels, not through low-level actor mailboxes:
 
 ```ciel
-ChannelPair<Bytes> ch = async::channel<Bytes>(1024)?;
+ChannelPair<bytes::Bytes> ch = async::channel<bytes::Bytes>(1024)?;
 Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
 
 await async::send(ch.sender, payload)?;
@@ -677,7 +680,7 @@ before the frame is handed to GC for memory reclamation.
 For:
 
 ```ciel
-Bytes bytes = await async_net::read(stream, 16384)?;
+bytes::Bytes bytes = await async_net::read(&stream, 16384)?;
 ```
 
 lowering performs:
@@ -1045,11 +1048,11 @@ export Result<BufferedStreamReader, AsyncNetError> buffered_reader(
 export Result<AsyncTcpReadHalf, AsyncNetError> into_read_half(
     BufferedStreamReader reader
 );
-export async Result<Bytes, AsyncNetError> read_buffered(
+export async Result<bytes::Bytes, AsyncNetError> read_buffered(
     BufferedStreamReader reader,
     usize max_len
 );
-export async Result<Bytes, AsyncNetError> read_exact_buffered(
+export async Result<bytes::Bytes, AsyncNetError> read_exact_buffered(
     BufferedStreamReader reader,
     usize len
 );

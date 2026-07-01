@@ -5,11 +5,41 @@ import /std/lib;
 
 struct AddOne {}
 
+struct IsEven {}
+
 impl update_value<i64, i64, SyncError>(*const AddOne updater, i64 value) {
     return Ok({
         value: value + 1,
         result: value + 1,
     });
+}
+
+impl map_call<i64, i64>(*AddOne mapper, i64 value) {
+    return value + 1;
+}
+
+impl filter_accept<i64>(*IsEven predicate, *const i64 value) {
+    return ((*value) % 2) == 0;
+}
+
+i64 sum_i64_slice([]const i64 items) {
+    i64 @total = 0;
+    usize @i = 0;
+    while (i < items.len) {
+        total = total + items[i];
+        i = i + 1;
+    }
+    return total;
+}
+
+i64 sum_u8_slice([]const u8 items) {
+    i64 @total = 0;
+    usize @i = 0;
+    while (i < items.len) {
+        total = total + (items[i] as i64);
+        i = i + 1;
+    }
+    return total;
 }
 
 i64 main() {
@@ -139,6 +169,74 @@ i64 main() {
             return 29;
         case SharedMapPop::Empty:
             {}
+    }
+
+    Vec<i64> @numbers = vec_new<i64>(0).must();
+    numbers.reserve(2).must();
+    numbers.push(3).must();
+    numbers.push(5).must();
+    if (numbers.len() != 2 || numbers.capacity() < 2) {
+        return 30;
+    }
+    *const i64 first = numbers.at(0).must();
+    *i64 second = numbers.mut_at(1).must();
+    *second = 6;
+    []i64 mutable_numbers = numbers.mut_slice();
+    mutable_numbers[0] = 2;
+    if (*first != 2 || numbers.slice()[1] != 6) {
+        return 31;
+    }
+
+    AddOne add = {};
+    IsEven even = {};
+    [5]i64 raw = [1, 2, 3, 4, 5];
+    Result<Vec<i64>, VecError> selector_collected_result =
+        raw[..].iter().filter(even).map(add).collect();
+    Vec<i64> selector_collected = selector_collected_result.must();
+    Result<Vec<i64>, VecError> ordinary_collected_result =
+        collect<Vec<i64>>(map(filter(slice_iter(raw[..]), even), add));
+    Vec<i64> ordinary_collected = ordinary_collected_result.must();
+    if (
+        selector_collected.len() != ordinary_collected.len() ||
+        sum_i64_slice(selector_collected.slice()) != sum_i64_slice(ordinary_collected.slice())
+    ) {
+        return 32;
+    }
+    if (selector_collected.len() != 2 || sum_i64_slice(selector_collected.slice()) != 8) {
+        return 33;
+    }
+
+    i64 selector_fold =
+        range(0, 6).filter(even).map(add).take(2).fold(0, |i64 acc, i64 value| {
+            return acc + value;
+        });
+    i64 ordinary_fold = fold(
+        take(map(filter(range(0, 6), even), add), 2),
+        0,
+        |i64 acc, i64 value| {
+            return acc + value;
+        }
+    );
+    if (selector_fold != ordinary_fold || selector_fold != 4) {
+        return 34;
+    }
+
+    Result<Vec<i64>, VecError> vec_iter_result = numbers.iter().collect();
+    Vec<i64> vec_iter_values = vec_iter_result.must();
+    if (vec_iter_values.len() != 2 || sum_i64_slice(vec_iter_values.slice()) != 8) {
+        return 35;
+    }
+    Result<Vec<u8>, VecError> byte_iter_result = bytes.iter().collect();
+    Vec<u8> byte_iter_values = byte_iter_result.must();
+    if (byte_iter_values.len() != 3 || sum_u8_slice(byte_iter_values.slice()) != 294) {
+        return 36;
+    }
+    if (text.chars().count() != 5) {
+        return 37;
+    }
+    numbers.clear();
+    if (numbers.len() != 0 || numbers.slice().len != 0) {
+        return 38;
     }
 
     return 0;

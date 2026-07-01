@@ -76,13 +76,7 @@ Result<ServerHelloResult, Error> prepare_server_hello(
     []const char route = rt::auth_config_route(auth_config)?;
     []u8 psk = rt::auth_config_psk(auth_config)?;
     io::eprintln_value("tunnel-server: received hello")?;
-    Result<void, Error> verified =
-        auth::verify_hello(
-            hello,
-            route,
-            psk
-        );
-    switch (verified) {
+    switch (auth::verify_hello(hello, route, psk)) {
         case Ok:
             []u8 ok_payload = auth::encode_hello_ok()?;
             bytes::Bytes encoded =
@@ -93,9 +87,10 @@ Result<ServerHelloResult, Error> prepare_server_hello(
             )?;
             return Ok(ServerHelloAccepted(encoded));
         case Err(error):
-            io::eprintln("tunnel-server: rejecting agent: {}", [error])?;
+            []const char message = format_error(&error);
+            io::eprintln("tunnel-server: rejecting agent: {}", [message])?;
             []u8 error_payload =
-                tunnel_codec::encode_error_message(error_message(&error))?;
+                tunnel_codec::encode_error_message(message)?;
             bytes::Bytes encoded =
                 rt::encode_frame_from_slice(frame::ErrorFrame, 0 as u32, error_payload)?;
             return Ok(ServerHelloRejected(encoded));
@@ -285,7 +280,7 @@ async Result<void, Error> server_stream_worker(
                         case Err(error):
                             io::eprintln(
                                 "tunnel-server: stream {} open result decode failed: {}",
-                                [stream_id, error]
+                                [stream_id, format_error(&error)]
                             )?;
                             return Ok;
                     }

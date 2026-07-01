@@ -1,5 +1,13 @@
 # Intranet Tunnel Demo PRD
 
+Status note: this PRD records the design pressure that produced the demo and
+the supporting standard-library work. API sketches in this document may use
+early placeholder shapes such as `Result<_, Error>` or unqualified `Bytes`.
+Current alpha-facing examples and code should follow the implemented surface:
+concrete module errors in reusable layers, `/std/bytes.Bytes` for immutable
+owned bytes, `/std/buf.ByteBuf` for reusable mutable buffers, and receiver
+selectors where they are exported.
+
 ## 1. Purpose
 
 This document defines a small but realistic intranet tunneling demo for Ciel and

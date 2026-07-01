@@ -995,27 +995,24 @@ CielAsyncOp *ciel_async_write_bytes(CielAsyncFd *fd, const uint8_t *data,
         errno = ENOMEM;
         return NULL;
     }
-    dispatch_io_write(channel, 0, dispatch_data, ciel_async_queue(),
-                      ^(bool done, dispatch_data_t remaining_data, int error) {
-                        int32_t attach_rc = ciel_runtime_enter_callback();
-                        if (attach_rc != 0) {
-                            if (done)
-                                ciel_async_complete(op, attach_rc, NULL, 0, 0,
-                                                    0);
-                            return;
-                        }
-                        if (done) {
-                            size_t remaining =
-                                remaining_data == NULL
-                                    ? 0
-                                    : dispatch_data_get_size(remaining_data);
-                            size_t written = len >= remaining
-                                                 ? len - remaining
-                                                 : 0;
-                            ciel_async_complete(op, error, NULL, 0, 0, written);
-                        }
-                        ciel_runtime_leave_callback();
-                      });
+    dispatch_io_write(
+        channel, 0, dispatch_data, ciel_async_queue(),
+        ^(bool done, dispatch_data_t remaining_data, int error) {
+          int32_t attach_rc = ciel_runtime_enter_callback();
+          if (attach_rc != 0) {
+              if (done)
+                  ciel_async_complete(op, attach_rc, NULL, 0, 0, 0);
+              return;
+          }
+          if (done) {
+              size_t remaining = remaining_data == NULL
+                                     ? 0
+                                     : dispatch_data_get_size(remaining_data);
+              size_t written = len >= remaining ? len - remaining : 0;
+              ciel_async_complete(op, error, NULL, 0, 0, written);
+          }
+          ciel_runtime_leave_callback();
+        });
     return op;
 }
 
@@ -1257,7 +1254,8 @@ static int32_t ciel_buffered_reader_prepend_locked(CielBufferedReader *reader,
 }
 
 static uint8_t *ciel_buffered_reader_take_locked(CielBufferedReader *reader,
-                                                 size_t max_len, size_t *out_len,
+                                                 size_t max_len,
+                                                 size_t *out_len,
                                                  size_t *out_cap,
                                                  int32_t *out_rc) {
     if (out_rc != NULL)
@@ -1289,8 +1287,7 @@ static int32_t ciel_buffered_reader_take_into_locked(CielBufferedReader *reader,
                                                      size_t *out_len,
                                                      size_t out_cap,
                                                      size_t max_len) {
-    if (reader == NULL || out == NULL || out_len == NULL ||
-        *out_len > out_cap)
+    if (reader == NULL || out == NULL || out_len == NULL || *out_len > out_cap)
         return EINVAL;
     size_t unread = ciel_buffered_reader_unread_locked(reader);
     size_t out_remaining = out_cap - *out_len;
@@ -1487,8 +1484,8 @@ CielAsyncOp *ciel_async_tcp_read_buffered(CielBufferedReader *reader,
           || immediate_err == EWOULDBLOCK
 #endif
           )) {
-        ciel_async_complete_buffered_read(op, immediate_err, bytes, 0,
-                                          read_cap, max_len);
+        ciel_async_complete_buffered_read(op, immediate_err, bytes, 0, read_cap,
+                                          max_len);
         return op;
     }
     dispatch_source_t source = dispatch_source_create(
@@ -1565,8 +1562,8 @@ CielAsyncOp *ciel_async_tcp_read_exact_buffered(CielBufferedReader *reader,
         errno = EALREADY;
         return NULL;
     }
-    int32_t rc =
-        ciel_buffered_reader_take_into_locked(reader, bytes, &bytes_len, len, len);
+    int32_t rc = ciel_buffered_reader_take_into_locked(reader, bytes,
+                                                       &bytes_len, len, len);
     op->bytes_len = bytes_len;
     if (rc != 0) {
         pthread_mutex_unlock(&reader->mutex);

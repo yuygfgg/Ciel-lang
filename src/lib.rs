@@ -1,7 +1,9 @@
 pub mod ast;
 pub mod build;
 pub mod capture;
+pub mod checked;
 pub mod codegen;
+pub mod common;
 pub mod diagnostic;
 pub mod driver;
 pub mod escape;
@@ -17,6 +19,7 @@ pub mod source;
 pub mod span;
 pub mod std_id;
 pub mod thir;
+pub mod type_display;
 pub mod typeck;
 pub mod types;
 

@@ -7,6 +7,8 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
+use crate::common::normalize_path;
+
 use super::requirements::{BuildPlan, BuildProfile, CmakeTarget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -593,23 +595,6 @@ fn c_include_quote(path: &Path) -> String {
         .replace('\\', "\\\\")
         .replace('"', "\\\"");
     format!("\"{escaped}\"")
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            std::path::Component::CurDir => {}
-            std::path::Component::ParentDir => {
-                out.pop();
-            }
-            std::path::Component::Normal(part) => out.push(part),
-            std::path::Component::RootDir | std::path::Component::Prefix(_) => {
-                out.push(component.as_os_str())
-            }
-        }
-    }
-    out
 }
 
 fn is_macos_target(target_os: &str) -> bool {

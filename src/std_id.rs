@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 
-use crate::resolve::{DefId, DefKind, ModuleId, ResolvedProgram};
 use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
+use crate::{
+    common::{is_nominal_type_def_kind, nominal_type_name},
+    resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
+};
 
 const STD_RESULT_EXPORT: &str = "/std/result";
 const STD_RESULT_CORE_EXPORT: &str = "/std/result/core";
@@ -225,22 +228,6 @@ pub fn is_std_async_time_function(
     expected_name: &str,
 ) -> bool {
     name == expected_name && module_export_matches(resolved, module, STD_ASYNC_TIME_EXPORT)
-}
-
-fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
-    matches!(kind, DefKind::Struct | DefKind::Enum)
-}
-
-fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
-    let def = resolved.def(def_id);
-    let has_same_named_nominal = resolved.defs.iter().any(|other| {
-        other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
-    });
-    if has_same_named_nominal {
-        format!("{}__def{}", def.name, def.id.0)
-    } else {
-        def.name.clone()
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

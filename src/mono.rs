@@ -1,10 +1,12 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
+    checked::CheckedProgram,
+    common::{name_ref_canonical, nominal_type_name},
     diagnostic::{DiagResult, Diagnostic},
     hir::{
-        ConstraintExpr, FieldDecl, ItemKind, NameRef, NameRefKind, Type, TypeAliasTarget, TypeKind,
-        TypeNameKind, VariantDecl,
+        ConstraintExpr, FieldDecl, ItemKind, Type, TypeAliasTarget, TypeKind, TypeNameKind,
+        VariantDecl,
     },
     interfaces::{
         checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
@@ -18,9 +20,10 @@ use crate::{
     std_id,
     thir::{
         ActorSpawnMode, CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl,
-        CheckedInterfaceRef, CheckedProgram, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr,
-        TExprKind, TForInit, TPattern, TSelectArm, TStmt, TStmtKind,
+        CheckedInterfaceRef, CheckedStruct, CheckedVariant, TBlock, TCase, TExpr, TExprKind,
+        TForInit, TPattern, TSelectArm, TStmt, TStmtKind,
     },
+    type_display::result_args,
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
@@ -51,25 +54,6 @@ pub struct GenericOrigin {
 
 pub fn monomorphize(checked: CheckedProgram) -> DiagResult<MonoProgram> {
     MonoContext::new(checked).run()
-}
-
-fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
-    matches!(kind, DefKind::Struct | DefKind::Enum)
-}
-
-fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
-    let def = resolved.def(def_id);
-    if !is_nominal_type_def_kind(&def.kind) {
-        return def.name.clone();
-    }
-    let has_same_named_nominal = resolved.defs.iter().any(|other| {
-        other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
-    });
-    if has_same_named_nominal {
-        format!("{}__def{}", def.name, def.id.0)
-    } else {
-        def.name.clone()
-    }
 }
 
 struct MonoContext {
@@ -1189,17 +1173,6 @@ impl MonoContext {
                     && implementation.interface_args.get(1..) == Some(&[][..])
             })
             .map(|implementation| implementation.function_def)
-    }
-}
-
-fn result_args<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<(&'a Ty, &'a Ty)> {
-    let Ty::Named { name, args } = ty else {
-        return None;
-    };
-    if args.len() == 2 && std_id::is_std_result_type_name(resolved, name) {
-        Some((&args[0], &args[1]))
-    } else {
-        None
     }
 }
 
@@ -2873,11 +2846,4 @@ fn is_strict_generic_growth(previous: &[Ty], next: &[Ty]) -> bool {
         && previous
             .iter()
             .any(|old| next.iter().any(|new| ty_contains(new, old)))
-}
-
-fn name_ref_canonical(resolved: &ResolvedProgram, name: &NameRef) -> String {
-    match name.kind {
-        NameRefKind::Def(def_id) => resolved.def(def_id).name.clone(),
-        _ => name.display.clone(),
-    }
 }

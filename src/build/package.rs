@@ -1,26 +1,28 @@
 use std::{
     collections::{HashMap, HashSet},
     fs,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
+
+use crate::common::normalize_path;
 
 use super::manifest::{PackageKind, PackageManifest};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PackageOrigin {
+pub(crate) enum PackageOrigin {
     Builtin,
     Project,
     User,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LoadedPackageManifest {
+pub(crate) struct LoadedPackageManifest {
     pub manifest: PackageManifest,
     pub origin: PackageOrigin,
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct PackageIndex {
+pub(crate) struct PackageIndex {
     manifests: Vec<IndexedPackage>,
     by_export: HashMap<String, PathBuf>,
     by_source: HashMap<PathBuf, usize>,
@@ -34,13 +36,13 @@ struct IndexedPackage {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct PackageLoadError {
+pub(crate) struct PackageLoadError {
     pub path: PathBuf,
     pub message: String,
 }
 
 impl PackageIndex {
-    pub fn load_std(std_paths: &[PathBuf]) -> Result<Self, Vec<PackageLoadError>> {
+    pub(crate) fn load_std(std_paths: &[PathBuf]) -> Result<Self, Vec<PackageLoadError>> {
         let mut manifest_paths = Vec::new();
         let mut scanned_roots = HashSet::new();
         for std_path in std_paths {
@@ -77,7 +79,9 @@ impl PackageIndex {
         }
     }
 
-    pub fn load_package_roots(package_roots: &[PathBuf]) -> Result<Self, Vec<PackageLoadError>> {
+    pub(crate) fn load_package_roots(
+        package_roots: &[PathBuf],
+    ) -> Result<Self, Vec<PackageLoadError>> {
         let mut manifest_paths = Vec::new();
         let mut scanned_roots = HashSet::new();
         for package_root in package_roots {
@@ -119,7 +123,7 @@ impl PackageIndex {
         }
     }
 
-    pub fn load_project_manifest_and_package_roots(
+    pub(crate) fn load_project_manifest_and_package_roots(
         project_manifest: Option<&Path>,
         package_roots: &[PathBuf],
     ) -> Result<Self, Vec<PackageLoadError>> {
@@ -165,11 +169,11 @@ impl PackageIndex {
         }
     }
 
-    pub fn resolve_export(&self, export: &str) -> Option<&Path> {
+    pub(crate) fn resolve_export(&self, export: &str) -> Option<&Path> {
         self.by_export.get(export).map(PathBuf::as_path)
     }
 
-    pub fn manifest_for_source(&self, source: &Path) -> Option<LoadedPackageManifest> {
+    pub(crate) fn manifest_for_source(&self, source: &Path) -> Option<LoadedPackageManifest> {
         self.by_source
             .get(&normalize_path(source))
             .map(|idx| LoadedPackageManifest {
@@ -178,7 +182,7 @@ impl PackageIndex {
             })
     }
 
-    pub fn export_for_source(&self, source: &Path) -> Option<&str> {
+    pub(crate) fn export_for_source(&self, source: &Path) -> Option<&str> {
         self.export_by_source
             .get(&normalize_path(source))
             .map(String::as_str)
@@ -295,21 +299,6 @@ fn collect_manifest_paths_inner(
             manifest_paths.push(normalize_path(&path));
         }
     }
-}
-
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            Component::Normal(part) => out.push(part),
-            Component::RootDir | Component::Prefix(_) => out.push(component.as_os_str()),
-        }
-    }
-    out
 }
 
 #[cfg(test)]

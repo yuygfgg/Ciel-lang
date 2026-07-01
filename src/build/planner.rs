@@ -5,7 +5,8 @@ use super::{
     requirements::{BuildPlan, BuildProfile, CmakeTarget},
 };
 
-pub fn build_plan_for_generated_c(
+#[cfg(test)]
+fn build_plan_for_generated_c(
     generated_c: String,
     profile: BuildProfile,
     target_os: &str,
@@ -21,7 +22,7 @@ pub fn build_plan_for_generated_c(
     )
 }
 
-pub fn build_plan_for_generated_c_with_packages(
+pub(crate) fn build_plan_for_generated_c_with_packages(
     generated_c: String,
     profile: BuildProfile,
     allow_native_build: bool,
@@ -48,7 +49,7 @@ pub fn build_plan_for_generated_c_with_packages(
     plan
 }
 
-pub fn synthetic_runtime_cmake_targets(_target_os: &str) -> Vec<CmakeTarget> {
+fn synthetic_runtime_cmake_targets(_target_os: &str) -> Vec<CmakeTarget> {
     let package_root = runtime_package_root();
     vec![CmakeTarget {
         package_root: package_root.clone(),
@@ -58,7 +59,7 @@ pub fn synthetic_runtime_cmake_targets(_target_os: &str) -> Vec<CmakeTarget> {
     }]
 }
 
-pub fn runtime_package_root() -> PathBuf {
+fn runtime_package_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("runtime")
 }
 

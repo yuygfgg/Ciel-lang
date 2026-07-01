@@ -16,6 +16,7 @@ pub struct ConstraintBounds {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConstraintRef {
+    pub def_id: DefId,
     pub name: String,
     pub args: Vec<Ty>,
 }
@@ -37,8 +38,9 @@ pub const STD_ASYNC_AWAITABLE_FUTURE_INTERFACE: &str = "awaitable_future";
 pub const STD_ASYNC_CANCEL_SAFE_INTERFACE: &str = "cancel_safe_marker";
 pub const STD_ASYNC_ABORT_FUTURE_INTERFACE: &str = "abort_future";
 
-pub fn clone_message_capability() -> ConstraintRef {
+pub fn clone_message_capability(def_id: DefId) -> ConstraintRef {
     ConstraintRef {
+        def_id,
         name: STD_MESSAGE_CLONE_INTERFACE.to_string(),
         args: Vec::new(),
     }
@@ -109,6 +111,7 @@ pub enum Ty {
     },
     Generic(String),
     DynamicInterface {
+        def_id: DefId,
         name: String,
         args: Vec<Ty>,
     },
@@ -444,7 +447,8 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             abortable: *abortable,
             affine_state: *affine_state,
         },
-        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+        Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
+            def_id: *def_id,
             name: name.clone(),
             args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
         },
@@ -529,6 +533,7 @@ pub fn substitute_constraint_ref(
     subst: &HashMap<String, Ty>,
 ) -> ConstraintRef {
     ConstraintRef {
+        def_id: entry.def_id,
         name: entry.name.clone(),
         args: entry
             .args
@@ -604,11 +609,12 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             } if name == actual_name => unify_ty(output, actual_output, subst),
             _ => false,
         },
-        Ty::DynamicInterface { name, args } => match actual {
+        Ty::DynamicInterface { def_id, args, .. } => match actual {
             Ty::DynamicInterface {
-                name: actual_name,
+                def_id: actual_def_id,
                 args: actual_args,
-            } if name == actual_name && args.len() == actual_args.len() => args
+                ..
+            } if def_id == actual_def_id && args.len() == actual_args.len() => args
                 .iter()
                 .zip(actual_args.iter())
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
@@ -1132,18 +1138,14 @@ pub fn retained_closure_has_capability(ty: &Ty, capability: &ConstraintRef) -> b
     constraints.positive.iter().any(|entry| entry == capability)
 }
 
-pub fn retained_closure_proves_capability(ty: &Ty, interface_name: &str, args: &[Ty]) -> bool {
+pub fn retained_closure_proves_capability(ty: &Ty, interface_def: DefId, args: &[Ty]) -> bool {
     let Ty::Closure { constraints, .. } = ty else {
         return false;
     };
     constraints
         .positive
         .iter()
-        .any(|entry| entry.name == interface_name && entry.args == args)
-}
-
-pub fn is_clone_message_capability(capability: &ConstraintRef) -> bool {
-    capability.name == STD_MESSAGE_CLONE_INTERFACE && capability.args.is_empty()
+        .any(|entry| entry.def_id == interface_def && entry.args == args)
 }
 
 pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
@@ -1160,8 +1162,9 @@ pub fn std_error_ty() -> Ty {
     }
 }
 
-pub fn std_error_trait_ty() -> Ty {
+pub fn std_error_trait_ty(def_id: DefId) -> Ty {
     Ty::DynamicInterface {
+        def_id,
         name: STD_ERROR_TRAIT_ALIAS.to_string(),
         args: Vec::new(),
     }
@@ -1532,7 +1535,8 @@ where
             abortable: *abortable,
             affine_state: *affine_state,
         },
-        Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+        Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
+            def_id: *def_id,
             name: name.clone(),
             args: args.iter().map(map_child).collect(),
         },
@@ -1546,6 +1550,7 @@ where
                     .positive
                     .iter()
                     .map(|entry| ConstraintRef {
+                        def_id: entry.def_id,
                         name: entry.name.clone(),
                         args: entry.args.iter().map(&mut map_child).collect(),
                     })
@@ -1554,6 +1559,7 @@ where
                     .negative
                     .iter()
                     .map(|entry| ConstraintRef {
+                        def_id: entry.def_id,
                         name: entry.name.clone(),
                         args: entry.args.iter().map(&mut map_child).collect(),
                     })
@@ -1699,13 +1705,14 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
             format!("{prefix}_{name}_{}", mangle_ty_fragment(output))
         }
         Ty::Generic(name) => format!("gen_{name}"),
-        Ty::DynamicInterface { name, args } => {
+        Ty::DynamicInterface { def_id, name, args } => {
             if args.is_empty() {
-                format!("dyn_{name}")
+                format!("dyn_{name}_def{}", def_id.0)
             } else {
                 format!(
-                    "dyn_{}_{}",
+                    "dyn_{}_def{}_{}",
                     name,
+                    def_id.0,
                     args.iter()
                         .map(mangle_ty_fragment)
                         .collect::<Vec<_>>()
@@ -1829,11 +1836,16 @@ pub fn mangle_constraint_bounds(bounds: &ConstraintBounds) -> String {
 
 pub fn mangle_constraint_ref(entry: &ConstraintRef) -> String {
     if entry.args.is_empty() {
-        sanitize_mangle_fragment(&entry.name)
+        format!(
+            "{}_def{}",
+            sanitize_mangle_fragment(&entry.name),
+            entry.def_id.0
+        )
     } else {
         format!(
-            "{}_{}",
+            "{}_def{}_{}",
             sanitize_mangle_fragment(&entry.name),
+            entry.def_id.0,
             entry
                 .args
                 .iter()
@@ -1943,7 +1955,7 @@ impl fmt::Display for Ty {
             }
             Ty::GeneratedFuture { output, .. } => write!(f, "Future<{output}>"),
             Ty::Generic(name) => write!(f, "{name}"),
-            Ty::DynamicInterface { name, args } => {
+            Ty::DynamicInterface { name, args, .. } => {
                 if args.is_empty() {
                     write!(f, "{name}")
                 } else {

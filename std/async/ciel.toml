@@ -8,3 +8,4 @@ root = "."
 [ciel.exports]
 "/std/async" = "async.ciel"
 "/std/async/core" = "core.ciel"
+"/std/async/internal/adapter" = "internal/adapter.ciel"

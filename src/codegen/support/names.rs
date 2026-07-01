@@ -1,6 +1,65 @@
 use super::*;
 
 impl<'a> CGenerator<'a> {
+    pub(in crate::codegen) fn std_message_interface_def(&self, name: &str) -> DefId {
+        self.program
+            .checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == name
+                    && std_id::is_std_message_interface(
+                        &self.program.checked.resolved,
+                        interface.def_id,
+                        name,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing std message interface `{name}`"))
+    }
+
+    pub(in crate::codegen) fn std_async_interface_def(&self, name: &str) -> DefId {
+        self.program
+            .checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == name
+                    && std_id::is_std_async_interface(
+                        &self.program.checked.resolved,
+                        interface.def_id,
+                        name,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing std async interface `{name}`"))
+    }
+
+    pub(in crate::codegen) fn interface_alias_def_by_name(&self, name: &str) -> DefId {
+        self.program
+            .checked
+            .interface_aliases
+            .iter()
+            .find(|alias| alias.name == name)
+            .map(|alias| alias.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing interface alias `{name}`"))
+    }
+
+    pub(in crate::codegen) fn std_error_trait_ty(&self) -> Ty {
+        std_error_trait_ty(self.interface_alias_def_by_name(STD_ERROR_TRAIT_ALIAS))
+    }
+
+    pub(in crate::codegen) fn is_std_clone_message_capability(
+        &self,
+        capability: &ConstraintRef,
+    ) -> bool {
+        capability.args.is_empty()
+            && std_id::is_std_message_clone_interface(
+                &self.program.checked.resolved,
+                capability.def_id,
+            )
+    }
+
     pub(in crate::codegen) fn c_name(&self, def_id: DefId) -> String {
         self.plan
             .name_map
@@ -19,13 +78,14 @@ impl<'a> CGenerator<'a> {
 
     pub(in crate::codegen) fn dynamic_type_name(&self, ty: &Ty) -> String {
         match ty {
-            Ty::DynamicInterface { name, args } => {
+            Ty::DynamicInterface { def_id, name, args } => {
                 if args.is_empty() {
-                    format!("CielDyn_{name}")
+                    format!("CielDyn_{}_def{}", name, def_id.0)
                 } else {
                     format!(
-                        "CielDyn_{}_{}",
+                        "CielDyn_{}_def{}_{}",
                         name,
+                        def_id.0,
                         args.iter()
                             .map(mangle_ty_fragment)
                             .collect::<Vec<_>>()
@@ -265,35 +325,43 @@ impl<'a> CGenerator<'a> {
         &self,
         dyn_ty: &Ty,
         concrete_ty: &Ty,
-        interface_name: &str,
+        interface: &CheckedInterfaceRef,
     ) -> String {
         format!(
-            "ciel_dyn_shim_{}_{}_{}",
-            interface_name,
+            "ciel_dyn_shim_{}_def{}_{}_{}",
+            interface.name,
+            interface.def_id.0,
             mangle_ty_fragment(dyn_ty),
             mangle_ty_fragment(concrete_ty)
         )
+    }
+
+    pub(in crate::codegen) fn dynamic_interface_field_name(
+        &self,
+        interface: &CheckedInterfaceRef,
+    ) -> String {
+        format!("{}_def{}", interface.name, interface.def_id.0)
     }
 
     pub(in crate::codegen) fn dynamic_use_interfaces(
         &self,
         dynamic_use: &DynamicImplUse,
     ) -> Vec<CheckedInterfaceRef> {
-        let Ty::DynamicInterface { name, args } = &dynamic_use.dyn_ty else {
+        let Ty::DynamicInterface { def_id, args, .. } = &dynamic_use.dyn_ty else {
             return Vec::new();
         };
-        self.dynamic_view_interfaces(name, args)
+        self.dynamic_view_interfaces(*def_id, args)
     }
 
     pub(in crate::codegen) fn dynamic_view_interfaces(
         &self,
-        name: &str,
+        def_id: DefId,
         args: &[Ty],
     ) -> Vec<CheckedInterfaceRef> {
         checked_interface_view(
             &self.program.checked.interfaces,
             &self.program.checked.interface_aliases,
-            name,
+            def_id,
             args,
         )
     }
@@ -316,7 +384,7 @@ impl<'a> CGenerator<'a> {
         self.program.checked.impls.iter().find(|implementation| {
             impl_matches_interface_receiver(
                 implementation,
-                &capability.name,
+                capability.def_id,
                 &capability.args,
                 source_ty,
             )

@@ -1,0 +1,66 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+import /std/parse as parse;
+import /std/result;
+
+bool is_overflow(Result<u8, parse::ParseError> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case parse::Overflow:
+                    return true;
+                case parse::Empty:
+                    return false;
+                case parse::InvalidChar(_):
+                    return false;
+                case parse::Underflow:
+                    return false;
+            }
+    }
+}
+
+bool is_invalid_u32(Result<u32, parse::ParseError> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case parse::InvalidChar(_):
+                    return true;
+                case parse::Empty:
+                    return false;
+                case parse::Overflow:
+                    return false;
+                case parse::Underflow:
+                    return false;
+            }
+    }
+}
+
+i64 main() {
+    if (must(parse::parse_number(meta::type_tag<i64>(), "  -42 ")) != -42) {
+        return 1;
+    }
+    if (must(parse::parse_number(meta::type_tag<u32>(), "+123")) != (123 as u32)) {
+        return 2;
+    }
+    if (!is_invalid_u32(parse::parse_number(meta::type_tag<u32>(), "-1"))) {
+        return 3;
+    }
+    if (!is_overflow(parse::parse_number(meta::type_tag<u8>(), "256"))) {
+        return 4;
+    }
+    f64 value = must(parse::parse_number(meta::type_tag<f64>(), "1.25e2"));
+    if (value != 125.0) {
+        return 5;
+    }
+    f32 inf = must(parse::parse_number(meta::type_tag<f32>(), "inf"));
+    if (inf < (1000000.0 as f32)) {
+        return 6;
+    }
+    return 0;
+}

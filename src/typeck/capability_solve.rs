@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     diagnostic::Diagnostic,
+    resolve::DefId,
     types::{
         ConstraintBounds, ConstraintRef, Ty, contains_generic, map_ty_children,
         substitute_constraint_bounds, substitute_ty, unify_ty,
@@ -33,11 +34,7 @@ pub(super) fn solve_hidden_from_capability(
     hidden_names: &HashSet<String>,
     assumptions: &[HiddenConstraint],
 ) -> HiddenSolveResult {
-    let Some(interface) = ctx
-        .interface_names
-        .get(&capability.name)
-        .and_then(|def_id| ctx.interfaces.get(def_id))
-    else {
+    let Some(interface) = ctx.interfaces.get(&capability.def_id) else {
         return HiddenSolveResult::NoSolution;
     };
     let Some(determined_start) = interface.determined_start else {
@@ -52,7 +49,7 @@ pub(super) fn solve_hidden_from_capability(
 
     let mut candidates = Vec::new();
     candidates.extend(hidden_candidates_from_assumptions(
-        &capability.name,
+        capability.def_id,
         determined_start,
         &full_args,
         hidden_names,
@@ -60,14 +57,14 @@ pub(super) fn solve_hidden_from_capability(
     ));
     candidates.extend(hidden_candidates_from_impls(
         ctx,
-        &capability.name,
+        capability.def_id,
         determined_start,
         &full_args,
         hidden_names,
     ));
     candidates.extend(hidden_candidates_from_generic_impls(
         ctx,
-        &capability.name,
+        capability.def_id,
         determined_start,
         &full_args,
         hidden_names,
@@ -82,16 +79,14 @@ pub fn check_determined_coherence(table: &CapabilityTable<'_>) -> Vec<Diagnostic
     let mut impls = Vec::new();
     for implementation in table.impls() {
         impls.push(CoherenceImpl {
+            interface_def: implementation.interface_def,
             interface_name: implementation.interface_name.clone(),
             interface_args: implementation.interface_args.clone(),
             span: None,
         });
     }
     for template in table.generic_impls() {
-        if let Some(interface) = ctx
-            .interface_names
-            .get(&template.interface_name)
-            .and_then(|def_id| ctx.interfaces.get(def_id))
+        if let Some(interface) = ctx.interfaces.get(&template.interface_def)
             && let Some(determined_start) = interface.determined_start
             && generic_impl_has_unfixed_determined_generics(ctx, template, determined_start)
         {
@@ -104,6 +99,7 @@ pub fn check_determined_coherence(table: &CapabilityTable<'_>) -> Vec<Diagnostic
             ));
         }
         impls.push(CoherenceImpl {
+            interface_def: template.interface_def,
             interface_name: template.interface_name.clone(),
             interface_args: template.interface_args.clone(),
             span: Some(template.item_span),
@@ -111,18 +107,14 @@ pub fn check_determined_coherence(table: &CapabilityTable<'_>) -> Vec<Diagnostic
     }
 
     for (idx, left) in impls.iter().enumerate() {
-        let Some(interface) = ctx
-            .interface_names
-            .get(&left.interface_name)
-            .and_then(|def_id| ctx.interfaces.get(def_id))
-        else {
+        let Some(interface) = ctx.interfaces.get(&left.interface_def) else {
             continue;
         };
         let Some(determined_start) = interface.determined_start else {
             continue;
         };
         for right in impls.iter().skip(idx + 1) {
-            if left.interface_name != right.interface_name
+            if left.interface_def != right.interface_def
                 || left.interface_args.len() != right.interface_args.len()
             {
                 continue;
@@ -151,13 +143,14 @@ pub fn check_determined_coherence(table: &CapabilityTable<'_>) -> Vec<Diagnostic
 
 #[derive(Clone, Debug)]
 struct CoherenceImpl {
+    interface_def: DefId,
     interface_name: String,
     interface_args: Vec<Ty>,
     span: Option<crate::span::Span>,
 }
 
 fn hidden_candidates_from_assumptions(
-    interface_name: &str,
+    interface_def: DefId,
     determined_start: usize,
     full_args: &[Ty],
     hidden_names: &HashSet<String>,
@@ -165,7 +158,7 @@ fn hidden_candidates_from_assumptions(
 ) -> Vec<Vec<(String, Ty)>> {
     let mut candidates = Vec::new();
     for assumption in assumptions {
-        if assumption.capability.name != interface_name {
+        if assumption.capability.def_id != interface_def {
             continue;
         }
         let candidate = std::iter::once(assumption.receiver.clone())
@@ -187,14 +180,14 @@ fn hidden_candidates_from_assumptions(
 
 fn hidden_candidates_from_impls(
     ctx: &TyCtx,
-    interface_name: &str,
+    interface_def: DefId,
     determined_start: usize,
     full_args: &[Ty],
     hidden_names: &HashSet<String>,
 ) -> Vec<Vec<(String, Ty)>> {
     let mut candidates = Vec::new();
     for implementation in &ctx.impls {
-        if implementation.interface_name != interface_name {
+        if implementation.interface_def != interface_def {
             continue;
         }
         if determinants_match(full_args, &implementation.interface_args, determined_start)
@@ -213,14 +206,14 @@ fn hidden_candidates_from_impls(
 
 fn hidden_candidates_from_generic_impls(
     ctx: &TyCtx,
-    interface_name: &str,
+    interface_def: DefId,
     determined_start: usize,
     full_args: &[Ty],
     hidden_names: &HashSet<String>,
 ) -> Vec<Vec<(String, Ty)>> {
     let mut candidates = Vec::new();
     for template in &ctx.generic_impls {
-        if template.interface_name != interface_name
+        if template.interface_def != interface_def
             || template.interface_args.len() != full_args.len()
         {
             continue;
@@ -304,11 +297,7 @@ fn generic_impl_has_unfixed_determined_generics(
                 continue;
             }
             for capability in &generic_constraint.bounds.positive {
-                let Some(interface) = ctx
-                    .interface_names
-                    .get(&capability.name)
-                    .and_then(|def_id| ctx.interfaces.get(def_id))
-                else {
+                let Some(interface) = ctx.interfaces.get(&capability.def_id) else {
                     continue;
                 };
                 let Some(inner_determined_start) = interface.determined_start else {
@@ -381,14 +370,29 @@ fn constraint_bounds_satisfied(
     stack: &mut HashSet<CapabilityCheckKey>,
 ) -> bool {
     bounds.positive.iter().all(|capability| {
-        capability_satisfied(ctx, &capability.name, &capability.args, receiver_ty, stack)
+        capability_satisfied(
+            ctx,
+            capability.def_id,
+            &capability.name,
+            &capability.args,
+            receiver_ty,
+            stack,
+        )
     }) && bounds.negative.iter().all(|capability| {
-        !capability_satisfied(ctx, &capability.name, &capability.args, receiver_ty, stack)
+        !capability_satisfied(
+            ctx,
+            capability.def_id,
+            &capability.name,
+            &capability.args,
+            receiver_ty,
+            stack,
+        )
     })
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CapabilityCheckKey {
+    interface_def: DefId,
     interface_name: String,
     args: Vec<Ty>,
     receiver_ty: Ty,
@@ -396,12 +400,14 @@ struct CapabilityCheckKey {
 
 fn capability_satisfied(
     ctx: &TyCtx,
+    interface_def: DefId,
     interface_name: &str,
     args: &[Ty],
     receiver_ty: &Ty,
     stack: &mut HashSet<CapabilityCheckKey>,
 ) -> bool {
     let key = CapabilityCheckKey {
+        interface_def,
         interface_name: interface_name.to_string(),
         args: args.to_vec(),
         receiver_ty: receiver_ty.clone(),
@@ -409,20 +415,23 @@ fn capability_satisfied(
     if !stack.insert(key.clone()) {
         return false;
     }
-    let satisfied = capability_satisfied_inner(ctx, interface_name, args, receiver_ty, stack);
+    let satisfied =
+        capability_satisfied_inner(ctx, interface_def, interface_name, args, receiver_ty, stack);
     stack.remove(&key);
     satisfied
 }
 
 fn capability_satisfied_inner(
     ctx: &TyCtx,
+    interface_def: DefId,
     interface_name: &str,
     args: &[Ty],
     receiver_ty: &Ty,
     stack: &mut HashSet<CapabilityCheckKey>,
 ) -> bool {
+    let _ = interface_name;
     if ctx.impls.iter().any(|implementation| {
-        implementation.interface_name == interface_name
+        implementation.interface_def == interface_def
             && interface_non_receiver_args(&implementation.interface_args) == args
             && implementation
                 .receiver_ty
@@ -436,7 +445,7 @@ fn capability_satisfied_inner(
         .chain(args.iter().cloned())
         .collect::<Vec<_>>();
     ctx.generic_impls.iter().any(|template| {
-        if template.interface_name != interface_name
+        if template.interface_def != interface_def
             || template.interface_args.len() != full_args.len()
         {
             return false;
@@ -608,11 +617,12 @@ fn bind_hidden_ty(
                 }),
             _ => None,
         },
-        Ty::DynamicInterface { name, args } => match candidate {
+        Ty::DynamicInterface { def_id, args, .. } => match candidate {
             Ty::DynamicInterface {
-                name: candidate_name,
+                def_id: candidate_def_id,
                 args: candidate_args,
-            } if name == candidate_name && args.len() == candidate_args.len() => args
+                ..
+            } if def_id == candidate_def_id && args.len() == candidate_args.len() => args
                 .iter()
                 .zip(candidate_args.iter())
                 .try_for_each(|(required, candidate)| {
@@ -756,15 +766,23 @@ fn coherence_unify(left: &Ty, right: &Ty, subst: &mut HashMap<String, Ty>) -> bo
                 name: right_name,
                 args: right_args,
             },
-        )
-        | (
-            Ty::DynamicInterface { name, args },
-            Ty::DynamicInterface {
-                name: right_name,
-                args: right_args,
-            },
         ) => {
             name == right_name
+                && args.len() == right_args.len()
+                && args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| coherence_unify(left, right, subst))
+        }
+        (
+            Ty::DynamicInterface { def_id, args, .. },
+            Ty::DynamicInterface {
+                def_id: right_def_id,
+                args: right_args,
+                ..
+            },
+        ) => {
+            def_id == right_def_id
                 && args.len() == right_args.len()
                 && args
                     .iter()
@@ -905,7 +923,7 @@ fn coherence_constraint_ref_match(
     right: &ConstraintRef,
     subst: &mut HashMap<String, Ty>,
 ) -> bool {
-    left.name == right.name
+    left.def_id == right.def_id
         && left.args.len() == right.args.len()
         && left
             .args
@@ -978,6 +996,7 @@ fn coherence_normalize_constraint_ref(
     visiting: &mut HashSet<String>,
 ) -> ConstraintRef {
     ConstraintRef {
+        def_id: entry.def_id,
         name: entry.name.clone(),
         args: entry
             .args

@@ -467,15 +467,23 @@ pub(super) fn known_ty_matches(left: &Ty, right: &Ty) -> bool {
                 name: right_name,
                 args: right_args,
             },
-        )
-        | (
-            Ty::DynamicInterface { name, args },
-            Ty::DynamicInterface {
-                name: right_name,
-                args: right_args,
-            },
         ) => {
             name == right_name
+                && args.len() == right_args.len()
+                && args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| known_ty_matches(left, right))
+        }
+        (
+            Ty::DynamicInterface { def_id, args, .. },
+            Ty::DynamicInterface {
+                def_id: right_def_id,
+                args: right_args,
+                ..
+            },
+        ) => {
+            def_id == right_def_id
                 && args.len() == right_args.len()
                 && args
                     .iter()

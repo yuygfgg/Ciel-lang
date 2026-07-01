@@ -241,6 +241,10 @@ bool matches_vec() {
                     return true;
                 case vec::IndexOutOfBounds(_, _):
                     return false;
+                case vec::Empty:
+                    return false;
+                case vec::NotFound:
+                    return false;
                 case vec::Runtime(_):
                     return false;
             }
@@ -292,6 +296,8 @@ bool matches_text() {
             switch (error) {
                 case text::ShortCopy:
                     return true;
+                case text::NotFound:
+                    return false;
                 case text::Bytes(_):
                     return false;
                 case text::Storage:

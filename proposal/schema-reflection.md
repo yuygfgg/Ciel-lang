@@ -257,7 +257,7 @@ export Result<T, Error> decode<T>(JsonValue json) {
     meta::Schema<T> schema = meta::schema<T>();
     meta::Repr<T> repr = decode_schema(
         &schema,
-        {} as meta::Type<meta::Repr<T>>,
+        meta::type_tag<meta::Repr<T>>(),
         json
     )?;
     return Ok(meta::from_repr<T>(repr));
@@ -283,7 +283,7 @@ impl<V, STail, RTail> decode_schema(
     V value = decode_field<V>(schema->head.name, json)?;
     RTail tail = decode_schema(
         &schema->tail,
-        {} as meta::Type<RTail>,
+        meta::type_tag<RTail>(),
         json
     )?;
     meta::Field<V> field = {

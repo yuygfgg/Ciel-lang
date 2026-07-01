@@ -1,6 +1,8 @@
 // Re-exports Result for Text operations.
 export import /std/result;
+import /std/ascii as ascii;
 import /std/bytes as bytes;
+import /std/format as format;
 import /std/iter as iter;
 import /std/message;
 import /std/storage as storage;
@@ -20,6 +22,7 @@ export enum TextError {
     Bytes(bytes::BytesError),
     Storage,
     ShortCopy,
+    NotFound,
 }
 
 impl format_error(*const TextError error) {
@@ -30,6 +33,8 @@ impl format_error(*const TextError error) {
             return "text storage allocation failed";
         case ShortCopy:
             return "short text copy";
+        case NotFound:
+            return "text not found";
     }
 }
 
@@ -115,4 +120,191 @@ export Result<[]char, TextError> text_to_chars(Text text) = .to_chars {
 export Result<[]const char, TextError> text_to_slice(Text text) = .slice {
     []char chars = text_to_chars(text)?;
     return Ok(chars);
+}
+
+// Concatenates two Text values into a new owned Text.
+export Result<Text, TextError> text_concat(Text left, Text right) = .concat {
+    switch (bytes::bytes_append(left.bytes, right.bytes)) {
+        case Ok(value):
+            return Ok({ bytes: value });
+        case Err(error):
+            return Err(Bytes(error));
+    }
+}
+
+// Compares two Text values byte-for-byte.
+export bool text_equal(Text left, Text right) {
+    []const u8 left_bytes = bytes::bytes_const_slice(left.bytes);
+    []const u8 right_bytes = bytes::bytes_const_slice(right.bytes);
+    if (left_bytes.len != right_bytes.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left_bytes.len) {
+        if (left_bytes[i] != right_bytes[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+// Compares Text bytes with a character slice.
+export bool text_equal_slice(Text left, []const char right) {
+    []const u8 left_bytes = bytes::bytes_const_slice(left.bytes);
+    if (left_bytes.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left_bytes.len) {
+        if ((left_bytes[i] as char) != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+export bool text_starts_with(Text text, Text prefix) {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    []const u8 pat = bytes::bytes_const_slice(prefix.bytes);
+    if (pat.len > data.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < pat.len) {
+        if (data[i] != pat[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+export bool text_ends_with(Text text, Text suffix) {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    []const u8 pat = bytes::bytes_const_slice(suffix.bytes);
+    if (pat.len > data.len) {
+        return false;
+    }
+    usize offset = data.len - pat.len;
+    usize @i = 0;
+    while (i < pat.len) {
+        if (data[offset + i] != pat[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+usize find_bytes([]const u8 data, []const u8 needle) {
+    if (needle.len == 0) {
+        return 0;
+    }
+    if (needle.len > data.len) {
+        return data.len;
+    }
+    usize @i = 0;
+    while (i <= (data.len - needle.len)) {
+        bool @matched = true;
+        usize @j = 0;
+        while (j < needle.len) {
+            if (data[i + j] != needle[j]) {
+                matched = false;
+                break;
+            }
+            j = j + 1;
+        }
+        if (matched) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return data.len;
+}
+
+export bool text_contains(Text text, Text needle) {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    []const u8 pat = bytes::bytes_const_slice(needle.bytes);
+    return find_bytes(data, pat) != data.len || pat.len == 0;
+}
+
+export Result<usize, TextError> text_find(Text text, Text needle) = .find {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    []const u8 pat = bytes::bytes_const_slice(needle.bytes);
+    usize index = find_bytes(data, pat);
+    if (index == data.len && pat.len != 0) {
+        return Err(NotFound);
+    }
+    return Ok(index);
+}
+
+export Result<Text, TextError> text_trim(Text text) = .trim {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    usize @start = 0;
+    while (start < data.len && ascii::char_is_whitespace(data[start] as char)) {
+        start = start + 1;
+    }
+    usize @end = data.len;
+    while (end > start && ascii::char_is_whitespace(data[end - 1] as char)) {
+        end = end - 1;
+    }
+    switch (bytes::bytes_copy(data[start..end])) {
+        case Ok(value):
+            return Ok({ bytes: value });
+        case Err(error):
+            return Err(Bytes(error));
+    }
+}
+
+Result<Text, TextError> text_map_ascii_case(Text text, bool to_upper) {
+    []const u8 data = bytes::bytes_const_slice(text.bytes);
+    storage::RawStorage<u8> @raw;
+    switch (unsafe { storage::raw_zeroed<u8>(data.len) }) {
+        case Ok(value):
+            raw = value;
+        case Err(_):
+            return Err(Storage);
+    }
+    []u8 out = unsafe { storage::raw_slice<u8>(&raw) };
+    usize @i = 0;
+    while (i < data.len) {
+        if (data[i] <= (127 as u8)) {
+            char c = data[i] as char;
+            if (to_upper) {
+                out[i] = ascii::char_to_upper(c) as u8;
+            } else {
+                out[i] = ascii::char_to_lower(c) as u8;
+            }
+        } else {
+            out[i] = data[i];
+        }
+        i = i + 1;
+    }
+    switch (bytes::bytes_copy(out[..])) {
+        case Ok(value):
+            return Ok({ bytes: value });
+        case Err(error):
+            return Err(Bytes(error));
+    }
+}
+
+export Result<Text, TextError> text_to_upper_ascii(Text text) = .to_upper_ascii {
+    return text_map_ascii_case(text, true);
+}
+
+export Result<Text, TextError> text_to_lower_ascii(Text text) = .to_lower_ascii {
+    return text_map_ascii_case(text, false);
+}
+
+export Result<Text, TextError> text_from_bool(bool value) {
+    if (value) {
+        return text_copy("true");
+    }
+    return text_copy("false");
+}
+
+export Result<Text, TextError> text_from_i64(i64 value) {
+    return text_copy(format::i64_to_string(value));
 }

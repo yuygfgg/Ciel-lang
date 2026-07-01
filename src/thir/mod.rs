@@ -34,6 +34,7 @@ pub struct CheckedVariant {
 
 #[derive(Clone, Debug)]
 pub struct CheckedInterface {
+    pub def_id: DefId,
     pub name: String,
     pub is_unsafe: bool,
     pub generics: Vec<String>,
@@ -43,6 +44,7 @@ pub struct CheckedInterface {
 
 #[derive(Clone, Debug)]
 pub struct CheckedInterfaceAlias {
+    pub def_id: DefId,
     pub name: String,
     pub generics: Vec<String>,
     pub positive: Vec<CheckedInterfaceRef>,
@@ -51,12 +53,14 @@ pub struct CheckedInterfaceAlias {
 
 #[derive(Clone, Debug)]
 pub struct CheckedInterfaceRef {
+    pub def_id: DefId,
     pub name: String,
     pub args: Vec<Ty>,
 }
 
 #[derive(Clone, Debug)]
 pub struct CheckedImpl {
+    pub interface_def: DefId,
     pub interface_name: String,
     pub interface_args: Vec<Ty>,
     pub receiver_ty: Option<Ty>,
@@ -360,11 +364,13 @@ pub enum TExprKind {
         concrete_ty: Ty,
     },
     DynamicInterfaceCall {
+        interface_def: DefId,
         interface_name: String,
         receiver: Box<TExpr>,
         args: Vec<TExpr>,
     },
     RetainedClosureInterfaceCall {
+        interface_def: DefId,
         interface_name: String,
         interface_args: Vec<Ty>,
         receiver: Box<TExpr>,
@@ -412,6 +418,8 @@ pub enum TExprKind {
     AsyncOpFuture {
         op: Box<TExpr>,
         output_ty: Ty,
+        raw_operation_def: DefId,
+        poll_done_def: DefId,
     },
     AsyncSpawn {
         body: Box<TExpr>,

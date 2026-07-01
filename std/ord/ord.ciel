@@ -1,0 +1,337 @@
+import /std/meta as meta;
+
+// Equality capability for generic code.
+export interface<T> bool eq(*const T left, *const T right);
+
+// Less-than capability for generic code.
+export interface<T> bool lt(*const T left, *const T right);
+
+// Values that support equality and less-than comparisons.
+export interface ordered = eq + lt;
+
+// Absolute value capability for signed numeric types.
+export interface<T> T abs(T value);
+
+// Largest representable value for a type.
+export interface<T> T max_value(meta::Type<T> tag);
+
+// Smallest representable value for a type.
+export interface<T> T min_value(meta::Type<T> tag);
+
+i8 max_i8_value() {
+    return ((~(0 as u8)) >> 1) as i8;
+}
+
+i8 min_i8_value() {
+    return (0 as i8) - max_i8_value() - (1 as i8);
+}
+
+i16 max_i16_value() {
+    return ((~(0 as u16)) >> 1) as i16;
+}
+
+i16 min_i16_value() {
+    return (0 as i16) - max_i16_value() - (1 as i16);
+}
+
+i32 max_i32_value() {
+    return ((~(0 as u32)) >> 1) as i32;
+}
+
+i32 min_i32_value() {
+    return (0 as i32) - max_i32_value() - (1 as i32);
+}
+
+i64 max_i64_value() {
+    return ((~(0 as u64)) >> 1) as i64;
+}
+
+i64 min_i64_value() {
+    return (0 as i64) - max_i64_value() - (1 as i64);
+}
+
+export T min<T: lt>(T a, T b) {
+    if (lt(&b, &a)) {
+        return b;
+    }
+    return a;
+}
+
+export T max<T: lt>(T a, T b) {
+    if (lt(&a, &b)) {
+        return b;
+    }
+    return a;
+}
+
+export T clamp<T: lt>(T value, T lo, T hi) {
+    if (lt(&value, &lo)) {
+        return lo;
+    }
+    if (lt(&hi, &value)) {
+        return hi;
+    }
+    return value;
+}
+
+export bool ne<T: eq>(T a, T b) {
+    return !eq(&a, &b);
+}
+
+export bool le<T: lt>(T a, T b) {
+    return !lt(&b, &a);
+}
+
+export bool gt<T: lt>(T a, T b) {
+    return lt(&b, &a);
+}
+
+export bool ge<T: lt>(T a, T b) {
+    return !lt(&a, &b);
+}
+
+impl eq(*const bool left, *const bool right) {
+    return *left == *right;
+}
+
+impl lt(*const bool left, *const bool right) {
+    return !*left && *right;
+}
+
+impl eq(*const char left, *const char right) {
+    return *left == *right;
+}
+
+impl lt(*const char left, *const char right) {
+    return *left < *right;
+}
+
+impl eq(*const i8 left, *const i8 right) {
+    return *left == *right;
+}
+
+impl lt(*const i8 left, *const i8 right) {
+    return *left < *right;
+}
+
+impl eq(*const i16 left, *const i16 right) {
+    return *left == *right;
+}
+
+impl lt(*const i16 left, *const i16 right) {
+    return *left < *right;
+}
+
+impl eq(*const i32 left, *const i32 right) {
+    return *left == *right;
+}
+
+impl lt(*const i32 left, *const i32 right) {
+    return *left < *right;
+}
+
+impl eq(*const i64 left, *const i64 right) {
+    return *left == *right;
+}
+
+impl lt(*const i64 left, *const i64 right) {
+    return *left < *right;
+}
+
+impl eq(*const u8 left, *const u8 right) {
+    return *left == *right;
+}
+
+impl lt(*const u8 left, *const u8 right) {
+    return *left < *right;
+}
+
+impl eq(*const u16 left, *const u16 right) {
+    return *left == *right;
+}
+
+impl lt(*const u16 left, *const u16 right) {
+    return *left < *right;
+}
+
+impl eq(*const u32 left, *const u32 right) {
+    return *left == *right;
+}
+
+impl lt(*const u32 left, *const u32 right) {
+    return *left < *right;
+}
+
+impl eq(*const u64 left, *const u64 right) {
+    return *left == *right;
+}
+
+impl lt(*const u64 left, *const u64 right) {
+    return *left < *right;
+}
+
+impl eq(*const usize left, *const usize right) {
+    return *left == *right;
+}
+
+impl lt(*const usize left, *const usize right) {
+    return *left < *right;
+}
+
+impl eq(*const f32 left, *const f32 right) {
+    return *left == *right;
+}
+
+impl lt(*const f32 left, *const f32 right) {
+    return *left < *right;
+}
+
+impl eq(*const f64 left, *const f64 right) {
+    return *left == *right;
+}
+
+impl lt(*const f64 left, *const f64 right) {
+    return *left < *right;
+}
+
+impl abs(i8 value) {
+    if (value == min_i8_value()) {
+        return max_i8_value();
+    }
+    if (value < (0 as i8)) {
+        return -value;
+    }
+    return value;
+}
+
+impl abs(i16 value) {
+    if (value == min_i16_value()) {
+        return max_i16_value();
+    }
+    if (value < (0 as i16)) {
+        return -value;
+    }
+    return value;
+}
+
+impl abs(i32 value) {
+    if (value == min_i32_value()) {
+        return max_i32_value();
+    }
+    if (value < 0) {
+        return -value;
+    }
+    return value;
+}
+
+impl abs(i64 value) {
+    if (value == min_i64_value()) {
+        return max_i64_value();
+    }
+    if (value < 0) {
+        return -value;
+    }
+    return value;
+}
+
+impl abs(f32 value) {
+    if (value < 0.0) {
+        return -value;
+    }
+    return value;
+}
+
+impl abs(f64 value) {
+    if (value < 0.0) {
+        return -value;
+    }
+    return value;
+}
+
+impl max_value(meta::Type<i8> tag) {
+    return max_i8_value();
+}
+
+impl min_value(meta::Type<i8> tag) {
+    return min_i8_value();
+}
+
+impl max_value(meta::Type<i16> tag) {
+    return max_i16_value();
+}
+
+impl min_value(meta::Type<i16> tag) {
+    return min_i16_value();
+}
+
+impl max_value(meta::Type<i32> tag) {
+    return max_i32_value();
+}
+
+impl min_value(meta::Type<i32> tag) {
+    return min_i32_value();
+}
+
+impl max_value(meta::Type<i64> tag) {
+    return max_i64_value();
+}
+
+impl min_value(meta::Type<i64> tag) {
+    return min_i64_value();
+}
+
+impl max_value(meta::Type<u8> tag) {
+    return ~(0 as u8);
+}
+
+impl min_value(meta::Type<u8> tag) {
+    return 0 as u8;
+}
+
+impl max_value(meta::Type<u16> tag) {
+    return ~(0 as u16);
+}
+
+impl min_value(meta::Type<u16> tag) {
+    return 0 as u16;
+}
+
+impl max_value(meta::Type<u32> tag) {
+    return ~(0 as u32);
+}
+
+impl min_value(meta::Type<u32> tag) {
+    return 0 as u32;
+}
+
+impl max_value(meta::Type<u64> tag) {
+    return ~(0 as u64);
+}
+
+impl min_value(meta::Type<u64> tag) {
+    return 0 as u64;
+}
+
+impl max_value(meta::Type<usize> tag) {
+    return ~(0 as usize);
+}
+
+impl min_value(meta::Type<usize> tag) {
+    return 0 as usize;
+}
+
+impl max_value(meta::Type<f32> tag) {
+    return 3.402823466e38 as f32;
+}
+
+impl min_value(meta::Type<f32> tag) {
+    return -(3.402823466e38 as f32);
+}
+
+impl max_value(meta::Type<f64> tag) {
+    return 1.7976931348623157e308;
+}
+
+impl min_value(meta::Type<f64> tag) {
+    return -1.7976931348623157e308;
+}

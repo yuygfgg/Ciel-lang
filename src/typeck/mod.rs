@@ -41,7 +41,7 @@ mod helpers;
 mod infer;
 mod meta_repr;
 
-use crate::common::{name_ref_canonical, nominal_type_name};
+use crate::common::nominal_type_name;
 use capability::CapabilityTable;
 use env::{TyCtx, TyCtxBuilder};
 use helpers::*;
@@ -133,6 +133,7 @@ struct VariantSig {
 
 #[derive(Clone, Debug)]
 struct InterfaceSig {
+    def_id: DefId,
     name: String,
     is_unsafe: bool,
     generics: Vec<String>,
@@ -157,6 +158,7 @@ struct InterfaceView {
 
 #[derive(Clone, Debug)]
 struct ImplSig {
+    interface_def: DefId,
     interface_name: String,
     interface_args: Vec<Ty>,
     receiver_ty: Option<Ty>,
@@ -169,6 +171,7 @@ struct ImplSig {
 struct GenericImplTemplate {
     module: ModuleId,
     item_span: crate::span::Span,
+    interface_def: DefId,
     interface_name: String,
     generics: Vec<GenericInfo>,
     generic_constraints: Vec<GenericConstraintBounds>,
@@ -188,6 +191,7 @@ struct GenericConstraintBounds {
 
 #[derive(Clone, Debug)]
 struct ImplAnalysis {
+    interface_def: DefId,
     interface_name: String,
     generics: Vec<GenericInfo>,
     generic_constraints: Vec<GenericConstraintBounds>,
@@ -214,6 +218,7 @@ struct QueuedImplBody {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct CapabilityResolutionKey {
+    interface_def: DefId,
     interface_name: String,
     args: Vec<Ty>,
     receiver_ty: Ty,
@@ -812,6 +817,7 @@ pub fn type_check_generic_instance(
             .iter()
             .skip(base_impls)
             .map(|implementation| CheckedImpl {
+                interface_def: implementation.interface_def,
                 interface_name: implementation.interface_name.clone(),
                 interface_args: implementation.interface_args.clone(),
                 receiver_ty: implementation.receiver_ty.clone(),
@@ -1041,6 +1047,7 @@ impl TypeChecker {
                 .impls
                 .iter()
                 .map(|implementation| CheckedImpl {
+                    interface_def: implementation.interface_def,
                     interface_name: implementation.interface_name.clone(),
                     interface_args: implementation.interface_args.clone(),
                     receiver_ty: implementation.receiver_ty.clone(),
@@ -1075,6 +1082,7 @@ impl TypeChecker {
                         })
                         .collect::<HashMap<_, _>>();
                     CheckedInterface {
+                        def_id: *def_id,
                         name: interface.name.clone(),
                         is_unsafe: interface.is_unsafe,
                         generics,
@@ -1110,14 +1118,16 @@ impl TypeChecker {
                         .cloned()
                         .map(Ty::Generic)
                         .collect::<Vec<_>>();
-                    let view = self.interface_view(&name, &alias_args);
+                    let view = self.interface_view_for_def(*def_id, &alias_args);
                     Some(CheckedInterfaceAlias {
+                        def_id: *def_id,
                         name,
                         generics,
                         positive: view
                             .positive
                             .into_iter()
                             .map(|entry| CheckedInterfaceRef {
+                                def_id: entry.def_id,
                                 name: entry.name,
                                 args: entry.args,
                             })
@@ -1126,6 +1136,7 @@ impl TypeChecker {
                             .negative
                             .into_iter()
                             .map(|entry| CheckedInterfaceRef {
+                                def_id: entry.def_id,
                                 name: entry.name,
                                 args: entry.args,
                             })

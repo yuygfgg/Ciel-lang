@@ -1,0 +1,78 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/vec as vec;
+
+bool less_desc(*const i64 left, *const i64 right) {
+    return *left > *right;
+}
+
+bool is_not_found(Result<usize, vec::VecError> result) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            switch (error) {
+                case vec::NotFound:
+                    return true;
+                case vec::CapacityOverflow:
+                    return false;
+                case vec::IndexOutOfBounds(_, _):
+                    return false;
+                case vec::Empty:
+                    return false;
+                case vec::Runtime(_):
+                    return false;
+            }
+    }
+}
+
+i64 main() {
+    vec::Vec<i64> @values = must(vec::vec_new<i64>(0));
+    must(values.vec::push(3));
+    must(values.vec::push(1));
+    must(values.vec::push(4));
+    must(values.vec::insert(1, 2));
+    if (values.vec::len() != 4 || *must(values.vec::at(1)) != 2) {
+        return 1;
+    }
+    if (must(values.vec::remove(2)) != 1) {
+        return 2;
+    }
+    values.vec::reverse();
+    if (*must(values.vec::at(0)) != 4) {
+        return 3;
+    }
+    values.vec::sort();
+    if (*must(values.vec::at(0)) != 2 || *must(values.vec::at(2)) != 4) {
+        return 4;
+    }
+    if (must(values.vec::binary_search(3)) != 1) {
+        return 5;
+    }
+    if (!is_not_found(values.vec::binary_search(9))) {
+        return 6;
+    }
+    values.vec::sort_by(less_desc);
+    if (*must(values.vec::at(0)) != 4) {
+        return 7;
+    }
+    if (must(values.vec::pop()) != 2) {
+        return 8;
+    }
+    values.vec::truncate(1);
+    if (values.vec::len() != 1) {
+        return 9;
+    }
+    [2]i64 more = [8, 9];
+    must(values.vec::extend(more[..]));
+    if (values.vec::len() != 3) {
+        return 10;
+    }
+    vec::Vec<i64> other = must(vec::vec_from_slice(vec::vec_slice(&values)));
+    if (!vec::vec_equal(&values, &other)) {
+        return 11;
+    }
+    return 0;
+}

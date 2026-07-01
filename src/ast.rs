@@ -456,6 +456,10 @@ pub enum ExprKind {
         type_args: Vec<Type>,
         args: Vec<Expr>,
     },
+    GenericValue {
+        callee: Box<Expr>,
+        type_args: Vec<Type>,
+    },
     Field {
         base: Box<Expr>,
         field: Ident,

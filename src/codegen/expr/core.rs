@@ -479,6 +479,7 @@ impl<'a> CGenerator<'a> {
                 self.emit_error_boxed_value(&value, concrete_ty, indent, expr.span)?
             }
             TExprKind::DynamicInterfaceCall {
+                interface_def,
                 interface_name,
                 receiver,
                 args,
@@ -496,20 +497,27 @@ impl<'a> CGenerator<'a> {
                 };
                 let mut call_args = vec![format!("({receiver_code}).data")];
                 call_args.extend(self.gen_call_args(args, stmt_indent)?);
+                let field_name = self.dynamic_interface_field_name(&CheckedInterfaceRef {
+                    def_id: *interface_def,
+                    name: interface_name.clone(),
+                    args: Vec::new(),
+                });
                 let call = format!(
                     "({receiver_code}).vtable->{}({})",
-                    interface_name,
+                    field_name,
                     call_args.join(", ")
                 );
                 self.emit_array_call_value(expr, call, stmt_indent)?
             }
             TExprKind::RetainedClosureInterfaceCall {
+                interface_def,
                 interface_name,
                 interface_args,
                 receiver,
                 args,
             } => {
                 let call = self.emit_retained_closure_interface_call(
+                    *interface_def,
                     interface_name,
                     interface_args,
                     receiver,
@@ -649,7 +657,7 @@ impl<'a> CGenerator<'a> {
                 };
                 self.emit_async_sleep_expr(expr, ms, output_ty, indent)?
             }
-            TExprKind::AsyncOpFuture { op, output_ty } => {
+            TExprKind::AsyncOpFuture { op, output_ty, .. } => {
                 let Some(indent) = stmt_indent else {
                     return Err(vec![Diagnostic::new(
                         expr.span,

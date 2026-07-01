@@ -209,9 +209,9 @@ export Result<Hello, tunnel_error::AuthCodecError> decode_hello([]const u8 input
         return Err(tunnel_error::AuthFailure(tunnel_error::MalformedHello));
     }
 
-    u16 version = auth_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[..2]))?;
+    u16 version = auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
     usize route_len =
-        auth_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[2..4]))? as usize;
+        auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[2..4]))? as usize;
     usize expected_len = (4 as usize) + route_len + nonce_len() + tag_len();
     if (input.len != expected_len) {
         return Err(tunnel_error::AuthFailure(tunnel_error::MalformedHello));
@@ -290,7 +290,7 @@ export Result<HelloOk, tunnel_error::AuthCodecError> decode_hello_ok([]const u8 
         ));
     }
     u16 selected_version =
-        auth_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[..2]))?;
+        auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
     if (selected_version != frame::protocol_version()) {
         return Err(tunnel_error::AuthFailure(
             tunnel_error::AuthUnsupportedVersion(selected_version)

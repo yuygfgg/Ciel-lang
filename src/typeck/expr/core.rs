@@ -756,6 +756,44 @@ impl TypeChecker {
                     },
                 }
             }
+            ExprKind::GenericValue { callee, type_args } => {
+                if let ExprKind::Name(name_ref) = &callee.kind
+                    && !matches!(name_ref.kind, NameRefKind::Local(_))
+                    && let Some(sig) = self.resolve_function_name(name_ref)
+                {
+                    let (sig, instance_args) =
+                        self.instantiate_generic_function_item(expr.span, &sig, type_args)?;
+                    if sig.is_unsafe {
+                        self.require_unsafe(
+                            expr.span,
+                            format!(
+                                "use of unsafe function `{}` as a value requires unsafe block",
+                                sig.name
+                            ),
+                        );
+                    }
+                    TExpr {
+                        span: expr.span,
+                        ty: Ty::Function {
+                            is_unsafe: sig.is_unsafe,
+                            abi: sig.abi.clone(),
+                            ret: Box::new(sig.ret.clone()),
+                            params: sig.params.clone(),
+                        },
+                        kind: TExprKind::GenericFunction {
+                            def_id: sig.def_id,
+                            name: sig.name.clone(),
+                            type_args: instance_args,
+                        },
+                    }
+                } else {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        "type arguments can only be used on generic function values",
+                    ));
+                    return None;
+                }
+            }
             ExprKind::Field { base, field } => {
                 let base = self.check_expr(scopes, base, None)?;
                 let ty = self.field_ty(&base.ty, &field.name, field.span)?;
@@ -1168,8 +1206,8 @@ impl TypeChecker {
         {
             return expr;
         }
-        if let Ty::DynamicInterface { name, args } = &expected
-            && self.type_satisfies_dynamic_view(name, args, &expr_ty)
+        if let Ty::DynamicInterface { def_id, name, args } = &expected
+            && self.type_satisfies_dynamic_view(*def_id, name, args, &expr_ty)
         {
             if self.type_is_affine(&expr_ty) {
                 self.diagnostics.push(Diagnostic::new(

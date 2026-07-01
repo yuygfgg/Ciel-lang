@@ -3,47 +3,78 @@ use super::*;
 impl TypeChecker {
     pub(in crate::typeck) fn find_impl(
         &self,
+        interface_def: DefId,
         interface_name: &str,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> Option<&ImplSig> {
-        CapabilityTable::new(&self.ctx).find_impl(interface_name, args, receiver_ty)
+        let _ = interface_name;
+        CapabilityTable::new(&self.ctx).find_impl(interface_def, args, receiver_ty)
     }
 
-    pub(in crate::typeck) fn type_implements_capability(
+    pub(in crate::typeck) fn type_implements_capability_ref(
         &mut self,
+        capability: &ConstraintRef,
+        receiver_ty: &Ty,
+    ) -> bool {
+        self.type_implements_capability_by_def(
+            capability.def_id,
+            &capability.name,
+            &capability.args,
+            receiver_ty,
+        )
+    }
+
+    pub(in crate::typeck) fn type_implements_capability_by_def(
+        &mut self,
+        interface_def: DefId,
         interface_name: &str,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
         if let Ty::OpaqueReturn { .. } = receiver_ty {
-            if self.opaque_return_bounds_forbid(receiver_ty, interface_name, args) {
+            if self.opaque_return_bounds_forbid(receiver_ty, interface_def, args) {
                 return false;
             }
-            if self.opaque_return_bounds_prove(receiver_ty, interface_name, args) {
+            if self.opaque_return_bounds_prove(receiver_ty, interface_def, args) {
                 return true;
             }
         }
-        if self.is_std_message_clone_interface_name(interface_name)
+        if self.is_std_message_clone_interface_def(interface_def)
             && args.is_empty()
             && let Some(sop_ty) = self.meta_repr_owned_message_witness_ty(receiver_ty)
         {
-            return self.type_implements_capability(interface_name, args, &sop_ty);
+            return self.type_implements_capability_by_def(
+                interface_def,
+                interface_name,
+                args,
+                &sop_ty,
+            );
         }
-        if self.type_implements_capability_for_receiver(interface_name, args, receiver_ty) {
+        if self.type_implements_capability_for_receiver(
+            interface_def,
+            interface_name,
+            args,
+            receiver_ty,
+        ) {
             return true;
         }
         let storage_receiver_ty = self.meta_repr_constraint_receiver_ty(receiver_ty, None);
         if &storage_receiver_ty == receiver_ty {
             return false;
         }
-        self.type_implements_capability_for_receiver(interface_name, args, &storage_receiver_ty)
+        self.type_implements_capability_for_receiver(
+            interface_def,
+            interface_name,
+            args,
+            &storage_receiver_ty,
+        )
     }
 
     pub(super) fn opaque_return_bounds_prove(
         &self,
         ty: &Ty,
-        interface_name: &str,
+        interface_def: DefId,
         args: &[Ty],
     ) -> bool {
         let Ty::OpaqueReturn { bounds, .. } = ty else {
@@ -52,13 +83,13 @@ impl TypeChecker {
         bounds
             .positive
             .iter()
-            .any(|entry| entry.name == interface_name && entry.args == args)
+            .any(|entry| entry.def_id == interface_def && entry.args == args)
     }
 
     pub(super) fn opaque_return_bounds_forbid(
         &self,
         ty: &Ty,
-        interface_name: &str,
+        interface_def: DefId,
         args: &[Ty],
     ) -> bool {
         let Ty::OpaqueReturn { bounds, .. } = ty else {
@@ -67,16 +98,18 @@ impl TypeChecker {
         bounds
             .negative
             .iter()
-            .any(|entry| entry.name == interface_name && entry.args == args)
+            .any(|entry| entry.def_id == interface_def && entry.args == args)
     }
 
     pub(super) fn type_implements_capability_for_receiver(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
         let key = CapabilityResolutionKey {
+            interface_def,
             interface_name: interface_name.to_string(),
             args: args.to_vec(),
             receiver_ty: receiver_ty.clone(),
@@ -84,40 +117,42 @@ impl TypeChecker {
         if !self.capability_resolution_stack.insert(key.clone()) {
             return false;
         }
-        let implements = self.type_implements_capability_inner(interface_name, args, receiver_ty);
+        let implements =
+            self.type_implements_capability_inner(interface_def, interface_name, args, receiver_ty);
         self.capability_resolution_stack.remove(&key);
         implements
     }
 
     pub(super) fn type_implements_capability_inner(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
-        if (self.is_std_message_clone_interface_name(interface_name)
-            || self.is_std_message_share_handle_marker_name(interface_name))
+        if (self.is_std_message_clone_interface_def(interface_def)
+            || self.is_std_message_share_handle_marker_def(interface_def))
             && args.is_empty()
             && self.type_is_affine(receiver_ty)
         {
             return false;
         }
-        if self.is_std_message_capability_interface_name(interface_name)
+        if self.is_std_message_capability_interface_def(interface_def)
             && args.is_empty()
             && self.type_is_affine(receiver_ty)
         {
             return false;
         }
-        if self.is_std_message_capability_interface_name(interface_name)
+        if self.is_std_message_capability_interface_def(interface_def)
             && args.is_empty()
             && let Ty::ClosureInstance { captures, .. } = receiver_ty
-            && !captures
-                .iter()
-                .all(|capture| self.type_implements_capability(interface_name, args, capture))
+            && !captures.iter().all(|capture| {
+                self.type_implements_capability_by_def(interface_def, interface_name, args, capture)
+            })
         {
             return false;
         }
-        if self.type_implements_compiler_provided_meta_marker(interface_name, args, receiver_ty) {
+        if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
             return true;
         }
         if let Ty::GeneratedFuture {
@@ -127,36 +162,63 @@ impl TypeChecker {
             ..
         } = receiver_ty
         {
-            return (interface_name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                && args.len() == 1
+            return (std_id::is_std_async_interface(
+                &self.ctx.resolved,
+                interface_def,
+                STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+            ) && args.len() == 1
                 && args.first() == Some(output))
-                || (interface_name == STD_ASYNC_CANCEL_SAFE_INTERFACE
-                    && args.is_empty()
+                || (std_id::is_std_async_interface(
+                    &self.ctx.resolved,
+                    interface_def,
+                    STD_ASYNC_CANCEL_SAFE_INTERFACE,
+                ) && args.is_empty()
                     && *cancel_safe)
-                || (interface_name == STD_ASYNC_ABORT_FUTURE_INTERFACE
-                    && args.is_empty()
+                || (std_id::is_std_async_interface(
+                    &self.ctx.resolved,
+                    interface_def,
+                    STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                ) && args.is_empty()
                     && *abortable);
         }
-        if retained_closure_proves_capability(receiver_ty, interface_name, args) {
+        if retained_closure_proves_capability(receiver_ty, interface_def, args) {
             return true;
         }
-        self.find_impl(interface_name, args, receiver_ty).is_some()
+        self.find_impl(interface_def, interface_name, args, receiver_ty)
+            .is_some()
             || self
-                .instantiate_generic_impl_for_receiver(interface_name, args, receiver_ty, None)
+                .instantiate_generic_impl_for_receiver(
+                    interface_def,
+                    interface_name,
+                    args,
+                    receiver_ty,
+                    None,
+                )
                 .is_some()
-            || ((interface_name == STD_ASYNC_CANCEL_SAFE_INTERFACE
-                || interface_name == STD_ASYNC_ABORT_FUTURE_INTERFACE)
-                && self.generic_impl_matches_without_constraints(interface_name, args, receiver_ty))
+            || ((std_id::is_std_async_interface(
+                &self.ctx.resolved,
+                interface_def,
+                STD_ASYNC_CANCEL_SAFE_INTERFACE,
+            ) || std_id::is_std_async_interface(
+                &self.ctx.resolved,
+                interface_def,
+                STD_ASYNC_ABORT_FUTURE_INTERFACE,
+            )) && self.generic_impl_matches_without_constraints(
+                interface_def,
+                interface_name,
+                args,
+                receiver_ty,
+            ))
     }
 
     pub(super) fn type_implements_compiler_provided_meta_marker(
         &self,
-        interface_name: &str,
+        interface_def: DefId,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
         args.is_empty()
-            && ((self.is_std_meta_ciel_fn_value_marker_name(interface_name)
+            && ((self.is_std_meta_ciel_fn_value_marker_def(interface_def)
                 && matches!(
                     receiver_ty,
                     Ty::Function {
@@ -165,7 +227,7 @@ impl TypeChecker {
                         ..
                     }
                 ))
-                || (self.is_std_meta_closure_value_marker_name(interface_name)
+                || (self.is_std_meta_closure_value_marker_def(interface_def)
                     && matches!(receiver_ty, Ty::ClosureInstance { .. })))
     }
 
@@ -178,7 +240,7 @@ impl TypeChecker {
     ) -> bool {
         let mut ok = true;
         for capability in &constraints.positive {
-            if !self.type_implements_capability(&capability.name, &capability.args, source_ty) {
+            if !self.type_implements_capability_ref(capability, source_ty) {
                 ok = false;
                 if emit_diagnostics {
                     self.diagnostics.push(Diagnostic::new(
@@ -192,7 +254,7 @@ impl TypeChecker {
             }
         }
         for capability in &constraints.negative {
-            if self.type_implements_capability(&capability.name, &capability.args, source_ty) {
+            if self.type_implements_capability_ref(capability, source_ty) {
                 ok = false;
                 if emit_diagnostics {
                     self.diagnostics.push(Diagnostic::new(
@@ -215,7 +277,11 @@ impl TypeChecker {
         if let Some(repr_ty) = self.meta_repr_owned_message_witness_ty(ty) {
             return self.type_implements_message(&repr_ty);
         }
-        self.type_implements_capability(STD_MESSAGE_CLONE_INTERFACE, &[], ty)
+        let Some(interface_def) = self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE)
+        else {
+            return false;
+        };
+        self.type_implements_capability_by_def(interface_def, STD_MESSAGE_CLONE_INTERFACE, &[], ty)
     }
 
     pub(super) fn meta_repr_owned_message_witness_ty(&mut self, ty: &Ty) -> Option<Ty> {
@@ -546,18 +612,27 @@ impl TypeChecker {
                     name: right_name,
                     args: right_args,
                 },
-            )
-            | (
-                Ty::DynamicInterface {
-                    name: left_name,
-                    args: left_args,
-                },
-                Ty::DynamicInterface {
-                    name: right_name,
-                    args: right_args,
-                },
             ) => {
                 left_name == right_name
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| self.meta_repr_storage_equivalent_inner(left, right))
+            }
+            (
+                Ty::DynamicInterface {
+                    def_id: left_def_id,
+                    args: left_args,
+                    ..
+                },
+                Ty::DynamicInterface {
+                    def_id: right_def_id,
+                    args: right_args,
+                    ..
+                },
+            ) => {
+                left_def_id == right_def_id
                     && left_args.len() == right_args.len()
                     && left_args
                         .iter()
@@ -660,16 +735,19 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn type_implements_share_handle(&mut self, ty: &Ty) -> bool {
-        if !self.is_std_message_share_handle_marker_name(STD_MESSAGE_SHARE_HANDLE_INTERFACE) {
+    pub(in crate::typeck) fn type_implements_share_handle(&mut self, ty: &Ty) -> bool {
+        let Some(interface_def) =
+            self.std_message_interface_def(STD_MESSAGE_SHARE_HANDLE_INTERFACE)
+        else {
             return false;
-        }
+        };
         if self.type_is_affine(ty) {
             return false;
         }
-        self.find_impl(STD_MESSAGE_SHARE_HANDLE_INTERFACE, &[], ty)
+        self.find_impl(interface_def, STD_MESSAGE_SHARE_HANDLE_INTERFACE, &[], ty)
             .is_some()
             || self.generic_impl_matches_without_constraints(
+                interface_def,
                 STD_MESSAGE_SHARE_HANDLE_INTERFACE,
                 &[],
                 ty,
@@ -677,12 +755,17 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn type_implements_async_frame_opt_in(&mut self, ty: &Ty) -> bool {
-        if !self
-            .is_std_message_async_frame_opt_in_marker_name(STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE)
-        {
+        let Some(interface_def) =
+            self.std_message_interface_def(STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE)
+        else {
             return false;
-        }
-        self.type_implements_capability(STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE, &[], ty)
+        };
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE,
+            &[],
+            ty,
+        )
     }
 
     pub(in crate::typeck) fn type_implements_meta_policy_marker(&mut self, ty: &Ty) -> bool {
@@ -692,12 +775,15 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn type_implements_thread_local(&mut self, ty: &Ty) -> bool {
-        if !self.is_std_message_thread_local_marker_name(STD_MESSAGE_THREAD_LOCAL_INTERFACE) {
+        let Some(interface_def) =
+            self.std_message_interface_def(STD_MESSAGE_THREAD_LOCAL_INTERFACE)
+        else {
             return false;
-        }
-        self.find_impl(STD_MESSAGE_THREAD_LOCAL_INTERFACE, &[], ty)
+        };
+        self.find_impl(interface_def, STD_MESSAGE_THREAD_LOCAL_INTERFACE, &[], ty)
             .is_some()
             || self.generic_impl_matches_without_constraints(
+                interface_def,
                 STD_MESSAGE_THREAD_LOCAL_INTERFACE,
                 &[],
                 ty,
@@ -706,30 +792,71 @@ impl TypeChecker {
 
     pub(in crate::typeck) fn generic_impl_matches_without_constraints(
         &self,
+        interface_def: DefId,
         interface_name: &str,
         non_receiver_args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        let _ = interface_name;
         CapabilityTable::new(&self.ctx).generic_impl_matches_without_constraints(
-            interface_name,
+            interface_def,
             non_receiver_args,
             receiver_ty,
         )
     }
 
+    pub(super) fn std_message_view(&mut self, name: &str) -> InterfaceView {
+        self.std_message_interface_or_alias_def(name)
+            .map(|def_id| self.interface_view_for_def(def_id, &[]))
+            .unwrap_or_default()
+    }
+
+    pub(in crate::typeck) fn std_message_interface_def(&self, name: &str) -> Option<DefId> {
+        self.ctx
+            .interfaces
+            .keys()
+            .copied()
+            .find(|def_id| std_id::is_std_message_interface(&self.ctx.resolved, *def_id, name))
+    }
+
+    pub(in crate::typeck) fn std_message_interface_alias_def(&self, name: &str) -> Option<DefId> {
+        self.ctx.interface_aliases.keys().copied().find(|def_id| {
+            std_id::is_std_message_interface_alias(&self.ctx.resolved, *def_id, name)
+        })
+    }
+
+    pub(in crate::typeck) fn std_message_interface_or_alias_def(
+        &self,
+        name: &str,
+    ) -> Option<DefId> {
+        self.std_message_interface_def(name)
+            .or_else(|| self.std_message_interface_alias_def(name))
+    }
+
+    pub(super) fn std_error_interface_def(&self, name: &str) -> Option<DefId> {
+        self.ctx
+            .interfaces
+            .keys()
+            .copied()
+            .find(|def_id| std_id::is_std_error_interface(&self.ctx.resolved, *def_id, name))
+    }
+
     pub(in crate::typeck) fn find_impl_by_full_args(
         &self,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: &[Ty],
         receiver_ty: Option<&Ty>,
     ) -> Option<ImplSig> {
+        let _ = interface_name;
         CapabilityTable::new(&self.ctx)
-            .find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+            .find_impl_by_full_args(interface_def, interface_args, receiver_ty)
             .cloned()
     }
 
     pub(super) fn find_or_instantiate_impl_by_full_args(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: &[Ty],
         receiver_ty: Option<&Ty>,
@@ -739,7 +866,7 @@ impl TypeChecker {
             && matches!(receiver_ty, Ty::OpaqueReturn { .. })
         {
             let non_receiver_args = interface_non_receiver_args(interface_args);
-            if !self.opaque_return_bounds_prove(receiver_ty, interface_name, non_receiver_args) {
+            if !self.opaque_return_bounds_prove(receiver_ty, interface_def, non_receiver_args) {
                 return None;
             }
             let concrete_receiver = self.lower_opaque_returns_in_ty(receiver_ty);
@@ -749,6 +876,7 @@ impl TypeChecker {
                     .map(|arg| self.lower_opaque_returns_in_ty(arg))
                     .collect::<Vec<_>>();
                 return self.find_or_instantiate_impl_by_full_args(
+                    interface_def,
                     interface_name,
                     &concrete_args,
                     Some(&concrete_receiver),
@@ -757,13 +885,17 @@ impl TypeChecker {
             }
         }
         if let Some(implementation) =
-            self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+            self.find_impl_by_full_args(interface_def, interface_name, interface_args, receiver_ty)
         {
             return Some(implementation);
         }
-        if let Some(implementation) =
-            self.instantiate_generic_impl(interface_name, interface_args, receiver_ty, Some(span))
-        {
+        if let Some(implementation) = self.instantiate_generic_impl(
+            interface_def,
+            interface_name,
+            interface_args,
+            receiver_ty,
+            Some(span),
+        ) {
             return Some(implementation);
         }
         let storage_interface_args = interface_args
@@ -776,12 +908,14 @@ impl TypeChecker {
             || storage_receiver_ty.as_ref() != receiver_ty)
             && let Some(implementation) = self
                 .find_impl_by_full_args(
+                    interface_def,
                     interface_name,
                     &storage_interface_args,
                     storage_receiver_ty.as_ref(),
                 )
                 .or_else(|| {
                     self.instantiate_generic_impl(
+                        interface_def,
                         interface_name,
                         &storage_interface_args,
                         storage_receiver_ty.as_ref(),
@@ -796,6 +930,7 @@ impl TypeChecker {
 
     pub(super) fn instantiate_generic_impl_for_receiver(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         non_receiver_args: &[Ty],
         receiver_ty: &Ty,
@@ -804,25 +939,32 @@ impl TypeChecker {
         let interface_args = std::iter::once(receiver_ty.clone())
             .chain(non_receiver_args.iter().cloned())
             .collect::<Vec<_>>();
-        self.instantiate_generic_impl(interface_name, &interface_args, Some(receiver_ty), span)
+        self.instantiate_generic_impl(
+            interface_def,
+            interface_name,
+            &interface_args,
+            Some(receiver_ty),
+            span,
+        )
     }
 
     pub(super) fn instantiate_generic_impl(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: &[Ty],
         receiver_ty: Option<&Ty>,
         span: Option<crate::span::Span>,
     ) -> Option<ImplSig> {
         if let Some(existing) =
-            self.find_impl_by_full_args(interface_name, interface_args, receiver_ty)
+            self.find_impl_by_full_args(interface_def, interface_name, interface_args, receiver_ty)
         {
             return Some(existing);
         }
         let templates = self.ctx.generic_impls.clone();
         let mut matches = Vec::new();
         for template in templates {
-            if template.interface_name != interface_name {
+            if template.interface_def != interface_def {
                 continue;
             }
             let mut subst = template
@@ -889,7 +1031,7 @@ impl TypeChecker {
             ));
         }
         if matches.len() > 1 {
-            if self.is_std_message_capability_interface_name(interface_name) {
+            if self.is_std_message_capability_interface_def(interface_def) {
                 self.diagnostics.push(Diagnostic::new(
                     span.unwrap_or(matches[0].0.item_span),
                     format!("ambiguous generic impls for marker interface `{interface_name}`"),
@@ -903,6 +1045,7 @@ impl TypeChecker {
             return self.instantiate_impl_body(
                 template.module,
                 &template.decl,
+                template.interface_def,
                 &template.interface_name,
                 concrete_interface_args,
                 concrete_receiver,
@@ -916,29 +1059,31 @@ impl TypeChecker {
 
     pub(super) fn dynamic_view_interface(
         &mut self,
-        dyn_name: &str,
+        dyn_def_id: DefId,
         dyn_args: &[Ty],
-        interface_name: &str,
+        interface_def: DefId,
     ) -> Option<InterfaceRefTy> {
-        self.interface_view(dyn_name, dyn_args)
+        self.interface_view_for_def(dyn_def_id, dyn_args)
             .positive
             .into_iter()
-            .find(|entry| entry.name == interface_name)
+            .find(|entry| entry.def_id == interface_def)
     }
 
     pub(super) fn type_satisfies_dynamic_view(
         &mut self,
-        name: &str,
+        def_id: DefId,
+        _name: &str,
         args: &[Ty],
         actual: &Ty,
     ) -> bool {
-        let view = self.interface_view(name, args);
+        let view = self.interface_view_for_def(def_id, args);
         if let Ty::DynamicInterface {
-            name: actual_name,
+            def_id: actual_def_id,
             args: actual_args,
+            ..
         } = actual
         {
-            let actual_view = self.interface_view(actual_name, actual_args);
+            let actual_view = self.interface_view_for_def(*actual_def_id, actual_args);
             return view
                 .positive
                 .iter()
@@ -951,14 +1096,19 @@ impl TypeChecker {
         let receiver_ty = receiver_ty_from_value_ty(actual);
         view.positive
             .iter()
-            .all(|entry| self.type_implements_capability(&entry.name, &entry.args, &receiver_ty))
-            && view.negative.iter().all(|entry| {
-                !self.type_implements_capability(&entry.name, &entry.args, &receiver_ty)
-            })
+            .all(|entry| self.type_implements_capability_ref(entry, &receiver_ty))
+            && view
+                .negative
+                .iter()
+                .all(|entry| !self.type_implements_capability_ref(entry, &receiver_ty))
     }
 
-    pub(in crate::typeck) fn interface_view(&mut self, name: &str, args: &[Ty]) -> InterfaceView {
-        self.interface_view_inner(name, args, &mut HashSet::new())
+    pub(in crate::typeck) fn interface_view_for_def(
+        &mut self,
+        def_id: DefId,
+        args: &[Ty],
+    ) -> InterfaceView {
+        self.interface_view_inner(def_id, args, &mut HashSet::new())
     }
 
     pub(in crate::typeck) fn constraint_bounds(
@@ -973,8 +1123,10 @@ impl TypeChecker {
                 .iter()
                 .map(|arg| self.lower_constraint_arg_with_subst(arg, subst))
                 .collect::<Vec<_>>();
-            let view =
-                self.interface_view(&name_ref_canonical(&self.ctx.resolved, &term.name), &args);
+            let Some(def_id) = self.lookup_interface_name(&term.name) else {
+                continue;
+            };
+            let view = self.interface_view_for_def(def_id, &args);
             if term.removed {
                 bounds
                     .positive
@@ -1027,6 +1179,7 @@ impl TypeChecker {
                 .positive
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -1039,6 +1192,7 @@ impl TypeChecker {
                 .negative
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -1052,18 +1206,13 @@ impl TypeChecker {
 
     pub(super) fn interface_view_inner(
         &mut self,
-        name: &str,
+        def_id: DefId,
         args: &[Ty],
-        expanding: &mut HashSet<String>,
+        expanding: &mut HashSet<DefId>,
     ) -> InterfaceView {
-        if let Some(alias) = self
-            .ctx
-            .interface_alias_names
-            .get(name)
-            .and_then(|def_id| self.ctx.interface_aliases.get(def_id))
-            .cloned()
-        {
+        if let Some(alias) = self.ctx.interface_aliases.get(&def_id).cloned() {
             if alias.generics.len() != args.len() {
+                let name = self.ctx.resolved.def(def_id).name.clone();
                 self.diagnostics.push(Diagnostic::new(
                     None,
                     format!(
@@ -1074,7 +1223,7 @@ impl TypeChecker {
                 ));
                 return InterfaceView::default();
             }
-            if !expanding.insert(name.to_string()) {
+            if !expanding.insert(def_id) {
                 return InterfaceView::default();
             }
             let subst = alias
@@ -1084,11 +1233,13 @@ impl TypeChecker {
                 .zip(args.iter().cloned())
                 .collect::<HashMap<_, _>>();
             let view = self.interface_view_from_expr(&alias.expr, &subst, expanding);
-            expanding.remove(name);
+            expanding.remove(&def_id);
             return view;
         }
+        let name = self.ctx.resolved.def(def_id).name.clone();
         InterfaceView {
             positive: vec![InterfaceRefTy {
+                def_id,
                 name: name.to_string(),
                 args: args.to_vec(),
             }],
@@ -1100,7 +1251,7 @@ impl TypeChecker {
         &mut self,
         expr: &InterfaceExpr,
         subst: &HashMap<String, Ty>,
-        expanding: &mut HashSet<String>,
+        expanding: &mut HashSet<DefId>,
     ) -> InterfaceView {
         let mut view = InterfaceView::default();
         self.view_add_term(&mut view, &expr.first, subst, expanding);
@@ -1124,7 +1275,7 @@ impl TypeChecker {
         view: &mut InterfaceView,
         term: &InterfaceTerm,
         subst: &HashMap<String, Ty>,
-        expanding: &mut HashSet<String>,
+        expanding: &mut HashSet<DefId>,
     ) {
         let term_view = self.interface_view_for_term(term, subst, expanding);
         if term.negated {
@@ -1151,15 +1302,17 @@ impl TypeChecker {
         &mut self,
         term: &InterfaceTerm,
         subst: &HashMap<String, Ty>,
-        expanding: &mut HashSet<String>,
+        expanding: &mut HashSet<DefId>,
     ) -> InterfaceView {
-        let name = name_ref_canonical(&self.ctx.resolved, &term.name);
+        let Some(def_id) = self.lookup_interface_name(&term.name) else {
+            return InterfaceView::default();
+        };
         let args = term
             .args
             .iter()
             .map(|ty| self.lower_type_with_subst(ty, subst))
             .collect::<Vec<_>>();
-        self.interface_view_inner(&name, &args, expanding)
+        self.interface_view_inner(def_id, &args, expanding)
     }
 
     pub(super) fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
@@ -1198,13 +1351,13 @@ impl TypeChecker {
         if let Some(output_ty) = generated_future_output_ty(ty) {
             return Some(output_ty);
         }
-        if !std_id::has_std_async_interface(
-            &self.ctx.resolved,
-            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        ) {
+        let Some(interface_def) =
+            self.std_async_interface_def(STD_ASYNC_AWAITABLE_FUTURE_INTERFACE)
+        else {
             return None;
-        }
+        };
         self.capability_determined_arg(
+            interface_def,
             STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
             "Awaitable::Out",
             ty,
@@ -1213,11 +1366,29 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn is_abortable_ty(&mut self, ty: &Ty) -> bool {
-        self.type_implements_capability(STD_ASYNC_ABORT_FUTURE_INTERFACE, &[], ty)
+        let Some(interface_def) = self.std_async_interface_def(STD_ASYNC_ABORT_FUTURE_INTERFACE)
+        else {
+            return false;
+        };
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_ASYNC_ABORT_FUTURE_INTERFACE,
+            &[],
+            ty,
+        )
     }
 
     pub(in crate::typeck) fn is_cancel_safe_ty(&mut self, ty: &Ty) -> bool {
-        self.type_implements_capability(STD_ASYNC_CANCEL_SAFE_INTERFACE, &[], ty)
+        let Some(interface_def) = self.std_async_interface_def(STD_ASYNC_CANCEL_SAFE_INTERFACE)
+        else {
+            return false;
+        };
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_ASYNC_CANCEL_SAFE_INTERFACE,
+            &[],
+            ty,
+        )
     }
 
     pub(super) fn selectable_future_output_ty(
@@ -1304,12 +1475,13 @@ impl TypeChecker {
 
     pub(super) fn capability_determined_arg(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         binding_label: &str,
         receiver_ty: &Ty,
         span: crate::span::Span,
     ) -> Option<Ty> {
-        let Some(interface) = self.interface_sig_by_name(interface_name) else {
+        let Some(interface) = self.ctx.interfaces.get(&interface_def) else {
             return None;
         };
         if interface.determined_start.is_none() {
@@ -1319,6 +1491,7 @@ impl TypeChecker {
         let hidden_name = format!("__ciel_{interface_name}_determined");
         let hidden_names = HashSet::from([hidden_name.clone()]);
         let capability = ConstraintRef {
+            def_id: interface_def,
             name: interface_name.to_string(),
             args: vec![Ty::Generic(hidden_name.clone())],
         };
@@ -1348,6 +1521,7 @@ impl TypeChecker {
         if !contains_generic(&storage_receiver_ty) && !contains_generic(&output_ty) {
             let interface_args = vec![storage_receiver_ty.clone(), output_ty.clone()];
             let _ = self.find_or_instantiate_impl_by_full_args(
+                interface_def,
                 interface_name,
                 &interface_args,
                 Some(&storage_receiver_ty),
@@ -1380,69 +1554,32 @@ impl TypeChecker {
         self.task_output_ty(inner)
     }
 
-    pub(in crate::typeck) fn is_std_message_clone_interface_name(&self, name: &str) -> bool {
-        name == STD_MESSAGE_CLONE_INTERFACE
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_clone_interface(&self.ctx.resolved, *def_id)
-            })
+    pub(in crate::typeck) fn is_std_message_clone_interface_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_message_clone_interface(&self.ctx.resolved, def_id)
     }
 
-    pub(in crate::typeck) fn is_std_message_share_handle_marker_name(&self, name: &str) -> bool {
-        name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_interface(
-                    &self.ctx.resolved,
-                    *def_id,
-                    STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-                )
-            })
+    pub(in crate::typeck) fn std_async_interface_def(&self, name: &str) -> Option<DefId> {
+        self.ctx
+            .interfaces
+            .keys()
+            .copied()
+            .find(|def_id| std_id::is_std_async_interface(&self.ctx.resolved, *def_id, name))
     }
 
-    pub(super) fn is_std_message_thread_local_marker_name(&self, name: &str) -> bool {
-        name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_interface(
-                    &self.ctx.resolved,
-                    *def_id,
-                    STD_MESSAGE_THREAD_LOCAL_INTERFACE,
-                )
-            })
+    pub(in crate::typeck) fn is_std_message_share_handle_marker_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_message_interface(
+            &self.ctx.resolved,
+            def_id,
+            STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+        )
     }
 
-    pub(super) fn is_std_message_async_frame_opt_in_marker_name(&self, name: &str) -> bool {
-        name == STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_message_interface(
-                    &self.ctx.resolved,
-                    *def_id,
-                    STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE,
-                )
-            })
+    pub(in crate::typeck) fn is_std_meta_ciel_fn_value_marker_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "ciel_fn_value_marker")
     }
 
-    pub(in crate::typeck) fn is_std_meta_ciel_fn_value_marker_name(&self, name: &str) -> bool {
-        name == "ciel_fn_value_marker"
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_meta_interface(&self.ctx.resolved, *def_id, "ciel_fn_value_marker")
-            })
-    }
-
-    pub(in crate::typeck) fn is_std_meta_closure_value_marker_name(&self, name: &str) -> bool {
-        name == "closure_value_marker"
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_meta_interface(&self.ctx.resolved, *def_id, "closure_value_marker")
-            })
-    }
-
-    pub(super) fn is_std_error_format_interface_name(&self, name: &str) -> bool {
-        name == STD_ERROR_FORMAT_INTERFACE
-            && self.ctx.interface_names.get(name).is_some_and(|def_id| {
-                std_id::is_std_error_interface(
-                    &self.ctx.resolved,
-                    *def_id,
-                    STD_ERROR_FORMAT_INTERFACE,
-                )
-            })
+    pub(in crate::typeck) fn is_std_meta_closure_value_marker_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "closure_value_marker")
     }
 
     pub(super) fn is_std_error_ty(&self, ty: &Ty) -> bool {
@@ -1459,8 +1596,10 @@ impl TypeChecker {
     }
 
     pub(super) fn type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
-        self.is_std_error_format_interface_name(STD_ERROR_FORMAT_INTERFACE)
-            && self.type_implements_capability(STD_ERROR_FORMAT_INTERFACE, &[], ty)
+        let Some(interface_def) = self.std_error_interface_def(STD_ERROR_FORMAT_INTERFACE) else {
+            return false;
+        };
+        self.type_implements_capability_by_def(interface_def, STD_ERROR_FORMAT_INTERFACE, &[], ty)
     }
 
     pub(super) fn reject_affine_error_erasure(
@@ -1484,10 +1623,14 @@ impl TypeChecker {
             || std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "closure_value_marker")
     }
 
-    pub(in crate::typeck) fn is_std_message_capability_interface_name(&self, name: &str) -> bool {
-        self.is_std_message_clone_interface_name(name)
-            || self.is_std_message_share_handle_marker_name(name)
-            || self.is_std_message_thread_local_marker_name(name)
+    pub(in crate::typeck) fn is_std_message_capability_interface_def(&self, def_id: DefId) -> bool {
+        self.is_std_message_clone_interface_def(def_id)
+            || self.is_std_message_share_handle_marker_def(def_id)
+            || std_id::is_std_message_interface(
+                &self.ctx.resolved,
+                def_id,
+                STD_MESSAGE_THREAD_LOCAL_INTERFACE,
+            )
     }
 
     pub(in crate::typeck) fn apply_condition_narrowing(

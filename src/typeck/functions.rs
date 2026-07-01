@@ -333,6 +333,7 @@ impl TypeChecker {
                 if analysis.generics.is_empty() {
                     if self
                         .find_impl_by_full_args(
+                            analysis.interface_def,
                             &analysis.interface_name,
                             &analysis.interface_args,
                             analysis.receiver_ty.as_ref(),
@@ -351,6 +352,7 @@ impl TypeChecker {
                     if let Some(pending) = self.register_impl_signature(
                         module.id,
                         decl,
+                        analysis.interface_def,
                         &analysis.interface_name,
                         analysis.interface_args,
                         analysis.receiver_ty,
@@ -363,6 +365,7 @@ impl TypeChecker {
                     self.ctx.generic_impls.push(GenericImplTemplate {
                         module: module.id,
                         item_span: item.span,
+                        interface_def: analysis.interface_def,
                         interface_name: analysis.interface_name,
                         generics: analysis.generics,
                         generic_constraints: analysis.generic_constraints,
@@ -383,7 +386,7 @@ impl TypeChecker {
         analysis: &ImplAnalysis,
     ) -> bool {
         if analysis.generics.is_empty()
-            || !self.is_std_message_capability_interface_name(&analysis.interface_name)
+            || !self.is_std_message_capability_interface_def(analysis.interface_def)
         {
             return false;
         }
@@ -391,7 +394,7 @@ impl TypeChecker {
             self.compiler_marker_domain_for_impl(&analysis.generics, analysis.receiver_ty.as_ref());
         let templates = self.ctx.generic_impls.clone();
         for template in &templates {
-            if template.interface_name != analysis.interface_name {
+            if template.interface_def != analysis.interface_def {
                 continue;
             }
             let template_domain = self
@@ -422,7 +425,7 @@ impl TypeChecker {
             }
         }
         for existing in &self.ctx.impls {
-            if existing.interface_name != analysis.interface_name {
+            if existing.interface_def != analysis.interface_def {
                 continue;
             }
             if capability::marker_impl_domains_disjoint(
@@ -459,8 +462,8 @@ impl TypeChecker {
         analysis: &ImplAnalysis,
     ) -> bool {
         let is_forbidden_interface = self
-            .is_std_message_clone_interface_name(&analysis.interface_name)
-            || self.is_std_message_share_handle_marker_name(&analysis.interface_name);
+            .is_std_message_clone_interface_def(analysis.interface_def)
+            || self.is_std_message_share_handle_marker_def(analysis.interface_def);
         if !is_forbidden_interface {
             return false;
         }
@@ -514,10 +517,10 @@ impl TypeChecker {
             .collect::<HashMap<_, _>>();
         let bounds = self.constraint_bounds(constraint, &subst);
         let has_ciel_fn = bounds.positive.iter().any(|entry| {
-            self.is_std_meta_ciel_fn_value_marker_name(&entry.name) && entry.args.is_empty()
+            self.is_std_meta_ciel_fn_value_marker_def(entry.def_id) && entry.args.is_empty()
         });
         let has_closure = bounds.positive.iter().any(|entry| {
-            self.is_std_meta_closure_value_marker_name(&entry.name) && entry.args.is_empty()
+            self.is_std_meta_closure_value_marker_def(entry.def_id) && entry.args.is_empty()
         });
         match (has_ciel_fn, has_closure) {
             (true, false) => Some(CompilerMarkerDomain::CielFnValue),
@@ -686,6 +689,7 @@ impl TypeChecker {
             })
             .collect();
         Some(ImplAnalysis {
+            interface_def: interface.def_id,
             interface_name: interface.name.clone(),
             generics,
             generic_constraints,
@@ -701,6 +705,7 @@ impl TypeChecker {
         &mut self,
         module: ModuleId,
         decl: &ImplDecl,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: Vec<Ty>,
         receiver_ty: Option<Ty>,
@@ -708,9 +713,12 @@ impl TypeChecker {
         params_ty: Vec<Ty>,
         subst: &HashMap<String, Ty>,
     ) -> Option<ImplSig> {
-        if let Some(existing) =
-            self.find_impl_by_full_args(interface_name, &interface_args, receiver_ty.as_ref())
-        {
+        if let Some(existing) = self.find_impl_by_full_args(
+            interface_def,
+            interface_name,
+            &interface_args,
+            receiver_ty.as_ref(),
+        ) {
             if subst.is_empty() {
                 self.diagnostics.push(Diagnostic::new(
                     decl.name.span,
@@ -722,6 +730,7 @@ impl TypeChecker {
         let pending = self.register_impl_signature(
             module,
             decl,
+            interface_def,
             interface_name,
             interface_args,
             receiver_ty,
@@ -738,6 +747,7 @@ impl TypeChecker {
         &mut self,
         module: ModuleId,
         decl: &ImplDecl,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: Vec<Ty>,
         receiver_ty: Option<Ty>,
@@ -745,7 +755,12 @@ impl TypeChecker {
         params_ty: Vec<Ty>,
     ) -> Option<PendingImplBody> {
         if self
-            .find_impl_by_full_args(interface_name, &interface_args, receiver_ty.as_ref())
+            .find_impl_by_full_args(
+                interface_def,
+                interface_name,
+                &interface_args,
+                receiver_ty.as_ref(),
+            )
             .is_some()
         {
             return None;
@@ -775,6 +790,7 @@ impl TypeChecker {
             self.ensure_enum_instance(param);
         }
         let implementation = ImplSig {
+            interface_def,
             interface_name: interface_name.to_string(),
             interface_args,
             receiver_ty,

@@ -77,8 +77,14 @@ impl<'a> CGenerator<'a> {
             let cleanup_name = self.async_op_cleanup_name(&context.op_ty, &context.output_ty);
             let result_ty = std_result_ty(context.output_ty.clone(), std_async_error_ty());
             let layout = self.result_layout(&result_ty, span)?;
-            let raw_impl = self.async_op_impl_name("raw_operation", &[], &context.op_ty)?;
+            let raw_impl = self.async_op_impl_name(
+                context.raw_operation_def,
+                "raw_operation",
+                &[],
+                &context.op_ty,
+            )?;
             let poll_impl = self.async_op_impl_name(
+                context.poll_done_def,
                 "poll_done",
                 std::slice::from_ref(&context.output_ty),
                 &context.op_ty,

@@ -11,6 +11,11 @@ export bool type_needs_gc_scan<T>();
 // Zero-sized type witness used by APIs that need a type as an input value.
 export struct Type<T> {}
 
+// Constructs a zero-sized type witness for APIs that need a type as a value.
+export Type<T> type_tag<T>() {
+    return {};
+}
+
 // Read-only structural representation marker for a visible type.
 // Type checking normalizes this marker to the ordinary SOP types below.
 export struct RefRepr<T> {}

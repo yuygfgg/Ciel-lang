@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/math as math;
+import /std/meta as meta;
+
+i64 main() {
+    if (math::sqrt_f64(81.0) != 9.0) {
+        return 1;
+    }
+    if (math::pow_f64(2.0, 5.0) != 32.0) {
+        return 2;
+    }
+    if (math::floor_f64(3.9) != 3.0) {
+        return 3;
+    }
+    if (math::ceil_f64(3.1) != 4.0) {
+        return 4;
+    }
+    f64 pi = math::pi(meta::type_tag<f64>());
+    if (pi != math::acos_f64(-1.0)) {
+        return 5;
+    }
+    f32 e = math::e(meta::type_tag<f32>());
+    if (e != math::exp_f32(1.0 as f32)) {
+        return 6;
+    }
+    if (math::tau(meta::type_tag<f64>()) != (pi * 2.0)) {
+        return 7;
+    }
+    if (math::ln2(meta::type_tag<f64>()) != math::log_f64(2.0)) {
+        return 8;
+    }
+    if (math::log2_e(meta::type_tag<f64>()) != math::log2_f64(math::e(meta::type_tag<f64>()))) {
+        return 9;
+    }
+    if (math::log10_e(meta::type_tag<f32>()) != math::log10_f32(e)) {
+        return 10;
+    }
+    return 0;
+}

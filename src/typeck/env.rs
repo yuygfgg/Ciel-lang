@@ -31,9 +31,7 @@ pub struct TyCtx {
     pub(super) nominal_type_defs: HashMap<String, DefId>,
     pub(super) variants: HashMap<DefId, VariantSig>,
     pub(super) interfaces: HashMap<DefId, InterfaceSig>,
-    pub(super) interface_names: HashMap<String, DefId>,
     pub(super) interface_aliases: HashMap<DefId, InterfaceAliasTemplate>,
-    pub(super) interface_alias_names: HashMap<String, DefId>,
     pub(super) impls: Vec<ImplSig>,
     pub(super) generic_impls: Vec<GenericImplTemplate>,
     pub(super) generic_functions: HashMap<DefId, GenericFunctionTemplate>,
@@ -69,9 +67,7 @@ impl TyCtx {
             nominal_type_defs: HashMap::new(),
             variants: HashMap::new(),
             interfaces: HashMap::new(),
-            interface_names: HashMap::new(),
             interface_aliases: HashMap::new(),
-            interface_alias_names: HashMap::new(),
             impls: Vec::new(),
             generic_impls: Vec::new(),
             generic_functions: HashMap::new(),
@@ -134,13 +130,14 @@ impl TyCtx {
     fn merge_checked_impls(&mut self, impls: &[CheckedImpl]) {
         for implementation in impls {
             if self.impls.iter().any(|existing| {
-                existing.interface_name == implementation.interface_name
+                existing.interface_def == implementation.interface_def
                     && existing.interface_args == implementation.interface_args
                     && existing.receiver_ty == implementation.receiver_ty
             }) {
                 continue;
             }
             self.impls.push(ImplSig {
+                interface_def: implementation.interface_def,
                 interface_name: implementation.interface_name.clone(),
                 interface_args: implementation.interface_args.clone(),
                 receiver_ty: implementation.receiver_ty.clone(),

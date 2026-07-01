@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/ascii as ascii;
+import /std/result;
+
+i64 main() {
+    if (!ascii::char_is_digit('9') || ascii::char_is_digit('x')) {
+        return 1;
+    }
+    if (!ascii::char_is_alpha('Q') || !ascii::char_is_alnum('7')) {
+        return 2;
+    }
+    if (!ascii::char_is_whitespace('\n')) {
+        return 3;
+    }
+    if (ascii::char_to_upper('a') != 'A' || ascii::char_to_lower('Z') != 'z') {
+        return 4;
+    }
+    if (must(ascii::char_to_decimal_digit_value('8')) != (8 as u8)) {
+        return 5;
+    }
+    if (must(ascii::char_to_hex_digit_value('f')) != (15 as u8)) {
+        return 6;
+    }
+    if (must(ascii::hex_digit_value_to_char(10 as u8)) != 'a') {
+        return 7;
+    }
+    return 0;
+}

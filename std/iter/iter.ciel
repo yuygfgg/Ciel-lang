@@ -2,6 +2,7 @@
 export import /std/result;
 export import /std/error;
 import /std/meta as meta;
+import /std/ord as ord;
 
 // Result of advancing an iterator.
 export enum Next<Item> {
@@ -371,6 +372,106 @@ export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(
                 if (filter_accept(&predicate, &value)) {
                     return Item(value);
                 }
+            case Done:
+                return Done;
+        }
+    }
+}
+
+// Returns the smallest remaining item, or Done for an empty iterator.
+export Next<Item> iter_min<I: Iterator<Item = _: ord::lt>>(I iter) = .min {
+    switch (next(&iter)) {
+        case Item(first):
+            Item @best = first;
+            while (true) {
+                switch (next(&iter)) {
+                    case Item(value):
+                        if (ord::lt(&value, &best)) {
+                            best = value;
+                        }
+                    case Done:
+                        return Item(best);
+                }
+            }
+        case Done:
+            return Done;
+    }
+}
+
+// Returns the largest remaining item, or Done for an empty iterator.
+export Next<Item> iter_max<I: Iterator<Item = _: ord::lt>>(I iter) = .max {
+    switch (next(&iter)) {
+        case Item(first):
+            Item @best = first;
+            while (true) {
+                switch (next(&iter)) {
+                    case Item(value):
+                        if (ord::lt(&best, &value)) {
+                            best = value;
+                        }
+                    case Done:
+                        return Item(best);
+                }
+            }
+        case Done:
+            return Done;
+    }
+}
+
+// Returns the last remaining item, or Done for an empty iterator.
+export Next<Item> last<I: Iterator<Item = _>>(I iter) = .last {
+    Next<Item> @out = Done;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                out = Item(value);
+            case Done:
+                return out;
+        }
+    }
+}
+
+// Returns the item at zero-based position index, or Done if the iterator ends first.
+export Next<Item> nth<I: Iterator<Item = _>>(I iter, usize index) = .nth {
+    usize @i = 0;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                if (i == index) {
+                    return Item(value);
+                }
+                i = i + 1;
+            case Done:
+                return Done;
+        }
+    }
+}
+
+// Calls f for each remaining item.
+export void for_each<I: Iterator<Item = _>>(I iter, void |(Item)| f) = .for_each {
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                f(value);
+            case Done:
+                return;
+        }
+    }
+}
+
+// Returns the zero-based index of the first accepted item, or Done.
+export Next<usize> position<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .position {
+    usize @i = 0;
+    while (true) {
+        switch (next(&iter)) {
+            case Item(value):
+                if (filter_accept(&predicate, &value)) {
+                    return Item(i);
+                }
+                i = i + 1;
             case Done:
                 return Done;
         }

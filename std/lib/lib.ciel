@@ -46,6 +46,24 @@ export import /std/atomic;
 // Re-exports fixed-width integer codec helpers.
 export import /std/codec;
 
+// Re-exports generic ordering and comparison helpers.
+export import /std/ord;
+
+// Re-exports floating-point math helpers.
+export import /std/math;
+
+// Re-exports ASCII classification and conversion helpers.
+export import /std/ascii;
+
+// Re-exports string-to-number parsing helpers.
+export import /std/parse;
+
+// Re-exports generic slice helpers.
+export import /std/slice;
+
+// Re-exports sorting helpers.
+export import /std/sort;
+
 // Re-exports growable byte buffers.
 export import /std/buf;
 

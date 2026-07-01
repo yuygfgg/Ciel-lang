@@ -2733,9 +2733,10 @@ import /std/actor;
 `/std/result`, `/std/panic`, `/std/c`, `/std/io`, `/std/async_io`,
 `/std/async_net`, `/std/async_time`, `/std/message`, `/std/resource`,
 `/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
-`/std/codec`, `/std/buf`, `/std/vec`, `/std/bytes`, `/std/text`, `/std/map`,
-`/std/iter`, `/std/shared_map`, `/std/time`, `/std/env`, `/std/crypto`, and
-`/std/net`.
+`/std/codec`, `/std/ord`, `/std/math`, `/std/ascii`, `/std/parse`,
+`/std/slice`, `/std/sort`, `/std/buf`, `/std/vec`, `/std/bytes`,
+`/std/text`, `/std/map`, `/std/iter`, `/std/shared_map`, `/std/time`,
+`/std/env`, `/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -2835,7 +2836,183 @@ export import /std/format/number;
 export []const char u64_to_string(u64 value);
 export []const char usize_to_string(usize value);
 export []const char i64_to_string(i64 value);
+export []const char u64_to_hex(u64 value);
+export []const char u32_to_hex(u32 value);
+export []const char u8_to_hex(u8 value);
 ```
+
+The hexadecimal helpers return fixed-width lowercase ASCII without a `0x`
+prefix: 16 digits for `u64`, 8 digits for `u32`, and 2 digits for `u8`.
+
+```ciel
+// /std/ord
+import /std/meta as meta;
+
+export interface<T> bool eq(*const T left, *const T right);
+export interface<T> bool lt(*const T left, *const T right);
+export interface ordered = eq + lt;
+
+export interface<T> T abs(T value);
+export interface<T> T max_value(meta::Type<T> tag);
+export interface<T> T min_value(meta::Type<T> tag);
+
+export T min<T: lt>(T a, T b);
+export T max<T: lt>(T a, T b);
+export T clamp<T: lt>(T value, T lo, T hi);
+export bool ne<T: eq>(T a, T b);
+export bool le<T: lt>(T a, T b);
+export bool gt<T: lt>(T a, T b);
+export bool ge<T: lt>(T a, T b);
+```
+
+`/std/ord` is the generic equality and ordering surface. The language does not
+overload `==`, `<`, `>`, `<=`, or `>=` for generic type variables, so generic
+code uses the ordinary interface functions `eq` and `lt`, plus the derived
+helpers `ne`, `le`, `gt`, and `ge`. `eq` and `lt` are implemented for `bool`,
+`char`, all integer types, `usize`, `f32`, and `f64`; floating-point
+comparisons follow the built-in IEEE 754 operators, including NaN behavior.
+
+`min`, `max`, `clamp`, and sorting require `lt`; binary search and equality
+checks use `ordered` or `eq` as appropriate. `clamp` assumes the caller passes
+`lo <= hi`. `abs` is implemented for signed integers and floating-point types.
+Signed integer absolute value saturates at the corresponding positive maximum
+when given the minimum value.
+
+`max_value` and `min_value` are type-directed interfaces over
+`meta::Type<T>`, called with `meta::type_tag<T>()`. They are implemented for
+all integer and floating-point primitives. Floating-point bounds are finite
+maximum and finite negative maximum values, not infinities.
+
+```ciel
+// /std/math
+import /std/meta as meta;
+
+#c_include "math.h"
+
+export interface<T> T pi(meta::Type<T> tag);
+export interface<T> T e(meta::Type<T> tag);
+export interface<T> T tau(meta::Type<T> tag);
+export interface<T> T ln2(meta::Type<T> tag);
+export interface<T> T log2_e(meta::Type<T> tag);
+export interface<T> T log10_e(meta::Type<T> tag);
+
+export f64 sqrt_f64(f64 x);
+export f64 cbrt_f64(f64 x);
+export f64 sin_f64(f64 x);
+export f64 cos_f64(f64 x);
+export f64 tan_f64(f64 x);
+export f64 asin_f64(f64 x);
+export f64 acos_f64(f64 x);
+export f64 atan_f64(f64 x);
+export f64 atan2_f64(f64 y, f64 x);
+export f64 sinh_f64(f64 x);
+export f64 cosh_f64(f64 x);
+export f64 tanh_f64(f64 x);
+export f64 exp_f64(f64 x);
+export f64 exp2_f64(f64 x);
+export f64 log_f64(f64 x);
+export f64 log2_f64(f64 x);
+export f64 log10_f64(f64 x);
+export f64 pow_f64(f64 base, f64 exp);
+export f64 floor_f64(f64 x);
+export f64 ceil_f64(f64 x);
+export f64 round_f64(f64 x);
+export f64 trunc_f64(f64 x);
+export f64 fmod_f64(f64 x, f64 y);
+export f64 hypot_f64(f64 x, f64 y);
+export f64 fabs_f64(f64 x);
+
+export f32 sqrt_f32(f32 x);
+export f32 cbrt_f32(f32 x);
+export f32 sin_f32(f32 x);
+export f32 cos_f32(f32 x);
+export f32 tan_f32(f32 x);
+export f32 asin_f32(f32 x);
+export f32 acos_f32(f32 x);
+export f32 atan_f32(f32 x);
+export f32 atan2_f32(f32 y, f32 x);
+export f32 sinh_f32(f32 x);
+export f32 cosh_f32(f32 x);
+export f32 tanh_f32(f32 x);
+export f32 exp_f32(f32 x);
+export f32 exp2_f32(f32 x);
+export f32 log_f32(f32 x);
+export f32 log2_f32(f32 x);
+export f32 log10_f32(f32 x);
+export f32 pow_f32(f32 base, f32 exp);
+export f32 floor_f32(f32 x);
+export f32 ceil_f32(f32 x);
+export f32 round_f32(f32 x);
+export f32 trunc_f32(f32 x);
+export f32 fmod_f32(f32 x, f32 y);
+export f32 hypot_f32(f32 x, f32 y);
+export f32 fabs_f32(f32 x);
+```
+
+`/std/math` is a safe Ciel wrapper over the platform C math library. The
+wrappers return the C library result directly and preserve IEEE 754 NaN,
+infinity, and domain-result behavior rather than converting math outcomes into
+`Result`. Constants are exposed as type-directed interfaces, for example
+`math::pi(meta::type_tag<f64>())`. Values computable from libm are defined in
+terms of libm wrappers such as `acos(-1)` and `exp(1)`.
+
+The build driver links generated executable and shared-library outputs with
+`m` on Linux and macOS. This is a driver-level C link rule, not a special
+compiler semantic for `/std/math`.
+
+```ciel
+// /std/ascii
+export import /std/result;
+
+export enum AsciiError {
+    InvalidChar,
+    InvalidDigitValue,
+}
+
+export bool char_is_digit(char c);
+export bool char_is_alpha(char c);
+export bool char_is_alnum(char c);
+export bool char_is_whitespace(char c);
+export bool char_is_upper(char c);
+export bool char_is_lower(char c);
+export bool char_is_hex_digit(char c);
+export char char_to_upper(char c);
+export char char_to_lower(char c);
+export Result<u8, AsciiError> char_to_decimal_digit_value(char c);
+export Result<u8, AsciiError> char_to_hex_digit_value(char c);
+export Result<char, AsciiError> decimal_digit_value_to_char(u8 value);
+export Result<char, AsciiError> hex_digit_value_to_char(u8 value);
+```
+
+`/std/ascii` classifies and converts byte-sized `char` values using ASCII
+ranges only. It does not perform Unicode case mapping or decoding.
+
+```ciel
+// /std/parse
+export import /std/result;
+import /std/meta as meta;
+
+export enum ParseError {
+    Empty,
+    InvalidChar(usize),
+    Overflow,
+    Underflow,
+}
+
+export interface<T> Result<T, ParseError> parse_number(
+    meta::Type<T> tag,
+    []const char text
+);
+```
+
+`/std/parse` parses leading and trailing ASCII whitespace around decimal
+numbers. Integer parsing accepts an optional `+` for signed and unsigned
+targets and `-` only for signed targets. It reports `Overflow` and `Underflow`
+against the selected result type's `/std/ord` bounds. Floating-point parsing
+delegates to runtime C helpers, accepts decimal/exponent forms plus the C
+special values such as `inf`, `infinity`, and `nan`, and reports range errors
+as `Overflow` or `Underflow`. Implementations are provided for all integer
+primitives, `usize`, `f32`, and `f64`.
 
 ```ciel
 // /std/panic
@@ -3091,6 +3268,12 @@ use borrowed registry entries for process standard streams. Printable values
 are values that implement `to_string`; printing functions convert values to
 `[]const char` first, then write through a `File`.
 
+`/std/io` provides `to_string` implementations for `[]const char`, `char`,
+`bool`, all integer primitive widths, `usize`, `f32`, `f64`, and `/std/error`
+`Error`. User code should prefer the `to_string` interface and `printable`
+alias over calling decimal helper functions directly; fixed-width hexadecimal
+formatting remains in `/std/format`.
+
 Low-level raw descriptor interop lives in `/std/os/fd`:
 
 ```ciel
@@ -3162,6 +3345,8 @@ export usize type_align<T>();
 export bool type_needs_gc_scan<T>();
 
 export struct Type<T> {}
+
+export Type<T> type_tag<T>();
 
 export struct RefRepr<T> {}
 export struct Repr<T> {}
@@ -3403,6 +3588,12 @@ export import /std/channel;
 export import /std/sync;
 export import /std/atomic;
 export import /std/codec;
+export import /std/ord;
+export import /std/math;
+export import /std/ascii;
+export import /std/parse;
+export import /std/slice;
+export import /std/sort;
 export import /std/buf;
 export import /std/vec;
 export import /std/bytes;
@@ -3484,6 +3675,63 @@ runtime allocation pointer and an element capacity; ordinary user code cannot
 define an equivalent trusted slice-construction primitive.
 
 ```ciel
+// /std/slice
+export import /std/result;
+import /std/ord as ord;
+
+export enum SliceError {
+    NotFound,
+    OutOfBounds,
+}
+
+export bool slice_equal<T: ord::eq>([]const T left, []const T right) = .equal;
+export bool slice_equal_bytes([]const u8 left, []const u8 right);
+export void slice_reverse<T>([]T items) = .reverse;
+export usize slice_copy<T>([]T dst, []const T src);
+export void slice_fill<T>([]T items, T value) = .fill;
+export bool slice_contains<T: ord::eq>([]const T items, T needle) = .contains;
+export Result<usize, SliceError> slice_index_of<T: ord::eq>(
+    []const T items,
+    T needle
+) = .index_of;
+export bool slice_is_sorted<T: ord::lt>([]const T items) = .is_sorted;
+```
+
+`/std/slice` contains generic helpers over built-in slice views. It does not
+own the backing storage and does not extend any lifetime beyond the ordinary
+slice value rules. `slice_copy` copies up to the shorter length and uses
+temporary storage so overlapping source and destination views behave as if the
+source prefix were first copied aside. `slice_equal`, `slice_reverse`,
+`slice_fill`, `slice_contains`, `slice_index_of`, and `slice_is_sorted` are
+exposed as receiver selectors on slice values.
+
+```ciel
+// /std/sort
+export import /std/result;
+import /std/ord as ord;
+
+export enum SortError {
+    Storage,
+}
+
+export void sort_by<T>([]T items, bool |(*const T, *const T)| less);
+export void sort<T: ord::lt>([]T items);
+export Result<void, SortError> sort_stable_by<T>(
+    []T items,
+    bool |(*const T, *const T)| less
+);
+export Result<void, SortError> sort_stable<T: ord::lt>([]T items);
+export bool is_sorted<T: ord::lt>([]const T items);
+```
+
+`sort` and `sort_by` use an in-place introsort: median-of-three quicksort
+partitioning, a heap-sort fallback at the recursion depth limit, and insertion
+sort for small ranges. They are not stable and do not allocate. `sort_stable`
+and `sort_stable_by` use merge sort with temporary raw storage and return
+`SortError::Storage` if allocation fails. The comparator is an ordinary
+function item or closure value with signature `bool |(*const T, *const T)|`.
+
+```ciel
 // /std/buf
 import /std/result;
 import /std/bytes as bytes;
@@ -3542,11 +3790,16 @@ shareable bytes.
 export import /std/result;
 import /std/iter as iter;
 import /std/meta as meta;
+import /std/ord as ord;
+import /std/slice as slice;
+import /std/sort as sort;
 import /std/storage as storage;
 
 export enum VecError {
     CapacityOverflow,
     IndexOutOfBounds(usize, usize),
+    Empty,
+    NotFound,
     Runtime(i64),
 }
 
@@ -3573,6 +3826,22 @@ export []const T vec_slice<T>(*const Vec<T> vec) = .slice;
 export _: iter::Iterator<T> vec_iter<T>(*const Vec<T> vec) = .iter;
 export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice;
 export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source);
+export Result<T, VecError> vec_pop<T>(*Vec<T> vec) = .pop;
+export void vec_truncate<T>(*Vec<T> vec, usize len) = .truncate;
+export Result<void, VecError> vec_extend<T>(*Vec<T> vec, []const T source) = .extend;
+export Result<void, VecError> vec_insert<T>(*Vec<T> vec, usize index, T value) = .insert;
+export Result<T, VecError> vec_remove<T>(*Vec<T> vec, usize index) = .remove;
+export void vec_reverse<T>(*Vec<T> vec) = .reverse;
+export void vec_sort<T: ord::lt>(*Vec<T> vec) = .sort;
+export void vec_sort_by<T>(
+    *Vec<T> vec,
+    bool |(*const T, *const T)| less
+) = .sort_by;
+export Result<usize, VecError> vec_binary_search<T: ord::ordered>(
+    *const Vec<T> vec,
+    T needle
+) = .binary_search;
+export bool vec_equal<T: ord::eq>(*const Vec<T> left, *const Vec<T> right);
 
 impl<T> iter::collect_new<T, VecError>(meta::Type<Vec<T>> collection, usize capacity) {
     return vec_new<T>(capacity);
@@ -3613,14 +3882,25 @@ slots so removed elements are not retained by the vector's current storage.
 exposed through receiver selector `.iter()`. `vec_from_slice` copies the source
 slice into a new vector.
 
+`vec_pop` removes and returns the last initialized item, returning
+`VecError::Empty` for an empty vector. `vec_truncate` drops the initialized
+tail above a requested length and clears removed backing slots. `vec_extend`
+appends a slice, `vec_insert` inserts at an index from `0..=len`, and
+`vec_remove` removes at an index from `0..len` while shifting later items.
+`vec_reverse`, `vec_sort`, and `vec_sort_by` operate on the initialized prefix.
+`vec_binary_search` assumes that prefix is sorted according to `ord::ordered`
+and returns `VecError::NotFound` when the needle is absent. `vec_equal`
+compares initialized prefixes by element equality.
+
 `VecError` implements `/std/error::ErrorTrait` through `format_error`, so a
 `Result<T, VecError>` can be propagated with `?` into a `Result<U, Error>` by
 the standard error-boxing rule. The initial messages are
-`"vector capacity overflow"`, `"vector index out of bounds"`, and
-`"vector runtime error"`. New standard-library containers that need structured
-failures should prefer exported module-specific enum errors with `ErrorTrait`
-implementations; the enum variants preserve inspectable details, while callers
-can still erase them into `/std/error::Error` at API boundaries.
+`"vector capacity overflow"`, `"vector index out of bounds"`,
+`"vector is empty"`, `"vector item not found"`, and `"vector runtime error"`.
+New standard-library containers that need structured failures should prefer
+exported module-specific enum errors with `ErrorTrait` implementations; the
+enum variants preserve inspectable details, while callers can still erase them
+into `/std/error::Error` at API boundaries.
 
 `Vec<T>` implements `Message` exactly when `T: Message`. Its `clone_message`
 implementation allocates a fresh vector and clones each initialized element
@@ -3799,6 +4079,7 @@ cloning semantics.
 export import /std/result;
 export import /std/error;
 import /std/meta as meta;
+import /std/ord as ord;
 
 export enum Next<Item> {
     Item(Item),
@@ -3887,6 +4168,15 @@ export Next<Item> find<I: Iterator<Item = _>, P: Predicate<Item>>(
     I iter,
     P predicate
 ) = .find;
+export Next<Item> iter_min<I: Iterator<Item = _: ord::lt>>(I iter) = .min;
+export Next<Item> iter_max<I: Iterator<Item = _: ord::lt>>(I iter) = .max;
+export Next<Item> last<I: Iterator<Item = _>>(I iter) = .last;
+export Next<Item> nth<I: Iterator<Item = _>>(I iter, usize index) = .nth;
+export void for_each<I: Iterator<Item = _>>(I iter, void |(Item)| f) = .for_each;
+export Next<usize> position<I: Iterator<Item = _>, P: Predicate<Item>>(
+    I iter,
+    P predicate
+) = .position;
 export bool any<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .any;
 export bool all<I: Iterator<Item = _>, P: Predicate<Item>>(I iter, P predicate) = .all;
 ```
@@ -3902,9 +4192,16 @@ depend on nested private adapter structs.
 The borrowed slice entrypoint is `slice_iter<T>([]const T)`, exposed through
 receiver selector `.iter()` for `[]const T`. Iterator adapters and consumers
 also expose receiver selectors: `.map`, `.filter`, `.take`, `.enumerate`,
-`.zip`, `.chain`, `.flatten`, `.count`, `.fold`, `.find`, `.any`, `.all`, and
-`.collect`. Selector calls and ordinary function calls are the same operations;
-selectors do not introduce separate method semantics.
+`.zip`, `.chain`, `.flatten`, `.count`, `.fold`, `.find`, `.min`, `.max`,
+`.last`, `.nth`, `.for_each`, `.position`, `.any`, `.all`, and `.collect`.
+Selector calls and ordinary function calls are the same operations; selectors
+do not introduce separate method semantics.
+
+`iter_min`, `iter_max`, `last`, `nth`, `find`, and `position` return
+`Next<T>`-shaped results rather than `Result`, because reaching the end of an
+iterator is an expected data outcome, not an error. The exported names for
+minimum and maximum are `iter_min` and `iter_max`, while their receiver
+selectors are `.min()` and `.max()`.
 
 `collect` consumes the remaining items of an iterator into a target collection
 chosen by the expected result type or explicit type argument. A collection
@@ -4184,6 +4481,13 @@ export struct Text {
     bytes::Bytes bytes;
 }
 
+export enum TextError {
+    Bytes(bytes::BytesError),
+    Storage,
+    ShortCopy,
+    NotFound,
+}
+
 export Result<Text, TextError> text_empty();
 export Result<Text, TextError> text_copy([]const char text);
 export usize text_len(Text text) = .len;
@@ -4191,6 +4495,18 @@ export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes;
 export _: iter::Iterator<char> text_chars(Text text) = .chars;
 export Result<[]char, TextError> text_to_chars(Text text) = .to_chars;
 export Result<[]const char, TextError> text_to_slice(Text text) = .slice;
+export Result<Text, TextError> text_concat(Text left, Text right) = .concat;
+export bool text_equal(Text left, Text right);
+export bool text_equal_slice(Text left, []const char right);
+export bool text_starts_with(Text text, Text prefix);
+export bool text_ends_with(Text text, Text suffix);
+export bool text_contains(Text text, Text needle);
+export Result<usize, TextError> text_find(Text text, Text needle) = .find;
+export Result<Text, TextError> text_trim(Text text) = .trim;
+export Result<Text, TextError> text_to_upper_ascii(Text text) = .to_upper_ascii;
+export Result<Text, TextError> text_to_lower_ascii(Text text) = .to_lower_ascii;
+export Result<Text, TextError> text_from_bool(bool value);
+export Result<Text, TextError> text_from_i64(i64 value);
 ```
 
 `/std/text` wraps immutable owned bytes as text-oriented data. It does not yet
@@ -4200,6 +4516,15 @@ and async-task payloads. Conversion helpers copy the contents out when mutable
 or slice inspection is needed. `text_chars` is exposed as `.chars()` and
 iterates the stored UTF-8 bytes as `char` code units; it does not perform
 Unicode scalar decoding.
+
+Text search and comparison functions operate byte-for-byte. `text_trim` removes
+leading and trailing ASCII whitespace. ASCII case conversion changes only bytes
+in the ASCII letter ranges and leaves all other bytes unchanged. The conversion
+helpers allocate new owned `Text` values rather than exposing mutable access to
+the underlying `Bytes` handle. `text_find` returns `TextError::NotFound` when
+the needle is absent. `text_concat`, `text_find`, `text_trim`,
+`text_to_upper_ascii`, and `text_to_lower_ascii` are exposed as receiver
+selectors.
 
 ```ciel
 // /std/async

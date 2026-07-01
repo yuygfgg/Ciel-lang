@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/sort as sort;
+
+bool greater(*const i64 left, *const i64 right) {
+    return *left > *right;
+}
+
+i64 main() {
+    [5]i64 @items = [5, 1, 4, 1, 3];
+    sort::sort(items[..]);
+    if (items[0] != 1 || items[1] != 1 || items[4] != 5) {
+        return 1;
+    }
+    if (!sort::is_sorted(items[..])) {
+        return 2;
+    }
+    sort::sort_by(items[..], greater);
+    if (items[0] != 5 || items[4] != 1) {
+        return 3;
+    }
+    must(sort::sort_stable(items[..]));
+    if (items[0] != 1 || items[4] != 5) {
+        return 4;
+    }
+    return 0;
+}

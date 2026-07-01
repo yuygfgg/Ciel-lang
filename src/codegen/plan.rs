@@ -481,10 +481,10 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
         }
         let dynamic_types = self.plan.dynamic_types.clone();
         for (_, ty) in dynamic_types {
-            let Ty::DynamicInterface { name, args } = &ty else {
+            let Ty::DynamicInterface { def_id, args, .. } = &ty else {
                 continue;
             };
-            for interface_ref in self.generator.dynamic_view_interfaces(name, args) {
+            for interface_ref in self.generator.dynamic_view_interfaces(*def_id, args) {
                 let ret = self.generator.dynamic_interface_ret(&interface_ref);
                 self.collect_return_ty_array_return(&ret);
                 for param in self.generator.dynamic_interface_params(&interface_ref) {
@@ -652,7 +652,7 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
     }
 
     fn collect_standard_error_code_dynamic(&mut self) {
-        let dyn_ty = std_error_trait_ty();
+        let dyn_ty = self.generator.std_error_trait_ty();
         let code_ty = std_error_code_ty();
         self.collect_ty_dynamic(&dyn_ty);
         self.collect_ty_dynamic(&code_ty);
@@ -1090,7 +1090,12 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                     .insert(mangle_ty_fragment(output_ty), output_ty.clone());
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncOpFuture { op, output_ty } => {
+            TExprKind::AsyncOpFuture {
+                op,
+                output_ty,
+                raw_operation_def,
+                poll_done_def,
+            } => {
                 self.builder.plan.async_op_contexts.insert(
                     self.builder
                         .generator
@@ -1098,6 +1103,8 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                     AsyncOpContext {
                         op_ty: op.ty.clone(),
                         output_ty: output_ty.clone(),
+                        raw_operation_def: *raw_operation_def,
+                        poll_done_def: *poll_done_def,
                     },
                 );
                 walk_expr(self, expr);
@@ -1252,7 +1259,7 @@ impl ThirVisitor for DynamicVisitor<'_, '_, '_> {
                 walk_expr(self, expr);
             }
             TExprKind::ErrorBox { concrete_ty, .. } => {
-                let dyn_ty = std_error_trait_ty();
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
                 self.builder.collect_ty_dynamic(&dyn_ty);
                 self.builder.collect_ty_dynamic(concrete_ty);
                 self.builder.plan.dynamic_impls.insert(
@@ -1271,7 +1278,7 @@ impl ThirVisitor for DynamicVisitor<'_, '_, '_> {
                 propagation,
             } => {
                 if let Some(err_ty) = self.builder.error_box_try_err_ty(inner, propagation) {
-                    let dyn_ty = std_error_trait_ty();
+                    let dyn_ty = self.builder.generator.std_error_trait_ty();
                     self.builder.collect_ty_dynamic(&dyn_ty);
                     self.builder.collect_ty_dynamic(err_ty);
                     self.builder.plan.dynamic_impls.insert(
@@ -1413,7 +1420,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 propagation,
             } => {
                 if let Some(err_ty) = self.builder.error_box_try_err_ty(inner, propagation) {
-                    self.builder.collect_ty_slice(&std_error_trait_ty());
+                    let dyn_ty = self.builder.generator.std_error_trait_ty();
+                    self.builder.collect_ty_slice(&dyn_ty);
                     self.builder.collect_ty_slice(err_ty);
                 }
                 walk_expr(self, expr);
@@ -1428,7 +1436,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
             TExprKind::AsyncSleep { output_ty, .. } => {
                 self.builder.collect_ty_slice(output_ty);
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncOpFuture { output_ty, .. } => {
@@ -1438,7 +1447,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                     .collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.builder.collect_ty_slice(&result_ty);
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncChannelSend { payload_ty, .. } => {
@@ -1448,7 +1458,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                     .collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.builder.collect_ty_slice(&result_ty);
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncChannelReserve { payload_ty, .. } => {
@@ -1459,7 +1470,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                     .collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.builder.collect_ty_slice(&result_ty);
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncChannelRecv { payload_ty, .. } => {
@@ -1469,7 +1481,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                     .collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.builder.collect_ty_slice(&result_ty);
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncChannelTrySend { payload_ty, .. }
@@ -1478,7 +1491,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 self.builder
                     .collect_ty_slice(&std_result_ty(Ty::Void, std_async_error_ty()));
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncSpawn { task_output_ty, .. } => {
@@ -1486,7 +1500,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 self.builder
                     .collect_ty_slice(&std_task_ty(task_output_ty.clone()));
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::AsyncTaskCancel { task_output_ty, .. }
@@ -1495,7 +1510,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 self.builder
                     .collect_ty_slice(&std_task_ty(task_output_ty.clone()));
                 self.builder.collect_ty_slice(&std_error_code_ty());
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
             TExprKind::RetainClosure { source_ty, .. } => {
@@ -1511,7 +1527,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 walk_expr(self, expr);
             }
             TExprKind::ErrorBox { concrete_ty, .. } => {
-                self.builder.collect_ty_slice(&std_error_trait_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
                 self.builder.collect_ty_slice(concrete_ty);
                 walk_expr(self, expr);
             }

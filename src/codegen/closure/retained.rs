@@ -46,7 +46,7 @@ impl<'a> CGenerator<'a> {
         &mut self,
         witness: &RetainedClosureWitness,
     ) -> DiagResult<()> {
-        if is_clone_message_capability(&witness.capability) {
+        if self.is_std_clone_message_capability(&witness.capability) {
             return self.emit_retained_closure_clone_witness(witness);
         }
         if retained_closure_can_forward_source_witness(&witness.source_ty, &witness.capability) {
@@ -674,9 +674,14 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, &format!("{source_temp} = *({source_ptr});"));
             }
             Ty::Closure { constraints, .. }
-                if constraints.positive.iter().any(is_clone_message_capability) =>
+                if constraints
+                    .positive
+                    .iter()
+                    .any(|capability| self.is_std_clone_message_capability(capability)) =>
             {
-                let capability = clone_message_capability();
+                let capability = clone_message_capability(
+                    self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE),
+                );
                 let field = self.retained_closure_witness_field_name(&capability);
                 let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
                 let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;

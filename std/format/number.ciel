@@ -1,3 +1,6 @@
+import /std/meta as meta;
+import /std/ord as ord;
+
 // Formats an unsigned 64-bit integer as decimal ASCII digits.
 export []const char u64_to_string(u64 value) {
     [20]char @buf = ['\0';];
@@ -9,7 +12,7 @@ export []const char u64_to_string(u64 value) {
     }
     while (n > 0) {
         i = i - 1;
-        buf[i] = (((n % 10) + 48) as char);
+        buf[i] = (((n % 10) + ('0' as u64)) as char);
         n = n / 10;
     }
     return buf[i..];
@@ -26,7 +29,7 @@ export []const char usize_to_string(usize value) {
     }
     while (n > 0) {
         i = i - 1;
-        buf[i] = (((n % 10) + 48) as char);
+        buf[i] = (((n % 10) + ('0' as usize)) as char);
         n = n / 10;
     }
     return buf[i..];
@@ -34,20 +37,22 @@ export []const char usize_to_string(usize value) {
 
 // Formats a signed 64-bit integer as decimal ASCII digits.
 export []const char i64_to_string(i64 value) {
-    if (value == -9223372036854775808) {
-        return "-9223372036854775808";
-    }
     if (value < 0) {
         [20]char @digits = ['\0';];
         usize @i = 20;
-        u64 @n = (-value) as u64;
+        u64 @n = 0;
+        if (value == ord::min_value(meta::type_tag<i64>())) {
+            n = (ord::max_value(meta::type_tag<i64>()) as u64) + 1;
+        } else {
+            n = (-value) as u64;
+        }
         if (n == 0) {
             i = i - 1;
             digits[i] = '0';
         }
         while (n > 0) {
             i = i - 1;
-            digits[i] = (((n % 10) + 48) as char);
+            digits[i] = (((n % 10) + ('0' as u64)) as char);
             n = n / 10;
         }
         [21]char @out = ['\0';];
@@ -60,4 +65,50 @@ export []const char i64_to_string(i64 value) {
         return out[..j + 1];
     }
     return u64_to_string(value as u64);
+}
+
+char hex_digit(u8 value) {
+    if (value < 10) {
+        return (value + ('0' as u8)) as char;
+    }
+    return ((value - 10) + ('a' as u8)) as char;
+}
+
+// Formats a u64 value as 16 lowercase hexadecimal digits without a prefix.
+export []const char u64_to_hex(u64 value) {
+    [16]char @buf = ['0';];
+    u64 @n = value;
+    usize @i = 16;
+    while (i > 0) {
+        i = i - 1;
+        buf[i] = hex_digit((n & (15 as u64)) as u8);
+        n = n >> 4;
+    }
+    return buf[..];
+}
+
+// Formats a u32 value as 8 lowercase hexadecimal digits without a prefix.
+export []const char u32_to_hex(u32 value) {
+    [8]char @buf = ['0';];
+    u32 @n = value;
+    usize @i = 8;
+    while (i > 0) {
+        i = i - 1;
+        buf[i] = hex_digit((n & (15 as u32)) as u8);
+        n = n >> 4;
+    }
+    return buf[..];
+}
+
+// Formats a u8 value as 2 lowercase hexadecimal digits without a prefix.
+export []const char u8_to_hex(u8 value) {
+    [2]char @buf = ['0';];
+    u8 @n = value;
+    usize @i = 2;
+    while (i > 0) {
+        i = i - 1;
+        buf[i] = hex_digit(n & (15 as u8));
+        n = n >> 4;
+    }
+    return buf[..];
 }

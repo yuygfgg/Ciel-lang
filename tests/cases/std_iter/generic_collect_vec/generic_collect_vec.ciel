@@ -82,6 +82,10 @@ bool is_vec_new_overflow(Result<vec::Vec<u64>, vec::VecError> result) {
                     return true;
                 case vec::IndexOutOfBounds(_, _):
                     return false;
+                case vec::Empty:
+                    return false;
+                case vec::NotFound:
+                    return false;
                 case vec::Runtime(_):
                     return false;
             }

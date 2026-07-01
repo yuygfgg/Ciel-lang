@@ -1,0 +1,287 @@
+export import /std/result;
+import /std/ascii as ascii;
+import /std/c as c;
+import /std/meta as meta;
+import /std/ord as ord;
+
+unsafe extern "C" {
+    c::c_int ciel_parse_f32(*const char text, usize len, *f32 out, *usize out_end, *c::c_int out_range);
+    c::c_int ciel_parse_f64(*const char text, usize len, *f64 out, *usize out_end, *c::c_int out_range);
+}
+
+export enum ParseError {
+    Empty,
+    InvalidChar(usize),
+    Overflow,
+    Underflow,
+}
+
+impl format_error(*const ParseError error) {
+    switch (*error) {
+        case Empty:
+            return "empty input";
+        case InvalidChar(_):
+            return "invalid character";
+        case Overflow:
+            return "numeric overflow";
+        case Underflow:
+            return "numeric underflow";
+    }
+}
+
+export interface<T> Result<T, ParseError> parse_number(meta::Type<T> tag, []const char text);
+
+usize skip_ws([]const char text, usize start) {
+    usize @i = start;
+    while (i < text.len && ascii::char_is_whitespace(text[i])) {
+        i = i + 1;
+    }
+    return i;
+}
+
+Result<void, ParseError> require_trailing_ws([]const char text, usize start) {
+    usize @i = start;
+    while (i < text.len) {
+        if (!ascii::char_is_whitespace(text[i])) {
+            return Err(InvalidChar(i));
+        }
+        i = i + 1;
+    }
+    return Ok;
+}
+
+Result<u64, ParseError> parse_unsigned_decimal([]const char text, u64 limit, bool allow_plus) {
+    usize @i = skip_ws(text, 0);
+    if (i >= text.len) {
+        return Err(Empty);
+    }
+    if (text[i] == '-') {
+        return Err(InvalidChar(i));
+    }
+    if (text[i] == '+') {
+        if (!allow_plus) {
+            return Err(InvalidChar(i));
+        }
+        i = i + 1;
+    }
+    if (i >= text.len) {
+        return Err(InvalidChar(i));
+    }
+
+    u64 @value = 0;
+    bool @saw_digit = false;
+    while (i < text.len) {
+        switch (ascii::char_to_decimal_digit_value(text[i])) {
+            case Ok(digit_u8):
+                saw_digit = true;
+                u64 digit = digit_u8 as u64;
+                if (value > ((limit - digit) / 10)) {
+                    return Err(Overflow);
+                }
+                value = (value * 10) + digit;
+                i = i + 1;
+            case Err(_):
+                if (!saw_digit) {
+                    return Err(InvalidChar(i));
+                }
+                require_trailing_ws(text, i)?;
+                return Ok(value);
+        }
+    }
+    if (!saw_digit) {
+        return Err(InvalidChar(i));
+    }
+    return Ok(value);
+}
+
+Result<i64, ParseError> parse_i64_text([]const char text) {
+    usize @i = skip_ws(text, 0);
+    if (i >= text.len) {
+        return Err(Empty);
+    }
+    bool @negative = false;
+    if (text[i] == '-' || text[i] == '+') {
+        negative = text[i] == '-';
+        i = i + 1;
+    }
+    if (i >= text.len) {
+        return Err(InvalidChar(i));
+    }
+
+    u64 @limit = ord::max_value(meta::type_tag<i64>()) as u64;
+    if (negative) {
+        limit = limit + 1;
+    }
+
+    u64 @value = 0;
+    bool @saw_digit = false;
+    while (i < text.len) {
+        switch (ascii::char_to_decimal_digit_value(text[i])) {
+            case Ok(digit_u8):
+                saw_digit = true;
+                u64 digit = digit_u8 as u64;
+                if (value > ((limit - digit) / 10)) {
+                    if (negative) {
+                        return Err(Underflow);
+                    }
+                    return Err(Overflow);
+                }
+                value = (value * 10) + digit;
+                i = i + 1;
+            case Err(_):
+                if (!saw_digit) {
+                    return Err(InvalidChar(i));
+                }
+                require_trailing_ws(text, i)?;
+                if (negative) {
+                    if (value == ((ord::max_value(meta::type_tag<i64>()) as u64) + 1)) {
+                        return Ok(ord::min_value(meta::type_tag<i64>()));
+                    }
+                    return Ok(-(value as i64));
+                }
+                return Ok(value as i64);
+        }
+    }
+    if (!saw_digit) {
+        return Err(InvalidChar(i));
+    }
+    if (negative) {
+        if (value == ((ord::max_value(meta::type_tag<i64>()) as u64) + 1)) {
+            return Ok(ord::min_value(meta::type_tag<i64>()));
+        }
+        return Ok(-(value as i64));
+    }
+    return Ok(value as i64);
+}
+
+Result<u64, ParseError> parse_u64_text([]const char text) {
+    return parse_unsigned_decimal(text, ~(0 as u64), true);
+}
+
+Result<f64, ParseError> parse_f64_text([]const char text) {
+    usize start = skip_ws(text, 0);
+    if (start >= text.len) {
+        return Err(Empty);
+    }
+    f64 @out = 0.0;
+    usize @end = 0;
+    c::c_int @range = 0;
+    c::c_int rc = unsafe { ciel_parse_f64(text.ptr, text.len, &out, &end, &range) };
+    if ((rc as i64) != 0) {
+        return Err(InvalidChar(start));
+    }
+    if ((range as i64) > 0) {
+        return Err(Overflow);
+    }
+    if ((range as i64) < 0) {
+        return Err(Underflow);
+    }
+    require_trailing_ws(text, end)?;
+    return Ok(out);
+}
+
+Result<f32, ParseError> parse_f32_text([]const char text) {
+    usize start = skip_ws(text, 0);
+    if (start >= text.len) {
+        return Err(Empty);
+    }
+    f32 @out = 0.0 as f32;
+    usize @end = 0;
+    c::c_int @range = 0;
+    c::c_int rc = unsafe { ciel_parse_f32(text.ptr, text.len, &out, &end, &range) };
+    if ((rc as i64) != 0) {
+        return Err(InvalidChar(start));
+    }
+    if ((range as i64) > 0) {
+        return Err(Overflow);
+    }
+    if ((range as i64) < 0) {
+        return Err(Underflow);
+    }
+    require_trailing_ws(text, end)?;
+    return Ok(out);
+}
+
+impl parse_number(meta::Type<i64> tag, []const char text) {
+    return parse_i64_text(text);
+}
+
+impl parse_number(meta::Type<u64> tag, []const char text) {
+    return parse_u64_text(text);
+}
+
+impl parse_number(meta::Type<usize> tag, []const char text) {
+    u64 value = parse_u64_text(text)?;
+    if (meta::type_size<usize>() == 8) {
+        return Ok(value as usize);
+    }
+    if (value > (ord::max_value(meta::type_tag<u32>()) as u64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as usize);
+}
+
+impl parse_number(meta::Type<i32> tag, []const char text) {
+    i64 value = parse_i64_text(text)?;
+    if (value < (ord::min_value(meta::type_tag<i32>()) as i64)) {
+        return Err(Underflow);
+    }
+    if (value > (ord::max_value(meta::type_tag<i32>()) as i64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as i32);
+}
+
+impl parse_number(meta::Type<u32> tag, []const char text) {
+    u64 value = parse_u64_text(text)?;
+    if (value > (ord::max_value(meta::type_tag<u32>()) as u64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as u32);
+}
+
+impl parse_number(meta::Type<i16> tag, []const char text) {
+    i64 value = parse_i64_text(text)?;
+    if (value < (ord::min_value(meta::type_tag<i16>()) as i64)) {
+        return Err(Underflow);
+    }
+    if (value > (ord::max_value(meta::type_tag<i16>()) as i64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as i16);
+}
+
+impl parse_number(meta::Type<u16> tag, []const char text) {
+    u64 value = parse_u64_text(text)?;
+    if (value > (ord::max_value(meta::type_tag<u16>()) as u64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as u16);
+}
+
+impl parse_number(meta::Type<i8> tag, []const char text) {
+    i64 value = parse_i64_text(text)?;
+    if (value < (ord::min_value(meta::type_tag<i8>()) as i64)) {
+        return Err(Underflow);
+    }
+    if (value > (ord::max_value(meta::type_tag<i8>()) as i64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as i8);
+}
+
+impl parse_number(meta::Type<u8> tag, []const char text) {
+    u64 value = parse_u64_text(text)?;
+    if (value > (ord::max_value(meta::type_tag<u8>()) as u64)) {
+        return Err(Overflow);
+    }
+    return Ok(value as u8);
+}
+
+impl parse_number(meta::Type<f64> tag, []const char text) {
+    return parse_f64_text(text);
+}
+
+impl parse_number(meta::Type<f32> tag, []const char text) {
+    return parse_f32_text(text);
+}

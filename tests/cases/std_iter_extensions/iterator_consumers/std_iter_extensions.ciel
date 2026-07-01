@@ -1,0 +1,60 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/iter as iter;
+
+struct IsFour {}
+
+impl iter::filter_accept<i64>(*IsFour predicate, *const i64 value) {
+    return *value == 4;
+}
+
+void add_to_score(i64 value) {
+}
+
+i64 main() {
+    [4]i64 values = [3, 1, 4, 2];
+    switch (iter::iter_min(iter::slice_iter(values[..]))) {
+        case iter::Item(value):
+            if (value != 1) {
+                return 1;
+            }
+        case iter::Done:
+            return 2;
+    }
+    switch (iter::iter_max(iter::slice_iter(values[..]))) {
+        case iter::Item(value):
+            if (value != 4) {
+                return 3;
+            }
+        case iter::Done:
+            return 4;
+    }
+    switch (iter::last(iter::slice_iter(values[..]))) {
+        case iter::Item(value):
+            if (value != 2) {
+                return 5;
+            }
+        case iter::Done:
+            return 6;
+    }
+    switch (iter::nth(iter::slice_iter(values[..]), 2)) {
+        case iter::Item(value):
+            if (value != 4) {
+                return 7;
+            }
+        case iter::Done:
+            return 8;
+    }
+    IsFour pred = {};
+    switch (iter::position(iter::slice_iter(values[..]), pred)) {
+        case iter::Item(index):
+            if (index != 2) {
+                return 9;
+            }
+        case iter::Done:
+            return 10;
+    }
+    iter::for_each(iter::slice_iter(values[..]), add_to_score);
+    return 0;
+}

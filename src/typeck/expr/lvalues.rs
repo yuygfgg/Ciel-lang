@@ -1068,7 +1068,7 @@ impl TypeChecker {
             return;
         };
         for capability in &bounds.positive {
-            if !self.type_implements_capability(&capability.name, &capability.args, concrete_ty) {
+            if !self.type_implements_capability_ref(capability, concrete_ty) {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!(
@@ -1079,7 +1079,7 @@ impl TypeChecker {
             }
         }
         for capability in &bounds.negative {
-            if self.type_implements_capability(&capability.name, &capability.args, concrete_ty) {
+            if self.type_implements_capability_ref(capability, concrete_ty) {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!(

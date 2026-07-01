@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
     checked::CheckedProgram,
-    common::{name_ref_canonical, nominal_type_name},
+    common::nominal_type_name,
     diagnostic::{DiagResult, Diagnostic},
     hir::{
         ConstraintExpr, FieldDecl, ItemKind, Type, TypeAliasTarget, TypeKind, TypeNameKind,
@@ -14,9 +14,7 @@ use crate::{
     },
     layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ResolvedProgram},
-    retained::{
-        retained_closure_has_clone_message_capability, retained_closure_missing_capabilities,
-    },
+    retained::retained_closure_missing_capabilities,
     std_id,
     thir::{
         ActorSpawnMode, CheckedEnum, CheckedFunction, CheckedGenericFunction, CheckedImpl,
@@ -27,10 +25,10 @@ use crate::{
     typeck::{CheckedGenericInstance, type_check_generic_instance},
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        STD_ERROR_FORMAT_INTERFACE, STD_ERROR_TRAIT_ALIAS, STD_MESSAGE_CLONE_INTERFACE,
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
-        aggregate_instance_name, contains_generic, is_clone_message_capability, mangle_ty_fragment,
-        map_ty_children, meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        aggregate_instance_name, contains_generic, mangle_ty_fragment, map_ty_children,
+        meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
         retained_closure_capabilities, std_async_error_ty, std_error_code_ty, std_error_trait_ty,
         std_error_ty, std_future_ty, std_message_result_ty, std_meta_repr_marker_ty,
@@ -201,6 +199,74 @@ impl MonoContext {
         }
     }
 
+    fn interface_alias_def_by_name(&self, name: &str) -> DefId {
+        self.checked
+            .interface_aliases
+            .iter()
+            .find(|alias| alias.name == name)
+            .map(|alias| alias.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing interface alias `{name}`"))
+    }
+
+    fn std_error_format_interface_def(&self) -> DefId {
+        self.checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == STD_ERROR_FORMAT_INTERFACE
+                    && std_id::is_std_error_interface(
+                        &self.checked.resolved,
+                        interface.def_id,
+                        STD_ERROR_FORMAT_INTERFACE,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| {
+                panic!("internal error: missing std error interface `{STD_ERROR_FORMAT_INTERFACE}`")
+            })
+    }
+
+    fn std_message_interface_def(&self, name: &str) -> DefId {
+        self.checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == name
+                    && std_id::is_std_message_interface(
+                        &self.checked.resolved,
+                        interface.def_id,
+                        name,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing std message interface `{name}`"))
+    }
+
+    fn std_async_interface_def(&self, name: &str) -> DefId {
+        self.checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == name
+                    && std_id::is_std_async_interface(
+                        &self.checked.resolved,
+                        interface.def_id,
+                        name,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing std async interface `{name}`"))
+    }
+
+    fn std_error_trait_ty(&self) -> Ty {
+        std_error_trait_ty(self.interface_alias_def_by_name(STD_ERROR_TRAIT_ALIAS))
+    }
+
+    fn is_std_clone_message_capability(&self, capability: &ConstraintRef) -> bool {
+        capability.args.is_empty()
+            && std_id::is_std_message_clone_interface(&self.checked.resolved, capability.def_id)
+    }
+
     fn process_function(&mut self, def_id: DefId) {
         if self.processed.contains_key(&def_id) {
             return;
@@ -266,7 +332,7 @@ impl MonoContext {
         )?;
         for implementation in impls {
             if !self.checked.impls.iter().any(|existing| {
-                existing.interface_name == implementation.interface_name
+                existing.interface_def == implementation.interface_def
                     && existing.interface_args == implementation.interface_args
                     && existing.receiver_ty == implementation.receiver_ty
             }) {
@@ -641,17 +707,20 @@ impl MonoContext {
                 concrete_ty,
             } => {
                 let concrete_ty = self.lower_opaque_returns_in_ty(&concrete_ty);
-                self.mark_dynamic_impls(&std_error_trait_ty(), &concrete_ty);
+                let dyn_ty = self.std_error_trait_ty();
+                self.mark_dynamic_impls(&dyn_ty, &concrete_ty);
                 TExprKind::ErrorBox {
                     expr: Box::new(self.rewrite_expr(*inner)?),
                     concrete_ty,
                 }
             }
             TExprKind::DynamicInterfaceCall {
+                interface_def,
                 interface_name,
                 receiver,
                 args,
             } => TExprKind::DynamicInterfaceCall {
+                interface_def,
                 interface_name,
                 receiver: Box::new(self.rewrite_expr(*receiver)?),
                 args: args
@@ -660,11 +729,13 @@ impl MonoContext {
                     .collect::<DiagResult<Vec<_>>>()?,
             },
             TExprKind::RetainedClosureInterfaceCall {
+                interface_def,
                 interface_name,
                 interface_args,
                 receiver,
                 args,
             } => TExprKind::RetainedClosureInterfaceCall {
+                interface_def,
                 interface_name,
                 interface_args: interface_args
                     .iter()
@@ -713,7 +784,8 @@ impl MonoContext {
                 if matches!(propagation, crate::thir::TryPropagation::ErrorBox)
                     && let Some((_, err_ty)) = result_args(&self.checked.resolved, &inner.ty)
                 {
-                    self.mark_dynamic_impls(&std_error_trait_ty(), &err_ty);
+                    let dyn_ty = self.std_error_trait_ty();
+                    self.mark_dynamic_impls(&dyn_ty, &err_ty);
                 }
                 TExprKind::Try {
                     expr: Box::new(inner),
@@ -772,12 +844,19 @@ impl MonoContext {
                     output_ty: self.lower_opaque_returns_in_ty(&output_ty),
                 }
             }
-            TExprKind::AsyncOpFuture { op, output_ty } => {
+            TExprKind::AsyncOpFuture {
+                op,
+                output_ty,
+                raw_operation_def,
+                poll_done_def,
+            } => {
                 self.mark_standard_error_code_impl();
-                self.mark_async_op_impls(&op.ty, &output_ty);
+                self.mark_async_op_impls(raw_operation_def, poll_done_def, &op.ty, &output_ty);
                 TExprKind::AsyncOpFuture {
                     op: Box::new(self.rewrite_expr(*op)?),
                     output_ty: self.lower_opaque_returns_in_ty(&output_ty),
+                    raw_operation_def,
+                    poll_done_def,
                 }
             }
             TExprKind::AsyncSpawn {
@@ -1015,10 +1094,10 @@ impl MonoContext {
     }
 
     fn mark_dynamic_impls(&mut self, dyn_ty: &Ty, concrete_ty: &Ty) {
-        let Ty::DynamicInterface { name, args } = dyn_ty else {
+        let Ty::DynamicInterface { def_id, args, .. } = dyn_ty else {
             return;
         };
-        for interface in self.dynamic_view_interfaces(name, args) {
+        for interface in self.dynamic_view_interfaces(*def_id, args) {
             let function_def = self
                 .checked
                 .impls
@@ -1042,7 +1121,7 @@ impl MonoContext {
             .find(|implementation| {
                 impl_matches_interface_receiver(
                     implementation,
-                    STD_ERROR_FORMAT_INTERFACE,
+                    self.std_error_format_interface_def(),
                     &[],
                     &code_ty,
                 )
@@ -1053,9 +1132,15 @@ impl MonoContext {
         }
     }
 
-    fn mark_async_op_impls(&mut self, op_ty: &Ty, output_ty: &Ty) {
-        self.mark_async_op_impl("raw_operation", &[], op_ty);
-        self.mark_async_op_impl("poll_done", std::slice::from_ref(output_ty), op_ty);
+    fn mark_async_op_impls(
+        &mut self,
+        raw_operation_def: DefId,
+        poll_done_def: DefId,
+        op_ty: &Ty,
+        output_ty: &Ty,
+    ) {
+        self.mark_async_op_impl(raw_operation_def, &[], op_ty);
+        self.mark_async_op_impl(poll_done_def, std::slice::from_ref(output_ty), op_ty);
     }
 
     fn mark_awaitable_impl(&mut self, output_ty: &Ty, receiver_ty: &Ty) {
@@ -1071,7 +1156,7 @@ impl MonoContext {
             .find(|implementation| {
                 impl_matches_interface_receiver(
                     implementation,
-                    STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                    self.std_async_interface_def(STD_ASYNC_AWAITABLE_FUTURE_INTERFACE),
                     std::slice::from_ref(output_ty),
                     receiver_ty,
                 )
@@ -1082,7 +1167,7 @@ impl MonoContext {
         }
     }
 
-    fn mark_async_op_impl(&mut self, interface_name: &str, interface_args: &[Ty], op_ty: &Ty) {
+    fn mark_async_op_impl(&mut self, interface_def: DefId, interface_args: &[Ty], op_ty: &Ty) {
         let function_def = self
             .checked
             .impls
@@ -1090,7 +1175,7 @@ impl MonoContext {
             .find(|implementation| {
                 impl_matches_interface_receiver(
                     implementation,
-                    interface_name,
+                    interface_def,
                     interface_args,
                     op_ty,
                 )
@@ -1101,11 +1186,11 @@ impl MonoContext {
         }
     }
 
-    fn dynamic_view_interfaces(&self, name: &str, args: &[Ty]) -> Vec<CheckedInterfaceRef> {
+    fn dynamic_view_interfaces(&self, def_id: DefId, args: &[Ty]) -> Vec<CheckedInterfaceRef> {
         checked_interface_view(
             &self.checked.interfaces,
             &self.checked.interface_aliases,
-            name,
+            def_id,
             args,
         )
     }
@@ -1139,7 +1224,7 @@ impl MonoContext {
 
     fn mark_retained_closure_witness_impls(&mut self, target_ty: &Ty, source_ty: &Ty) {
         for capability in retained_closure_missing_capabilities(target_ty, source_ty) {
-            if is_clone_message_capability(&capability) {
+            if self.is_std_clone_message_capability(&capability) {
                 self.mark_message_clone_impls(source_ty);
                 continue;
             }
@@ -1150,7 +1235,7 @@ impl MonoContext {
                 .find(|implementation| {
                     impl_matches_interface_receiver(
                         implementation,
-                        &capability.name,
+                        capability.def_id,
                         &capability.args,
                         source_ty,
                     )
@@ -1164,11 +1249,12 @@ impl MonoContext {
 
     fn clone_message_impl_def(&self, ty: &Ty) -> Option<DefId> {
         let ty = ty;
+        let interface_def = self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE);
         self.checked
             .impls
             .iter()
             .find(|implementation| {
-                implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
+                implementation.interface_def == interface_def
                     && implementation
                         .receiver_ty
                         .as_ref()
@@ -1226,6 +1312,46 @@ struct AggregateCollector<'a> {
 }
 
 impl<'a> AggregateCollector<'a> {
+    fn std_message_interface_def(&self, name: &str) -> DefId {
+        self.checked
+            .interfaces
+            .iter()
+            .find(|interface| {
+                interface.name == name
+                    && std_id::is_std_message_interface(
+                        &self.checked.resolved,
+                        interface.def_id,
+                        name,
+                    )
+            })
+            .map(|interface| interface.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing std message interface `{name}`"))
+    }
+
+    fn interface_alias_def_by_name(&self, name: &str) -> DefId {
+        self.checked
+            .interface_aliases
+            .iter()
+            .find(|alias| alias.name == name)
+            .map(|alias| alias.def_id)
+            .unwrap_or_else(|| panic!("internal error: missing interface alias `{name}`"))
+    }
+
+    fn std_error_trait_ty(&self) -> Ty {
+        std_error_trait_ty(self.interface_alias_def_by_name(STD_ERROR_TRAIT_ALIAS))
+    }
+
+    fn is_std_clone_message_capability(&self, capability: &ConstraintRef) -> bool {
+        capability.args.is_empty()
+            && std_id::is_std_message_clone_interface(&self.checked.resolved, capability.def_id)
+    }
+
+    fn retained_closure_has_std_clone_message_capability(&self, ty: &Ty) -> bool {
+        retained_closure_capabilities(ty)
+            .iter()
+            .any(|capability| self.is_std_clone_message_capability(capability))
+    }
+
     fn new(checked: &'a CheckedProgram) -> Self {
         let mut structs = HashMap::new();
         let mut enums = HashMap::new();
@@ -1483,7 +1609,8 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr(expr);
                 if matches!(propagation, crate::thir::TryPropagation::ErrorBox) {
-                    self.collect_ty(&std_error_trait_ty());
+                    let dyn_ty = self.std_error_trait_ty();
+                    self.collect_ty(&dyn_ty);
                     if let Some((_, err_ty)) = result_args(&self.checked.resolved, &expr.ty) {
                         self.collect_ty(err_ty);
                     }
@@ -1492,14 +1619,16 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.collect_expr(future);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
                     self.collect_task_boundary_clone_result_tys(&task_output_ty);
                 }
             }
             TExprKind::AsyncSelect { arms, .. } => {
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 for arm in arms {
                     self.collect_expr(&arm.future);
                     self.collect_expr(&arm.body);
@@ -1517,16 +1646,18 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_future_ty(output_ty.clone()));
                 self.collect_ty(output_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
             }
-            TExprKind::AsyncOpFuture { op, output_ty } => {
+            TExprKind::AsyncOpFuture { op, output_ty, .. } => {
                 self.collect_expr(op);
                 let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
                 self.collect_ty(&std_future_ty(result_ty.clone()));
                 self.collect_ty(&result_ty);
                 self.collect_ty(output_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
             }
             TExprKind::AsyncSpawn {
                 body,
@@ -1537,7 +1668,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_task_ty(task_output_ty.clone()));
                 self.collect_ty(&std_message_result_ty(task_output_ty.clone()));
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 if let TExprKind::Closure { captures, .. } = &body.kind {
                     for capture in captures {
                         self.collect_task_boundary_clone_result_tys(&capture.ty);
@@ -1557,7 +1689,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(task_output_ty);
                 self.collect_ty(&std_task_ty(task_output_ty.clone()));
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
             }
             TExprKind::AsyncChannelSend {
                 sender,
@@ -1571,7 +1704,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_future_ty(result_ty.clone()));
                 self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 self.collect_task_boundary_clone_result_tys(payload_ty);
             }
             TExprKind::AsyncChannelTrySend {
@@ -1584,7 +1718,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(payload_ty);
                 self.collect_ty(&std_result_ty(Ty::Void, std_async_error_ty()));
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 self.collect_task_boundary_clone_result_tys(payload_ty);
             }
             TExprKind::AsyncChannelReserve { sender, payload_ty } => {
@@ -1596,7 +1731,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_future_ty(result_ty.clone()));
                 self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
             }
             TExprKind::AsyncChannelPermitSend {
                 permit,
@@ -1608,7 +1744,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(payload_ty);
                 self.collect_ty(&std_result_ty(Ty::Void, std_async_error_ty()));
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 self.collect_task_boundary_clone_result_tys(payload_ty);
             }
             TExprKind::AsyncChannelRecv {
@@ -1621,7 +1758,8 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&std_future_ty(result_ty.clone()));
                 self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
             }
             TExprKind::Binary { left, right, .. } => {
                 self.collect_expr(left);
@@ -1645,7 +1783,7 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::FunctionToClosure(inner) => {
                 self.collect_expr(inner);
                 self.collect_retained_closure_witness_tys(&expr.ty, &inner.ty);
-                if retained_closure_has_clone_message_capability(&expr.ty) {
+                if self.retained_closure_has_std_clone_message_capability(&expr.ty) {
                     self.collect_message_clone_result_tys(&expr.ty);
                 }
             }
@@ -1656,7 +1794,7 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(inner);
                 self.collect_ty(source_ty);
                 self.collect_retained_closure_witness_tys(&expr.ty, source_ty);
-                if retained_closure_has_clone_message_capability(&expr.ty) {
+                if self.retained_closure_has_std_clone_message_capability(&expr.ty) {
                     self.collect_message_clone_result_tys(&expr.ty);
                     self.collect_message_clone_result_tys(source_ty);
                 }
@@ -1675,7 +1813,8 @@ impl<'a> AggregateCollector<'a> {
             }
             TExprKind::ErrorBox { expr, concrete_ty } => {
                 self.collect_expr(expr);
-                self.collect_ty(&std_error_trait_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
                 self.collect_ty(concrete_ty);
             }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
@@ -2450,11 +2589,12 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn type_matches_policy_marker(&self, interface_name: &str, templates: &[Ty], ty: &Ty) -> bool {
+        let interface_def = self.std_message_interface_def(interface_name);
         templates.iter().any(|pattern| {
             let mut subst = HashMap::new();
             unify_ty(pattern, ty, &mut subst)
         }) || self.checked.impls.iter().any(|implementation| {
-            implementation.interface_name == interface_name
+            implementation.interface_def == interface_def
                 && implementation
                     .receiver_ty
                     .as_ref()
@@ -2488,6 +2628,7 @@ impl<'a> AggregateCollector<'a> {
         if root.is_some_and(|root| ty == root) && !is_thread_local {
             return false;
         }
+        let clone_interface_def = self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE);
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
                 || self.type_matches_policy_marker(
@@ -2496,7 +2637,7 @@ impl<'a> AggregateCollector<'a> {
                     &leaf_ty,
                 )
                 || self.checked.impls.iter().any(|implementation| {
-                    implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
+                    implementation.interface_def == clone_interface_def
                         && implementation
                             .receiver_ty
                             .as_ref()
@@ -2650,18 +2791,19 @@ impl<'a> AggregateCollector<'a> {
                         self.normalize_meta_repr_markers(&lowered)
                     };
                 }
-                if self
-                    .checked
-                    .interfaces
-                    .iter()
-                    .any(|interface| interface.name == name)
-                    || self
+                if let Some(def_id) = def_id
+                    && (self
                         .checked
-                        .interface_aliases
+                        .interfaces
                         .iter()
-                        .any(|alias| alias.name == name)
+                        .any(|interface| interface.def_id == def_id)
+                        || self
+                            .checked
+                            .interface_aliases
+                            .iter()
+                            .any(|alias| alias.def_id == def_id))
                 {
-                    Ty::DynamicInterface { name, args }
+                    Ty::DynamicInterface { def_id, name, args }
                 } else {
                     let ty = Ty::Named { name, args };
                     if preserve_meta_repr_markers {
@@ -2734,6 +2876,7 @@ impl<'a> AggregateCollector<'a> {
                 .positive
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -2746,6 +2889,7 @@ impl<'a> AggregateCollector<'a> {
                 .negative
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -2769,11 +2913,12 @@ impl<'a> AggregateCollector<'a> {
                 .iter()
                 .map(|arg| self.lower_constraint_arg(arg, subst))
                 .collect::<Vec<_>>();
-            let view = constraint_interface_view(
-                &self.checked.interface_aliases,
-                &name_ref_canonical(&self.checked.resolved, &term.name),
-                &args,
-            );
+            let crate::hir::NameRefKind::Def(def_id) = term.name.kind else {
+                continue;
+            };
+            let name = self.checked.resolved.def(def_id).name.clone();
+            let view =
+                constraint_interface_view(&self.checked.interface_aliases, def_id, &name, &args);
             if term.removed {
                 bounds
                     .positive

@@ -4,14 +4,15 @@ impl<'a> CGenerator<'a> {
     pub(in crate::codegen) fn emit_dynamic_vtable_layouts(&mut self) {
         let dynamic_types = self.plan.dynamic_types.clone();
         for (_, ty) in dynamic_types {
-            let Ty::DynamicInterface { name, args } = &ty else {
+            let Ty::DynamicInterface { def_id, args, .. } = &ty else {
                 continue;
             };
             let vtable = self.dynamic_vtable_name(&ty);
             self.line(&format!("struct {vtable} {{"));
-            for interface in self.dynamic_view_interfaces(name, args) {
+            for interface in self.dynamic_view_interfaces(*def_id, args) {
                 let field_ret = self.dynamic_interface_ret(&interface);
                 let field_params = self.dynamic_interface_params(&interface);
+                let field_name = self.dynamic_interface_field_name(&interface);
                 let params = field_params
                     .iter()
                     .filter(|ty| !ty.is_erased_value())
@@ -21,7 +22,7 @@ impl<'a> CGenerator<'a> {
                     .join(", ");
                 self.line(&format!(
                     "    {};",
-                    self.c_return_decl(&field_ret, &format!("(*{})({})", interface.name, params)),
+                    self.c_return_decl(&field_ret, &format!("(*{})({})", field_name, params)),
                 ));
             }
             self.line("};");
@@ -49,7 +50,7 @@ impl<'a> CGenerator<'a> {
                     let name = self.dynamic_shim_name(
                         &dynamic_use.dyn_ty,
                         &dynamic_use.concrete_ty,
-                        &interface.name,
+                        &interface,
                     );
                     self.line(&format!(
                         "{};",
@@ -82,7 +83,7 @@ impl<'a> CGenerator<'a> {
                 let shim_name = self.dynamic_shim_name(
                     &dynamic_use.dyn_ty,
                     &dynamic_use.concrete_ty,
-                    &interface.name,
+                    &interface,
                 );
                 self.line(&format!(
                     "{} {{",
@@ -123,13 +124,14 @@ impl<'a> CGenerator<'a> {
             let table = self.dynamic_table_name(&dynamic_use.dyn_ty, &dynamic_use.concrete_ty);
             self.line(&format!("static const {vtable} {table} = {{"));
             for interface in self.dynamic_use_interfaces(&dynamic_use) {
+                let field_name = self.dynamic_interface_field_name(&interface);
                 self.line(&format!(
                     "    .{} = {},",
-                    interface.name,
+                    field_name,
                     self.dynamic_shim_name(
                         &dynamic_use.dyn_ty,
                         &dynamic_use.concrete_ty,
-                        &interface.name
+                        &interface
                     )
                 ));
             }

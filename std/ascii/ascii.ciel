@@ -1,0 +1,95 @@
+export import /std/result;
+
+export enum AsciiError {
+    InvalidChar,
+    InvalidDigitValue,
+}
+
+impl format_error(*const AsciiError error) {
+    switch (*error) {
+        case InvalidChar:
+            return "invalid ASCII character";
+        case InvalidDigitValue:
+            return "invalid ASCII digit value";
+    }
+}
+
+export bool char_is_digit(char c) {
+    return c >= '0' && c <= '9';
+}
+
+export bool char_is_alpha(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+export bool char_is_alnum(char c) {
+    return char_is_alpha(c) || char_is_digit(c);
+}
+
+export bool char_is_whitespace(char c) {
+    u8 code = c as u8;
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || code == 11 || code == 12;
+}
+
+export bool char_is_upper(char c) {
+    return c >= 'A' && c <= 'Z';
+}
+
+export bool char_is_lower(char c) {
+    return c >= 'a' && c <= 'z';
+}
+
+export bool char_is_hex_digit(char c) {
+    return char_is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+}
+
+export char char_to_upper(char c) {
+    if (char_is_lower(c)) {
+        return ((c as u8) - 32) as char;
+    }
+    return c;
+}
+
+export char char_to_lower(char c) {
+    if (char_is_upper(c)) {
+        return ((c as u8) + 32) as char;
+    }
+    return c;
+}
+
+export Result<u8, AsciiError> char_to_decimal_digit_value(char c) {
+    if (char_is_digit(c)) {
+        return Ok((c as u8) - ('0' as u8));
+    }
+    return Err(InvalidChar);
+}
+
+export Result<u8, AsciiError> char_to_hex_digit_value(char c) {
+    if (char_is_digit(c)) {
+        return Ok((c as u8) - ('0' as u8));
+    }
+    if (c >= 'a' && c <= 'f') {
+        return Ok(((c as u8) - ('a' as u8)) + 10);
+    }
+    if (c >= 'A' && c <= 'F') {
+        return Ok(((c as u8) - ('A' as u8)) + 10);
+    }
+    return Err(InvalidChar);
+}
+
+export Result<char, AsciiError> decimal_digit_value_to_char(u8 value) {
+    if (value <= 9) {
+        return Ok((value + ('0' as u8)) as char);
+    }
+    return Err(InvalidDigitValue);
+}
+
+export Result<char, AsciiError> hex_digit_value_to_char(u8 value) {
+    if (value <= 9) {
+        return Ok((value + ('0' as u8)) as char);
+    }
+    if (value <= 15) {
+        return Ok(((value - 10) + ('a' as u8)) as char);
+    }
+    return Err(InvalidDigitValue);
+}

@@ -296,14 +296,14 @@ impl put_le([]u8 out, usize value) {
 
 impl get_be(meta::Type<usize> tag, []const u8 data) {
     if (meta::type_size<usize>() == 8) {
-        return Ok(get_be({} as meta::Type<u64>, data)? as usize);
+        return Ok(get_be(meta::type_tag<u64>(), data)? as usize);
     }
-    return Ok(get_be({} as meta::Type<u32>, data)? as usize);
+    return Ok(get_be(meta::type_tag<u32>(), data)? as usize);
 }
 
 impl get_le(meta::Type<usize> tag, []const u8 data) {
     if (meta::type_size<usize>() == 8) {
-        return Ok(get_le({} as meta::Type<u64>, data)? as usize);
+        return Ok(get_le(meta::type_tag<u64>(), data)? as usize);
     }
-    return Ok(get_le({} as meta::Type<u32>, data)? as usize);
+    return Ok(get_le(meta::type_tag<u32>(), data)? as usize);
 }

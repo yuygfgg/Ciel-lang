@@ -1,0 +1,51 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+import /std/ord as ord;
+
+i64 main() {
+    if (ord::min(9, 4) != 4) {
+        return 1;
+    }
+    if (ord::max(9, 4) != 9) {
+        return 2;
+    }
+    if (ord::clamp(12, 3, 8) != 8) {
+        return 3;
+    }
+    if (!ord::gt(9, 4) || !ord::ge(9, 9) || !ord::le(4, 9) || !ord::ne(4, 9)) {
+        return 4;
+    }
+
+    i64 signed_abs = ord::abs(-11);
+    if (signed_abs != 11) {
+        return 5;
+    }
+    i64 min_i64 = ord::min_value(meta::type_tag<i64>());
+    i64 max_i64 = ((~(0 as u64)) >> 1) as i64;
+    if (ord::abs(min_i64) != max_i64) {
+        return 6;
+    }
+    f64 float_abs = ord::abs(-2.5);
+    if (float_abs != 2.5) {
+        return 7;
+    }
+
+    if (ord::max_value(meta::type_tag<u8>()) != ~(0 as u8)) {
+        return 8;
+    }
+    i16 max_i16 = ((~(0 as u16)) >> 1) as i16;
+    if (ord::min_value(meta::type_tag<i16>()) != ((0 as i16) - max_i16 - (1 as i16))) {
+        return 9;
+    }
+    f64 max_f64 = ord::max_value(meta::type_tag<f64>());
+    if ((max_f64 - max_f64) != 0.0) {
+        return 10;
+    }
+    f64 overflow_f64 = max_f64 + max_f64;
+    if ((overflow_f64 - overflow_f64) == 0.0) {
+        return 11;
+    }
+    return 0;
+}

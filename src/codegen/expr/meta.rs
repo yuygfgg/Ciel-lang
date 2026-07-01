@@ -473,7 +473,8 @@ impl<'a> CGenerator<'a> {
                         .collect(),
                 }
             }
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
+                def_id: *def_id,
                 name: name.clone(),
                 args: args
                     .iter()

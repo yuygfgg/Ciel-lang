@@ -1,0 +1,312 @@
+import /std/meta as meta;
+
+#c_include "math.h"
+
+unsafe extern "C" {
+    f64 sqrt(f64 x);
+    f64 cbrt(f64 x);
+    f64 sin(f64 x);
+    f64 cos(f64 x);
+    f64 tan(f64 x);
+    f64 asin(f64 x);
+    f64 acos(f64 x);
+    f64 atan(f64 x);
+    f64 atan2(f64 y, f64 x);
+    f64 sinh(f64 x);
+    f64 cosh(f64 x);
+    f64 tanh(f64 x);
+    f64 exp(f64 x);
+    f64 exp2(f64 x);
+    f64 log(f64 x);
+    f64 log2(f64 x);
+    f64 log10(f64 x);
+    f64 pow(f64 base, f64 exp);
+    f64 floor(f64 x);
+    f64 ceil(f64 x);
+    f64 round(f64 x);
+    f64 trunc(f64 x);
+    f64 fmod(f64 x, f64 y);
+    f64 hypot(f64 x, f64 y);
+    f64 fabs(f64 x);
+
+    f32 sqrtf(f32 x);
+    f32 cbrtf(f32 x);
+    f32 sinf(f32 x);
+    f32 cosf(f32 x);
+    f32 tanf(f32 x);
+    f32 asinf(f32 x);
+    f32 acosf(f32 x);
+    f32 atanf(f32 x);
+    f32 atan2f(f32 y, f32 x);
+    f32 sinhf(f32 x);
+    f32 coshf(f32 x);
+    f32 tanhf(f32 x);
+    f32 expf(f32 x);
+    f32 exp2f(f32 x);
+    f32 logf(f32 x);
+    f32 log2f(f32 x);
+    f32 log10f(f32 x);
+    f32 powf(f32 base, f32 exp);
+    f32 floorf(f32 x);
+    f32 ceilf(f32 x);
+    f32 roundf(f32 x);
+    f32 truncf(f32 x);
+    f32 fmodf(f32 x, f32 y);
+    f32 hypotf(f32 x, f32 y);
+    f32 fabsf(f32 x);
+}
+
+export interface<T> T pi(meta::Type<T> tag);
+export interface<T> T e(meta::Type<T> tag);
+export interface<T> T tau(meta::Type<T> tag);
+export interface<T> T ln2(meta::Type<T> tag);
+export interface<T> T log2_e(meta::Type<T> tag);
+export interface<T> T log10_e(meta::Type<T> tag);
+
+export f64 sqrt_f64(f64 x) {
+    return unsafe { sqrt(x) };
+}
+
+export f64 cbrt_f64(f64 x) {
+    return unsafe { cbrt(x) };
+}
+
+export f64 sin_f64(f64 x) {
+    return unsafe { sin(x) };
+}
+
+export f64 cos_f64(f64 x) {
+    return unsafe { cos(x) };
+}
+
+export f64 tan_f64(f64 x) {
+    return unsafe { tan(x) };
+}
+
+export f64 asin_f64(f64 x) {
+    return unsafe { asin(x) };
+}
+
+export f64 acos_f64(f64 x) {
+    return unsafe { acos(x) };
+}
+
+export f64 atan_f64(f64 x) {
+    return unsafe { atan(x) };
+}
+
+export f64 atan2_f64(f64 y, f64 x) {
+    return unsafe { atan2(y, x) };
+}
+
+export f64 sinh_f64(f64 x) {
+    return unsafe { sinh(x) };
+}
+
+export f64 cosh_f64(f64 x) {
+    return unsafe { cosh(x) };
+}
+
+export f64 tanh_f64(f64 x) {
+    return unsafe { tanh(x) };
+}
+
+export f64 exp_f64(f64 x) {
+    return unsafe { exp(x) };
+}
+
+export f64 exp2_f64(f64 x) {
+    return unsafe { exp2(x) };
+}
+
+export f64 log_f64(f64 x) {
+    return unsafe { log(x) };
+}
+
+export f64 log2_f64(f64 x) {
+    return unsafe { log2(x) };
+}
+
+export f64 log10_f64(f64 x) {
+    return unsafe { log10(x) };
+}
+
+export f64 pow_f64(f64 base, f64 exp) {
+    return unsafe { pow(base, exp) };
+}
+
+export f64 floor_f64(f64 x) {
+    return unsafe { floor(x) };
+}
+
+export f64 ceil_f64(f64 x) {
+    return unsafe { ceil(x) };
+}
+
+export f64 round_f64(f64 x) {
+    return unsafe { round(x) };
+}
+
+export f64 trunc_f64(f64 x) {
+    return unsafe { trunc(x) };
+}
+
+export f64 fmod_f64(f64 x, f64 y) {
+    return unsafe { fmod(x, y) };
+}
+
+export f64 hypot_f64(f64 x, f64 y) {
+    return unsafe { hypot(x, y) };
+}
+
+export f64 fabs_f64(f64 x) {
+    return unsafe { fabs(x) };
+}
+
+export f32 sqrt_f32(f32 x) {
+    return unsafe { sqrtf(x) };
+}
+
+export f32 cbrt_f32(f32 x) {
+    return unsafe { cbrtf(x) };
+}
+
+export f32 sin_f32(f32 x) {
+    return unsafe { sinf(x) };
+}
+
+export f32 cos_f32(f32 x) {
+    return unsafe { cosf(x) };
+}
+
+export f32 tan_f32(f32 x) {
+    return unsafe { tanf(x) };
+}
+
+export f32 asin_f32(f32 x) {
+    return unsafe { asinf(x) };
+}
+
+export f32 acos_f32(f32 x) {
+    return unsafe { acosf(x) };
+}
+
+export f32 atan_f32(f32 x) {
+    return unsafe { atanf(x) };
+}
+
+export f32 atan2_f32(f32 y, f32 x) {
+    return unsafe { atan2f(y, x) };
+}
+
+export f32 sinh_f32(f32 x) {
+    return unsafe { sinhf(x) };
+}
+
+export f32 cosh_f32(f32 x) {
+    return unsafe { coshf(x) };
+}
+
+export f32 tanh_f32(f32 x) {
+    return unsafe { tanhf(x) };
+}
+
+export f32 exp_f32(f32 x) {
+    return unsafe { expf(x) };
+}
+
+export f32 exp2_f32(f32 x) {
+    return unsafe { exp2f(x) };
+}
+
+export f32 log_f32(f32 x) {
+    return unsafe { logf(x) };
+}
+
+export f32 log2_f32(f32 x) {
+    return unsafe { log2f(x) };
+}
+
+export f32 log10_f32(f32 x) {
+    return unsafe { log10f(x) };
+}
+
+export f32 pow_f32(f32 base, f32 exp) {
+    return unsafe { powf(base, exp) };
+}
+
+export f32 floor_f32(f32 x) {
+    return unsafe { floorf(x) };
+}
+
+export f32 ceil_f32(f32 x) {
+    return unsafe { ceilf(x) };
+}
+
+export f32 round_f32(f32 x) {
+    return unsafe { roundf(x) };
+}
+
+export f32 trunc_f32(f32 x) {
+    return unsafe { truncf(x) };
+}
+
+export f32 fmod_f32(f32 x, f32 y) {
+    return unsafe { fmodf(x, y) };
+}
+
+export f32 hypot_f32(f32 x, f32 y) {
+    return unsafe { hypotf(x, y) };
+}
+
+export f32 fabs_f32(f32 x) {
+    return unsafe { fabsf(x) };
+}
+
+impl pi(meta::Type<f64> tag) {
+    return acos_f64(-1.0);
+}
+
+impl pi(meta::Type<f32> tag) {
+    return acos_f32(-1.0 as f32);
+}
+
+impl e(meta::Type<f64> tag) {
+    return exp_f64(1.0);
+}
+
+impl e(meta::Type<f32> tag) {
+    return exp_f32(1.0 as f32);
+}
+
+impl tau(meta::Type<f64> tag) {
+    return pi(meta::type_tag<f64>()) * 2.0;
+}
+
+impl tau(meta::Type<f32> tag) {
+    return pi(meta::type_tag<f32>()) * (2.0 as f32);
+}
+
+impl ln2(meta::Type<f64> tag) {
+    return log_f64(2.0);
+}
+
+impl ln2(meta::Type<f32> tag) {
+    return log_f32(2.0 as f32);
+}
+
+impl log2_e(meta::Type<f64> tag) {
+    return log2_f64(e(meta::type_tag<f64>()));
+}
+
+impl log2_e(meta::Type<f32> tag) {
+    return log2_f32(e(meta::type_tag<f32>()));
+}
+
+impl log10_e(meta::Type<f64> tag) {
+    return log10_f64(e(meta::type_tag<f64>()));
+}
+
+impl log10_e(meta::Type<f32> tag) {
+    return log10_f32(e(meta::type_tag<f32>()));
+}

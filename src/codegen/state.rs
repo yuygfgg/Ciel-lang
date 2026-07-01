@@ -64,6 +64,8 @@ pub(super) struct CodegenPlanData {
 pub(super) struct AsyncOpContext {
     pub(super) op_ty: Ty,
     pub(super) output_ty: Ty,
+    pub(super) raw_operation_def: DefId,
+    pub(super) poll_done_def: DefId,
 }
 
 #[derive(Clone, Debug)]

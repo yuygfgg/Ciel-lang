@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::types::{Ty, contains_generic, unify_ty};
+use crate::{
+    resolve::DefId,
+    types::{Ty, contains_generic, unify_ty},
+};
 
 use super::{
     CompilerMarkerDomain, GenericImplTemplate, ImplSig, TyCtx, interface_non_receiver_args,
@@ -29,12 +32,12 @@ impl<'ctx> CapabilityTable<'ctx> {
 
     pub(super) fn find_impl(
         &self,
-        interface_name: &str,
+        interface_def: DefId,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> Option<&'ctx ImplSig> {
         self.ctx.impls.iter().find(|implementation| {
-            implementation.interface_name == interface_name
+            implementation.interface_def == interface_def
                 && implementation
                     .receiver_ty
                     .as_ref()
@@ -45,16 +48,16 @@ impl<'ctx> CapabilityTable<'ctx> {
 
     pub(super) fn find_impl_by_full_args(
         &self,
-        interface_name: &str,
+        interface_def: DefId,
         interface_args: &[Ty],
         receiver_ty: Option<&Ty>,
     ) -> Option<&'ctx ImplSig> {
-        find_impl_in(&self.ctx.impls, interface_name, interface_args, receiver_ty)
+        find_impl_in(&self.ctx.impls, interface_def, interface_args, receiver_ty)
     }
 
     pub(super) fn generic_impl_matches_without_constraints(
         &self,
-        interface_name: &str,
+        interface_def: DefId,
         non_receiver_args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
@@ -62,7 +65,7 @@ impl<'ctx> CapabilityTable<'ctx> {
             .chain(non_receiver_args.iter().cloned())
             .collect::<Vec<_>>();
         self.ctx.generic_impls.iter().any(|template| {
-            if template.interface_name != interface_name
+            if template.interface_def != interface_def
                 || template.interface_args.len() != interface_args.len()
             {
                 return false;
@@ -99,12 +102,12 @@ impl<'ctx> CapabilityTable<'ctx> {
 
 pub(super) fn find_impl_in<'a>(
     impls: &'a [ImplSig],
-    interface_name: &str,
+    interface_def: DefId,
     interface_args: &[Ty],
     receiver_ty: Option<&Ty>,
 ) -> Option<&'a ImplSig> {
     impls.iter().find(|implementation| {
-        implementation.interface_name == interface_name
+        implementation.interface_def == interface_def
             && implementation.interface_args == interface_args
             && match (implementation.receiver_ty.as_ref(), receiver_ty) {
                 (Some(left), Some(right)) => left == right,
@@ -226,18 +229,27 @@ fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
                 name: right_name,
                 args: right_args,
             },
-        )
-        | (
-            Ty::DynamicInterface {
-                name: left_name,
-                args: left_args,
-            },
-            Ty::DynamicInterface {
-                name: right_name,
-                args: right_args,
-            },
         ) => {
             left_name == right_name
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| marker_ty_patterns_overlap(left, right))
+        }
+        (
+            Ty::DynamicInterface {
+                def_id: left_def_id,
+                args: left_args,
+                ..
+            },
+            Ty::DynamicInterface {
+                def_id: right_def_id,
+                args: right_args,
+                ..
+            },
+        ) => {
+            left_def_id == right_def_id
                 && left_args.len() == right_args.len()
                 && left_args
                     .iter()

@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/text as text;
+
+i64 main() {
+    text::Text hello = must(text::text_copy(" Hello"));
+    text::Text world = must(text::text_copy("World "));
+    text::Text joined = must(text::text_concat(hello, world));
+    if (!text::text_contains(joined, must(text::text_copy("loWo")))) {
+        return 1;
+    }
+    if (must(text::text_find(joined, must(text::text_copy("World")))) != 6) {
+        return 2;
+    }
+    text::Text trimmed = must(text::text_trim(joined));
+    if (!text::text_equal_slice(trimmed, "HelloWorld")) {
+        return 3;
+    }
+    if (!text::text_starts_with(trimmed, must(text::text_copy("Hello")))) {
+        return 4;
+    }
+    if (!text::text_ends_with(trimmed, must(text::text_copy("World")))) {
+        return 5;
+    }
+    text::Text upper = must(text::text_to_upper_ascii(trimmed));
+    if (!text::text_equal_slice(upper, "HELLOWORLD")) {
+        return 6;
+    }
+    text::Text lower = must(text::text_to_lower_ascii(upper));
+    if (!text::text_equal_slice(lower, "helloworld")) {
+        return 7;
+    }
+    if (!text::text_equal_slice(must(text::text_from_bool(true)), "true")) {
+        return 8;
+    }
+    if (!text::text_equal_slice(must(text::text_from_i64(-42)), "-42")) {
+        return 9;
+    }
+    return 0;
+}

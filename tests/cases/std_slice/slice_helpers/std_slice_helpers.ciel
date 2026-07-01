@@ -1,0 +1,39 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/result;
+import /std/slice as slice;
+
+i64 main() {
+    [4]i64 @items = [1, 2, 3, 4];
+    [4]i64 other = [1, 2, 3, 4];
+    if (!slice::slice_equal(items[..], other[..])) {
+        return 1;
+    }
+    slice::slice_reverse(items[..]);
+    if (items[0] != 4 || items[3] != 1) {
+        return 2;
+    }
+    if (!slice::slice_contains(items[..], 3)) {
+        return 3;
+    }
+    if (must(slice::slice_index_of(items[..], 2)) != 2) {
+        return 4;
+    }
+    [3]i64 sorted = [1, 2, 3];
+    if (!slice::slice_is_sorted(sorted[..])) {
+        return 5;
+    }
+    [2]i64 @dst = [0, 0];
+    if (slice::slice_copy(dst[..], sorted[..]) != 2) {
+        return 6;
+    }
+    if (dst[0] != 1 || dst[1] != 2) {
+        return 7;
+    }
+    slice::slice_fill(dst[..], 9);
+    if (dst[0] != 9 || dst[1] != 9) {
+        return 8;
+    }
+    return 0;
+}

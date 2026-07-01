@@ -251,7 +251,7 @@ impl TypeChecker {
         let handler_message_ty = handle_message_ty.clone();
         let storage_state_ty = self.meta_repr_storage_ty(&state_ty, span);
         let handler_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
-        let message_view = self.interface_view("Message", &[]);
+        let message_view = self.std_message_view("Message");
         let expected_handler_ty = Ty::Closure {
             ret: Box::new(handler_ret.clone()),
             params: vec![handler_state_ty.clone(), handler_message_ty.clone()],
@@ -427,7 +427,7 @@ impl TypeChecker {
         let actor_self_ty = std_actor_ty(handle_message_ty.clone());
         let init_ret = std_result_ty(storage_state_ty.clone(), std_error_ty());
         let handler_ret = std_result_ty(Ty::Void, std_error_ty());
-        let message_view = self.interface_view("Message", &[]);
+        let message_view = self.std_message_view("Message");
         let expected_init_ty = Ty::Closure {
             ret: Box::new(init_ret.clone()),
             params: vec![],
@@ -2138,9 +2138,29 @@ impl TypeChecker {
             self.require_assignable(op_ty, &op_expr.ty, op_expr.span);
         }
         let op_ty = explicit_op_ty.clone().unwrap_or_else(|| op_expr.ty.clone());
+        let Some(raw_operation_def) = self.std_async_interface_def("raw_operation") else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "internal error: missing std async interface `raw_operation`",
+            ));
+            return None;
+        };
+        let Some(poll_done_def) = self.std_async_interface_def("poll_done") else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "internal error: missing std async interface `poll_done`",
+            ));
+            return None;
+        };
         let output_ty = {
             let diagnostic_count = self.diagnostics.len();
-            match self.capability_determined_arg("poll_done", "poll_done::Out", &op_ty, span) {
+            match self.capability_determined_arg(
+                poll_done_def,
+                "poll_done",
+                "poll_done::Out",
+                &op_ty,
+                span,
+            ) {
                 Some(output_ty) => output_ty,
                 None => {
                     if self.diagnostics.len() == diagnostic_count {
@@ -2155,7 +2175,8 @@ impl TypeChecker {
                 }
             }
         };
-        if !self.type_implements_capability("raw_operation", &[], &op_ty) {
+        if !self.type_implements_capability_by_def(raw_operation_def, "raw_operation", &[], &op_ty)
+        {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!(
@@ -2163,7 +2184,12 @@ impl TypeChecker {
                 ),
             ));
         }
-        if !self.type_implements_capability("poll_done", std::slice::from_ref(&output_ty), &op_ty) {
+        if !self.type_implements_capability_by_def(
+            poll_done_def,
+            "poll_done",
+            std::slice::from_ref(&output_ty),
+            &op_ty,
+        ) {
             self.diagnostics.push(Diagnostic::new(
                 span,
                 format!("`future_from_op` operation type `{op_ty}` does not implement `poll_done<{output_ty}>`"),
@@ -2177,6 +2203,8 @@ impl TypeChecker {
             kind: TExprKind::AsyncOpFuture {
                 op: Box::new(op_expr),
                 output_ty,
+                raw_operation_def,
+                poll_done_def,
             },
         })
     }

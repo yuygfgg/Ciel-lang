@@ -4,6 +4,9 @@ import /std/c as c;
 import /std/iter as iter;
 import /std/message;
 import /std/meta as meta;
+import /std/ord as ord;
+import /std/slice as slice;
+import /std/sort as sort;
 import /std/storage as storage;
 
 unsafe extern "C" {
@@ -14,6 +17,8 @@ unsafe extern "C" {
 export enum VecError {
     CapacityOverflow,
     IndexOutOfBounds(usize, usize),
+    Empty,
+    NotFound,
     Runtime(i64),
 }
 
@@ -23,6 +28,10 @@ impl format_error(*const VecError error) {
             return "vector capacity overflow";
         case IndexOutOfBounds(_, _):
             return "vector index out of bounds";
+        case Empty:
+            return "vector is empty";
+        case NotFound:
+            return "vector item not found";
         case Runtime(_):
             return "vector runtime error";
     }
@@ -204,6 +213,143 @@ export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source) {
         i = i + 1;
     }
     return Ok(out);
+}
+
+// Removes and returns the last initialized item.
+export Result<T, VecError> vec_pop<T>(*Vec<T> vec) = .pop {
+    usize len = vec_len(vec);
+    if (len == 0) {
+        return Err(Empty);
+    }
+    usize next_len = len - 1;
+    []const T storage_view = unsafe { storage::raw_const_slice<T>(&vec->storage) };
+    T out = storage_view[next_len];
+    usize cap = vec_capacity(vec);
+    storage::RawStorage<T> old = unsafe { vec->storage };
+    storage::RawStorage<T> next = vec_raw_realloc_zeroed<T>(old, next_len, cap)?;
+    unsafe {
+        vec->storage = next;
+        vec->len = next_len;
+    };
+    return Ok(out);
+}
+
+// Reduces the initialized length to at most len.
+export void vec_truncate<T>(*Vec<T> vec, usize len) = .truncate {
+    usize current = vec_len(vec);
+    if (len >= current) {
+        return;
+    }
+    usize cap = vec_capacity(vec);
+    storage::RawStorage<T> old = unsafe { vec->storage };
+    storage::RawStorage<T> next = must(vec_raw_realloc_zeroed<T>(old, len, cap));
+    unsafe {
+        vec->storage = next;
+        vec->len = len;
+    };
+}
+
+// Appends all items in source.
+export Result<void, VecError> vec_extend<T>(*Vec<T> vec, []const T source) = .extend {
+    vec_reserve<T>(vec, source.len)?;
+    usize @i = 0;
+    while (i < source.len) {
+        vec_push<T>(vec, source[i])?;
+        i = i + 1;
+    }
+    return Ok;
+}
+
+// Inserts value at index, shifting initialized items after it.
+export Result<void, VecError> vec_insert<T>(*Vec<T> vec, usize index, T value) = .insert {
+    usize len = vec_len(vec);
+    if (index > len) {
+        return Err(IndexOutOfBounds(index, len));
+    }
+    vec_reserve<T>(vec, 1)?;
+    []T items = unsafe { storage::raw_slice<T>(&vec->storage) };
+    usize @i = len;
+    while (i > index) {
+        items[i] = items[i - 1];
+        i = i - 1;
+    }
+    items[index] = value;
+    unsafe {
+        vec->len = len + 1;
+    };
+    return Ok;
+}
+
+// Removes and returns the item at index, shifting later items backward.
+export Result<T, VecError> vec_remove<T>(*Vec<T> vec, usize index) = .remove {
+    usize len = vec_len(vec);
+    if (index >= len) {
+        return Err(IndexOutOfBounds(index, len));
+    }
+    []T items = unsafe { storage::raw_slice<T>(&vec->storage) };
+    T out = items[index];
+    usize @i = index;
+    while ((i + 1) < len) {
+        items[i] = items[i + 1];
+        i = i + 1;
+    }
+    usize next_len = len - 1;
+    usize cap = vec_capacity(vec);
+    storage::RawStorage<T> old = unsafe { vec->storage };
+    storage::RawStorage<T> next = vec_raw_realloc_zeroed<T>(old, next_len, cap)?;
+    unsafe {
+        vec->storage = next;
+        vec->len = next_len;
+    };
+    return Ok(out);
+}
+
+// Reverses the initialized prefix in place.
+export void vec_reverse<T>(*Vec<T> vec) = .reverse {
+    []T items = vec_mut_slice<T>(vec);
+    slice::slice_reverse<T>(items);
+}
+
+// Sorts the initialized prefix in ascending order.
+export void vec_sort<T: ord::lt>(*Vec<T> vec) = .sort {
+    []T items = vec_mut_slice<T>(vec);
+    sort::sort<T>(items);
+}
+
+// Sorts the initialized prefix with a custom comparator.
+export void vec_sort_by<T>(
+    *Vec<T> vec,
+    bool |(*const T, *const T)| less
+) = .sort_by {
+    []T items = vec_mut_slice<T>(vec);
+    sort::sort_by<T>(items, less);
+}
+
+// Searches the initialized prefix assuming it is sorted.
+export Result<usize, VecError> vec_binary_search<T: ord::ordered>(
+    *const Vec<T> vec,
+    T needle
+) = .binary_search {
+    []const T items = vec_slice<T>(vec);
+    usize @left = 0;
+    usize @right = items.len;
+    while (left < right) {
+        usize mid = left + ((right - left) / 2);
+        if (ord::eq(&items[mid], &needle)) {
+            return Ok(mid);
+        }
+        if (ord::lt(&items[mid], &needle)) {
+            left = mid + 1;
+        } else {
+            right = mid;
+        }
+    }
+    return Err(NotFound);
+}
+
+// Compares two vectors by initialized length and element equality.
+export bool vec_equal<T: ord::eq>(*const Vec<T> left, *const Vec<T> right) {
+    return slice::slice_equal<T>(vec_slice<T>(left), vec_slice<T>(right));
 }
 
 impl<T> iter::collect_new<T, VecError>(meta::Type<Vec<T>> collection, usize capacity) {

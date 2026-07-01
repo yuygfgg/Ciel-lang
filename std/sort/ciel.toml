@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.sort"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/sort" = "sort.ciel"

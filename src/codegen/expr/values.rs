@@ -283,7 +283,7 @@ impl<'a> CGenerator<'a> {
         concrete_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let Ty::DynamicInterface { name, args } = &expr.ty else {
+        let Ty::DynamicInterface { def_id, args, .. } = &expr.ty else {
             return Err(vec![Diagnostic::new(
                 expr.span,
                 "internal error: dynamic re-erasure target is not dynamic",
@@ -306,12 +306,13 @@ impl<'a> CGenerator<'a> {
                 "{vtable_ty} *{vtable_temp} = ({vtable_ty} *)ciel_alloc(sizeof({vtable_ty}));"
             ),
         );
-        for interface in self.dynamic_view_interfaces(name, args) {
+        for interface in self.dynamic_view_interfaces(*def_id, args) {
+            let field_name = self.dynamic_interface_field_name(&interface);
             self.line_indent(
                 indent,
                 &format!(
                     "{vtable_temp}->{} = ({source_temp}).vtable->{};",
-                    interface.name, interface.name
+                    field_name, field_name
                 ),
             );
         }
@@ -591,6 +592,7 @@ impl<'a> CGenerator<'a> {
 
     pub(super) fn emit_retained_closure_interface_call(
         &mut self,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: &[Ty],
         receiver: &TExpr,
@@ -598,6 +600,7 @@ impl<'a> CGenerator<'a> {
         stmt_indent: Option<usize>,
     ) -> DiagResult<String> {
         let capability = ConstraintRef {
+            def_id: interface_def,
             name: interface_name.to_string(),
             args: interface_args.to_vec(),
         };

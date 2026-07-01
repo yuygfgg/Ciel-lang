@@ -116,20 +116,20 @@ export Result<frame::FrameHeader, tunnel_error::FrameCodecError> decode_header([
         return Err(tunnel_error::FrameProtocol(tunnel_error::UnexpectedEof));
     }
 
-    u32 magic = frame_codec_result<u32>(binary::get_be({} as meta::Type<u32>, input[..4]))?;
+    u32 magic = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[..4]))?;
     if (magic != frame::magic()) {
         return Err(tunnel_error::FrameProtocol(tunnel_error::BadMagic(magic)));
     }
 
-    u16 version = frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[4..6]))?;
+    u16 version = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[4..6]))?;
     if (version != frame::protocol_version()) {
         return Err(tunnel_error::FrameProtocol(tunnel_error::UnsupportedVersion(version)));
     }
 
-    u16 kind_code = frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[6..8]))?;
+    u16 kind_code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[6..8]))?;
     frame::FrameKind kind = frame_kind_result(frame::frame_kind_from_code(kind_code))?;
-    u32 stream_id = frame_codec_result<u32>(binary::get_be({} as meta::Type<u32>, input[8..12]))?;
-    u32 length = frame_codec_result<u32>(binary::get_be({} as meta::Type<u32>, input[12..16]))?;
+    u32 stream_id = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[8..12]))?;
+    u32 length = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[12..16]))?;
 
     frame_protocol_void(frame::validate_payload_len(length as usize))?;
     frame_protocol_void(frame::validate_stream_id(kind, stream_id))?;
@@ -185,9 +185,9 @@ export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_resu
             tunnel_error::MalformedPayload("short error open result")
         ));
     }
-    u16 code = frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[1..3]))?;
+    u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[1..3]))?;
     usize message_len =
-        frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[3..5]))? as usize;
+        frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[3..5]))? as usize;
     if (input.len != ((5 as usize) + message_len)) {
         return Err(tunnel_error::FrameProtocol(
             tunnel_error::MalformedPayload("open result length mismatch")
@@ -223,9 +223,9 @@ export Result<CloseReason, tunnel_error::FrameCodecError> decode_close_reason([]
             tunnel_error::MalformedPayload("short close reason")
         ));
     }
-    u16 code = frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[..2]))?;
+    u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
     usize message_len =
-        frame_codec_result<u16>(binary::get_be({} as meta::Type<u16>, input[2..4]))? as usize;
+        frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[2..4]))? as usize;
     if (input.len != ((4 as usize) + message_len)) {
         return Err(tunnel_error::FrameProtocol(
             tunnel_error::MalformedPayload("close reason length mismatch")

@@ -327,6 +327,9 @@ fn render_output_cmake_with_native_dirs(
         }
         out.push_str(")\n");
     }
+    if is_linux_target(output.target_os) || is_macos_target(output.target_os) {
+        out.push_str("target_link_libraries(ciel_output PRIVATE m)\n");
+    }
 
     render_profile_options(&mut out, plan.profile, output.target_os);
     render_extra_options(&mut out, "target_compile_options", &output.compile_flags);

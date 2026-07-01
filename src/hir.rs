@@ -457,6 +457,10 @@ pub enum ExprKind {
         type_args: Vec<Type>,
         args: Vec<Expr>,
     },
+    GenericValue {
+        callee: Box<Expr>,
+        type_args: Vec<Type>,
+    },
     Field {
         base: Box<Expr>,
         field: ast::Ident,
@@ -1348,6 +1352,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 callee: Box::new(self.lower_expr(callee)),
                 type_args: type_args.iter().map(|ty| self.lower_type(ty)).collect(),
                 args: args.iter().map(|expr| self.lower_expr(expr)).collect(),
+            },
+            ast::ExprKind::GenericValue { callee, type_args } => ExprKind::GenericValue {
+                callee: Box::new(self.lower_expr(callee)),
+                type_args: type_args.iter().map(|ty| self.lower_type(ty)).collect(),
             },
             ast::ExprKind::Field { base, field } => ExprKind::Field {
                 base: Box::new(self.lower_expr(base)),

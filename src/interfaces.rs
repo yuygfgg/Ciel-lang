@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{
+    resolve::DefId,
     thir::{CheckedImpl, CheckedInterface, CheckedInterfaceAlias, CheckedInterfaceRef},
     types::{ConstraintBounds, ConstraintRef, Ty, receiver_ty_from_value_ty, substitute_ty},
 };
@@ -11,46 +12,51 @@ pub struct InterfaceSignature {
     pub params: Vec<Ty>,
 }
 
-pub fn interface_by_name<'a>(
-    interfaces: &'a [CheckedInterface],
-    name: &str,
-) -> Option<&'a CheckedInterface> {
-    interfaces.iter().find(|interface| interface.name == name)
+pub fn interface_by_def(
+    interfaces: &[CheckedInterface],
+    def_id: DefId,
+) -> Option<&CheckedInterface> {
+    interfaces
+        .iter()
+        .find(|interface| interface.def_id == def_id)
 }
 
 pub fn checked_interface_view(
     interfaces: &[CheckedInterface],
     aliases: &[CheckedInterfaceAlias],
-    name: &str,
+    def_id: DefId,
     args: &[Ty],
 ) -> Vec<CheckedInterfaceRef> {
-    if let Some(interface) = interface_by_name(interfaces, name) {
+    if let Some(interface) = interface_by_def(interfaces, def_id) {
         return vec![CheckedInterfaceRef {
+            def_id: interface.def_id,
             name: interface.name.clone(),
             args: args.to_vec(),
         }];
     }
     aliases
         .iter()
-        .find(|alias| alias.name == name)
+        .find(|alias| alias.def_id == def_id)
         .map(|alias| substitute_checked_alias_refs(&alias.generics, args, &alias.positive))
         .unwrap_or_default()
 }
 
 pub fn constraint_interface_view(
     aliases: &[CheckedInterfaceAlias],
+    def_id: DefId,
     name: &str,
     args: &[Ty],
 ) -> ConstraintBounds {
     aliases
         .iter()
-        .find(|alias| alias.name == name)
+        .find(|alias| alias.def_id == def_id)
         .map(|alias| {
             let subst = alias_subst(&alias.generics, args);
             let positive = alias
                 .positive
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -63,6 +69,7 @@ pub fn constraint_interface_view(
                 .negative
                 .iter()
                 .map(|entry| ConstraintRef {
+                    def_id: entry.def_id,
                     name: entry.name.clone(),
                     args: entry
                         .args
@@ -75,6 +82,7 @@ pub fn constraint_interface_view(
         })
         .unwrap_or_else(|| ConstraintBounds {
             positive: vec![ConstraintRef {
+                def_id,
                 name: name.to_string(),
                 args: args.to_vec(),
             }],
@@ -97,6 +105,7 @@ fn substitute_checked_alias_refs(
     let subst = alias_subst(generics, args);
     refs.iter()
         .map(|entry| CheckedInterfaceRef {
+            def_id: entry.def_id,
             name: entry.name.clone(),
             args: entry
                 .args
@@ -148,7 +157,7 @@ pub fn retained_closure_interface_signature(
     receiver_ty: &Ty,
     capability: &ConstraintRef,
 ) -> Option<InterfaceSignature> {
-    let interface = interface_by_name(interfaces, &capability.name)?;
+    let interface = interface_by_def(interfaces, capability.def_id)?;
     Some(interface_signature(
         interface,
         receiver_ty.clone(),
@@ -161,7 +170,7 @@ pub fn dynamic_interface_signature(
     interfaces: &[CheckedInterface],
     interface_ref: &CheckedInterfaceRef,
 ) -> Option<InterfaceSignature> {
-    let interface = interface_by_name(interfaces, &interface_ref.name)?;
+    let interface = interface_by_def(interfaces, interface_ref.def_id)?;
     Some(interface_signature(
         interface,
         Ty::pointer_to(Ty::Void),
@@ -172,11 +181,11 @@ pub fn dynamic_interface_signature(
 
 pub fn impl_matches_interface_receiver(
     implementation: &CheckedImpl,
-    interface_name: &str,
+    interface_def: DefId,
     non_receiver_args: &[Ty],
     receiver_ty: &Ty,
 ) -> bool {
-    implementation.interface_name == interface_name
+    implementation.interface_def == interface_def
         && implementation
             .receiver_ty
             .as_ref()
@@ -192,7 +201,7 @@ pub fn impl_matches_dynamic_interface(
     let receiver_ty = receiver_ty_from_value_ty(concrete_ty);
     impl_matches_interface_receiver(
         implementation,
-        &interface_ref.name,
+        interface_ref.def_id,
         &interface_ref.args,
         &receiver_ty,
     )

@@ -20,6 +20,10 @@ CIEL_MALLOC_LIKE CIEL_RETURNS_NONNULL char*
 ciel_cstr_from_slice(const char* ptr, size_t len);
 size_t ciel_f32_to_string(float value, char* out, size_t cap);
 size_t ciel_f64_to_string(double value, char* out, size_t cap);
+int32_t ciel_parse_f32(const char* text, size_t len, float* out,
+                       size_t* out_end, int32_t* out_range);
+int32_t ciel_parse_f64(const char* text, size_t len, double* out,
+                       size_t* out_end, int32_t* out_range);
 int32_t ciel_time_monotonic_ms(uint64_t* out);
 int32_t ciel_time_sleep_ms(uint64_t ms);
 

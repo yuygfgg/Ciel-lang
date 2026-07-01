@@ -1,0 +1,292 @@
+export import /std/result;
+import /std/ord as ord;
+import /std/storage as storage;
+
+export enum SortError {
+    Storage,
+}
+
+impl format_error(*const SortError error) {
+    switch (*error) {
+        case Storage:
+            return "sort storage allocation failed";
+    }
+}
+
+bool ord_less<T: ord::lt>(*const T left, *const T right) {
+    return ord::lt(left, right);
+}
+
+void swap<T>([]T items, usize left, usize right) {
+    T tmp = items[left];
+    items[left] = items[right];
+    items[right] = tmp;
+}
+
+usize floor_log2(usize n) {
+    usize @value = n;
+    usize @out = 0;
+    while (value > 1) {
+        value = value / 2;
+        out = out + 1;
+    }
+    return out;
+}
+
+void insertion_sort_range<T>(
+    []T items,
+    usize lo,
+    usize hi,
+    bool |(*const T, *const T)| less
+) {
+    if ((hi - lo) < 2) {
+        return;
+    }
+    usize @i = lo + 1;
+    while (i < hi) {
+        T @value = items[i];
+        usize @j = i;
+        while (j > lo && less(&value, &items[j - 1])) {
+            items[j] = items[j - 1];
+            j = j - 1;
+        }
+        items[j] = value;
+        i = i + 1;
+    }
+}
+
+void sift_down_range<T>(
+    []T items,
+    usize lo,
+    usize start,
+    usize end,
+    bool |(*const T, *const T)| less
+) {
+    usize @root = start;
+    while (true) {
+        usize child = (root * 2) + 1;
+        if (child > end) {
+            return;
+        }
+        usize @swap_idx = root;
+        if (less(&items[lo + swap_idx], &items[lo + child])) {
+            swap_idx = child;
+        }
+        if ((child + 1) <= end && less(&items[lo + swap_idx], &items[lo + child + 1])) {
+            swap_idx = child + 1;
+        }
+        if (swap_idx == root) {
+            return;
+        }
+        swap<T>(items, lo + root, lo + swap_idx);
+        root = swap_idx;
+    }
+}
+
+void heap_sort_range<T>(
+    []T items,
+    usize lo,
+    usize hi,
+    bool |(*const T, *const T)| less
+) {
+    usize n = hi - lo;
+    if (n < 2) {
+        return;
+    }
+
+    usize @start = (n - 2) / 2;
+    while (true) {
+        sift_down_range<T>(items, lo, start, n - 1, less);
+        if (start == 0) {
+            break;
+        }
+        start = start - 1;
+    }
+
+    usize @end = n - 1;
+    while (end > 0) {
+        swap<T>(items, lo, lo + end);
+        end = end - 1;
+        sift_down_range<T>(items, lo, 0, end, less);
+    }
+}
+
+usize median_of_three<T>(
+    []T items,
+    usize a,
+    usize b,
+    usize c,
+    bool |(*const T, *const T)| less
+) {
+    if (less(&items[a], &items[b])) {
+        if (less(&items[b], &items[c])) {
+            return b;
+        }
+        if (less(&items[a], &items[c])) {
+            return c;
+        }
+        return a;
+    }
+    if (less(&items[a], &items[c])) {
+        return a;
+    }
+    if (less(&items[b], &items[c])) {
+        return c;
+    }
+    return b;
+}
+
+usize partition_range<T>(
+    []T items,
+    usize lo,
+    usize hi,
+    bool |(*const T, *const T)| less
+) {
+    usize mid = lo + ((hi - lo) / 2);
+    usize pivot_idx = median_of_three<T>(items, lo, mid, hi - 1, less);
+    swap<T>(items, pivot_idx, hi - 1);
+    usize pivot_pos = hi - 1;
+
+    usize @store = lo;
+    usize @i = lo;
+    while (i < pivot_pos) {
+        if (less(&items[i], &items[pivot_pos])) {
+            swap<T>(items, i, store);
+            store = store + 1;
+        }
+        i = i + 1;
+    }
+    swap<T>(items, store, pivot_pos);
+    return store;
+}
+
+void introsort_range<T>(
+    []T items,
+    usize lo,
+    usize hi,
+    usize depth_limit,
+    bool |(*const T, *const T)| less
+) {
+    usize @left = lo;
+    usize @right = hi;
+    usize @depth = depth_limit;
+    while ((right - left) > 16) {
+        if (depth == 0) {
+            heap_sort_range<T>(items, left, right, less);
+            return;
+        }
+        depth = depth - 1;
+        usize pivot = partition_range<T>(items, left, right, less);
+
+        if ((pivot - left) < (right - (pivot + 1))) {
+            introsort_range<T>(items, left, pivot, depth, less);
+            left = pivot + 1;
+        } else {
+            introsort_range<T>(items, pivot + 1, right, depth, less);
+            right = pivot;
+        }
+    }
+    insertion_sort_range<T>(items, left, right, less);
+}
+
+export void sort_by<T>([]T items, bool |(*const T, *const T)| less) {
+    if (items.len < 2) {
+        return;
+    }
+    introsort_range<T>(items, 0, items.len, floor_log2(items.len) * 2, less);
+}
+
+export void sort<T: ord::lt>([]T items) {
+    sort_by<T>(items, ord_less<T>);
+}
+
+void merge_ranges<T>(
+    []T items,
+    []T tmp,
+    usize lo,
+    usize mid,
+    usize hi,
+    bool |(*const T, *const T)| less
+) {
+    usize @left = lo;
+    usize @right = mid;
+    usize @out = lo;
+    while (left < mid && right < hi) {
+        if (less(&items[right], &items[left])) {
+            tmp[out] = items[right];
+            right = right + 1;
+        } else {
+            tmp[out] = items[left];
+            left = left + 1;
+        }
+        out = out + 1;
+    }
+    while (left < mid) {
+        tmp[out] = items[left];
+        left = left + 1;
+        out = out + 1;
+    }
+    while (right < hi) {
+        tmp[out] = items[right];
+        right = right + 1;
+        out = out + 1;
+    }
+    usize @i = lo;
+    while (i < hi) {
+        items[i] = tmp[i];
+        i = i + 1;
+    }
+}
+
+void merge_sort_range<T>(
+    []T items,
+    []T tmp,
+    usize lo,
+    usize hi,
+    bool |(*const T, *const T)| less
+) {
+    if ((hi - lo) < 2) {
+        return;
+    }
+    usize mid = lo + ((hi - lo) / 2);
+    merge_sort_range<T>(items, tmp, lo, mid, less);
+    merge_sort_range<T>(items, tmp, mid, hi, less);
+    merge_ranges<T>(items, tmp, lo, mid, hi, less);
+}
+
+export Result<void, SortError> sort_stable_by<T>(
+    []T items,
+    bool |(*const T, *const T)| less
+) {
+    if (items.len < 2) {
+        return Ok;
+    }
+    storage::RawStorage<T> @raw;
+    switch (unsafe { storage::raw_zeroed<T>(items.len) }) {
+        case Ok(value):
+            raw = value;
+        case Err(_):
+            return Err(Storage);
+    }
+    []T tmp = unsafe { storage::raw_slice<T>(&raw) };
+    merge_sort_range<T>(items, tmp, 0, items.len, less);
+    return Ok;
+}
+
+export Result<void, SortError> sort_stable<T: ord::lt>([]T items) {
+    return sort_stable_by<T>(items, ord_less<T>);
+}
+
+export bool is_sorted<T: ord::lt>([]const T items) {
+    if (items.len < 2) {
+        return true;
+    }
+    usize @i = 1;
+    while (i < items.len) {
+        if (ord::lt(&items[i], &items[i - 1])) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}

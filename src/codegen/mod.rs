@@ -27,15 +27,15 @@ use crate::{
     type_display::result_args,
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
+        STD_ERROR_TRAIT_ALIAS, STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
         STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
         clone_message_capability, generated_future_output_ty,
-        generated_future_ty_with_affine_state, is_clone_message_capability, mangle_constraint_ref,
-        mangle_ty_fragment, map_ty_children, meta_array_split_len, meta_named, meta_product_ty,
-        meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name,
-        meta_sum_ty, retained_closure_capabilities, std_async_error_ty, std_error_code_ty,
-        std_error_trait_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
-        std_resource_error_ty, std_result_ty, std_send_permit_ty, std_task_ty, unify_ty,
+        generated_future_ty_with_affine_state, mangle_constraint_ref, mangle_ty_fragment,
+        map_ty_children, meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
+        retained_closure_capabilities, std_async_error_ty, std_error_code_ty, std_error_trait_ty,
+        std_error_ty, std_future_ty, std_meta_repr_marker_ty, std_resource_error_ty, std_result_ty,
+        std_send_permit_ty, std_task_ty, unify_ty,
     },
 };
 

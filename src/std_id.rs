@@ -17,6 +17,7 @@ const STD_META_EXPORT: &str = "/std/meta";
 const STD_STORAGE_EXPORT: &str = "/std/storage";
 const STD_ASYNC_EXPORT: &str = "/std/async";
 const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
+const STD_ASYNC_INTERNAL_ADAPTER_EXPORT: &str = "/std/async/internal/adapter";
 const STD_ASYNC_IO_EXPORT: &str = "/std/async_io";
 const STD_ASYNC_NET_EXPORT: &str = "/std/async_net";
 const STD_ASYNC_TIME_EXPORT: &str = "/std/async_time";
@@ -41,7 +42,15 @@ fn module_export_matches_any(
 }
 
 fn module_export_matches_std_async(resolved: &ResolvedProgram, module: ModuleId) -> bool {
-    module_export_matches_any(resolved, module, &[STD_ASYNC_EXPORT, STD_ASYNC_CORE_EXPORT])
+    module_export_matches_any(
+        resolved,
+        module,
+        &[
+            STD_ASYNC_EXPORT,
+            STD_ASYNC_CORE_EXPORT,
+            STD_ASYNC_INTERNAL_ADAPTER_EXPORT,
+        ],
+    )
 }
 
 fn def_matches(
@@ -137,6 +146,20 @@ pub fn is_std_message_interface(
     )
 }
 
+pub fn is_std_message_interface_alias(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::InterfaceAlias,
+        expected_name,
+        STD_MESSAGE_EXPORT,
+    )
+}
+
 pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId) -> bool {
     is_std_message_interface(resolved, def_id, STD_MESSAGE_CLONE_INTERFACE)
 }
@@ -211,6 +234,12 @@ pub fn is_std_async_interface(
         DefKind::Interface,
         expected_name,
         STD_ASYNC_CORE_EXPORT,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ASYNC_INTERNAL_ADAPTER_EXPORT,
     )
 }
 

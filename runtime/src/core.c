@@ -160,6 +160,50 @@ size_t ciel_f64_to_string(double value, char *out, size_t cap) {
     return ciel_format_float(out, cap, "%.17g", value);
 }
 
+static int32_t ciel_parse_range(double value) {
+    if (value == 0.0)
+        return -1;
+    return 1;
+}
+
+int32_t ciel_parse_f64(const char *text, size_t len, double *out,
+                       size_t *out_end, int32_t *out_range) {
+    if (text == NULL || out == NULL || out_end == NULL || out_range == NULL)
+        return EINVAL;
+    char *copy = ciel_cstr_from_slice(text, len);
+    errno = 0;
+    char *end = NULL;
+    double value = strtod(copy, &end);
+    if (end == copy || end == NULL) {
+        *out_end = 0;
+        *out_range = 0;
+        return EINVAL;
+    }
+    *out = value;
+    *out_end = (size_t)(end - copy);
+    *out_range = errno == ERANGE ? ciel_parse_range(value) : 0;
+    return 0;
+}
+
+int32_t ciel_parse_f32(const char *text, size_t len, float *out,
+                       size_t *out_end, int32_t *out_range) {
+    if (text == NULL || out == NULL || out_end == NULL || out_range == NULL)
+        return EINVAL;
+    char *copy = ciel_cstr_from_slice(text, len);
+    errno = 0;
+    char *end = NULL;
+    float value = strtof(copy, &end);
+    if (end == copy || end == NULL) {
+        *out_end = 0;
+        *out_range = 0;
+        return EINVAL;
+    }
+    *out = value;
+    *out_end = (size_t)(end - copy);
+    *out_range = errno == ERANGE ? ciel_parse_range((double)value) : 0;
+    return 0;
+}
+
 int ciel_io_open_read(const char *path) { return open(path, O_RDONLY); }
 
 int ciel_io_open_write(const char *path) {

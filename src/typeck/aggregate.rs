@@ -308,10 +308,7 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn interface_sig_by_name(&self, name: &str) -> Option<&InterfaceSig> {
-        self.ctx
-            .interface_names
-            .get(name)
-            .and_then(|def_id| self.ctx.interfaces.get(def_id))
+    pub(super) fn interface_sig_by_def(&self, def_id: DefId) -> Option<&InterfaceSig> {
+        self.ctx.interfaces.get(&def_id)
     }
 }

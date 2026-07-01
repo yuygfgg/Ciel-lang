@@ -29,6 +29,10 @@ bool is_overflow(Result<void, vec::VecError> value) {
                     return true;
                 case vec::IndexOutOfBounds(_, _):
                     return false;
+                case vec::Empty:
+                    return false;
+                case vec::NotFound:
+                    return false;
                 case vec::Runtime(_):
                     return false;
             }

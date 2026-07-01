@@ -336,7 +336,7 @@ impl TypeChecker {
                 };
                 let bounds = self.constraint_bounds(constraint, &subst);
                 for capability in bounds.positive {
-                    let Some(interface) = self.interface_sig_by_name(&capability.name) else {
+                    let Some(interface) = self.ctx.interfaces.get(&capability.def_id) else {
                         continue;
                     };
                     let Some(determined_start) = interface.determined_start else {
@@ -441,6 +441,7 @@ impl TypeChecker {
                             ));
                         }
                         Ty::DynamicInterface {
+                            def_id,
                             name: def.name,
                             args: args
                                 .iter()
@@ -454,10 +455,10 @@ impl TypeChecker {
                             .iter()
                             .map(|arg| self.lower_type_with_subst_inner(arg, subst, allow_holes))
                             .collect::<Vec<_>>();
-                        let view = self.interface_view(&def.name, &alias_args);
+                        let view = self.interface_view_for_def(def_id, &alias_args);
                         for entry in view.positive.iter().chain(view.negative.iter()) {
                             if let Some(interface) =
-                                self.interface_sig_by_name(&entry.name).cloned()
+                                self.interface_sig_by_def(entry.def_id).cloned()
                             {
                                 let required_args = interface.generics.len().saturating_sub(1);
                                 if entry.args.len() != required_args {
@@ -481,6 +482,7 @@ impl TypeChecker {
                             }
                         }
                         Ty::DynamicInterface {
+                            def_id,
                             name: def.name,
                             args: alias_args,
                         }
@@ -656,7 +658,8 @@ impl TypeChecker {
                     .map(|arg| self.resolve_type_holes(arg))
                     .collect(),
             },
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
+                def_id: *def_id,
                 name: name.clone(),
                 args: args
                     .iter()
@@ -787,12 +790,13 @@ impl TypeChecker {
                 .zip(actual_args.iter())
                 .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
             (
-                Ty::DynamicInterface { name, args },
+                Ty::DynamicInterface { def_id, args, .. },
                 Ty::DynamicInterface {
-                    name: actual_name,
+                    def_id: actual_def_id,
                     args: actual_args,
+                    ..
                 },
-            ) if name == actual_name && args.len() == actual_args.len() => args
+            ) if def_id == actual_def_id && args.len() == actual_args.len() => args
                 .iter()
                 .zip(actual_args.iter())
                 .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
@@ -968,11 +972,12 @@ impl TypeChecker {
                 ),
                 _ => false,
             },
-            Ty::DynamicInterface { name, args } => match &actual {
+            Ty::DynamicInterface { def_id, args, .. } => match &actual {
                 Ty::DynamicInterface {
-                    name: actual_name,
+                    def_id: actual_def_id,
                     args: actual_args,
-                } if name == actual_name && args.len() == actual_args.len() => args
+                    ..
+                } if def_id == actual_def_id && args.len() == actual_args.len() => args
                     .iter()
                     .zip(actual_args.iter())
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),

@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/format as format;
+import /std/io;
+
+bool equal([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    if (!equal(format::u8_to_hex(0xab as u8), "ab")) {
+        return 1;
+    }
+    if (!equal(format::u32_to_hex(0x1234abcd as u32), "1234abcd")) {
+        return 2;
+    }
+    if (!equal(format::u64_to_hex(0x1234abcd as u64), "000000001234abcd")) {
+        return 3;
+    }
+    bool flag = true;
+    if (!equal(to_string(&flag), "true")) {
+        return 4;
+    }
+    i16 small = -12 as i16;
+    if (!equal(to_string(&small), "-12")) {
+        return 5;
+    }
+    return 0;
+}

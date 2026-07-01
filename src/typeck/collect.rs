@@ -41,6 +41,7 @@ impl TypeChecker {
                         self.ctx.interfaces.insert(
                             def_id,
                             InterfaceSig {
+                                def_id,
                                 name: decl.signature.name.name.clone(),
                                 is_unsafe: decl.is_unsafe,
                                 generics,
@@ -49,9 +50,6 @@ impl TypeChecker {
                                 params: decl.signature.params.clone(),
                             },
                         );
-                        self.ctx
-                            .interface_names
-                            .insert(decl.signature.name.name.clone(), def_id);
                     }
                     ItemKind::InterfaceAlias(decl) => {
                         let Some(def_id) = self.ctx.resolved.local_def(
@@ -86,9 +84,6 @@ impl TypeChecker {
                                 expr: decl.expr.clone(),
                             },
                         );
-                        self.ctx
-                            .interface_alias_names
-                            .insert(decl.name.name.clone(), def_id);
                     }
                     _ => {}
                 }

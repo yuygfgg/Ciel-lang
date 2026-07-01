@@ -388,7 +388,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<String> {
         let error_ty = std_error_ty();
-        let trait_ty = std_error_trait_ty();
+        let trait_ty = self.std_error_trait_ty();
         let trait_value = self.emit_dynamic_interface_value_from_code(
             &trait_ty,
             concrete_ty,
@@ -407,8 +407,8 @@ impl<'a> CGenerator<'a> {
             self.c_type(&code_ty),
             self.c_sizeof_type(&code_ty)
         );
-        let trait_value =
-            self.dynamic_interface_from_ptr_literal(&std_error_trait_ty(), &code_ty, &code_ptr);
+        let trait_ty = self.std_error_trait_ty();
+        let trait_value = self.dynamic_interface_from_ptr_literal(&trait_ty, &code_ty, &code_ptr);
         self.error_value_literal(&std_error_ty(), &trait_value, "\"\"", "NULL")
     }
 
@@ -500,9 +500,14 @@ impl<'a> CGenerator<'a> {
             return Ok(result_temp);
         }
         if let Ty::Closure { constraints, .. } = message_ty
-            && constraints.positive.iter().any(is_clone_message_capability)
+            && constraints
+                .positive
+                .iter()
+                .any(|capability| self.is_std_clone_message_capability(capability))
         {
-            let capability = clone_message_capability();
+            let capability = clone_message_capability(
+                self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE),
+            );
             let field = self.retained_closure_witness_field_name(&capability);
             self.line_indent(
                 indent,
@@ -527,7 +532,10 @@ impl<'a> CGenerator<'a> {
             || matches!(
                 message_ty,
                 Ty::Closure { constraints, .. }
-                    if constraints.positive.iter().any(is_clone_message_capability)
+                    if constraints
+                        .positive
+                        .iter()
+                        .any(|capability| self.is_std_clone_message_capability(capability))
             )
         {
             return self.emit_clone_message_result_from_ptr(message_ty, source_ptr, indent, span);
@@ -668,8 +676,9 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(in crate::codegen) fn clone_message_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
+        let interface_def = self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE);
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == STD_MESSAGE_CLONE_INTERFACE
+            implementation.interface_def == interface_def
                 && implementation
                     .receiver_ty
                     .as_ref()
@@ -679,8 +688,9 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(super) fn share_handle_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
+        let interface_def = self.std_message_interface_def(STD_MESSAGE_SHARE_HANDLE_INTERFACE);
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == STD_MESSAGE_SHARE_HANDLE_INTERFACE
+            implementation.interface_def == interface_def
                 && implementation
                     .receiver_ty
                     .as_ref()
@@ -690,8 +700,9 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(super) fn thread_local_impl(&self, ty: &Ty) -> Option<&CheckedImpl> {
+        let interface_def = self.std_message_interface_def(STD_MESSAGE_THREAD_LOCAL_INTERFACE);
         self.program.checked.impls.iter().find(|implementation| {
-            implementation.interface_name == STD_MESSAGE_THREAD_LOCAL_INTERFACE
+            implementation.interface_def == interface_def
                 && implementation
                     .receiver_ty
                     .as_ref()

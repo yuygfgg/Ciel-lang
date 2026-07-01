@@ -179,6 +179,7 @@ impl<'a> CGenerator<'a> {
 
     pub(in crate::codegen) fn async_op_impl_name(
         &self,
+        interface_def: DefId,
         interface_name: &str,
         interface_args: &[Ty],
         op_ty: &Ty,
@@ -190,7 +191,7 @@ impl<'a> CGenerator<'a> {
             .find(|implementation| {
                 impl_matches_interface_receiver(
                     implementation,
-                    interface_name,
+                    interface_def,
                     interface_args,
                     op_ty,
                 )
@@ -216,7 +217,7 @@ impl<'a> CGenerator<'a> {
             .find(|implementation| {
                 impl_matches_interface_receiver(
                     implementation,
-                    STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                    self.std_async_interface_def(STD_ASYNC_AWAITABLE_FUTURE_INTERFACE),
                     std::slice::from_ref(output_ty),
                     receiver_ty,
                 )

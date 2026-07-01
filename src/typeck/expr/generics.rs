@@ -1,6 +1,104 @@
 use super::*;
 
 impl TypeChecker {
+    pub(super) fn instantiate_generic_function_item(
+        &mut self,
+        span: crate::span::Span,
+        sig: &FunctionSig,
+        type_args: &[Type],
+    ) -> Option<(FunctionSig, Vec<Ty>)> {
+        if sig.generics.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("function `{}` is not generic", sig.name),
+            ));
+            return None;
+        }
+        let explicit_count = Self::explicit_generic_count(&sig.generics);
+        if type_args.len() != explicit_count {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "generic function `{}` expects {} explicit type arguments, got {}",
+                    sig.name,
+                    explicit_count,
+                    type_args.len()
+                ),
+            ));
+            return None;
+        }
+
+        let mut subst = HashMap::<String, Ty>::new();
+        let current_subst = self.current_type_subst();
+        let mut arg_idx = 0;
+        for generic in &sig.generics {
+            if generic.is_hidden {
+                continue;
+            }
+            let concrete = self.lower_type_with_subst(&type_args[arg_idx], &current_subst);
+            subst.insert(generic.name.clone(), concrete);
+            arg_idx += 1;
+        }
+        self.infer_generic_constraints_from_known_receivers(&sig.generics, &mut subst, span);
+        self.solve_hidden_generics(&sig.name, &sig.generics, &mut subst, span);
+        for generic in &sig.generics {
+            if !subst.contains_key(&generic.name) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "could not infer generic parameter `{}` for `{}`",
+                        generic.name, sig.name
+                    ),
+                ));
+                return None;
+            }
+        }
+
+        self.check_generic_constraints(&sig.generics, &subst, span);
+        let instance_args = sig
+            .generics
+            .iter()
+            .filter_map(|generic| {
+                subst.get(&generic.name).map(|ty| {
+                    let ty = self.resolve_type_holes(ty);
+                    self.normalize_meta_repr_markers(&ty, span)
+                })
+            })
+            .collect::<Vec<_>>();
+        let params = sig
+            .params
+            .iter()
+            .map(|param| {
+                let substituted = substitute_ty(param, &subst);
+                let ty = self.normalize_meta_repr_markers(&substituted, span);
+                self.resolve_type_holes(&ty)
+            })
+            .collect::<Vec<_>>();
+        let ret = {
+            let substituted = substitute_ty(&sig.ret, &subst);
+            let ty = self.normalize_meta_repr_markers(&substituted, span);
+            self.resolve_type_holes(&ty)
+        };
+        self.ensure_generic_opaque_return_solution(sig, &instance_args, &ret);
+        Some((
+            FunctionSig {
+                def_id: sig.def_id,
+                module: sig.module,
+                name: sig.name.clone(),
+                is_unsafe: sig.is_unsafe,
+                is_async: sig.is_async,
+                abi: sig.abi.clone(),
+                noescape: sig.noescape,
+                has_body: sig.has_body,
+                ret,
+                params,
+                generics: Vec::new(),
+                exported: sig.exported,
+            },
+            instance_args,
+        ))
+    }
+
     pub(super) fn infer_generic_function_call(
         &mut self,
         scopes: &mut LocalScopes,
@@ -275,7 +373,11 @@ impl TypeChecker {
         receiver_ty: &Ty,
         span: crate::span::Span,
     ) -> Option<Vec<Ty>> {
-        if capability.name == STD_ASYNC_AWAITABLE_FUTURE_INTERFACE {
+        if std_id::is_std_async_interface(
+            &self.ctx.resolved,
+            capability.def_id,
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+        ) {
             return self
                 .awaitable_output_ty(receiver_ty, span)
                 .map(|output_ty| vec![output_ty]);
@@ -345,11 +447,7 @@ impl TypeChecker {
             let concrete_for_constraints = self.meta_repr_constraint_receiver_ty(concrete, span);
             let bounds = self.constraint_bounds(constraint, subst);
             for capability in bounds.positive {
-                if !self.type_implements_capability(
-                    &capability.name,
-                    &capability.args,
-                    &concrete_for_constraints,
-                ) {
+                if !self.type_implements_capability_ref(&capability, &concrete_for_constraints) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
                         format!(
@@ -360,11 +458,7 @@ impl TypeChecker {
                 }
             }
             for capability in bounds.negative {
-                if self.type_implements_capability(
-                    &capability.name,
-                    &capability.args,
-                    &concrete_for_constraints,
-                ) {
+                if self.type_implements_capability_ref(&capability, &concrete_for_constraints) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
                         format!(
@@ -538,10 +632,11 @@ impl TypeChecker {
             .collect::<Vec<_>>();
         let receiver_arg = self.check_expr(scopes, &args[receiver_index], None)?;
         if let Ty::DynamicInterface {
-            name: dyn_name,
+            def_id: dyn_def_id,
             args: dyn_args,
+            ..
         } = &receiver_arg.ty
-            && let Some(interface_ref) = self.dynamic_view_interface(dyn_name, dyn_args, &name)
+            && let Some(interface_ref) = self.dynamic_view_interface(*dyn_def_id, dyn_args, def_id)
         {
             if receiver_index != 0 {
                 self.diagnostics.push(Diagnostic::new(
@@ -644,7 +739,7 @@ impl TypeChecker {
             .map(|ty| self.resolve_type_holes(ty));
         let non_receiver_args = interface_non_receiver_args(&interface_args);
         if let Some(receiver_ty) = receiver_ty.as_ref()
-            && retained_closure_proves_capability(receiver_ty, &name, &non_receiver_args)
+            && retained_closure_proves_capability(receiver_ty, def_id, &non_receiver_args)
         {
             let ret = self.lower_type_with_subst(&interface.ret, &subst);
             let receiver = checked_args.remove(receiver_index);
@@ -653,6 +748,7 @@ impl TypeChecker {
                 span,
                 ty: ret,
                 kind: TExprKind::RetainedClosureInterfaceCall {
+                    interface_def: def_id,
                     interface_name: name.clone(),
                     interface_args: non_receiver_args.to_vec(),
                     receiver: Box::new(receiver),
@@ -664,7 +760,7 @@ impl TypeChecker {
             && interface_args.len() == 1
             && let Some(message_ty) = receiver_ty.as_ref()
             && let Some(witness_ty) = self.meta_repr_owned_message_witness_ty(message_ty)
-            && self.type_implements_capability(STD_MESSAGE_CLONE_INTERFACE, &[], &witness_ty)
+            && self.type_implements_capability_by_def(def_id, &name, &[], &witness_ty)
         {
             let value = checked_args.remove(receiver_index);
             let ret = std_result_ty(message_ty.clone(), std_error_ty());
@@ -678,6 +774,7 @@ impl TypeChecker {
             });
         }
         if let Some(implementation) = self.find_or_instantiate_impl_by_full_args(
+            def_id,
             &name,
             &interface_args,
             receiver_ty.as_ref(),
@@ -771,6 +868,7 @@ impl TypeChecker {
             span,
             ty: ret,
             kind: TExprKind::DynamicInterfaceCall {
+                interface_def: interface.def_id,
                 interface_name: interface.name,
                 receiver: Box::new(receiver),
                 args: checked_args,
@@ -809,6 +907,7 @@ impl TypeChecker {
             return;
         };
         let capability = ConstraintRef {
+            def_id: interface.def_id,
             name: interface.name.clone(),
             args: full_args.get(1..).unwrap_or(&[]).to_vec(),
         };

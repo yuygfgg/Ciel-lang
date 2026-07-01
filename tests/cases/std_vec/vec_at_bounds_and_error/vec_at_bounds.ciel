@@ -14,6 +14,10 @@ bool is_index_error(Result<*const i64, vec::VecError> value, usize expected_inde
                     return false;
                 case vec::IndexOutOfBounds(index, len):
                     return index == expected_index && len == expected_len;
+                case vec::Empty:
+                    return false;
+                case vec::NotFound:
+                    return false;
                 case vec::Runtime(_):
                     return false;
             }
@@ -30,6 +34,10 @@ bool is_mut_index_error(Result<*i64, vec::VecError> value, usize expected_index,
                     return false;
                 case vec::IndexOutOfBounds(index, len):
                     return index == expected_index && len == expected_len;
+                case vec::Empty:
+                    return false;
+                case vec::NotFound:
+                    return false;
                 case vec::Runtime(_):
                     return false;
             }

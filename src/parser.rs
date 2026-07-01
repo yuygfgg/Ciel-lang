@@ -1601,6 +1601,17 @@ impl Parser {
                         };
                         continue;
                     }
+                    if matches!(expr.kind, ExprKind::Name(_)) {
+                        let span = expr.span.merge(self.previous().span);
+                        expr = Expr {
+                            span,
+                            kind: ExprKind::GenericValue {
+                                callee: Box::new(expr),
+                                type_args,
+                            },
+                        };
+                        continue;
+                    }
                 }
                 self.pos = save;
                 self.tokens = token_save;

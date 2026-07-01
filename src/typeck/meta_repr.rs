@@ -511,7 +511,7 @@ impl TypeChecker {
                     from_replacement: output.from_replacement,
                 }
             }
-            Ty::DynamicInterface { name, args } => {
+            Ty::DynamicInterface { def_id, name, args } => {
                 let (args, has_replacement_arg) = self.substitute_ty_normalized_list(
                     args,
                     subst,
@@ -521,6 +521,7 @@ impl TypeChecker {
                 );
                 SubstitutedTy {
                     ty: Ty::DynamicInterface {
+                        def_id: *def_id,
                         name: name.clone(),
                         args,
                     },
@@ -752,7 +753,8 @@ impl TypeChecker {
                     .map(|arg| self.partial_inference_ty(arg, holes))
                     .collect(),
             },
-            Ty::DynamicInterface { name, args } => Ty::DynamicInterface {
+            Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
+                def_id: *def_id,
                 name: name.clone(),
                 args: args
                     .iter()
@@ -831,6 +833,7 @@ impl TypeChecker {
         holes: &mut HashMap<String, Ty>,
     ) -> ConstraintRef {
         ConstraintRef {
+            def_id: entry.def_id,
             name: entry.name.clone(),
             args: entry
                 .args
@@ -1142,11 +1145,7 @@ impl TypeChecker {
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
                 || is_resource
-                || self.type_implements_capability(
-                    STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-                    &[],
-                    &leaf_ty,
-                )
+                || self.type_implements_share_handle(&leaf_ty)
                 || self.type_implements_message(&leaf_ty))
     }
 

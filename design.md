@@ -26,11 +26,10 @@ also decide whether the storage needs GC scanning from the concrete runtime
 layout.
 
 The language uses value semantics for structs, enums, and fixed-size arrays.
-Assignment is shallow field-wise or element-wise copy. Memory is GC-managed;
-non-memory resources are owned by runtime resource owners and are accessed
-through revocable handle tokens. Explicit operations such as `close` remain
-available for early release, while owner close provides deterministic cleanup on
-normal control-flow exits.
+Assignment is shallow field-wise or element-wise copy. Memory is GC-managed.
+Non-memory resources use resource-affine wrapper values backed by runtime
+resource owners; explicit close, lexical cleanup, scoped owners, and owner close
+are part of one resource-management model.
 
 Program execution starts at `i64 main()` unless the program is built as a C ABI
 library. A nonzero `main` result is returned to the host process.
@@ -668,16 +667,12 @@ Returning a struct, enum, or array value uses the same value semantics at the
 Ciel level; backend lowering may avoid physical copies.
 
 A concrete type is resource-affine when it is declared `resource struct`, when
-it is `/std/resource::Handle`, or when it structurally contains a
+it is the canonical `/std/resource::Handle`, or when it structurally contains a
 resource-affine field, enum payload, array element, closure capture, or
-generated future output. Resource-affine values are move-only. Moving a whole
-local, parameter, enum payload, result payload, selected future output, or
-returned value consumes the source slot; later reads are rejected and the
-backend clears the moved-from resource handles so cleanup does not close the
-moved value. Safe code cannot copy a resource-affine value, repeat it in an
-array literal, move only a resource subfield out of an aggregate, or replace a
-resource subfield in place. Unsafe code can still manipulate raw handles, but
-standard-library unsafe holes must document their ownership contract.
+generated future state or output. Resource-affine values are move-only and are
+cleaned up by generated structural cleanup code when their live owner slot goes
+out of scope. The full non-memory resource model is specified in
+[Non-Memory Resource Management](#18-non-memory-resource-management).
 
 A local declaration without an initializer creates an uninitialized binding,
 unless its type contains a hole. Declarations with type holes require an
@@ -738,8 +733,8 @@ _ @value;               // error
 ```
 
 This is local type-hole syntax. The same `_` token also appears in inferred
-capability bindings and opaque return types, but those forms are legal only in
-their own grammar positions and have declaration-level scope.
+capability type bindings and opaque return types, but those forms are legal
+only in their own grammar positions and have declaration-level scope.
 
 Struct declarations do not define default field values. A struct value is
 created by a named-field struct literal, by copying another value, by a
@@ -748,85 +743,22 @@ An `unsafe struct` is still copied and passed like an ordinary struct, but
 constructing it with a struct literal or projecting one of its fields requires
 `unsafe { ... }`.
 
-A `resource struct` declares an owning resource wrapper. It is resource-affine
-and is automatically cleaned up when the live value goes out of scope or its
-resource owner closes. A concrete `resource struct` must contain an owning
-resource field, unless it is the canonical `/std/resource::Handle` leaf. A
-concrete non-resource struct cannot store a resource-affine field. The
-`unsafe` modifier is independent: `resource unsafe struct` is used when the
-wrapper representation itself has unsafe invariants, such as a raw runtime
-handle field.
+A `resource struct` declares an owning resource wrapper. It is resource-affine.
+A concrete `resource struct` must contain an owning resource field, unless it
+is the canonical `/std/resource::Handle` leaf. A concrete non-resource struct
+cannot store a resource-affine field. The `unsafe` modifier is independent:
+`resource unsafe struct` is used when the wrapper representation itself has
+unsafe invariants, such as a raw runtime handle field.
 
 Generic parameters may be written as `resource T` to require a resource-affine
 type argument. Ordinary `T` parameters can still be instantiated with resources
 when the generic body is affine-correct; the `resource` marker is for APIs that
 must expose a resource-only operation boundary in their signature.
 
-A generic parameter bound may bind an inferred capability type with
-`Name = _`. The identifier before `=` is the new hidden generic parameter name
-introduced in the surrounding declaration. It is not a named argument for the
-interface or alias being constrained. Constraint argument lists are positional:
-`Iterator<Cached = _>` places the hidden type `Cached` in the same argument slot
-that `Iterator<Item>` would occupy. The interface parameter name, such as
-`Item` in `interface Iterator<Item>`, describes that slot but does not have to
-be repeated at use sites. The binding creates a hidden generic parameter that is
-in scope for the rest of the declaration, including fields, enum payloads, type
-alias targets, function signatures, impl bodies, and ordinary type references:
-
-```ciel
-struct Peekable<I: Iterator<Item = _>> {
-    I inner;
-    Item cached;
-}
-```
-
-Hidden parameters are not part of source-level arity. `Peekable<Range>` is the
-source spelling; the compiler's canonical instance includes the solved hidden
-arguments so layout and monomorphization remain concrete. When two constraints
-should infer independent types from the same interface slot, they use distinct
-hidden names:
-
-```ciel
-struct Zip<A: Iterator<AItem = _>, B: Iterator<BItem = _>> {
-    A iter_a;
-    B iter_b;
-    AItem a_val;
-    BItem b_val;
-}
-```
-
-When two constraints must share one inferred type, the first constraint binds
-the hidden name and later constraints refer to that name as an ordinary type:
-
-```ciel
-struct SameItemZip<A: Iterator<Item = _>, B: Iterator<Item>> {
-    A iter_a;
-    B iter_b;
-    Item cached;
-}
-```
-
-A binding may carry an additional constraint on the hidden type:
-
-```ciel
-struct Flatten<I: Iterator<Inner = _: Iterator<Item = _>>> {
-    I inner;
-    Inner current;
-}
-```
-
-The hidden name introduced by each binding must be unique in the declaration and
-must not duplicate an explicit generic parameter. Repeating the same hidden
-binding, such as `A: Iterator<Item = _>, B: Iterator<Item = _>`, is an error
-because it would introduce the hidden parameter `Item` twice. Later uses write
-`Item` as an ordinary type name. Hidden bindings are allowed only in positive
-static capability constraints that introduce or check a generic environment.
-They are rejected in negative or removed constraint terms, dynamic interface
-types, interface alias declarations, impl target argument lists, explicit call
-or type argument lists, retained closure types, casts, opaque return
-constraints, and other ordinary type contexts. Opaque return constraints may
-refer to hidden names that were already bound by the function's generic
-parameter list; they may not introduce new bindings.
+Generic parameter bounds may bind inferred capability types with `Name = _`.
+That syntax introduces hidden generic parameters for the declaration; the
+central rules are in
+[Inferred Capability Types](#inferred-capability-types).
 
 At most one function body may exist for a given fully qualified name. A
 non-`extern` function declaration ending in `;` is a prototype and must match
@@ -1166,9 +1098,10 @@ async |usize value| {
 An async closure body uses the same async rules as an async function body. A
 direct async closure passed to `async::spawn` is checked by the compiler as a
 task boundary: result values and captured values that cross into the spawned
-task must satisfy the hidden `Message` obligations described in Section 16. The
-closure does not need to be manually retained as a `: Message` closure unless
-the surrounding API requires an ordinary messageable closure value.
+task must satisfy the hidden `Message` obligations described in
+[Async/Await](#16-asyncawait). The closure does not need to be manually retained
+as a `: Message` closure unless the surrounding API requires an ordinary
+messageable closure value.
 
 A call suffix may call a function item, function-pointer value, or closure
 value. Closure arguments are evaluated in source order, then the closure's
@@ -1249,7 +1182,8 @@ bytes::Bytes bytes = await async_net::read(&stream, 16384)?;
 ```
 
 The full execution, task, cancellation, and frame-safety rules for async
-functions, futures, and `await` are specified in Section 16.
+functions, futures, and `await` are specified in
+[Async/Await](#16-asyncawait).
 
 `select` constructs a future that races a flat set of future expressions:
 
@@ -1262,7 +1196,7 @@ usize result = await select {
 
 Every arm future must produce the same selected result type through its arm
 body. Fairness, cancellation-safety, timeout lowering, and selectable future
-rules are specified in Section 16.
+rules are specified in [Async/Await](#16-asyncawait).
 
 `if`, `while`, and `for` conditions must have type `bool`. A missing `for`
 condition is treated as `true`. In `for (init; cond; step)`, `init` runs once,
@@ -1675,14 +1609,88 @@ program, all of its impls participate in coherence and constraint checks.
 
 If any imported file implements `seek` for `T`, then `T: !seek` fails.
 
-Named constraint bindings are solved only from positive determined capability
-facts. During declaration checking, each hidden parameter must be derivable from
+### Inferred Capability Types
+
+An inferred capability type is a hidden generic parameter introduced by a
+positive static capability constraint using `Name = _`:
+
+```ciel
+struct Peekable<I: Iterator<Item = _>> {
+    I inner;
+    Item cached;
+}
+```
+
+The identifier before `=` is the hidden generic parameter name in the
+surrounding declaration. It is not a named argument for the constrained
+interface or alias. Constraint argument lists remain positional:
+`Iterator<Cached = _>` binds a hidden type named `Cached` in the same argument
+slot that `Iterator<Item>` would occupy. Interface parameter names describe
+slots; they do not have to be repeated at use sites.
+
+The hidden parameter is in scope anywhere an explicit generic parameter of the
+same declaration would be in scope: fields, enum payloads, type alias targets,
+function signatures, impl bodies, and ordinary type references. Hidden
+parameters are not part of source-level arity. `Peekable<Range>` is the source
+spelling; the compiler's canonical instance includes the solved hidden
+arguments so layout and monomorphization remain concrete.
+
+When two constraints should infer independent types from the same interface
+slot, they use distinct hidden names:
+
+```ciel
+struct Zip<A: Iterator<AItem = _>, B: Iterator<BItem = _>> {
+    A iter_a;
+    B iter_b;
+    AItem a_val;
+    BItem b_val;
+}
+```
+
+When two constraints must share one inferred type, the first constraint binds
+the hidden name and later constraints refer to that name as an ordinary type:
+
+```ciel
+struct SameItemZip<A: Iterator<Item = _>, B: Iterator<Item>> {
+    A iter_a;
+    B iter_b;
+    Item cached;
+}
+```
+
+A binding may carry an additional constraint on the hidden type:
+
+```ciel
+struct Flatten<I: Iterator<Inner = _: Iterator<Item = _>>> {
+    I inner;
+    Inner current;
+}
+```
+
+The hidden name introduced by each binding must be unique in the declaration
+and must not duplicate an explicit generic parameter. Repeating the same hidden
+binding, such as `A: Iterator<Item = _>, B: Iterator<Item = _>`, is an error
+because it would introduce `Item` twice. Later uses write `Item` as an ordinary
+type name.
+
+Named constraint bindings are valid only in positive static capability
+constraints that introduce or check a generic environment, including nested
+constraints attached to another hidden binding. They are rejected in negative
+or removed constraint terms, dynamic interface types, interface alias
+declarations, impl target argument lists, explicit call or type argument lists,
+retained closure types, casts, opaque return constraints, and other ordinary
+type contexts. Opaque return constraints may refer to hidden names that were
+already bound by the function's generic parameter list; they may not introduce
+new bindings.
+
+Hidden parameters are solved only from positive determined capability facts.
+During declaration checking, each hidden parameter must be derivable from
 explicit parameters and already-derived hidden parameters by applying
-determined interfaces. During instantiation, the compiler solves the hidden
+determined interfaces. During instantiation, the compiler solves hidden
 canonical arguments from concrete explicit arguments, the current generic
-constraint environment, opaque return bounds when relevant, and the complete
-impl table. If a hidden parameter is unsolved or ambiguous, instantiation is
-rejected.
+constraint environment, opaque return bounds when relevant, concrete impls,
+and generic impls whose own constraints are satisfied. If a hidden parameter is
+unsolved or ambiguous, instantiation is rejected.
 
 ```ciel
 struct MapIter<I: Iterator<In = _>, F: Mapper<In, Out = _>> {
@@ -1694,9 +1702,9 @@ struct MapIter<I: Iterator<In = _>, F: Mapper<In, Out = _>> {
 
 Here `In` is determined from `I: Iterator<In>`, and `Out` is determined from
 `F, In: Mapper<In, Out>`. The names `In` and `Out` are hidden type names local
-to `MapIter`; they are not required to match the generic parameter names written
-by `Iterator` or `Mapper`. A constraint on an interface without determined
-parameters cannot bind a hidden type:
+to `MapIter`; they are not required to match the generic parameter names
+written by `Iterator` or `Mapper`. A constraint on an interface without
+determined parameters cannot bind a hidden type:
 
 ```ciel
 interface<T, U> bool related(*T value, U other);
@@ -2309,7 +2317,8 @@ Safe async concurrency follows these invariants:
 
 Ciel's low-level actor model is the runtime isolation model behind
 async/await and the explicit mailbox API for advanced code. Ordinary
-asynchronous I/O should use the async/await surface in Section 16.
+asynchronous I/O should use the async/await surface in
+[Async/Await](#16-asyncawait).
 
 The actor model has four parts:
 
@@ -2709,7 +2718,297 @@ mutable pointers. This guarantee depends on correct compiler checks, correct
 standard-library implementations, and trusted C wrappers honoring their declared
 policies.
 
-## 18. Standard Library Boundary
+## 18. Non-Memory Resource Management
+
+Non-memory resources use a two-layer model:
+
+1. source-level resource-affine values prevent accidental copies, double
+   close, and use after move;
+2. runtime resource owners and registry entries provide deterministic cleanup,
+   revocation, generation checks, quotas, and integration with tasks, actors,
+   and async operation tokens.
+
+Memory remains GC-managed. `resource` is not a manual-memory mode, a GC escape
+hatch, or a user-defined finalizer mechanism. It is for host and runtime
+capabilities whose lifetime must be represented separately from GC reachability:
+files, sockets, native handles, async operation tokens, actor/task owners, and
+similar runtime resources.
+
+The public standard-library surface is `/std/resource`. Its core types are
+`Handle`, `TransferToken`, `Limits`, and `ScopedError<E>`. Its core operations
+are explicit close, transfer to parent/current owner, scoped owner creation,
+and the unsafe in-place helpers used by resource wrapper internals. Concrete
+modules such as `/std/io`, `/std/net`, `/std/async_io`, `/std/async_net`, and
+`/std/async_time` expose typed `resource struct` wrappers over this substrate.
+
+The runtime source of truth is a resource owner table. An owner contains
+resource entries with an owner id, resource id, generation, kind, state, raw
+host resource or runtime pointer, and close action. Owners form a hierarchy:
+the process root owner, task and actor owners, and lexical owners created by
+`resource::scoped` or `resource::scoped_async`. Opening or registering a
+resource uses the current ambient owner. Closing an owner closes every live
+entry still owned by that owner and then closes live child owners. Owner limits
+track live resources, child owners, pending operations, and descriptors; a zero
+limit field means the runtime default for that count.
+
+Visible Ciel resource values are resource-affine wrapper values. The canonical
+leaf is `/std/resource::Handle`, a revocable token containing owner id,
+resource id, and generation. `resource struct` wrappers such as `/std/io::File`
+and `/std/async_net::AsyncTcpStream` contain that leaf directly or through
+other resource-affine fields. Copying a raw token does not copy or extend the
+underlying resource. Closing an entry, moving it to another owner, or closing
+its owner revokes old token copies; later operations validate the token against
+the registry and fail through the module's ordinary error path if the token is
+stale, closed, moved, wrong-kind, or over policy.
+
+The type checker treats a concrete type as resource-affine when it is
+`resource struct`, the canonical `Handle`, or a visible aggregate, array,
+closure capture, generated future state, or generated future output that
+contains a resource-affine value. Resource-affine values are move-only. Moving
+a whole local, parameter, enum payload, result payload, selected future output,
+or returned value consumes the source slot; later reads are rejected. Safe code
+cannot copy a resource-affine value, use an array repeat to duplicate it, move
+only a resource subvalue out of an aggregate, replace a resource subfield in
+place, erase it into a dynamic interface or boxed error, or send it through
+clone-based task, actor, and channel boundaries. Unsafe code may use the raw
+standard-library holes, but those holes must document and uphold uniqueness.
+
+A by-value use of a resource-affine local is a source move. The compiler marks
+the source slot as moved and rejects later reads, borrows, and cleanup-sensitive
+uses:
+
+```ciel
+Result<void, Error> drive([]const char path) {
+    io::File file = io::open_read(path)?;
+    io::File moved = file;        // moves `file`
+
+    [8]u8 @buffer = [0;];
+    io::read(&file, buffer[..])?; // error: use of moved resource `file`
+
+    io::close(moved)?;
+    return Ok;
+}
+```
+
+Aggregates containing resource-affine fields are themselves resource-affine.
+Moving the whole aggregate is allowed; moving one resource field out of the
+aggregate is rejected in safe code because it would leave the aggregate with a
+partially-owned cleanup shape:
+
+```ciel
+resource struct Duplex {
+    io::File read_side;
+    io::File write_side;
+}
+
+Result<void, Error> split_bad(Duplex pair) {
+    io::File read = pair.read_side; // error: cannot move resource subvalue
+    io::close(read)?;
+    return Ok;
+}
+
+Result<void, Error> move_whole(Duplex pair) {
+    Duplex moved = pair; // ok: whole aggregate move
+    return Ok;           // `moved` is cleaned up if still live
+}
+```
+
+Resource-qualified generic parameters make an API require a resource-affine
+type argument at the call boundary. Ordinary generic parameters may still be
+instantiated with resource-affine types when the generic body does not copy or
+otherwise violate affine rules.
+
+```ciel
+Result<void, Error> accept_resource<resource T>(T value) {
+    return Ok; // `value` is cleaned up if still live
+}
+
+accept_resource<io::File>(io::open_read(path)?); // ok
+accept_resource<i64>(1);                         // error
+```
+
+Generated code performs structural cleanup for live affine owner slots on
+normal cleanup paths. A cleanup helper closes a live `Handle` through the
+runtime registry and clears the token fields. It recursively cleans arrays,
+struct fields, enum payloads, closure captures, and generated future state; for
+generated futures, cleanup aborts the future handle. Cleanup is structural and
+compiler-generated. There is no public user-defined `drop` hook, and ordinary
+GC-managed fields remain GC-managed.
+
+`close` is the explicit early-release operation for resource wrappers. It
+consumes the wrapper, closes the registry entry, revokes copied tokens, and
+clears the unique owner slot. A close error reports the runtime failure but the
+source resource value has still been consumed. Automatic cleanup is best
+effort for error reporting; APIs that need a close error in the program result
+should call the explicit close operation or use a scoped helper whose result
+surface includes cleanup errors.
+
+Typed close functions are ordinary consuming wrappers over the unsafe
+raw-handle close helper. `/std/io::close` clears the unique local slot so later
+generated cleanup cannot close the same handle again:
+
+```ciel
+*resource::Handle file_handle_mut(*File file) {
+    return unsafe { &file->handle };
+}
+
+export Result<void, IoError> close(File @file) {
+    switch (unsafe { resource::close_handle_in_place(file_handle_mut(&file)) }) {
+        case Ok:
+            return Ok;
+        case Err(error):
+            return Err(resource_error(error));
+    }
+}
+```
+
+`resource::scoped` and `resource::scoped_with_limits` create a child owner,
+make it current for the callback body, run a `Result<R, E>` body, transfer the
+whole body result to the parent owner when that result is resource-affine, and
+then close the child owner. This transfer applies to resources in both `Ok(R)`
+and `Err(E)` payloads. Resources not moved into the body result remain in the
+child owner and are closed when the child owner closes. Setup, transfer, and
+cleanup failures are returned as `ScopedError::Resource`; body failures are
+returned as `ScopedError::Body(E)`.
+
+`resource::scoped_async` and `resource::scoped_async_with_limits` run an async
+body under a child owner across suspension points. They restore the previous
+owner after constructing the future, restore the child owner around result
+transfer, transfer the whole `Result<R, E>` before closing the child owner, and
+close the child owner on completion or cancellation. The source-level private
+hook used by `scoped_async` is a deliberate no-op fallback; code generation
+recognizes the canonical hook and emits structural transfer code for affine
+results.
+
+A resource opened inside `resource::scoped` normally belongs to the child owner.
+If the body returns it, code generation transfers the whole returned
+`Result<R, E>` to the parent owner before closing the child owner:
+
+```ciel
+Result<io::File, resource::ScopedError<Error>> open_for_later([]const char path) {
+    return resource::scoped<io::File, Error>(|| {
+        io::File file = io::open_read(path)?;
+        return Ok(file);
+    });
+}
+```
+
+The returned `File` remains usable by the caller. Any resource opened inside
+the body and not moved into the returned result is closed when the scoped owner
+closes:
+
+```ciel
+Result<void, resource::ScopedError<Error>> write_temp([]const char path) {
+    return resource::scoped<void, Error>(|| {
+        io::File file = io::create(path)?;
+        io::write_text(&file, "temporary")?;
+        return Ok; // `file` remains in the child owner and is closed here
+    });
+}
+```
+
+The transfer is applied to the whole result, not only the `Ok` branch. If `E`
+is resource-affine, resources stored in `Err(E)` are also reattached to the
+parent before the child owner closes.
+
+`transfer_to_parent` is the explicit lifetime-extension operation. It moves the
+underlying registry entry to the parent owner, returns a fresh token, and
+revokes old token copies. Transfer fails without moving the source entry if the
+handle is stale, the destination is closed or incompatible, or the destination
+owner is over quota. `transfer_to_current` is the corresponding adoption
+operation: it moves an open entry from an ancestor owner into the current owner,
+or validates and returns it unchanged when it is already current.
+
+The transfer interfaces operate on a borrowed wrapper and move the registry
+entry, not the source variable. The returned wrapper contains the fresh token.
+The old wrapper and any copied tokens become stale, so later operations on
+those tokens return resource errors.
+
+```ciel
+Result<io::File, resource::ScopedError<Error>> promote([]const char path) {
+    return resource::scoped<io::File, Error>(|| {
+        io::File child_file = io::open_read(path)?;
+        io::File parent_file = resource::transfer_to_parent(&child_file)?;
+
+        // `child_file` still exists as a source value, but its token is stale.
+        // Use `parent_file` from this point on.
+        return Ok(parent_file);
+    });
+}
+```
+
+`transfer_to_current` is useful when a child owner needs to adopt an ancestor
+resource so that the child owner will close it if it is not returned or
+transferred back out:
+
+```ciel
+Result<void, resource::ScopedError<Error>> consume_in_child(io::File parent_file) {
+    return resource::scoped<void, Error>(|| {
+        io::File local = resource::transfer_to_current(&parent_file)?;
+        [128]u8 @buffer = [0;];
+        _ n = io::read(&local, buffer[..])?;
+        return Ok; // `local` remains in the child owner and is closed here
+    });
+}
+```
+
+`TransferToken` is an affine wrapper for a handle that has already been moved
+out of its source owner. It is not `Message` and cannot cross clone-based task,
+actor, or channel boundaries. Safe code can move the token through lexical
+returns and then call `claim_transfer_token`, which validates and adopts it
+through `transfer_handle_to_current`. Stale tokens fail through ordinary
+generation validation.
+
+A typed wrapper can claim a token by adopting the raw handle into the current
+owner and rebuilding the typed resource. This is still a wrapper-internal
+operation because constructing the typed wrapper from `Handle` is unsafe:
+
+```ciel
+Result<File, resource::ResourceError> claim_file(resource::TransferToken token) {
+    resource::Handle handle = resource::claim_transfer_token(token)?;
+    return Ok(file_from_handle(handle));
+}
+```
+
+The `*_in_place` helpers are unsafe standard-library holes. They require the
+caller to pass the unique live owner slot and clear that slot exactly once.
+They exist so resource wrapper internals can move, close, split, or rebuild raw
+handles without exposing raw resource invariants to ordinary safe code. The
+compiler recognizes canonical `/std/resource` owner hooks through
+standard-library identity metadata, not by source path or by trusting a user
+interface with the same spelling.
+
+Typed resource wrappers implement transfer by copying the wrapper into a local
+unsafe owner slot, transferring the raw handle in place, clearing that local
+slot, and rebuilding a typed wrapper from the fresh handle:
+
+```ciel
+File file_from_handle(resource::Handle handle) {
+    return unsafe { { handle: handle } };
+}
+
+impl transfer_to_parent(*const File value) {
+    File @file = unsafe { *value };
+    resource::Handle handle = unsafe {
+        resource::transfer_handle_to_parent_in_place(file_handle_mut(&file))?
+    };
+    return Ok(file_from_handle(handle));
+}
+
+impl transfer_to_current(*const File value) {
+    File @file = unsafe { *value };
+    resource::Handle handle = unsafe {
+        resource::transfer_handle_to_current_in_place(file_handle_mut(&file))?
+    };
+    return Ok(file_from_handle(handle));
+}
+```
+
+This pattern is intentionally standard-library-internal. Safe user code should
+use typed wrappers such as `io::close`, `resource::transfer_to_parent`, and
+`resource::transfer_to_current`, not raw handle mutation.
+
+## 19. Standard Library Boundary
 
 The compiler treats the standard library as ordinary Ciel source except for the
 generic `/std/meta` helpers and runtime hooks explicitly named in this
@@ -3126,58 +3425,9 @@ export async Result<R, ScopedError<E>> scoped_async_with_limits<R, E: ErrorTrait
 );
 ```
 
-`/std/resource` defines deterministic non-memory resource ownership. Memory
-remains GC-managed. Non-memory resources such as files, sockets, and async
-operation tokens are registered in the current resource owner. A visible handle
-token stores an owner id, resource id, and generation. Copying that token does
-not copy or extend ownership; closing an owner or entry revokes all token
-copies, and later operations on stale tokens return a stable `Error`.
-
-`resource::scoped` creates a child owner, installs it as the current owner for
-the body, and closes it on normal return or `Err` return. Values that remain
-live in the child owner are closed. A resource-affine value returned from the
-body is an ordinary move-out; the compiler reattaches the moved resource
-handles to the caller's owner before closing the child owner.
-
-`scoped` and `scoped_async` keep the body error type generic and wrap owner
-setup or cleanup failures as `ScopedError::Resource`. Body failures are
-returned as `ScopedError::Body(E)`, so reusable code does not need to erase
-callback errors into `/std/error.Error`. `scoped_async` accepts the same
-callable shape returning `async_core::Future<Result<R, E>>`; an `async || {
-... }` closure matches that API and the scoped owner is preserved across
-`await`. Its source implementation uses a private compiler hook. The source
-hook is a deliberate no-op fallback, and code generation rewrites it for
-affine `R` into a
-structural transfer of all live returned handles to the parent owner before the
-child owner closes.
-
-`transfer_to_parent` is the explicit lifetime-extension operation. It moves the
-underlying registry entry to the parent owner, returns a fresh token, and
-revokes old token copies. Transfer fails without moving the source entry if the
-destination owner is closed, incompatible, or over quota.
-
-`transfer_to_current` is the corresponding adoption operation. It moves an open
-entry owned by an ancestor owner into the current owner, returning a fresh token
-when the owner changes. It fails without moving the source entry for stale
-handles, closed entries, quota failures, or handles whose source owner is not an
-ancestor of the current owner. If the entry is already owned by the current
-owner, the runtime validates the handle and returns it unchanged.
-
-`TransferToken` is an affine wrapper for a handle that has already been
-transferred out of its source owner. It is not `Message` and cannot cross
-clone-based task, actor, or channel boundaries. Safe code can move the token
-through ordinary lexical returns and then call `claim_transfer_token`, which
-validates the token and adopts it through `transfer_handle_to_current`. Stale
-tokens fail through ordinary generation validation.
-
-The `*_in_place` helpers are unsafe standard-library holes. They require the
-caller to pass the unique live owner slot and clear that slot exactly once.
-They exist so resource wrapper internals can move or close raw handles without
-exposing raw resource invariants to ordinary user code.
-
-The compiler recognizes canonical `/std/resource` owner hooks through
-standard-library identity metadata, not by source path or by trusting a user
-interface with the same spelling.
+The `/std/resource` APIs are the standard-library entry points for the
+resource model specified in
+[Non-Memory Resource Management](#18-non-memory-resource-management).
 
 ```ciel
 // /std/io
@@ -3251,22 +3501,20 @@ export Result<void, IoError> eprint([]const char fmt, []printable values);
 export Result<void, IoError> eprintln([]const char fmt, []printable values);
 ```
 
-`/std/io` is a blocking I/O API over the current resource owner. `open_read`,
-`create`, and `append` register the real descriptor in that owner and return a
-revocable `File` token. `close` closes the registry entry early and revokes all
-token copies. The scoped helpers use `resource::scoped`, so resources opened
-deep in the callback are closed when the helper returns unless they are moved
-out through the helper result.
+`/std/io` is a blocking I/O API whose `File` values are resource-affine
+wrappers over descriptors registered in the current resource owner. `open_read`,
+`create`, and `append` register a descriptor and return a `File`; `close`
+performs explicit early release through the common resource registry. The
+scoped helpers are convenience wrappers over `resource::scoped`.
 
 The scoped helpers return `IoWithError<E>` so open/setup failures, resource
 cleanup failures, and callback body failures can be matched separately.
 
-Every blocking I/O operation validates the file token through the common
-resource registry before touching the OS descriptor. This prevents stale tokens
-from touching a reused descriptor. `stdout`, `stderr`, and formatting helpers
-use borrowed registry entries for process standard streams. Printable values
-are values that implement `to_string`; printing functions convert values to
-`[]const char` first, then write through a `File`.
+Every blocking I/O operation validates the file token before touching the OS
+descriptor. `stdout`, `stderr`, and formatting helpers use borrowed registry
+entries for process standard streams. Printable values are values that
+implement `to_string`; printing functions convert values to `[]const char`
+first, then write through a `File`.
 
 `/std/io` provides `to_string` implementations for `[]const char`, `char`,
 `bool`, all integer primitive widths, `usize`, `f32`, `f64`, and `/std/error`
@@ -4424,12 +4672,9 @@ returned TCP addresses until one connects.
 
 `SocketAddr` is an immutable runtime-backed address value and implements
 `Message` as a shareable handle. `TcpListener` and `TcpStream` are
-runtime-backed resource handles and are actor-local blocking resources. The
-runtime stores real descriptors in the common resource registry, so stale
-copies of a closed or transferred listener or stream cannot accidentally
-operate on a reused descriptor. The scoped `with_tcp_*` helpers follow the
-`/std/io` pattern and close resources that remain in the helper's child owner
-on normal and error returns from the body.
+resource-affine wrappers over blocking socket descriptors and are actor-local
+blocking resources. The scoped `with_tcp_*` helpers follow the `/std/io`
+pattern and are convenience wrappers over `resource::scoped`.
 
 The scoped `with_tcp_*` helpers return `NetWithError<E>` so network setup,
 resource cleanup, and body failures remain separate matchable domains.
@@ -4736,15 +4981,14 @@ export Result<void, AsyncIoError> cancel_read(AsyncRead op) = .cancel;
 export Result<void, AsyncIoError> cancel_write(AsyncWrite op) = .cancel;
 ```
 
-`/std/async_io` provides awaitable file-descriptor operations over the current
-resource owner. `AsyncFd`, `AsyncRead`, and `AsyncWrite` are revocable resource
-tokens backed by the common registry. The high-level `read_bytes` and
+`/std/async_io` provides awaitable file-descriptor operations over the resource
+model. `AsyncFd`, `AsyncRead`, and `AsyncWrite` are resource-affine wrappers
+over descriptor and operation entries. The high-level `read_bytes` and
 `write_bytes` functions are async functions and are the normal API. The
 `*_async`, `notify_*`, `finish_*`, and `cancel_*` operation-token functions are
-low-level hooks for direct actor-completion integration. `finish_*` and
-`cancel_*` consume or close the operation token entry, so stale token copies
-fail through ordinary registry validation. Raw fd reads and writes are
-`Abortable` but not `CancelSafe` by default because cancellation may hide
+low-level hooks for direct actor-completion integration; `finish_*` and
+`cancel_*` consume or close the operation token entry. Raw fd reads and writes
+are `Abortable` but not `CancelSafe` by default because cancellation may hide
 offset changes or partial writes.
 
 ```ciel
@@ -4926,14 +5170,13 @@ export Result<void, AsyncNetError> cancel_buffered_read(AsyncBufferedRead op) = 
 ```
 
 `/std/async_net` provides awaitable TCP operations over nonblocking runtime
-resources registered in the common resource registry. `AsyncTcpListener`,
-`AsyncTcpStream`, split halves, and low-level async operation tokens are
-revocable `resource::Handle` wrappers. `accept` and `connect` are
-`CancelSafe + Abortable`, so they can be used directly with `timeout` and
-`select`. `read` returns zero-length `bytes::Bytes` for EOF. `read_into` moves
-an owned `buf::ByteBuf` into the future and returns the same buffer with the
-number of bytes read so hot loops can reuse capacity without treating immutable
-`Bytes` as a mutable destination.
+resources. `AsyncTcpListener`, `AsyncTcpStream`, split halves, buffered
+readers, and low-level async operation tokens are resource-affine wrappers over
+registry entries. `accept` and `connect` are `CancelSafe + Abortable`, so they
+can be used directly with `timeout` and `select`. `read` returns zero-length
+`bytes::Bytes` for EOF. `read_into` moves an owned `buf::ByteBuf` into the
+future and returns the same buffer with the number of bytes read so hot loops
+can reuse capacity without treating immutable `Bytes` as a mutable destination.
 
 `/std/async_net` no longer exposes a Message-safe stream transfer wrapper.
 `AsyncTcpStream` and its split/read/write operation tokens are resource-affine
@@ -4951,10 +5194,9 @@ bytes, losing an owned buffer, or observing partial writes.
 
 The `*_async`, `notify_*`, `finish_*`, and `cancel_*` functions are low-level
 operation-token hooks for actor completion tests and direct operation
-integration. `finish_*` and `cancel_*` consume or close the registry entry for
-the operation token, so stale token copies cannot finish or cancel a reused
-runtime operation. Normal async application code should prefer `accept`,
-`connect`, `read`, `write`, and the buffered reader helpers.
+integration. `finish_*` and `cancel_*` consume or close the operation token.
+Normal async application code should prefer `accept`, `connect`, `read`,
+`write`, and the buffered reader helpers.
 Operation token types are split by completion value: for example,
 `AsyncTcpRead` completes to `bytes::Bytes`, while `AsyncTcpReadInto` completes
 to `ReadIntoResult`. This preserves the determined `Op -> Out` contract on
@@ -4995,20 +5237,20 @@ export Result<void, AsyncTimeError> cancel_sleep(AsyncSleep op) = .cancel;
 ```
 
 `/std/async_time` provides monotonic awaitable timers. Low-level `AsyncSleep`
-tokens are registered async operation resources. `sleep_ms` is the normal async
-timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
+values are resource-affine async operation tokens. `sleep_ms` is the normal
+async timer API and is `CancelSafe + Abortable`. `sleep_ms_async`,
 `notify_sleep_done`, `finish_sleep`, and `cancel_sleep` are low-level
-operation-token hooks for direct actor-completion integration. `finish_sleep`
-and `cancel_sleep` consume or close the registry entry, so stale token copies
-fail through ordinary resource validation. Timer policy is deliberately narrow:
-protocol-specific heartbeat, missed-pong, retry, and deadline behavior belongs
-in application code or in helpers such as `async::timeout`.
+operation-token hooks for direct actor-completion integration; `finish_sleep`
+and `cancel_sleep` consume or close the operation token. Timer policy is
+deliberately narrow: protocol-specific heartbeat, missed-pong, retry, and
+deadline behavior belongs in application code or in helpers such as
+`async::timeout`.
 
 These modules are standard library API. They are not compiler intrinsics except
 where this specification names `/std/meta` type metadata helpers or a runtime
 hook.
 
-## 19. C Interop and ABI
+## 20. C Interop and ABI
 
 `extern "C"` declarations are C ABI declarations. C APIs require explicit
 pointer nullability and view mutability: users write `*T`, `*const T`, `?*T`,
@@ -5193,7 +5435,7 @@ GC pointers must use `CielRoot` or another explicit root mechanism.
 
 `ciel_thread_attach` returns `0` on success and a nonzero value on failure.
 
-## 20. Debug Information
+## 21. Debug Information
 
 A debug build emits target debug information through the generated C compiler.
 The Ciel compiler:
@@ -5207,7 +5449,7 @@ The Ciel compiler:
 The minimum debug contract is source-line mapping, readable panic locations,
 and deterministic generated names.
 
-## 21. C Backend Lowering
+## 22. C Backend Lowering
 
 Ciel keeps source-level value semantics. The generated C ABI for internal Ciel
 functions may avoid large copies:

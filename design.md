@@ -4847,9 +4847,12 @@ unsafe extern "C" {
 ```
 
 `ciel_runtime_init` initializes the GC and enables external thread
-registration. It is idempotent. Generated executables call it before user
-`main`. Shared libraries also emit an internal constructor or target-equivalent
-initializer:
+registration. It is idempotent. The runtime configures BDWGC for allocation-heavy
+Ciel workloads by default, using a 128 MiB initial heap target and a free-space
+divisor of `1` unless overridden by `CIEL_GC_INITIAL_HEAP_SIZE`,
+`CIEL_GC_FREE_SPACE_DIVISOR`, or the corresponding BDWGC `GC_*` environment
+variables. Generated executables call it before user `main`. Shared libraries
+also emit an internal constructor or target-equivalent initializer:
 
 ```c
 __attribute__((constructor))

@@ -4,11 +4,71 @@ static int ciel_runtime_initialized = 0;
 static int ciel_runtime_argc = 0;
 static char **ciel_runtime_argv = NULL;
 
+#define CIEL_DEFAULT_GC_INITIAL_HEAP_SIZE ((size_t)128 * 1024 * 1024)
+#define CIEL_DEFAULT_GC_FREE_SPACE_DIVISOR ((GC_word)1)
+
+static int ciel_env_is_set(const char *name) {
+    const char *value = getenv(name);
+    return value != NULL && value[0] != '\0';
+}
+
+static int ciel_parse_size_env(const char *name, size_t *out) {
+    const char *value = getenv(name);
+    if (value == NULL || value[0] == '\0')
+        return 0;
+
+    errno = 0;
+    char *end = NULL;
+    unsigned long long parsed = strtoull(value, &end, 10);
+    if (errno != 0 || end == value || end == NULL || *end != '\0' ||
+        parsed > SIZE_MAX)
+        return 0;
+
+    *out = (size_t)parsed;
+    return 1;
+}
+
+static int ciel_parse_gc_word_env(const char *name, GC_word *out) {
+    size_t parsed = 0;
+    if (!ciel_parse_size_env(name, &parsed) || parsed == 0)
+        return 0;
+    *out = (GC_word)parsed;
+    return 1;
+}
+
+static void ciel_configure_gc_before_init(void) {
+    GC_word divisor = 0;
+    if (ciel_parse_gc_word_env("CIEL_GC_FREE_SPACE_DIVISOR", &divisor)) {
+        GC_set_free_space_divisor(divisor);
+    } else if (!ciel_env_is_set("GC_FREE_SPACE_DIVISOR")) {
+        GC_set_free_space_divisor(CIEL_DEFAULT_GC_FREE_SPACE_DIVISOR);
+    }
+}
+
+static void ciel_configure_gc_after_init(void) {
+    GC_word divisor = 0;
+    if (ciel_parse_gc_word_env("CIEL_GC_FREE_SPACE_DIVISOR", &divisor))
+        GC_set_free_space_divisor(divisor);
+
+    size_t initial_heap_size = 0;
+    if (!ciel_parse_size_env("CIEL_GC_INITIAL_HEAP_SIZE", &initial_heap_size)) {
+        if (ciel_env_is_set("GC_INITIAL_HEAP_SIZE"))
+            return;
+        initial_heap_size = CIEL_DEFAULT_GC_INITIAL_HEAP_SIZE;
+    }
+
+    size_t current_heap_size = GC_get_heap_size();
+    if (current_heap_size < initial_heap_size)
+        (void)GC_expand_hp(initial_heap_size - current_heap_size);
+}
+
 void ciel_runtime_init(void) {
     if (ciel_runtime_initialized)
         return;
     ciel_runtime_initialized = 1;
+    ciel_configure_gc_before_init();
     GC_INIT();
+    ciel_configure_gc_after_init();
 #if defined(GC_THREADS)
     GC_allow_register_threads();
 #endif

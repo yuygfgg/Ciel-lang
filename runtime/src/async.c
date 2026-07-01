@@ -1,17 +1,25 @@
 #include "internal.h"
 
 typedef struct CielTask CielTask;
+typedef struct CielSelectSet CielSelectSet;
 typedef struct CielTaskWaitNode CielTaskWaitNode;
+typedef enum {
+    CIEL_WAIT_TASK = 1,
+    CIEL_WAIT_SELECT_ARM = 2,
+} CielWaitKind;
 struct CielTaskWaitNode {
+    CielWaitKind kind;
     CielTask *task;
+    CielSelectSet *select;
+    size_t select_index;
     struct CielTaskWaitNode *next;
 };
 
 static void ciel_task_schedule_waiters(CielTaskWaitNode *waiters);
+static void ciel_select_wake_arm(CielSelectSet *set, size_t index);
 
 static uint8_t *ciel_async_alloc_bytes(size_t capacity) {
-    return (uint8_t *)ciel_raw_alloc_zeroed(sizeof(uint8_t), 1, capacity,
-                                            false);
+    return (uint8_t *)ciel_alloc_atomic(capacity == 0 ? 1 : capacity);
 }
 
 struct CielBufferedReader {
@@ -130,9 +138,21 @@ static int32_t ciel_async_channel_enqueue_locked(CielAsyncChannel *channel,
                                                  const void *value) {
     if (channel == NULL || (value == NULL && channel->value_size > 0))
         return EINVAL;
-    CielAsyncQueueNode *node =
-        (CielAsyncQueueNode *)ciel_alloc(sizeof(CielAsyncQueueNode));
-    void *copy = ciel_alloc(channel->value_size == 0 ? 1 : channel->value_size);
+    size_t value_size = channel->value_size == 0 ? 1 : channel->value_size;
+    if (channel->value_align == 0)
+        return EINVAL;
+    if (sizeof(CielAsyncQueueNode) > SIZE_MAX - (channel->value_align - 1) ||
+        sizeof(CielAsyncQueueNode) + (channel->value_align - 1) >
+            SIZE_MAX - value_size)
+        return EOVERFLOW;
+    size_t bytes =
+        sizeof(CielAsyncQueueNode) + (channel->value_align - 1) + value_size;
+    CielAsyncQueueNode *node = (CielAsyncQueueNode *)ciel_alloc(bytes);
+    uintptr_t raw_value = (uintptr_t)(node + 1);
+    uintptr_t rem = raw_value % channel->value_align;
+    if (rem != 0)
+        raw_value += channel->value_align - rem;
+    void *copy = (void *)raw_value;
     if (channel->value_size > 0)
         memcpy(copy, value, channel->value_size);
     node->value = copy;
@@ -146,16 +166,18 @@ static int32_t ciel_async_channel_enqueue_locked(CielAsyncChannel *channel,
     return 0;
 }
 
-static void *ciel_async_channel_pop_locked(CielAsyncChannel *channel) {
+static int ciel_async_channel_pop_into_locked(CielAsyncChannel *channel,
+                                              void *out) {
     CielAsyncQueueNode *node = channel->head;
     if (node == NULL)
-        return NULL;
+        return 0;
     channel->head = node->next;
     if (channel->head == NULL)
         channel->tail = NULL;
     channel->len--;
-    void *value = node->value;
-    return value;
+    if (channel->value_size > 0 && out != NULL)
+        memcpy(out, node->value, channel->value_size);
+    return 1;
 }
 
 int32_t ciel_async_channel_make(size_t value_size, size_t value_align,
@@ -353,6 +375,7 @@ struct CielAsyncTcpListener {
     int fd;
     pthread_mutex_t mutex;
     int closed;
+    dispatch_source_t source;
     CielAsyncOp *pending_accept;
     CielAcceptedStreamNode *accepted_head;
     CielAcceptedStreamNode *accepted_tail;
@@ -399,6 +422,9 @@ struct CielAsyncOp {
     uint64_t route_generation;
 };
 
+static void ciel_async_complete_stream(CielAsyncOp *op, int error,
+                                       CielAsyncFd *stream);
+
 typedef enum {
     CIEL_PENDING_CHANNEL_NONE = 0,
     CIEL_PENDING_CHANNEL_SEND = 1,
@@ -416,6 +442,7 @@ struct CielFuture {
     pthread_mutex_t mutex;
     uint8_t state;
     uint8_t cleanup_started;
+    uint8_t cancel_requested;
     int32_t failure;
     uint64_t task_id;
     uint64_t next_operation_id;
@@ -512,10 +539,27 @@ static dispatch_queue_t ciel_task_queue(void);
 
 static CielTaskWaitNode *ciel_task_wait_node_new(CielTask *task) {
     CielTaskWaitNode *node =
-        (CielTaskWaitNode *)malloc(sizeof(CielTaskWaitNode));
+        (CielTaskWaitNode *)ciel_alloc_uncollectable(sizeof(CielTaskWaitNode));
     if (node == NULL)
         return NULL;
+    node->kind = CIEL_WAIT_TASK;
     node->task = task;
+    node->select = NULL;
+    node->select_index = 0;
+    node->next = NULL;
+    return node;
+}
+
+static CielTaskWaitNode *ciel_select_wait_node_new(CielSelectSet *set,
+                                                   size_t index) {
+    CielTaskWaitNode *node =
+        (CielTaskWaitNode *)ciel_alloc_uncollectable(sizeof(CielTaskWaitNode));
+    if (node == NULL)
+        return NULL;
+    node->kind = CIEL_WAIT_SELECT_ARM;
+    node->task = NULL;
+    node->select = set;
+    node->select_index = index;
     node->next = NULL;
     return node;
 }
@@ -524,6 +568,18 @@ static int32_t ciel_task_waiter_push(CielTaskWaitNode **head, CielTask *task) {
     if (head == NULL || task == NULL)
         return EINVAL;
     CielTaskWaitNode *node = ciel_task_wait_node_new(task);
+    if (node == NULL)
+        return ENOMEM;
+    node->next = *head;
+    *head = node;
+    return 0;
+}
+
+static int32_t ciel_select_waiter_push(CielTaskWaitNode **head,
+                                       CielSelectSet *set, size_t index) {
+    if (head == NULL || set == NULL)
+        return EINVAL;
+    CielTaskWaitNode *node = ciel_select_wait_node_new(set, index);
     if (node == NULL)
         return ENOMEM;
     node->next = *head;
@@ -548,8 +604,11 @@ static void ciel_task_schedule(CielTask *task) {
 static void ciel_task_schedule_waiters(CielTaskWaitNode *waiters) {
     while (waiters != NULL) {
         CielTaskWaitNode *next = waiters->next;
-        ciel_task_schedule(waiters->task);
-        free(waiters);
+        if (waiters->kind == CIEL_WAIT_SELECT_ARM)
+            ciel_select_wake_arm(waiters->select, waiters->select_index);
+        else
+            ciel_task_schedule(waiters->task);
+        GC_FREE(waiters);
         waiters = next;
     }
 }
@@ -662,7 +721,7 @@ ciel_async_listener_pop_accepted_locked(CielAsyncTcpListener *listener) {
     return stream;
 }
 
-static void ciel_async_listener_enqueue_accepted(CielAsyncTcpListener *listener,
+static void ciel_async_listener_deliver_accepted(CielAsyncTcpListener *listener,
                                                  CielAsyncFd *stream) {
     if (stream == NULL)
         return;
@@ -671,6 +730,7 @@ static void ciel_async_listener_enqueue_accepted(CielAsyncTcpListener *listener,
             sizeof(CielAcceptedStreamNode));
     node->stream = stream;
     node->next = NULL;
+    CielAsyncOp *pending = NULL;
     pthread_mutex_lock(&listener->mutex);
     if (listener->closed) {
         pthread_mutex_unlock(&listener->mutex);
@@ -678,12 +738,37 @@ static void ciel_async_listener_enqueue_accepted(CielAsyncTcpListener *listener,
         GC_FREE(node);
         return;
     }
-    if (listener->accepted_tail != NULL)
-        listener->accepted_tail->next = node;
-    else
-        listener->accepted_head = node;
-    listener->accepted_tail = node;
+    if (listener->pending_accept != NULL) {
+        pending = listener->pending_accept;
+        listener->pending_accept = NULL;
+    } else {
+        if (listener->accepted_tail != NULL)
+            listener->accepted_tail->next = node;
+        else
+            listener->accepted_head = node;
+        listener->accepted_tail = node;
+        node = NULL;
+    }
     pthread_mutex_unlock(&listener->mutex);
+    if (pending != NULL)
+        ciel_async_complete_stream(pending, 0, stream);
+    if (node != NULL)
+        GC_FREE(node);
+}
+
+static void ciel_async_listener_deliver_error(CielAsyncTcpListener *listener,
+                                              int error) {
+    if (error == 0)
+        return;
+    CielAsyncOp *pending = NULL;
+    pthread_mutex_lock(&listener->mutex);
+    if (!listener->closed && listener->pending_accept != NULL) {
+        pending = listener->pending_accept;
+        listener->pending_accept = NULL;
+    }
+    pthread_mutex_unlock(&listener->mutex);
+    if (pending != NULL)
+        ciel_async_complete_stream(pending, error, NULL);
 }
 
 static void ciel_async_close_accepted_queue(CielAcceptedStreamNode *node) {
@@ -1783,6 +1868,8 @@ CielAsyncOp *ciel_async_tcp_write_bytes(CielAsyncFd *fd, const uint8_t *data,
     return op;
 }
 
+static int32_t ciel_async_tcp_wrap_accepted(int accepted, CielAsyncFd **out);
+
 CielAsyncTcpListener *ciel_async_tcp_listen(CielSocketAddr *addr) {
     if (addr == NULL) {
         errno = EINVAL;
@@ -1817,6 +1904,7 @@ CielAsyncTcpListener *ciel_async_tcp_listen(CielSocketAddr *addr) {
             sizeof(CielAsyncTcpListener));
     listener->fd = fd;
     listener->closed = 0;
+    listener->source = NULL;
     listener->pending_accept = NULL;
     listener->accepted_head = NULL;
     listener->accepted_tail = NULL;
@@ -1826,6 +1914,51 @@ CielAsyncTcpListener *ciel_async_tcp_listen(CielSocketAddr *addr) {
         errno = rc;
         return NULL;
     }
+    dispatch_source_t source = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, ciel_async_net_queue());
+    if (source == NULL) {
+        close(fd);
+        errno = ENOMEM;
+        return NULL;
+    }
+    listener->source = source;
+    dispatch_source_set_event_handler(source, ^{
+      int32_t attach_rc = ciel_runtime_enter_callback();
+      if (attach_rc != 0) {
+          ciel_async_listener_deliver_error(listener, attach_rc);
+          return;
+      }
+      int first_error = 0;
+      while (true) {
+          int accepted;
+          do {
+              accepted = accept(fd, NULL, NULL);
+          } while (accepted < 0 && errno == EINTR);
+          if (accepted < 0) {
+              int err = errno == 0 ? EIO : errno;
+              if (err == EAGAIN
+#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
+                  || err == EWOULDBLOCK
+#endif
+              ) {
+                  break;
+              }
+              first_error = err;
+              break;
+          }
+          CielAsyncFd *stream = NULL;
+          int32_t wrap_rc = ciel_async_tcp_wrap_accepted(accepted, &stream);
+          if (wrap_rc != 0) {
+              first_error = wrap_rc;
+              break;
+          }
+          ciel_async_listener_deliver_accepted(listener, stream);
+      }
+      if (first_error != 0)
+          ciel_async_listener_deliver_error(listener, first_error);
+      ciel_runtime_leave_callback();
+    });
+    dispatch_resume(source);
     return listener;
 }
 
@@ -1861,14 +1994,17 @@ int32_t ciel_async_tcp_close_listener(CielAsyncTcpListener *listener) {
     listener->closed = 1;
     int fd = listener->fd;
     listener->fd = -1;
+    dispatch_source_t source = listener->source;
+    listener->source = NULL;
     pending = listener->pending_accept;
     listener->pending_accept = NULL;
     accepted = listener->accepted_head;
     listener->accepted_head = NULL;
     listener->accepted_tail = NULL;
     pthread_mutex_unlock(&listener->mutex);
+    if (source != NULL)
+        dispatch_source_cancel(source);
     if (pending != NULL) {
-        ciel_async_cancel_source(pending);
         ciel_async_complete_stream(pending, ECANCELED, NULL);
     }
     ciel_async_close_accepted_queue(accepted);
@@ -1906,6 +2042,7 @@ CielAsyncOp *ciel_async_tcp_accept(CielAsyncTcpListener *listener) {
     pthread_mutex_lock(&listener->mutex);
     if (listener->closed) {
         pthread_mutex_unlock(&listener->mutex);
+        ciel_async_op_unpin(op);
         errno = EBADF;
         return NULL;
     }
@@ -1917,72 +2054,13 @@ CielAsyncOp *ciel_async_tcp_accept(CielAsyncTcpListener *listener) {
     }
     if (listener->pending_accept != NULL) {
         pthread_mutex_unlock(&listener->mutex);
+        ciel_async_op_unpin(op);
         errno = EALREADY;
         return NULL;
     }
-    int fd = listener->fd;
-    dispatch_source_t source = dispatch_source_create(
-        DISPATCH_SOURCE_TYPE_READ, (uintptr_t)fd, 0, ciel_async_net_queue());
-    if (source == NULL) {
-        pthread_mutex_unlock(&listener->mutex);
-        errno = ENOMEM;
-        return NULL;
-    }
     op->listener = listener;
-    op->source = source;
     listener->pending_accept = op;
     pthread_mutex_unlock(&listener->mutex);
-
-    dispatch_source_set_event_handler(source, ^{
-      int32_t attach_rc = ciel_runtime_enter_callback();
-      if (attach_rc != 0) {
-          ciel_async_cancel_source(op);
-          ciel_async_complete_stream(op, attach_rc, NULL);
-          return;
-      }
-      CielAsyncFd *first_stream = NULL;
-      int first_error = 0;
-      while (true) {
-          int accepted;
-          do {
-              accepted = accept(fd, NULL, NULL);
-          } while (accepted < 0 && errno == EINTR);
-          if (accepted < 0) {
-              int err = errno == 0 ? EIO : errno;
-              if (err == EAGAIN
-#if defined(EWOULDBLOCK) && EWOULDBLOCK != EAGAIN
-                  || err == EWOULDBLOCK
-#endif
-              ) {
-                  break;
-              }
-              first_error = err;
-              break;
-          }
-          CielAsyncFd *stream = NULL;
-          int32_t rc = ciel_async_tcp_wrap_accepted(accepted, &stream);
-          if (rc != 0) {
-              first_error = rc;
-              break;
-          }
-          if (first_stream == NULL)
-              first_stream = stream;
-          else
-              ciel_async_listener_enqueue_accepted(listener, stream);
-      }
-      if (first_stream != NULL) {
-          ciel_async_cancel_source(op);
-          ciel_async_complete_stream(op, 0, first_stream);
-          ciel_runtime_leave_callback();
-          return;
-      }
-      if (first_error != 0) {
-          ciel_async_cancel_source(op);
-          ciel_async_complete_stream(op, first_error, NULL);
-      }
-      ciel_runtime_leave_callback();
-    });
-    dispatch_resume(source);
     return op;
 }
 
@@ -2531,6 +2609,12 @@ int32_t ciel_future_cancel(CielFuture *future) {
         pthread_mutex_unlock(&future->mutex);
         return EALREADY;
     }
+    if (future->state == CIEL_FUTURE_RUNNING) {
+        future->cancel_requested = 1;
+        future->failure = ECANCELED;
+        pthread_mutex_unlock(&future->mutex);
+        return 0;
+    }
     future->state = CIEL_FUTURE_FAILED;
     future->failure = ECANCELED;
     op = future->pending_op;
@@ -2756,8 +2840,20 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
     int32_t rc = future->run(future->ctx, future->result);
     ciel_resource_restore_current_owner(previous);
 
+    int32_t cleanup_reason = 0;
     pthread_mutex_lock(&future->mutex);
-    if (rc == 0) {
+    if (future->cancel_requested) {
+        future->cancel_requested = 0;
+        future->state = CIEL_FUTURE_FAILED;
+        future->failure = ECANCELED;
+        future->pending_op = NULL;
+        future->pending_task = NULL;
+        future->pending_select = NULL;
+        future->pending_channel = NULL;
+        future->pending_channel_mode = CIEL_PENDING_CHANNEL_NONE;
+        future->pending_group = NULL;
+        cleanup_reason = ECANCELED;
+    } else if (rc == 0) {
         future->state = CIEL_FUTURE_COMPLETE;
         future->pending_op = NULL;
         future->pending_task = NULL;
@@ -2780,6 +2876,10 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
         future->failure = rc;
     }
     pthread_mutex_unlock(&future->mutex);
+    if (cleanup_reason != 0) {
+        ciel_future_run_cleanup(future, cleanup_reason);
+        return cleanup_reason;
+    }
     return rc;
 }
 
@@ -2887,10 +2987,7 @@ int32_t ciel_async_channel_recv_poll(CielFuture *future,
         return EINVAL;
     CielAsyncChannel *channel = receiver->channel;
     pthread_mutex_lock(&channel->mutex);
-    void *value = ciel_async_channel_pop_locked(channel);
-    if (value != NULL) {
-        if (channel->value_size > 0)
-            memcpy(out, value, channel->value_size);
+    if (ciel_async_channel_pop_into_locked(channel, out)) {
         CielTaskWaitNode *waiters =
             ciel_async_channel_take_send_waiter_locked(channel);
         pthread_mutex_unlock(&channel->mutex);
@@ -2974,10 +3071,7 @@ int32_t ciel_future_await_channel_recv(CielFuture *future,
         ciel_future_clear_channel(future, channel);
         return EPIPE;
     }
-    if (channel->head != NULL) {
-        void *value = ciel_async_channel_pop_locked(channel);
-        if (channel->value_size > 0 && out != NULL)
-            memcpy(out, value, channel->value_size);
+    if (ciel_async_channel_pop_into_locked(channel, out)) {
         CielTaskWaitNode *waiters =
             ciel_async_channel_take_send_waiter_locked(channel);
         pthread_mutex_unlock(&channel->mutex);
@@ -3235,7 +3329,8 @@ void *ciel_task_spawn(CielFuture *future) {
         ciel_resource_current_owner_or_root(), ciel_resource_default_limits(),
         &owner_rc);
     if (task->owner == NULL) {
-        errno = owner_rc == 0 ? ENOMEM : owner_rc;
+        int err = owner_rc == 0 ? ENOMEM : owner_rc;
+        errno = err;
         return NULL;
     }
     int32_t detach_rc = ciel_resource_owner_detach(task->owner);
@@ -3566,8 +3661,42 @@ static int ciel_select_claim(CielSelectSet *set, size_t index, int32_t rc) {
         pthread_cond_broadcast(&set->cond);
     }
     pthread_mutex_unlock(&set->mutex);
+    if (claimed)
+        ciel_select_cancel_losers(set, index);
     ciel_task_schedule_waiters(waiters);
     return claimed;
+}
+
+static int ciel_select_register_future_pending_source(CielSelectSet *set,
+                                                      size_t index,
+                                                      CielFuture *future);
+
+static void ciel_select_wake_arm(CielSelectSet *set, size_t index) {
+    if (set == NULL)
+        return;
+    pthread_mutex_lock(&set->mutex);
+    int stopped = set->winner != -1;
+    CielFuture *arm_future =
+        !stopped && index < set->len ? set->arms[index].future : NULL;
+    void *result =
+        !stopped && index < set->len ? set->arms[index].result : NULL;
+    pthread_mutex_unlock(&set->mutex);
+    if (stopped || arm_future == NULL)
+        return;
+    int32_t rc = ciel_future_poll_trampoline(arm_future, result);
+    if (rc != EAGAIN) {
+        pthread_mutex_lock(&set->mutex);
+        if (index < set->len) {
+            set->arms[index].rc = rc;
+            set->arms[index].completed = 1;
+        }
+        pthread_mutex_unlock(&set->mutex);
+        (void)ciel_select_claim(set, index, rc);
+        return;
+    }
+    if (ciel_future_has_pending_source(arm_future))
+        (void)ciel_select_register_future_pending_source(set, index,
+                                                         arm_future);
 }
 
 static void ciel_select_waiter_run(void *ctx_raw) {
@@ -3643,6 +3772,119 @@ static int ciel_select_register_task_waiter(CielSelectSet *set,
             should_schedule = 1;
     }
     return should_schedule;
+}
+
+static int ciel_select_register_future_pending_source(CielSelectSet *set,
+                                                      size_t index,
+                                                      CielFuture *future) {
+    if (set == NULL || future == NULL)
+        return 1;
+    CielAsyncOp *op = NULL;
+    CielTask *pending_task = NULL;
+    CielSelectSet *pending_select = NULL;
+    CielAsyncChannel *channel = NULL;
+    CielPendingChannelMode channel_mode = CIEL_PENDING_CHANNEL_NONE;
+    CielTaskGroup *group = NULL;
+    pthread_mutex_lock(&future->mutex);
+    op = future->pending_op;
+    pending_task = future->pending_task;
+    pending_select = future->pending_select;
+    channel = future->pending_channel;
+    channel_mode = future->pending_channel_mode;
+    group = future->pending_group;
+    int future_ready = future->state == CIEL_FUTURE_COMPLETE ||
+                       future->state == CIEL_FUTURE_FAILED;
+    pthread_mutex_unlock(&future->mutex);
+    if (future_ready)
+        return 1;
+
+    if (op != NULL) {
+        pthread_mutex_lock(&op->mutex);
+        int ready = op->complete || op->canceled || op->finished;
+        int32_t rc = 0;
+        if (!ready)
+            rc = ciel_select_waiter_push(&op->waiters, set, index);
+        pthread_mutex_unlock(&op->mutex);
+        return ready || rc != 0;
+    }
+    if (channel != NULL) {
+        pthread_mutex_lock(&channel->mutex);
+        int ready =
+            ciel_async_channel_ready_for_mode_locked(channel, channel_mode);
+        int32_t rc = 0;
+        if (!ready) {
+            switch (channel_mode) {
+            case CIEL_PENDING_CHANNEL_SEND:
+                rc =
+                    ciel_select_waiter_push(&channel->send_waiters, set, index);
+                break;
+            case CIEL_PENDING_CHANNEL_RECV:
+                rc =
+                    ciel_select_waiter_push(&channel->recv_waiters, set, index);
+                break;
+            case CIEL_PENDING_CHANNEL_NONE:
+            default:
+                ready = 1;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&channel->mutex);
+        return ready || rc != 0;
+    }
+    if (pending_select != NULL) {
+        pthread_mutex_lock(&pending_select->mutex);
+        int ready = pending_select->winner != -1;
+        int32_t rc = 0;
+        if (!ready)
+            rc = ciel_select_waiter_push(&pending_select->waiters, set, index);
+        pthread_mutex_unlock(&pending_select->mutex);
+        return ready || rc != 0;
+    }
+    if (pending_task != NULL) {
+        pthread_mutex_lock(&pending_task->mutex);
+        int ready = pending_task->finished != 0;
+        int32_t rc = 0;
+        if (!ready)
+            rc = ciel_select_waiter_push(&pending_task->waiters, set, index);
+        pthread_mutex_unlock(&pending_task->mutex);
+        return ready || rc != 0;
+    }
+    if (group != NULL) {
+        pthread_mutex_lock(&group->mutex);
+        int ready =
+            group->done_head != NULL || group->closed || group->live_tasks == 0;
+        int32_t rc = 0;
+        if (!ready)
+            rc = ciel_select_waiter_push(&group->waiters, set, index);
+        pthread_mutex_unlock(&group->mutex);
+        return ready || rc != 0;
+    }
+    return 1;
+}
+
+static int ciel_select_register_source_waiters(CielSelectSet *set) {
+    if (set == NULL)
+        return 1;
+    pthread_mutex_lock(&set->mutex);
+    int stopped = set->winner != -1;
+    size_t len = set->len;
+    pthread_mutex_unlock(&set->mutex);
+    if (stopped)
+        return 1;
+
+    int should_poll = 0;
+    for (size_t i = 0; i < len; i++) {
+        pthread_mutex_lock(&set->mutex);
+        stopped = set->winner != -1;
+        CielFuture *arm_future = i < set->len ? set->arms[i].future : NULL;
+        pthread_mutex_unlock(&set->mutex);
+        if (stopped)
+            return 1;
+        if (arm_future == NULL ||
+            ciel_select_register_future_pending_source(set, i, arm_future))
+            should_poll = 1;
+    }
+    return should_poll;
 }
 
 static size_t ciel_select_fair_start(size_t len) {
@@ -3727,8 +3969,7 @@ static void ciel_select_wait_until_ready(CielSelectSet *set) {
         sched_yield();
         return;
     }
-    int32_t rc = ciel_select_start_waiters(set);
-    if (rc != 0)
+    if (ciel_select_register_source_waiters(set))
         return;
     pthread_mutex_lock(&set->mutex);
     while (set->winner == -1)

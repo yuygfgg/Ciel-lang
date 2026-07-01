@@ -23,6 +23,7 @@ typedef struct CielResourceEntry {
 struct CielResourceOwner {
     uint64_t id;
     uint64_t generation;
+    pthread_mutex_t mutex;
     CielResourceLimits limits;
     size_t live_resources;
     size_t live_child_owners;
@@ -51,6 +52,9 @@ static __thread CielResourceOwner *ciel_resource_current = NULL;
 static __thread CielResourceOwner *ciel_resource_owner_stack[128];
 static __thread size_t ciel_resource_owner_stack_len = 0;
 
+#define CIEL_RESOURCE_ASYNC_OP_HANDLE_OWNER_ID UINT64_MAX
+#define CIEL_RESOURCE_ASYNC_OP_HANDLE_GENERATION UINT64_C(0xc1e1000000000001)
+
 static int ciel_resource_kind_is_descriptor(CielResourceKind kind) {
     return kind == CIEL_RESOURCE_KIND_FILE ||
            kind == CIEL_RESOURCE_KIND_TCP_LISTENER ||
@@ -66,7 +70,7 @@ static int ciel_resource_kind_is_pending_op(CielResourceKind kind) {
 CielResourceLimits ciel_resource_default_limits(void) {
     CielResourceLimits limits;
     limits.max_resources = 4096;
-    limits.max_child_owners = 1024;
+    limits.max_child_owners = 65536;
     limits.max_pending_ops = 8192;
     limits.max_descriptors = 4096;
     return limits;
@@ -110,6 +114,12 @@ ciel_resource_owner_alloc_locked(CielResourceOwner *parent,
     memset(owner, 0, sizeof(*owner));
     owner->id = id;
     owner->generation = 1;
+    int mutex_rc = pthread_mutex_init(&owner->mutex, NULL);
+    if (mutex_rc != 0) {
+        if (out_rc != NULL)
+            *out_rc = mutex_rc;
+        return NULL;
+    }
     owner->limits = limits;
     owner->next_resource_id = 1;
     owner->parent = parent;
@@ -248,6 +258,26 @@ static CielResourceHandle ciel_resource_handle_from_parts(uint64_t owner_id,
     return handle;
 }
 
+static CielResourceHandle
+ciel_resource_async_op_handle_from_ptr(CielAsyncOp *op) {
+    return ciel_resource_handle_from_parts(
+        CIEL_RESOURCE_ASYNC_OP_HANDLE_OWNER_ID, (uint64_t)(uintptr_t)op,
+        CIEL_RESOURCE_ASYNC_OP_HANDLE_GENERATION);
+}
+
+static int ciel_resource_handle_is_async_op(CielResourceHandle handle) {
+    return handle.owner_id == CIEL_RESOURCE_ASYNC_OP_HANDLE_OWNER_ID &&
+           handle.generation == CIEL_RESOURCE_ASYNC_OP_HANDLE_GENERATION &&
+           handle.resource_id != 0;
+}
+
+static CielAsyncOp *
+ciel_resource_async_op_from_handle(CielResourceHandle handle) {
+    if (!ciel_resource_handle_is_async_op(handle))
+        return NULL;
+    return (CielAsyncOp *)(uintptr_t)handle.resource_id;
+}
+
 int32_t ciel_resource_scope_push_default(void) {
     return ciel_resource_scope_push_limits(ciel_resource_default_limits());
 }
@@ -337,19 +367,29 @@ static int32_t ciel_resource_collect_owner_close_locked(
     size_t *child_cap) {
     if (owner == NULL)
         return EINVAL;
-    if (owner->closed)
+    pthread_mutex_lock(&owner->mutex);
+    if (owner->closed) {
+        pthread_mutex_unlock(&owner->mutex);
         return 0;
+    }
     owner->closed = 1;
-    if (owner->parent != NULL && owner->parent->live_child_owners > 0)
-        owner->parent->live_child_owners--;
+    CielResourceOwner *parent = owner->parent;
+    if (parent != NULL &&
+        ciel_resource_owner_unlink_child_locked(parent, owner)) {
+        if (parent->live_child_owners > 0)
+            parent->live_child_owners--;
+        owner->parent = NULL;
+    }
 
     for (CielResourceEntry *entry = owner->entries; entry != NULL;
          entry = entry->next) {
         if (entry->state != CIEL_RESOURCE_STATE_OPEN)
             continue;
         int32_t rc = ciel_resource_close_action_push(actions, len, cap, entry);
-        if (rc != 0)
+        if (rc != 0) {
+            pthread_mutex_unlock(&owner->mutex);
             return rc;
+        }
         entry->state = CIEL_RESOURCE_STATE_CLOSED;
         if (owner->live_resources > 0)
             owner->live_resources--;
@@ -360,6 +400,7 @@ static int32_t ciel_resource_collect_owner_close_locked(
             owner->live_descriptors > 0)
             owner->live_descriptors--;
     }
+    pthread_mutex_unlock(&owner->mutex);
 
     for (CielResourceOwner *child = owner->first_child; child != NULL;
          child = child->next_sibling) {
@@ -447,6 +488,75 @@ ciel_resource_find_entry_locked(CielResourceOwner *owner,
             return entry;
     }
     return NULL;
+}
+
+static CielResourceOwner *
+ciel_resource_find_owner_for_handle(CielResourceHandle handle) {
+    if (handle.owner_id == 0 || handle.resource_id == 0 ||
+        handle.generation == 0)
+        return NULL;
+    CielResourceOwner *current = ciel_resource_current;
+    if (current != NULL && current->id == handle.owner_id)
+        return current;
+    pthread_mutex_lock(&ciel_resource_mutex);
+    CielResourceOwner *owner = ciel_resource_find_owner_locked(
+        handle.owner_id, ciel_resource_root_owner);
+    pthread_mutex_unlock(&ciel_resource_mutex);
+    return owner;
+}
+
+static int32_t ciel_resource_resolve_entry_owner_locked(
+    CielResourceOwner *owner, CielResourceHandle handle,
+    CielResourceKind expected, CielResourceEntry **out_entry) {
+    if (handle.owner_id == 0 || handle.resource_id == 0 ||
+        handle.generation == 0)
+        return EBADF;
+    if (owner == NULL || owner->id != handle.owner_id || owner->closed)
+        return EBADF;
+    CielResourceEntry *entry =
+        ciel_resource_find_entry_locked(owner, handle.resource_id);
+    if (entry == NULL)
+        return EBADF;
+    if (entry->generation != handle.generation)
+        return EBADF;
+    if (expected != 0 && entry->kind != expected)
+        return EINVAL;
+    if (out_entry != NULL)
+        *out_entry = entry;
+    if (entry->state == CIEL_RESOURCE_STATE_CLOSED)
+        return 0;
+    if (entry->state != CIEL_RESOURCE_STATE_OPEN)
+        return EBADF;
+    return 0;
+}
+
+static void ciel_resource_owner_lock_pair(CielResourceOwner *a,
+                                          CielResourceOwner *b) {
+    if (a == NULL)
+        return;
+    if (a == b || b == NULL) {
+        pthread_mutex_lock(&a->mutex);
+        return;
+    }
+    if (a->id < b->id) {
+        pthread_mutex_lock(&a->mutex);
+        pthread_mutex_lock(&b->mutex);
+    } else {
+        pthread_mutex_lock(&b->mutex);
+        pthread_mutex_lock(&a->mutex);
+    }
+}
+
+static void ciel_resource_owner_unlock_pair(CielResourceOwner *a,
+                                            CielResourceOwner *b) {
+    if (a == NULL)
+        return;
+    if (a == b || b == NULL) {
+        pthread_mutex_unlock(&a->mutex);
+        return;
+    }
+    pthread_mutex_unlock(&a->mutex);
+    pthread_mutex_unlock(&b->mutex);
 }
 
 int32_t ciel_resource_owner_enter_child_limits_raw(
@@ -551,19 +661,22 @@ static int32_t ciel_resource_owner_has_capacity_locked(CielResourceOwner *owner,
     return 0;
 }
 
-static int32_t ciel_resource_register_locked(CielResourceOwner *owner,
-                                             CielResourceKind kind, int fd,
-                                             int borrowed, void *ptr,
-                                             CielResourceCloseFn close_fn,
-                                             const void *native_type,
-                                             CielResourceHandle *out) {
+static CielResourceEntry *ciel_resource_entry_alloc(void) {
+    return (CielResourceEntry *)ciel_alloc_uncollectable(
+        sizeof(CielResourceEntry));
+}
+
+static int32_t ciel_resource_register_entry_locked(
+    CielResourceOwner *owner, CielResourceKind kind, int fd, int borrowed,
+    void *ptr, CielResourceCloseFn close_fn, const void *native_type,
+    CielResourceEntry *entry, CielResourceHandle *out) {
     if (out == NULL)
         return EINVAL;
+    if (entry == NULL)
+        return ENOMEM;
     int32_t rc = ciel_resource_owner_has_capacity_locked(owner, kind);
     if (rc != 0)
         return rc;
-    CielResourceEntry *entry = (CielResourceEntry *)ciel_alloc_uncollectable(
-        sizeof(CielResourceEntry));
     memset(entry, 0, sizeof(*entry));
     entry->id = owner->next_resource_id++;
     entry->generation = 1;
@@ -593,11 +706,14 @@ int32_t ciel_resource_register_fd(CielResourceKind kind, int fd, int borrowed,
         return EINVAL;
     if (!ciel_resource_kind_is_descriptor(kind))
         return EINVAL;
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     CielResourceOwner *owner = ciel_resource_current_owner_or_root();
-    pthread_mutex_lock(&ciel_resource_mutex);
-    int32_t rc = ciel_resource_register_locked(owner, kind, fd, borrowed, NULL,
-                                               NULL, NULL, out);
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_lock(&owner->mutex);
+    int32_t rc = ciel_resource_register_entry_locked(
+        owner, kind, fd, borrowed, NULL, NULL, NULL, entry, out);
+    pthread_mutex_unlock(&owner->mutex);
+    if (rc != 0)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -605,11 +721,14 @@ int32_t ciel_resource_register_async_fd(CielAsyncFd *fd,
                                         CielResourceHandle *out) {
     if (fd == NULL || out == NULL)
         return EINVAL;
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     CielResourceOwner *owner = ciel_resource_current_owner_or_root();
-    pthread_mutex_lock(&ciel_resource_mutex);
-    int32_t rc = ciel_resource_register_locked(
-        owner, CIEL_RESOURCE_KIND_ASYNC_FD, -1, 0, fd, NULL, NULL, out);
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_lock(&owner->mutex);
+    int32_t rc = ciel_resource_register_entry_locked(
+        owner, CIEL_RESOURCE_KIND_ASYNC_FD, -1, 0, fd, NULL, NULL, entry, out);
+    pthread_mutex_unlock(&owner->mutex);
+    if (rc != 0)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -629,12 +748,15 @@ int32_t ciel_resource_register_async_listener(CielAsyncTcpListener *listener,
                                               CielResourceHandle *out) {
     if (listener == NULL || out == NULL)
         return EINVAL;
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     CielResourceOwner *owner = ciel_resource_current_owner_or_root();
-    pthread_mutex_lock(&ciel_resource_mutex);
-    int32_t rc = ciel_resource_register_locked(
+    pthread_mutex_lock(&owner->mutex);
+    int32_t rc = ciel_resource_register_entry_locked(
         owner, CIEL_RESOURCE_KIND_ASYNC_TCP_LISTENER, -1, 0, listener, NULL,
-        NULL, out);
-    pthread_mutex_unlock(&ciel_resource_mutex);
+        NULL, entry, out);
+    pthread_mutex_unlock(&owner->mutex);
+    if (rc != 0)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -653,12 +775,8 @@ int32_t ciel_resource_register_async_op(CielAsyncOp *op,
                                         CielResourceHandle *out) {
     if (op == NULL || out == NULL)
         return EINVAL;
-    CielResourceOwner *owner = ciel_resource_current_owner_or_root();
-    pthread_mutex_lock(&ciel_resource_mutex);
-    int32_t rc = ciel_resource_register_locked(
-        owner, CIEL_RESOURCE_KIND_ASYNC_OP, -1, 0, op, NULL, NULL, out);
-    pthread_mutex_unlock(&ciel_resource_mutex);
-    return rc;
+    *out = ciel_resource_async_op_handle_from_ptr(op);
+    return 0;
 }
 
 int32_t ciel_resource_register_async_op_handle(CielAsyncOp *op,
@@ -677,16 +795,20 @@ int32_t ciel_resource_fd_snapshot(CielResourceHandle handle,
                                   CielResourceKind expected, int *out_fd) {
     if (out_fd == NULL)
         return EINVAL;
-    pthread_mutex_lock(&ciel_resource_mutex);
+    CielResourceOwner *owner = ciel_resource_find_owner_for_handle(handle);
+    if (owner == NULL)
+        return EBADF;
+    pthread_mutex_lock(&owner->mutex);
     CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, expected, NULL, &entry);
+    int32_t rc = ciel_resource_resolve_entry_owner_locked(owner, handle,
+                                                          expected, &entry);
     if (rc == 0) {
         if (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN)
             rc = EBADF;
         else
             *out_fd = entry->fd;
     }
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_unlock(&owner->mutex);
     return rc;
 }
 
@@ -695,16 +817,20 @@ static int32_t ciel_resource_ptr_snapshot(CielResourceHandle handle,
                                           void **out) {
     if (out == NULL)
         return EINVAL;
-    pthread_mutex_lock(&ciel_resource_mutex);
+    CielResourceOwner *owner = ciel_resource_find_owner_for_handle(handle);
+    if (owner == NULL)
+        return EBADF;
+    pthread_mutex_lock(&owner->mutex);
     CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, expected, NULL, &entry);
+    int32_t rc = ciel_resource_resolve_entry_owner_locked(owner, handle,
+                                                          expected, &entry);
     if (rc == 0) {
         if (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN)
             rc = EBADF;
         else
             *out = entry->ptr;
     }
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_unlock(&owner->mutex);
     return rc;
 }
 
@@ -739,6 +865,13 @@ int32_t ciel_resource_async_listener_snapshot_handle(
 
 int32_t ciel_resource_async_op_snapshot(CielResourceHandle handle,
                                         CielAsyncOp **out) {
+    if (out == NULL)
+        return EINVAL;
+    CielAsyncOp *op = ciel_resource_async_op_from_handle(handle);
+    if (op != NULL) {
+        *out = op;
+        return 0;
+    }
     return ciel_resource_ptr_snapshot(handle, CIEL_RESOURCE_KIND_ASYNC_OP,
                                       (void **)out);
 }
@@ -757,12 +890,15 @@ int32_t ciel_resource_register_native(void *ptr, CielResourceCloseFn close_fn,
                                       CielResourceHandle *out) {
     if (ptr == NULL || close_fn == NULL || native_type == NULL || out == NULL)
         return EINVAL;
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     CielResourceOwner *owner = ciel_resource_current_owner_or_root();
-    pthread_mutex_lock(&ciel_resource_mutex);
-    int32_t rc =
-        ciel_resource_register_locked(owner, CIEL_RESOURCE_KIND_NATIVE, -1, 0,
-                                      ptr, close_fn, native_type, out);
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_lock(&owner->mutex);
+    int32_t rc = ciel_resource_register_entry_locked(
+        owner, CIEL_RESOURCE_KIND_NATIVE, -1, 0, ptr, close_fn, native_type,
+        entry, out);
+    pthread_mutex_unlock(&owner->mutex);
+    if (rc != 0)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -770,10 +906,13 @@ int32_t ciel_resource_native_snapshot(CielResourceHandle handle,
                                       const void *native_type, void **out) {
     if (native_type == NULL || out == NULL)
         return EINVAL;
-    pthread_mutex_lock(&ciel_resource_mutex);
+    CielResourceOwner *owner = ciel_resource_find_owner_for_handle(handle);
+    if (owner == NULL)
+        return EBADF;
+    pthread_mutex_lock(&owner->mutex);
     CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, CIEL_RESOURCE_KIND_NATIVE,
-                                              NULL, &entry);
+    int32_t rc = ciel_resource_resolve_entry_owner_locked(
+        owner, handle, CIEL_RESOURCE_KIND_NATIVE, &entry);
     if (rc == 0) {
         if (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN) {
             rc = EBADF;
@@ -783,17 +922,25 @@ int32_t ciel_resource_native_snapshot(CielResourceHandle handle,
             *out = entry->ptr;
         }
     }
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_unlock(&owner->mutex);
     return rc;
 }
 
 int32_t ciel_resource_close(CielResourceHandle handle) {
+    CielAsyncOp *op = ciel_resource_async_op_from_handle(handle);
+    if (op != NULL) {
+        int32_t rc = ciel_async_cancel(op);
+        return rc == EALREADY ? 0 : rc;
+    }
     CielResourceCloseAction action;
     memset(&action, 0, sizeof(action));
-    pthread_mutex_lock(&ciel_resource_mutex);
-    CielResourceOwner *owner = NULL;
+    CielResourceOwner *owner = ciel_resource_find_owner_for_handle(handle);
+    if (owner == NULL)
+        return EBADF;
+    pthread_mutex_lock(&owner->mutex);
     CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
+    int32_t rc =
+        ciel_resource_resolve_entry_owner_locked(owner, handle, 0, &entry);
     if (rc == 0) {
         if (entry == NULL) {
             rc = EBADF;
@@ -818,7 +965,7 @@ int32_t ciel_resource_close(CielResourceHandle handle) {
                 owner->live_descriptors--;
         }
     }
-    pthread_mutex_unlock(&ciel_resource_mutex);
+    pthread_mutex_unlock(&owner->mutex);
     if (rc != 0)
         return rc;
     if (action.kind == 0)
@@ -845,45 +992,50 @@ static int ciel_resource_owner_is_ancestor_locked(CielResourceOwner *ancestor,
     return 0;
 }
 
-static int32_t ciel_resource_transfer_to_owner_locked(
-    CielResourceHandle handle, CielResourceOwner *destination,
-    CielResourceHandle *out, CielResourceOwner **out_source) {
-    if (destination == NULL || out == NULL)
+static int32_t ciel_resource_transfer_to_owner_with_owners_locked(
+    CielResourceHandle handle, CielResourceOwner *owner,
+    CielResourceOwner *destination, CielResourceEntry **fresh_entry,
+    CielResourceHandle *out) {
+    if (owner == NULL || destination == NULL || fresh_entry == NULL ||
+        out == NULL)
         return EINVAL;
-    CielResourceOwner *owner = NULL;
     CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
-    if (rc != 0)
-        return rc;
-    if (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN ||
-        owner == NULL) {
-        return EBADF;
-    }
-    if (out_source != NULL)
-        *out_source = owner;
+    ciel_resource_owner_lock_pair(owner, destination);
+    int32_t rc =
+        ciel_resource_resolve_entry_owner_locked(owner, handle, 0, &entry);
+    if (rc == 0 && (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN))
+        rc = EBADF;
     if (owner == destination) {
-        *out = handle;
-        return 0;
-    }
-    rc = ciel_resource_owner_has_capacity_locked(destination, entry->kind);
-    if (rc != 0)
+        if (rc == 0)
+            *out = handle;
+        ciel_resource_owner_unlock_pair(owner, destination);
         return rc;
-    CielResourceHandle fresh;
-    rc = ciel_resource_register_locked(
-        destination, entry->kind, entry->fd, entry->borrowed, entry->ptr,
-        entry->close_fn, entry->native_type, &fresh);
-    if (rc == 0) {
-        entry->state = CIEL_RESOURCE_STATE_MOVED;
-        if (owner->live_resources > 0)
-            owner->live_resources--;
-        if (ciel_resource_kind_is_pending_op(entry->kind) &&
-            owner->live_pending_ops > 0)
-            owner->live_pending_ops--;
-        if (ciel_resource_kind_is_descriptor(entry->kind) &&
-            owner->live_descriptors > 0)
-            owner->live_descriptors--;
-        *out = fresh;
     }
+    if (rc == 0) {
+        if (*fresh_entry == NULL) {
+            rc = ENOMEM;
+        } else {
+            CielResourceHandle fresh;
+            rc = ciel_resource_register_entry_locked(
+                destination, entry->kind, entry->fd, entry->borrowed,
+                entry->ptr, entry->close_fn, entry->native_type, *fresh_entry,
+                &fresh);
+            if (rc == 0) {
+                *fresh_entry = NULL;
+                entry->state = CIEL_RESOURCE_STATE_MOVED;
+                if (owner->live_resources > 0)
+                    owner->live_resources--;
+                if (ciel_resource_kind_is_pending_op(entry->kind) &&
+                    owner->live_pending_ops > 0)
+                    owner->live_pending_ops--;
+                if (ciel_resource_kind_is_descriptor(entry->kind) &&
+                    owner->live_descriptors > 0)
+                    owner->live_descriptors--;
+                *out = fresh;
+            }
+        }
+    }
+    ciel_resource_owner_unlock_pair(owner, destination);
     return rc;
 }
 
@@ -891,22 +1043,34 @@ int32_t ciel_resource_transfer_to_parent(CielResourceHandle handle,
                                          CielResourceHandle *out) {
     if (out == NULL)
         return EINVAL;
+    if (ciel_resource_handle_is_async_op(handle)) {
+        *out = handle;
+        return 0;
+    }
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     pthread_mutex_lock(&ciel_resource_mutex);
     CielResourceOwner *owner = NULL;
-    CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
-    if (rc == 0 && (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN ||
-                    owner == NULL || owner->parent == NULL)) {
+    int32_t rc = 0;
+    if (handle.owner_id == 0 || handle.resource_id == 0 ||
+        handle.generation == 0) {
         rc = EBADF;
     }
     if (rc == 0) {
+        owner = ciel_resource_find_owner_locked(handle.owner_id,
+                                                ciel_resource_root_owner);
+        if (owner == NULL || owner->parent == NULL)
+            rc = EBADF;
+    }
+    if (rc == 0) {
         CielResourceHandle fresh;
-        rc = ciel_resource_transfer_to_owner_locked(handle, owner->parent,
-                                                    &fresh, NULL);
+        rc = ciel_resource_transfer_to_owner_with_owners_locked(
+            handle, owner, owner->parent, &entry, &fresh);
         if (rc == 0)
             *out = fresh;
     }
     pthread_mutex_unlock(&ciel_resource_mutex);
+    if (entry != NULL)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -914,14 +1078,24 @@ int32_t ciel_resource_transfer_to_current(CielResourceHandle handle,
                                           CielResourceHandle *out) {
     if (out == NULL)
         return EINVAL;
+    if (ciel_resource_handle_is_async_op(handle)) {
+        *out = handle;
+        return 0;
+    }
     CielResourceOwner *destination = ciel_resource_current_owner_or_root();
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     pthread_mutex_lock(&ciel_resource_mutex);
     CielResourceOwner *owner = NULL;
-    CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
-    if (rc == 0 && (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN ||
-                    owner == NULL || destination == NULL)) {
+    int32_t rc = 0;
+    if (handle.owner_id == 0 || handle.resource_id == 0 ||
+        handle.generation == 0) {
         rc = EBADF;
+    }
+    if (rc == 0) {
+        owner = ciel_resource_find_owner_locked(handle.owner_id,
+                                                ciel_resource_root_owner);
+        if (owner == NULL || destination == NULL)
+            rc = EBADF;
     }
     if (rc == 0 &&
         !ciel_resource_owner_is_ancestor_locked(owner, destination)) {
@@ -929,12 +1103,14 @@ int32_t ciel_resource_transfer_to_current(CielResourceHandle handle,
     }
     if (rc == 0) {
         CielResourceHandle fresh;
-        rc = ciel_resource_transfer_to_owner_locked(handle, destination, &fresh,
-                                                    NULL);
+        rc = ciel_resource_transfer_to_owner_with_owners_locked(
+            handle, owner, destination, &entry, &fresh);
         if (rc == 0)
             *out = fresh;
     }
     pthread_mutex_unlock(&ciel_resource_mutex);
+    if (entry != NULL)
+        GC_FREE(entry);
     return rc;
 }
 
@@ -979,19 +1155,31 @@ int32_t ciel_resource_reattach_to_parent_handle(uint64_t owner_id,
     handle.owner_id = owner_id;
     handle.resource_id = resource_id;
     handle.generation = generation;
+    if (ciel_resource_handle_is_async_op(handle)) {
+        *out_owner_id = handle.owner_id;
+        *out_resource_id = handle.resource_id;
+        *out_generation = handle.generation;
+        return 0;
+    }
 
+    CielResourceEntry *entry = ciel_resource_entry_alloc();
     pthread_mutex_lock(&ciel_resource_mutex);
     CielResourceOwner *owner = NULL;
-    CielResourceEntry *entry = NULL;
-    int32_t rc = ciel_resource_resolve_locked(handle, 0, &owner, &entry);
-    if (rc == 0 && (entry == NULL || entry->state != CIEL_RESOURCE_STATE_OPEN ||
-                    owner == NULL)) {
+    int32_t rc = 0;
+    if (handle.owner_id == 0 || handle.resource_id == 0 ||
+        handle.generation == 0) {
         rc = EBADF;
+    }
+    if (rc == 0) {
+        owner = ciel_resource_find_owner_locked(handle.owner_id,
+                                                ciel_resource_root_owner);
+        if (owner == NULL)
+            rc = EBADF;
     }
     if (rc == 0 && owner == current) {
         CielResourceHandle fresh;
-        rc = ciel_resource_transfer_to_owner_locked(handle, current->parent,
-                                                    &fresh, NULL);
+        rc = ciel_resource_transfer_to_owner_with_owners_locked(
+            handle, owner, current->parent, &entry, &fresh);
         if (rc == 0) {
             *out_owner_id = fresh.owner_id;
             *out_resource_id = fresh.resource_id;
@@ -1006,6 +1194,8 @@ int32_t ciel_resource_reattach_to_parent_handle(uint64_t owner_id,
         rc = EPERM;
     }
     pthread_mutex_unlock(&ciel_resource_mutex);
+    if (entry != NULL)
+        GC_FREE(entry);
     return rc;
 }
 

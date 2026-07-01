@@ -163,8 +163,7 @@ int ciel_u8_copy(uint8_t *dst, const uint8_t *src, size_t len) {
     return 0;
 }
 
-static pthread_mutex_t ciel_root_pool_mutex = PTHREAD_MUTEX_INITIALIZER;
-static CielRoot *ciel_root_pool = NULL;
+static __thread CielRoot *ciel_root_pool = NULL;
 
 static pthread_key_t ciel_gc_thread_key;
 static pthread_once_t ciel_gc_thread_key_once = PTHREAD_ONCE_INIT;
@@ -254,13 +253,10 @@ void ciel_runtime_leave_callback(void) {
 
 CielRoot *ciel_root_pin(void *ptr) {
     ciel_runtime_init();
-    CielRoot *root = NULL;
-    pthread_mutex_lock(&ciel_root_pool_mutex);
+    CielRoot *root = ciel_root_pool;
     if (ciel_root_pool != NULL) {
-        root = ciel_root_pool;
         ciel_root_pool = root->next;
     }
-    pthread_mutex_unlock(&ciel_root_pool_mutex);
     if (root == NULL) {
         root = (CielRoot *)GC_MALLOC_UNCOLLECTABLE(sizeof(CielRoot));
         if (root == NULL) {
@@ -279,8 +275,6 @@ void ciel_root_unpin(CielRoot *root) {
     if (root == NULL)
         return;
     root->ptr = NULL;
-    pthread_mutex_lock(&ciel_root_pool_mutex);
     root->next = ciel_root_pool;
     ciel_root_pool = root;
-    pthread_mutex_unlock(&ciel_root_pool_mutex);
 }

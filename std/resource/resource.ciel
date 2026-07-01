@@ -115,7 +115,7 @@ ResourceError resource_error(c::c_int code) {
 
 // Creates conservative default owner limits for a scoped resource owner.
 export Limits default_limits() {
-    return { max_resources: 4096, max_child_owners: 1024, max_pending_ops: 8192, max_descriptors: 4096 };
+    return { max_resources: 4096, max_child_owners: 65536, max_pending_ops: 8192, max_descriptors: 4096 };
 }
 
 unsafe void clear_handle(*Handle handle) {

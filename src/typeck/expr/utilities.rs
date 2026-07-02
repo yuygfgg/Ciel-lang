@@ -538,6 +538,7 @@ impl TypeChecker {
 
     pub(super) fn meta_repr_marker_matches_concrete(&mut self, marker: &Ty, concrete: &Ty) -> bool {
         self.meta_repr_marker_sop_ty(marker)
+            .or_else(|| self.meta_schema_marker_sop_ty(marker))
             .is_some_and(|repr_ty| self.meta_repr_storage_equivalent_inner(&repr_ty, concrete))
     }
 
@@ -975,16 +976,18 @@ impl TypeChecker {
             if template.interface_args.len() != interface_args.len() {
                 continue;
             }
-            if !template
-                .interface_args
-                .iter()
-                .zip(interface_args.iter())
-                .all(|(pattern, actual)| unify_ty(pattern, actual, &mut subst))
-            {
+            let mut args_match = true;
+            for (pattern, actual) in template.interface_args.iter().zip(interface_args.iter()) {
+                if !self.unify_ty_for_inference(pattern, actual, &mut subst) {
+                    args_match = false;
+                    break;
+                }
+            }
+            if !args_match {
                 continue;
             }
             if let (Some(pattern), Some(actual)) = (template.receiver_ty.as_ref(), receiver_ty)
-                && !unify_ty(pattern, actual, &mut subst)
+                && !self.unify_ty_for_inference(pattern, actual, &mut subst)
             {
                 continue;
             }

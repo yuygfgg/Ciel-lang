@@ -548,13 +548,17 @@ pub fn is_std_meta_sop_node_name(name: &str) -> bool {
             | "HCons"
             | "FieldRef"
             | "Field"
+            | "FieldSchema"
             | "PayloadRef"
             | "Payload"
+            | "PayloadSchema"
             | "CoNil"
             | "Coproduct"
             | "VariantRef"
             | "Variant"
+            | "VariantSchema"
             | "ArrayNil"
+            | "ElementSchema"
             | "ArrayCat"
     ) || name
         .strip_prefix("ArrayChunk")

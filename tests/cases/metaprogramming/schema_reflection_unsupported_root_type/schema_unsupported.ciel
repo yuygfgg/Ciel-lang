@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: meta schema reflection supports visible structs, enums, concrete closure values, and fixed-size arrays
+
+import /std/meta as meta;
+
+i64 main() {
+    _ schema = meta::schema<i64>();
+    return 0;
+}

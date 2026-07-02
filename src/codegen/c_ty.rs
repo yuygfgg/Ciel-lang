@@ -92,6 +92,7 @@ pub(super) fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::MetaAsRefRepr { .. }
         | TExprKind::MetaIntoRepr { .. }
         | TExprKind::MetaFromRepr { .. }
+        | TExprKind::MetaSchema { .. }
         | TExprKind::ActorSpawn { .. }
         | TExprKind::ActorSend { .. }
         | TExprKind::ActorStop { .. }

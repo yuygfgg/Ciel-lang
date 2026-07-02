@@ -641,8 +641,55 @@ impl TypeChecker {
             "as_ref_repr" => self.check_meta_as_ref_repr_call(scopes, span, type_args, args),
             "into_repr" => self.check_meta_into_repr_call(scopes, span, type_args, args),
             "from_repr" => self.check_meta_from_repr_call(scopes, span, type_args, args, expected),
+            "schema" => self.check_meta_schema_call(span, type_args, args),
             _ => None,
         }
+    }
+
+    pub(super) fn check_meta_schema_call(
+        &mut self,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        if !args.is_empty() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!("schema expects 0 arguments, got {}", args.len()),
+            ));
+            return None;
+        }
+        if type_args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "schema requires exactly one type argument",
+            ));
+            return None;
+        }
+        let subst = self.current_type_subst();
+        let source_ty = self.lower_type_with_subst(&type_args[0], &subst);
+        if !contains_generic(&source_ty)
+            && !contains_type_hole(&source_ty)
+            && !self.meta_repr_source_visible_from_current_module(&source_ty)
+        {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "meta schema reflection cannot inspect private shape of `{source_ty}` from this module"
+                ),
+            ));
+            return Some(TExpr {
+                span,
+                ty: Ty::Unknown,
+                kind: TExprKind::MetaSchema { source_ty },
+            });
+        }
+        let ret = self.meta_schema_ty(span, &source_ty);
+        Some(TExpr {
+            span,
+            ty: ret,
+            kind: TExprKind::MetaSchema { source_ty },
+        })
     }
 
     pub(super) fn check_meta_as_ref_repr_call(
@@ -1121,6 +1168,7 @@ impl TypeChecker {
         if std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "as_ref_repr")
             || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "into_repr")
             || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "from_repr")
+            || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "schema")
         {
             return self.check_meta_repr_call(scopes, span, &sig.name, type_args, args, expected);
         }

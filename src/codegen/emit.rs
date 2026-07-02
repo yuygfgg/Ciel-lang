@@ -24,6 +24,12 @@ impl<'a> CGenerator<'a> {
         self.emit_c_includes();
         self.line("");
         self.emit_source_location_table();
+        self.emit_meta_type_tag_type();
+    }
+
+    fn emit_meta_type_tag_type(&mut self) {
+        self.line("typedef struct { char _ciel_empty; } CielMetaTypeTag;");
+        self.line("");
     }
 
     fn emit_string_literal_table(&mut self) {

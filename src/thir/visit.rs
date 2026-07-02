@@ -250,6 +250,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         TExprKind::MetaAsRefRepr { value, .. }
         | TExprKind::MetaIntoRepr { value, .. }
         | TExprKind::MetaFromRepr { value, .. } => visitor.visit_expr(value),
+        TExprKind::MetaSchema { .. } => {}
         TExprKind::ActorSpawn {
             state_arg, handler, ..
         } => {

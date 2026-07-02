@@ -1,0 +1,92 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+bool chars_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+interface<T> i64 source_code(meta::Type<T> tag);
+interface<T> i64 repr_code(meta::Type<T> tag);
+interface<S> i64 count_fields(*const S schema);
+
+impl source_code(meta::Type<u8> tag) {
+    return 1;
+}
+
+impl repr_code(meta::Type<u8> tag) {
+    return 10;
+}
+
+impl source_code(meta::Type<[2]i64> tag) {
+    return 2;
+}
+
+impl repr_code(meta::Type<meta::ArrayChunk2<i64>> tag) {
+    return 20;
+}
+
+impl count_fields(*const meta::HNil schema) {
+    return 0;
+}
+
+impl<V, R, Tail: count_fields> count_fields(
+    *const meta::HCons<meta::FieldSchema<V, R>, Tail> schema
+) {
+    return 1 + count_fields(&schema->tail);
+}
+
+meta::Schema<T> schema_for<T>(T value) {
+    return meta::schema<T>();
+}
+
+i64 bool_value(bool ok) {
+    if (ok) {
+        return 1;
+    }
+    return 0;
+}
+
+i64 main() {
+    meta::Schema<[3]u8> bytes = meta::schema<[3]u8>();
+    if (source_code(bytes.item0.source_ty) != 1) {
+        return 1;
+    }
+    if (repr_code(bytes.item1.repr_ty) != 10) {
+        return 2;
+    }
+
+    meta::Schema<[2][2]i64> nested = meta::schema<[2][2]i64>();
+    if (source_code(nested.item0.source_ty) != 2) {
+        return 3;
+    }
+    if (repr_code(nested.item1.repr_ty) != 20) {
+        return 4;
+    }
+
+    i64 base = 8;
+    bool ok = true;
+    _ f = || base + bool_value(ok);
+    _ closure_schema = schema_for(f);
+    if (count_fields(&closure_schema) != 2) {
+        return 5;
+    }
+    if (!chars_eq(closure_schema.head.name, "capture#0")) {
+        return 6;
+    }
+    if (!chars_eq(closure_schema.tail.head.name, "capture#1")) {
+        return 7;
+    }
+    return f() - 9;
+}

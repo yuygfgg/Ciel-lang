@@ -106,7 +106,7 @@ impl<'a> CGenerator<'a> {
                 )]);
             }
             TExprKind::Literal(literal) => self.gen_literal(expr.span, literal, &expr.ty),
-            TExprKind::StructLiteral { type_name, fields } => {
+            TExprKind::StructLiteral { fields, .. } => {
                 let mut emitted_fields = Vec::new();
                 for (name, value) in fields {
                     let value_code = self.value_initializer_for_checked_expr(value, stmt_indent)?;
@@ -118,6 +118,7 @@ impl<'a> CGenerator<'a> {
                     }
                     emitted_fields.push(format!(".{} = {}", name, value_code));
                 }
+                let type_name = self.c_type(&expr.ty);
                 if emitted_fields.is_empty() {
                     format!("({type_name}){{0}}")
                 } else {
@@ -782,6 +783,15 @@ impl<'a> CGenerator<'a> {
                     )]);
                 };
                 self.emit_meta_from_repr_expr(expr, value, target_ty, indent)?
+            }
+            TExprKind::MetaSchema { source_ty } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "schema needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_meta_schema_expr(expr, source_ty, indent)?
             }
             TExprKind::ActorSpawn {
                 mode,

@@ -678,11 +678,8 @@ impl TypeChecker {
             self.unify_ty_for_inference(&ret, expected, &mut subst);
         }
         if let Some(param) = interface.params.get(receiver_index) {
-            unify_receiver_param(
-                &self.lower_type_with_subst(&param.ty, &subst),
-                &receiver_arg.ty,
-                &mut subst,
-            );
+            let param_ty = self.lower_type_with_subst(&param.ty, &subst);
+            self.unify_receiver_param_for_inference(&param_ty, &receiver_arg.ty, &mut subst);
         }
         let mut checked_args = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
@@ -912,5 +909,23 @@ impl TypeChecker {
             args: full_args.get(1..).unwrap_or(&[]).to_vec(),
         };
         self.solve_hidden_from_capability(&receiver_ty, &capability, &hidden_names, subst);
+    }
+
+    pub(super) fn unify_receiver_param_for_inference(
+        &mut self,
+        pattern: &Ty,
+        actual: &Ty,
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        match pattern {
+            Ty::Pointer { inner, .. } => match actual {
+                Ty::Pointer {
+                    inner: actual_inner,
+                    ..
+                } => self.unify_ty_for_inference(inner, actual_inner, subst),
+                _ => self.unify_ty_for_inference(inner, actual, subst),
+            },
+            _ => self.unify_ty_for_inference(pattern, actual, subst),
+        }
     }
 }

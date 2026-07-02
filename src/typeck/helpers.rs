@@ -206,23 +206,6 @@ pub(super) fn enum_instance_name(name: &str, args: &[Ty]) -> String {
     aggregate_instance_name(name, args)
 }
 
-pub(super) fn unify_receiver_param(
-    pattern: &Ty,
-    actual: &Ty,
-    subst: &mut HashMap<String, Ty>,
-) -> bool {
-    match pattern {
-        Ty::Pointer { inner, .. } => match actual {
-            Ty::Pointer {
-                inner: actual_inner,
-                ..
-            } => unify_ty(inner, actual_inner, subst),
-            _ => unify_ty(inner, actual, subst),
-        },
-        _ => unify_ty(pattern, actual, subst),
-    }
-}
-
 pub(super) fn hir_type_contains_hole(ty: &Type) -> bool {
     match &ty.kind {
         TypeKind::Hole => true,

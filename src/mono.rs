@@ -29,11 +29,12 @@ use crate::{
         STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
         aggregate_instance_name, contains_generic, mangle_ty_fragment, map_ty_children,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
-        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_sum_ty,
-        retained_closure_capabilities, std_async_error_ty, std_error_code_ty, std_error_trait_ty,
-        std_error_ty, std_future_ty, std_message_result_ty, std_meta_repr_marker_ty,
-        std_meta_repr_source_name, std_result_ty, std_send_permit_ty, std_task_ty, ty_contains,
-        ty_from_primitive, type_complexity, unify_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_schema_marker_name,
+        meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty, retained_closure_capabilities,
+        std_async_error_ty, std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty,
+        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
+        std_meta_schema_marker_ty, std_meta_schema_source_name, std_result_ty, std_send_permit_ty,
+        std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -965,6 +966,9 @@ impl MonoContext {
                 value: Box::new(self.rewrite_expr(*value)?),
                 target_ty: self.lower_opaque_returns_in_ty(&target_ty),
             },
+            TExprKind::MetaSchema { source_ty } => TExprKind::MetaSchema {
+                source_ty: self.lower_opaque_returns_in_ty(&source_ty),
+            },
             TExprKind::ActorSpawn {
                 mode,
                 state_arg,
@@ -1854,6 +1858,9 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(value);
                 self.collect_ty(target_ty);
             }
+            TExprKind::MetaSchema { source_ty } => {
+                self.collect_ty(source_ty);
+            }
             TExprKind::ActorSpawn {
                 mode,
                 state_arg,
@@ -1955,6 +1962,11 @@ impl<'a> AggregateCollector<'a> {
                     && !contains_generic(&args[0])
                 {
                     let storage_ty = self.meta_repr_ty(None, &args[0], borrowed);
+                    self.collect_ty(&storage_ty);
+                    return;
+                }
+                if meta_schema_marker_name(name) && args.len() == 1 && !contains_generic(&args[0]) {
+                    let storage_ty = self.meta_schema_ty(None, &args[0]);
                     self.collect_ty(&storage_ty);
                     return;
                 }
@@ -2304,7 +2316,7 @@ impl<'a> AggregateCollector<'a> {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if meta_repr_marker_name(name).is_some() {
+                if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
@@ -2321,6 +2333,9 @@ impl<'a> AggregateCollector<'a> {
                             })
                             .collect(),
                     };
+                }
+                if name == "Type" && args.len() == 1 && !preserve_markers {
+                    return meta_named("Type", vec![self.meta_marker_storage_ty(&args[0])]);
                 }
                 let original = Ty::Named {
                     name: name.clone(),
@@ -2536,7 +2551,7 @@ impl<'a> AggregateCollector<'a> {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if meta_repr_marker_name(name).is_some() {
+                if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
@@ -2586,6 +2601,176 @@ impl<'a> AggregateCollector<'a> {
             }
             other => other.clone(),
         }
+    }
+
+    fn meta_marker_storage_ty(&mut self, ty: &Ty) -> Ty {
+        match ty {
+            Ty::Named { name, args } => {
+                if let Some(borrowed) = meta_repr_marker_name(name)
+                    && args.len() == 1
+                    && !contains_generic(&args[0])
+                {
+                    return self.meta_repr_ty(None, &args[0], borrowed);
+                }
+                if meta_schema_marker_name(name) && args.len() == 1 && !contains_generic(&args[0]) {
+                    return self.meta_schema_ty(None, &args[0]);
+                }
+                Ty::Named {
+                    name: name.clone(),
+                    args: args
+                        .iter()
+                        .map(|arg| self.meta_marker_storage_ty(arg))
+                        .collect(),
+                }
+            }
+            _ => map_ty_children(ty, |arg| self.meta_marker_storage_ty(arg)),
+        }
+    }
+
+    fn meta_schema_ty(&mut self, span: impl Into<Option<crate::span::Span>>, source_ty: &Ty) -> Ty {
+        let span = span.into();
+        let root = source_ty.clone();
+        let mut expanding = HashSet::new();
+        self.meta_schema_ty_rec(span, source_ty, Some(&root), &mut expanding)
+    }
+
+    fn meta_schema_ty_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
+        if contains_generic(source_ty) {
+            return std_meta_schema_marker_ty(source_ty.clone());
+        }
+        match source_ty {
+            Ty::Array { len, elem } => self.meta_schema_array_ty_rec(*len, elem, root, expanding),
+            Ty::Named { name, args } => {
+                if meta_schema_marker_name(name) {
+                    if args.len() != 1 {
+                        self.push_meta_unsupported_schema(span, source_ty);
+                        return Ty::Unknown;
+                    }
+                    return self.meta_schema_ty_rec(span, &args[0], root, expanding);
+                }
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !expanding.insert(instance_ty.clone()) {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("meta schema reflection is recursive through `{source_ty}`"),
+                    ));
+                    return Ty::Unknown;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                self.deferred_meta_repr_roots.push(instance_ty.clone());
+                self.instantiate_struct(name, args);
+                if let Some(fields) = self
+                    .checked_structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+                    .map(|strukt| strukt.fields.clone())
+                    .or_else(|| {
+                        self.checked
+                            .structs
+                            .iter()
+                            .find(|strukt| strukt.name == instance_name)
+                            .map(|strukt| strukt.fields.clone())
+                    })
+                {
+                    let fields = fields.into_iter().map(|(_, ty)| {
+                        let repr_ty = self.meta_repr_field_ty(span, &ty, false, root, expanding);
+                        (ty, repr_ty)
+                    });
+                    let ty = meta_schema_product_ty(fields);
+                    self.deferred_meta_repr_roots.pop();
+                    expanding.remove(&instance_ty);
+                    return ty;
+                }
+                self.instantiate_enum(name, args);
+                if let Some(enm) = self
+                    .checked_enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+                    .or_else(|| {
+                        self.checked
+                            .enums
+                            .iter()
+                            .find(|enm| enm.name == instance_name)
+                            .cloned()
+                    })
+                {
+                    let ty = meta_schema_sum_ty(enm.variants.iter().map(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .map(|payload| {
+                                let repr_ty =
+                                    self.meta_repr_field_ty(span, payload, false, root, expanding);
+                                (payload.clone(), repr_ty)
+                            })
+                            .collect::<Vec<_>>()
+                    }));
+                    self.deferred_meta_repr_roots.pop();
+                    expanding.remove(&instance_ty);
+                    return ty;
+                }
+                self.deferred_meta_repr_roots.pop();
+                expanding.remove(&instance_ty);
+                self.push_meta_unsupported_schema(span, source_ty);
+                Ty::Unknown
+            }
+            Ty::ClosureInstance { captures, .. } => {
+                meta_schema_product_ty(captures.iter().filter(|ty| !ty.is_erased_value()).map(
+                    |ty| {
+                        let repr_ty = self.meta_repr_field_ty(span, ty, false, root, expanding);
+                        (ty.clone(), repr_ty)
+                    },
+                ))
+            }
+            Ty::Closure { .. } => {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "meta schema reflection requires a concrete closure value, got erased closure `{source_ty}`"
+                    ),
+                ));
+                Ty::Unknown
+            }
+            _ => {
+                self.push_meta_unsupported_schema(span, source_ty);
+                Ty::Unknown
+            }
+        }
+    }
+
+    fn meta_schema_array_ty_rec(
+        &mut self,
+        len: usize,
+        elem: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Ty {
+        if len == 0 {
+            return meta_named("ArrayNil", Vec::new());
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let repr_ty = self.meta_repr_owned_leaf_ty_rec(None, elem, root, expanding);
+            let elem_ty = meta_named("ElementSchema", vec![elem.clone(), repr_ty]);
+            return meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]);
+        }
+        let split = meta_array_split_len(len);
+        meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_schema_array_ty_rec(split, elem, root, expanding),
+                self.meta_schema_array_ty_rec(len - split, elem, root, expanding),
+            ],
+        )
     }
 
     fn type_matches_policy_marker(&self, interface_name: &str, templates: &[Ty], ty: &Ty) -> bool {
@@ -2688,6 +2873,19 @@ impl<'a> AggregateCollector<'a> {
         ));
     }
 
+    fn push_meta_unsupported_schema(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+    ) {
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "meta schema reflection supports visible structs, enums, concrete closure values, and fixed-size arrays, got `{source_ty}`"
+            ),
+        ));
+    }
+
     fn std_meta_repr_marker(&self, def_id: DefId, name: &str) -> Option<bool> {
         let borrowed = std_meta_repr_source_name(name)?;
         if std_id::is_std_meta_type(&self.checked.resolved, def_id, name) {
@@ -2695,6 +2893,11 @@ impl<'a> AggregateCollector<'a> {
         } else {
             None
         }
+    }
+
+    fn std_meta_schema_marker(&self, def_id: DefId, name: &str) -> bool {
+        std_meta_schema_source_name(name)
+            && std_id::is_std_meta_type(&self.checked.resolved, def_id, name)
     }
 
     fn lower_ast_type(&mut self, ty: &Type, subst: &HashMap<String, Ty>) -> Ty {
@@ -2745,6 +2948,18 @@ impl<'a> AggregateCollector<'a> {
                         return Ty::Unknown;
                     }
                     return std_meta_repr_marker_ty(borrowed, args[0].clone());
+                }
+                if let Some(def_id) = def_id
+                    && self.std_meta_schema_marker(def_id, &name)
+                {
+                    if args.len() != 1 {
+                        self.diagnostics.push(Diagnostic::new(
+                            type_name.span,
+                            "meta::Schema requires exactly one type argument",
+                        ));
+                        return Ty::Unknown;
+                    }
+                    return std_meta_schema_marker_ty(args[0].clone());
                 }
                 if matches!(def_kind, Some(DefKind::TypeAlias))
                     && let Some(alias) = self.aliases.get(&name)

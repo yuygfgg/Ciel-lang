@@ -982,6 +982,9 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
             | TExprKind::TypeNeedsGcScan { ty } => {
                 self.builder.collect_ty_array_returns(ty);
             }
+            TExprKind::MetaSchema { source_ty } => {
+                self.builder.collect_ty_array_returns(source_ty);
+            }
             _ => walk_expr(self, expr),
         }
     }
@@ -1164,6 +1167,9 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
             TExprKind::MetaFromRepr { target_ty, .. } => {
                 self.builder.collect_ty_closure(target_ty);
                 walk_expr(self, expr);
+            }
+            TExprKind::MetaSchema { source_ty } => {
+                self.builder.collect_ty_closure(source_ty);
             }
             TExprKind::ActorSpawn {
                 mode,
@@ -1540,6 +1546,9 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
             TExprKind::MetaFromRepr { target_ty, .. } => {
                 self.builder.collect_ty_slice(target_ty);
                 walk_expr(self, expr);
+            }
+            TExprKind::MetaSchema { source_ty } => {
+                self.builder.collect_ty_slice(source_ty);
             }
             TExprKind::ActorSpawn {
                 state_ty,

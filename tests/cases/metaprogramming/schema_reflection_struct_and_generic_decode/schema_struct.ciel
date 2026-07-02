@@ -1,0 +1,90 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+bool chars_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+interface<S> i64 count_fields(*const S schema);
+
+impl count_fields(*const meta::HNil schema) {
+    return 0;
+}
+
+impl<V, R, Tail: count_fields> count_fields(
+    *const meta::HCons<meta::FieldSchema<V, R>, Tail> schema
+) {
+    return 1 + count_fields(&schema->tail);
+}
+
+interface<F, R> R decode_field(*const F schema, meta::Type<R> out);
+
+impl decode_field(*const meta::FieldSchema<i64, i64> schema, meta::Type<i64> out) {
+    if (chars_eq(schema->name, "id")) {
+        return 40;
+    }
+    return -1;
+}
+
+impl decode_field(*const meta::FieldSchema<bool, bool> schema, meta::Type<bool> out) {
+    return chars_eq(schema->name, "ok");
+}
+
+interface<S, R> R decode_schema(*const S schema, meta::Type<R> out);
+
+impl decode_schema(*const meta::HNil schema, meta::Type<meta::HNil> out) {
+    return {};
+}
+
+impl<V, Slot, STail: decode_schema<RTail>, RTail> decode_schema(
+    *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Field<Slot>, RTail>> out
+) {
+    Slot value = decode_field(&schema->head, meta::type_tag<Slot>());
+    RTail tail = decode_schema(&schema->tail, meta::type_tag<RTail>());
+    meta::Field<Slot> field = {
+        name: schema->head.name,
+        value: value,
+    };
+    return { head: field, tail: tail };
+}
+
+i64 main() {
+    meta::Schema<Packet> schema = meta::schema<Packet>();
+    if (!chars_eq(schema.head.name, "id")) {
+        return 1;
+    }
+    if (!chars_eq(schema.tail.head.name, "ok")) {
+        return 2;
+    }
+    if (count_fields(&schema) != 2) {
+        return 3;
+    }
+
+    meta::Repr<Packet> repr = decode_schema(
+        &schema,
+        meta::type_tag<meta::Repr<Packet>>()
+    );
+    Packet packet = meta::from_repr<Packet>(repr);
+    if (!packet.ok) {
+        return 4;
+    }
+    return packet.id - 40;
+}

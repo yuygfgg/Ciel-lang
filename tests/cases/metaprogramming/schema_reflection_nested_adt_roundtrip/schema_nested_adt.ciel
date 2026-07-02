@@ -1,0 +1,692 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+import /std/panic;
+
+struct Flags {
+    bool active;
+    [3]u8 tag;
+}
+
+struct Header {
+    i64 seq;
+    Flags flags;
+}
+
+struct Pair {
+    i64 left;
+    i64 right;
+}
+
+enum Quality {
+    Low,
+    Score(i64, bool),
+    Code([3]u8),
+}
+
+struct Payload {
+    [2]Pair pairs;
+    Quality quality;
+    bool done;
+}
+
+enum Action {
+    Ping,
+    Store(Header, Payload),
+    Ack(i64, bool),
+    Bytes([3]u8),
+}
+
+struct Envelope {
+    Header header;
+    Action action;
+    [2]i64 counters;
+}
+
+struct Tape {
+    i64 int0;
+    i64 int1;
+    i64 int2;
+    i64 int3;
+    i64 int4;
+    i64 int5;
+    i64 int6;
+    i64 int7;
+    i64 int8;
+    bool flag0;
+    bool flag1;
+    bool flag2;
+    bool flag3;
+    u8 byte0;
+    u8 byte1;
+    u8 byte2;
+    u8 byte3;
+    u8 byte4;
+    u8 byte5;
+    usize variant0;
+    usize variant1;
+    usize int_write;
+    usize int_read;
+    usize flag_write;
+    usize flag_read;
+    usize byte_write;
+    usize byte_read;
+    usize variant_write;
+    usize variant_read;
+}
+
+Tape tape_new() {
+    return {
+        int0: 0,
+        int1: 0,
+        int2: 0,
+        int3: 0,
+        int4: 0,
+        int5: 0,
+        int6: 0,
+        int7: 0,
+        int8: 0,
+        flag0: false,
+        flag1: false,
+        flag2: false,
+        flag3: false,
+        byte0: 0 as u8,
+        byte1: 0 as u8,
+        byte2: 0 as u8,
+        byte3: 0 as u8,
+        byte4: 0 as u8,
+        byte5: 0 as u8,
+        variant0: 0 as usize,
+        variant1: 0 as usize,
+        int_write: 0,
+        int_read: 0,
+        flag_write: 0,
+        flag_read: 0,
+        byte_write: 0,
+        byte_read: 0,
+        variant_write: 0,
+        variant_read: 0,
+    };
+}
+
+void write_i64(*Tape tape, i64 value) {
+    usize index = tape->int_write;
+    if (index == (0 as usize)) {
+        tape->int0 = value;
+    } else if (index == (1 as usize)) {
+        tape->int1 = value;
+    } else if (index == (2 as usize)) {
+        tape->int2 = value;
+    } else if (index == (3 as usize)) {
+        tape->int3 = value;
+    } else if (index == (4 as usize)) {
+        tape->int4 = value;
+    } else if (index == (5 as usize)) {
+        tape->int5 = value;
+    } else if (index == (6 as usize)) {
+        tape->int6 = value;
+    } else if (index == (7 as usize)) {
+        tape->int7 = value;
+    } else if (index == (8 as usize)) {
+        tape->int8 = value;
+    } else {
+        panic("too many i64 tape values");
+    }
+    tape->int_write = index + 1;
+}
+
+i64 read_i64(*Tape tape) {
+    usize index = tape->int_read;
+    tape->int_read = index + 1;
+    if (index == (0 as usize)) {
+        return tape->int0;
+    } else if (index == (1 as usize)) {
+        return tape->int1;
+    } else if (index == (2 as usize)) {
+        return tape->int2;
+    } else if (index == (3 as usize)) {
+        return tape->int3;
+    } else if (index == (4 as usize)) {
+        return tape->int4;
+    } else if (index == (5 as usize)) {
+        return tape->int5;
+    } else if (index == (6 as usize)) {
+        return tape->int6;
+    } else if (index == (7 as usize)) {
+        return tape->int7;
+    } else if (index == (8 as usize)) {
+        return tape->int8;
+    }
+    panic("missing i64 tape value");
+}
+
+void write_bool(*Tape tape, bool value) {
+    usize index = tape->flag_write;
+    if (index == (0 as usize)) {
+        tape->flag0 = value;
+    } else if (index == (1 as usize)) {
+        tape->flag1 = value;
+    } else if (index == (2 as usize)) {
+        tape->flag2 = value;
+    } else if (index == (3 as usize)) {
+        tape->flag3 = value;
+    } else {
+        panic("too many bool tape values");
+    }
+    tape->flag_write = index + 1;
+}
+
+bool read_bool(*Tape tape) {
+    usize index = tape->flag_read;
+    tape->flag_read = index + 1;
+    if (index == (0 as usize)) {
+        return tape->flag0;
+    } else if (index == (1 as usize)) {
+        return tape->flag1;
+    } else if (index == (2 as usize)) {
+        return tape->flag2;
+    } else if (index == (3 as usize)) {
+        return tape->flag3;
+    }
+    panic("missing bool tape value");
+}
+
+void write_u8(*Tape tape, u8 value) {
+    usize index = tape->byte_write;
+    if (index == (0 as usize)) {
+        tape->byte0 = value;
+    } else if (index == (1 as usize)) {
+        tape->byte1 = value;
+    } else if (index == (2 as usize)) {
+        tape->byte2 = value;
+    } else if (index == (3 as usize)) {
+        tape->byte3 = value;
+    } else if (index == (4 as usize)) {
+        tape->byte4 = value;
+    } else if (index == (5 as usize)) {
+        tape->byte5 = value;
+    } else {
+        panic("too many u8 tape values");
+    }
+    tape->byte_write = index + 1;
+}
+
+u8 read_u8(*Tape tape) {
+    usize index = tape->byte_read;
+    tape->byte_read = index + 1;
+    if (index == (0 as usize)) {
+        return tape->byte0;
+    } else if (index == (1 as usize)) {
+        return tape->byte1;
+    } else if (index == (2 as usize)) {
+        return tape->byte2;
+    } else if (index == (3 as usize)) {
+        return tape->byte3;
+    } else if (index == (4 as usize)) {
+        return tape->byte4;
+    } else if (index == (5 as usize)) {
+        return tape->byte5;
+    }
+    panic("missing u8 tape value");
+}
+
+void write_variant(*Tape tape, usize value) {
+    usize index = tape->variant_write;
+    if (index == (0 as usize)) {
+        tape->variant0 = value;
+    } else if (index == (1 as usize)) {
+        tape->variant1 = value;
+    } else {
+        panic("too many variant tape values");
+    }
+    tape->variant_write = index + 1;
+}
+
+usize read_variant(*Tape tape) {
+    usize index = tape->variant_read;
+    tape->variant_read = index + 1;
+    if (index == (0 as usize)) {
+        return tape->variant0;
+    } else if (index == (1 as usize)) {
+        return tape->variant1;
+    }
+    panic("missing variant tape value");
+}
+
+interface<T> void write_repr(*const T value, *Tape tape);
+interface<T> void write_coproduct(*const T value, *Tape tape, usize index);
+interface<T, R> R read_typed(meta::Type<T> source, meta::Type<R> repr, *Tape tape);
+interface<S, R> R decode_schema(*const S schema, meta::Type<R> repr, *Tape tape);
+interface<S, R> R decode_variant_tail(
+    *const S schema,
+    meta::Type<R> repr,
+    *Tape tape,
+    usize target
+);
+
+impl write_repr(*const i64 value, *Tape tape) {
+    write_i64(tape, *value);
+}
+
+impl write_repr(*const bool value, *Tape tape) {
+    write_bool(tape, *value);
+}
+
+impl write_repr(*const u8 value, *Tape tape) {
+    write_u8(tape, *value);
+}
+
+impl write_repr(*const meta::HNil value, *Tape tape) {
+    return;
+}
+
+impl<Head: write_repr, Tail: write_repr> write_repr(
+    *const meta::HCons<Head, Tail> value,
+    *Tape tape
+) {
+    write_repr(&value->head, tape);
+    write_repr(&value->tail, tape);
+}
+
+impl<T: write_repr> write_repr(*const meta::Field<T> value, *Tape tape) {
+    write_repr(&value->value, tape);
+}
+
+impl<T: write_repr> write_repr(*const meta::Payload<T> value, *Tape tape) {
+    write_repr(&value->value, tape);
+}
+
+impl<P: write_repr> write_repr(*const meta::Variant<P> value, *Tape tape) {
+    write_repr(&value->payload, tape);
+}
+
+impl<T: write_repr> write_repr(*const meta::ArrayChunk2<T> value, *Tape tape) {
+    write_repr(&value->item0, tape);
+    write_repr(&value->item1, tape);
+}
+
+impl<T: write_repr> write_repr(*const meta::ArrayChunk3<T> value, *Tape tape) {
+    write_repr(&value->item0, tape);
+    write_repr(&value->item1, tape);
+    write_repr(&value->item2, tape);
+}
+
+impl write_coproduct(*const meta::CoNil value, *Tape tape, usize index) {
+    switch (*value) {
+    }
+}
+
+impl<Head: write_repr, Tail: write_coproduct> write_coproduct(
+    *const meta::Coproduct<Head, Tail> value,
+    *Tape tape,
+    usize index
+) {
+    switch (*value) {
+        case meta::This(head):
+            Head local = head;
+            write_variant(tape, index);
+            write_repr(&local, tape);
+            return;
+        case meta::Next(tail):
+            Tail local = tail;
+            write_coproduct(&local, tape, index + 1);
+            return;
+    }
+}
+
+impl<Head: write_repr, Tail: write_coproduct> write_repr(
+    *const meta::Coproduct<Head, Tail> value,
+    *Tape tape
+) {
+    write_coproduct(value, tape, 0);
+}
+
+impl read_typed(meta::Type<i64> source, meta::Type<i64> repr, *Tape tape) {
+    return read_i64(tape);
+}
+
+impl read_typed(meta::Type<bool> source, meta::Type<bool> repr, *Tape tape) {
+    return read_bool(tape);
+}
+
+impl read_typed(meta::Type<u8> source, meta::Type<u8> repr, *Tape tape) {
+    return read_u8(tape);
+}
+
+impl read_typed(meta::Type<[3]u8> source, meta::Type<meta::Repr<[3]u8>> repr, *Tape tape) {
+    meta::Schema<[3]u8> schema = meta::schema<[3]u8>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<[2]i64> source, meta::Type<meta::Repr<[2]i64>> repr, *Tape tape) {
+    meta::Schema<[2]i64> schema = meta::schema<[2]i64>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<[2]Pair> source, meta::Type<meta::Repr<[2]Pair>> repr, *Tape tape) {
+    meta::Schema<[2]Pair> schema = meta::schema<[2]Pair>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Pair> source, meta::Type<meta::Repr<Pair>> repr, *Tape tape) {
+    meta::Schema<Pair> schema = meta::schema<Pair>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Flags> source, meta::Type<meta::Repr<Flags>> repr, *Tape tape) {
+    meta::Schema<Flags> schema = meta::schema<Flags>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Header> source, meta::Type<meta::Repr<Header>> repr, *Tape tape) {
+    meta::Schema<Header> schema = meta::schema<Header>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Quality> source, meta::Type<meta::Repr<Quality>> repr, *Tape tape) {
+    meta::Schema<Quality> schema = meta::schema<Quality>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Payload> source, meta::Type<meta::Repr<Payload>> repr, *Tape tape) {
+    meta::Schema<Payload> schema = meta::schema<Payload>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl read_typed(meta::Type<Action> source, meta::Type<meta::Repr<Action>> repr, *Tape tape) {
+    meta::Schema<Action> schema = meta::schema<Action>();
+    return decode_schema(&schema, repr, tape);
+}
+
+impl decode_schema(*const meta::HNil schema, meta::Type<meta::HNil> repr, *Tape tape) {
+    return {};
+}
+
+impl<V: read_typed<Slot>, Slot, STail: decode_schema<RTail>, RTail> decode_schema(
+    *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Field<Slot>, RTail>> repr,
+    *Tape tape
+) {
+    Slot value = read_typed(schema->head.source_ty, schema->head.repr_ty, tape);
+    RTail tail = decode_schema(&schema->tail, meta::type_tag<RTail>(), tape);
+    meta::Field<Slot> field = {
+        name: schema->head.name,
+        value: value,
+    };
+    return { head: field, tail: tail };
+}
+
+impl<V: read_typed<Slot>, Slot, STail: decode_schema<RTail>, RTail> decode_schema(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
+    *Tape tape
+) {
+    Slot value = read_typed(schema->head.source_ty, schema->head.repr_ty, tape);
+    RTail tail = decode_schema(&schema->tail, meta::type_tag<RTail>(), tape);
+    meta::Payload<Slot> payload = {
+        index: schema->head.index,
+        value: value,
+    };
+    return { head: payload, tail: tail };
+}
+
+impl<T: read_typed<R>, R> decode_schema(
+    *const meta::ArrayChunk2<meta::ElementSchema<T, R>> schema,
+    meta::Type<meta::ArrayChunk2<R>> repr,
+    *Tape tape
+) {
+    R item0 = read_typed(schema->item0.source_ty, schema->item0.repr_ty, tape);
+    R item1 = read_typed(schema->item1.source_ty, schema->item1.repr_ty, tape);
+    return { item0: item0, item1: item1 };
+}
+
+impl<T: read_typed<R>, R> decode_schema(
+    *const meta::ArrayChunk3<meta::ElementSchema<T, R>> schema,
+    meta::Type<meta::ArrayChunk3<R>> repr,
+    *Tape tape
+) {
+    R item0 = read_typed(schema->item0.source_ty, schema->item0.repr_ty, tape);
+    R item1 = read_typed(schema->item1.source_ty, schema->item1.repr_ty, tape);
+    R item2 = read_typed(schema->item2.source_ty, schema->item2.repr_ty, tape);
+    return { item0: item0, item1: item1, item2: item2 };
+}
+
+impl<SP: decode_schema<RP>, RP, STail: decode_variant_tail<RTail>, RTail> decode_schema(
+    *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
+    meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> repr,
+    *Tape tape
+) {
+    usize target = read_variant(tape);
+    if (target == (0 as usize)) {
+        RP payload = decode_schema(&schema->head.payload, meta::type_tag<RP>(), tape);
+        meta::Variant<RP> variant = {
+            name: schema->head.name,
+            payload: payload,
+        };
+        return meta::This(variant);
+    }
+    RTail tail = decode_variant_tail(
+        &schema->tail,
+        meta::type_tag<RTail>(),
+        tape,
+        target - 1
+    );
+    return meta::Next(tail);
+}
+
+impl decode_variant_tail(
+    *const meta::HNil schema,
+    meta::Type<meta::CoNil> repr,
+    *Tape tape,
+    usize target
+) {
+    panic("bad variant index");
+}
+
+impl<SP: decode_schema<RP>, RP, STail: decode_variant_tail<RTail>, RTail> decode_variant_tail(
+    *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
+    meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> repr,
+    *Tape tape,
+    usize target
+) {
+    if (target == (0 as usize)) {
+        RP payload = decode_schema(&schema->head.payload, meta::type_tag<RP>(), tape);
+        meta::Variant<RP> variant = {
+            name: schema->head.name,
+            payload: payload,
+        };
+        return meta::This(variant);
+    }
+    RTail tail = decode_variant_tail(
+        &schema->tail,
+        meta::type_tag<RTail>(),
+        tape,
+        target - 1
+    );
+    return meta::Next(tail);
+}
+
+bool bytes3_eq([3]u8 left, [3]u8 right) {
+    return left[0] == right[0] && left[1] == right[1] && left[2] == right[2];
+}
+
+bool pair_eq(Pair left, Pair right) {
+    return left.left == right.left && left.right == right.right;
+}
+
+bool flags_eq(Flags left, Flags right) {
+    return left.active == right.active && bytes3_eq(left.tag, right.tag);
+}
+
+bool header_eq(Header left, Header right) {
+    return left.seq == right.seq && flags_eq(left.flags, right.flags);
+}
+
+bool quality_eq(Quality left, Quality right) {
+    switch (left) {
+        case Low:
+            switch (right) {
+                case Low:
+                    return true;
+                case Score(_, _):
+                    return false;
+                case Code(_):
+                    return false;
+            }
+        case Score(left_score, left_flag):
+            switch (right) {
+                case Low:
+                    return false;
+                case Score(right_score, right_flag):
+                    return left_score == right_score && left_flag == right_flag;
+                case Code(_):
+                    return false;
+            }
+        case Code(left_code):
+            switch (right) {
+                case Low:
+                    return false;
+                case Score(_, _):
+                    return false;
+                case Code(right_code):
+                    return bytes3_eq(left_code, right_code);
+            }
+    }
+}
+
+bool payload_eq(Payload left, Payload right) {
+    return pair_eq(left.pairs[0], right.pairs[0])
+        && pair_eq(left.pairs[1], right.pairs[1])
+        && quality_eq(left.quality, right.quality)
+        && left.done == right.done;
+}
+
+bool action_eq(Action left, Action right) {
+    switch (left) {
+        case Ping:
+            switch (right) {
+                case Ping:
+                    return true;
+                case Store(_, _):
+                    return false;
+                case Ack(_, _):
+                    return false;
+                case Bytes(_):
+                    return false;
+            }
+        case Store(left_header, left_payload):
+            switch (right) {
+                case Ping:
+                    return false;
+                case Store(right_header, right_payload):
+                    return header_eq(left_header, right_header)
+                        && payload_eq(left_payload, right_payload);
+                case Ack(_, _):
+                    return false;
+                case Bytes(_):
+                    return false;
+            }
+        case Ack(left_id, left_ok):
+            switch (right) {
+                case Ping:
+                    return false;
+                case Store(_, _):
+                    return false;
+                case Ack(right_id, right_ok):
+                    return left_id == right_id && left_ok == right_ok;
+                case Bytes(_):
+                    return false;
+            }
+        case Bytes(left_bytes):
+            switch (right) {
+                case Ping:
+                    return false;
+                case Store(_, _):
+                    return false;
+                case Ack(_, _):
+                    return false;
+                case Bytes(right_bytes):
+                    return bytes3_eq(left_bytes, right_bytes);
+            }
+    }
+}
+
+bool envelope_eq(Envelope left, Envelope right) {
+    return header_eq(left.header, right.header)
+        && action_eq(left.action, right.action)
+        && left.counters[0] == right.counters[0]
+        && left.counters[1] == right.counters[1];
+}
+
+i64 main() {
+    Header header = {
+        seq: 17,
+        flags: {
+            active: true,
+            tag: [3 as u8, 4 as u8, 5 as u8],
+        },
+    };
+    Header stored_header = {
+        seq: 99,
+        flags: {
+            active: false,
+            tag: [8 as u8, 9 as u8, 10 as u8],
+        },
+    };
+    Payload payload = {
+        pairs: [{ left: 7, right: 11 }, { left: 13, right: 19 }],
+        quality: Score(55, true),
+        done: false,
+    };
+    Envelope original = {
+        header: header,
+        action: Store(stored_header, payload),
+        counters: [101, 202],
+    };
+
+    Tape @tape = tape_new();
+    meta::Repr<Envelope> repr = meta::into_repr(&original);
+    write_repr(&repr, &tape);
+
+    if (tape.int_write != (9 as usize)) {
+        return 1;
+    }
+    if (tape.flag_write != (4 as usize)) {
+        return 2;
+    }
+    if (tape.byte_write != (6 as usize)) {
+        return 3;
+    }
+    if (tape.variant_write != (2 as usize)) {
+        return 4;
+    }
+    if (tape.variant0 != (1 as usize) || tape.variant1 != (1 as usize)) {
+        return 5;
+    }
+
+    meta::Schema<Envelope> schema = meta::schema<Envelope>();
+    meta::Repr<Envelope> decoded_repr = decode_schema(
+        &schema,
+        meta::type_tag<meta::Repr<Envelope>>(),
+        &tape
+    );
+    Envelope decoded = meta::from_repr<Envelope>(decoded_repr);
+
+    if (tape.int_read != tape.int_write) {
+        return 6;
+    }
+    if (tape.flag_read != tape.flag_write) {
+        return 7;
+    }
+    if (tape.byte_read != tape.byte_write) {
+        return 8;
+    }
+    if (tape.variant_read != tape.variant_write) {
+        return 9;
+    }
+    if (!envelope_eq(original, decoded)) {
+        return 10;
+    }
+    return 0;
+}

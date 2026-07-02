@@ -1285,6 +1285,7 @@ pub fn std_task_group_ty(payload_ty: Ty) -> Ty {
 
 pub const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
 pub const STD_META_REPR_MARKER: &str = "__ciel_std_meta_Repr";
+pub const STD_META_SCHEMA_MARKER: &str = "__ciel_std_meta_Schema";
 pub const META_ARRAY_CHUNK_SIZE: usize = 16;
 pub const META_ARRAY_EXPANSION_BUDGET: usize = 4096;
 
@@ -1325,6 +1326,55 @@ where
             let variant_head = if borrowed { "VariantRef" } else { "Variant" };
             let head = meta_named(variant_head, vec![payload]);
             meta_named("Coproduct", vec![head, tail])
+        })
+}
+
+pub fn meta_type_tag_ty(ty: Ty) -> Ty {
+    meta_named("Type", vec![ty])
+}
+
+pub fn meta_schema_product_ty<I>(fields: I) -> Ty
+where
+    I: IntoIterator<Item = (Ty, Ty)>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    fields.into_iter().rev().fold(
+        meta_named("HNil", Vec::new()),
+        |tail, (source_ty, repr_ty)| {
+            let head = meta_named("FieldSchema", vec![source_ty, repr_ty]);
+            meta_named("HCons", vec![head, tail])
+        },
+    )
+}
+
+pub fn meta_schema_payload_ty<I>(payloads: I) -> Ty
+where
+    I: IntoIterator<Item = (Ty, Ty)>,
+    I::IntoIter: DoubleEndedIterator,
+{
+    payloads.into_iter().rev().fold(
+        meta_named("HNil", Vec::new()),
+        |tail, (source_ty, repr_ty)| {
+            let head = meta_named("PayloadSchema", vec![source_ty, repr_ty]);
+            meta_named("HCons", vec![head, tail])
+        },
+    )
+}
+
+pub fn meta_schema_sum_ty<I>(variants: I) -> Ty
+where
+    I: IntoIterator,
+    I::Item: IntoIterator<Item = (Ty, Ty)>,
+    I::IntoIter: DoubleEndedIterator,
+    <I::Item as IntoIterator>::IntoIter: DoubleEndedIterator,
+{
+    variants
+        .into_iter()
+        .rev()
+        .fold(meta_named("HNil", Vec::new()), |tail, payload| {
+            let payload = meta_schema_payload_ty(payload);
+            let head = meta_named("VariantSchema", vec![payload]);
+            meta_named("HCons", vec![head, tail])
         })
 }
 
@@ -1435,12 +1485,23 @@ pub fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
     }
 }
 
+pub fn std_meta_schema_marker_ty(source_ty: Ty) -> Ty {
+    Ty::Named {
+        name: STD_META_SCHEMA_MARKER.to_string(),
+        args: vec![source_ty],
+    }
+}
+
 pub fn std_meta_repr_source_name(name: &str) -> Option<bool> {
     match name {
         "RefRepr" => Some(true),
         "Repr" => Some(false),
         _ => None,
     }
+}
+
+pub fn std_meta_schema_source_name(name: &str) -> bool {
+    name == "Schema"
 }
 
 pub fn meta_repr_marker_name(name: &str) -> Option<bool> {
@@ -1460,6 +1521,56 @@ pub fn meta_repr_marker_source(ty: &Ty) -> Option<(bool, &Ty)> {
         return None;
     }
     Some((borrowed, &args[0]))
+}
+
+pub fn meta_schema_marker_name(name: &str) -> bool {
+    name == STD_META_SCHEMA_MARKER
+}
+
+pub fn meta_schema_marker_source(ty: &Ty) -> Option<&Ty> {
+    let Ty::Named { name, args } = ty else {
+        return None;
+    };
+    if !meta_schema_marker_name(name) || args.len() != 1 {
+        return None;
+    }
+    Some(&args[0])
+}
+
+pub fn contains_meta_marker(ty: &Ty) -> bool {
+    match ty {
+        Ty::Named { name, args } => {
+            meta_repr_marker_name(name).is_some()
+                || meta_schema_marker_name(name)
+                || args.iter().any(contains_meta_marker)
+        }
+        Ty::GeneratedFuture { output, .. } => contains_meta_marker(output),
+        Ty::Pointer { inner, .. } => contains_meta_marker(inner),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_marker(elem),
+        Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_marker),
+        Ty::OpaqueReturn { key, bounds } => {
+            key.args.iter().any(contains_meta_marker)
+                || bounds
+                    .positive
+                    .iter()
+                    .chain(bounds.negative.iter())
+                    .any(|entry| entry.args.iter().any(contains_meta_marker))
+        }
+        Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
+            contains_meta_marker(ret) || params.iter().any(contains_meta_marker)
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            contains_meta_marker(ret)
+                || params.iter().any(contains_meta_marker)
+                || captures.iter().any(contains_meta_marker)
+        }
+        _ => false,
+    }
 }
 
 pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
@@ -1937,6 +2048,7 @@ impl fmt::Display for Ty {
                 let display_name = match name.as_str() {
                     "__ciel_std_meta_RefRepr" => "meta::RefRepr",
                     "__ciel_std_meta_Repr" => "meta::Repr",
+                    "__ciel_std_meta_Schema" => "meta::Schema",
                     _ => display_nominal_name(name),
                 };
                 if args.is_empty() {

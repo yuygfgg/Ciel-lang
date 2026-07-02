@@ -20,11 +20,12 @@ use crate::{
         generated_future_output_ty, generated_future_ty, generated_future_ty_with_affine_state,
         mangle_ty_fragment, map_ty_children, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_repr_marker_source,
-        meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
+        meta_schema_marker_name, meta_schema_marker_source, meta_schema_product_ty,
+        meta_schema_sum_ty, meta_sum_ty, pointer_view_can_weaken, receiver_ty_from_value_ty,
         retained_closure_proves_capability, std_actor_ty, std_async_error_ty, std_error_ty,
-        std_future_ty, std_meta_repr_marker_ty, std_receiver_ty, std_result_ty, std_send_permit_ty,
-        std_sender_ty, std_task_ty, substitute_constraint_bounds, substitute_ty, ty_from_primitive,
-        unify_ty,
+        std_future_ty, std_meta_repr_marker_ty, std_meta_schema_marker_ty, std_receiver_ty,
+        std_result_ty, std_send_permit_ty, std_sender_ty, std_task_ty,
+        substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
 

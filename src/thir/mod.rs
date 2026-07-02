@@ -468,6 +468,9 @@ pub enum TExprKind {
         value: Box<TExpr>,
         target_ty: Ty,
     },
+    MetaSchema {
+        source_ty: Ty,
+    },
     ActorSpawn {
         mode: ActorSpawnMode,
         state_arg: Box<TExpr>,

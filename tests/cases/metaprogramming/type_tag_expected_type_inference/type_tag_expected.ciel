@@ -1,0 +1,20 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+import /std/meta as meta;
+
+i64 expect_i64(meta::Type<i64> tag) {
+    return 42;
+}
+
+i32 main() {
+    meta::Type<i64> inferred_from_assignment = meta::type_tag();
+    if (expect_i64(inferred_from_assignment) != 42) {
+        return 1;
+    }
+    if (expect_i64(meta::type_tag()) != 42) {
+        return 2;
+    }
+    return 0;
+}

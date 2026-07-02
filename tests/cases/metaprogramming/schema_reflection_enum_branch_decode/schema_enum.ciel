@@ -1,0 +1,112 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+enum Token {
+    Number(i64),
+    End,
+}
+
+bool chars_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+interface<S> i64 count_variants(*const S schema);
+interface<S> i64 count_payloads(*const S schema);
+
+impl count_variants(*const meta::HNil schema) {
+    return 0;
+}
+
+impl<P, Tail: count_variants> count_variants(
+    *const meta::HCons<meta::VariantSchema<P>, Tail> schema
+) {
+    return 1 + count_variants(&schema->tail);
+}
+
+impl count_payloads(*const meta::HNil schema) {
+    return 0;
+}
+
+impl<V, R, Tail: count_payloads> count_payloads(
+    *const meta::HCons<meta::PayloadSchema<V, R>, Tail> schema
+) {
+    if (schema->head.index != (0 as usize)) {
+        return 100;
+    }
+    return 1 + count_payloads(&schema->tail);
+}
+
+interface<S, R> R decode_payloads(*const S schema, meta::Type<R> out);
+interface<P, R> R decode_payload(*const P schema, meta::Type<R> out);
+
+impl decode_payloads(*const meta::HNil schema, meta::Type<meta::HNil> out) {
+    return {};
+}
+
+impl<V, Slot, STail: decode_payloads<RTail>, RTail> decode_payloads(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> out
+) {
+    Slot value = decode_payload(&schema->head, meta::type_tag<Slot>());
+    RTail tail = decode_payloads(&schema->tail, meta::type_tag<RTail>());
+    meta::Payload<Slot> payload = {
+        index: schema->head.index,
+        value: value,
+    };
+    return { head: payload, tail: tail };
+}
+
+impl decode_payload(*const meta::PayloadSchema<i64, i64> schema, meta::Type<i64> out) {
+    return 77;
+}
+
+interface<S, R> R choose_number(*const S schema, meta::Type<R> out);
+
+impl<SP, RP, STail, RTail> choose_number(
+    *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
+    meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> out
+) {
+    RP payload = decode_payloads(&schema->head.payload, meta::type_tag<RP>());
+    meta::Variant<RP> variant = {
+        name: schema->head.name,
+        payload: payload,
+    };
+    return meta::This(variant);
+}
+
+i64 main() {
+    meta::Schema<Token> schema = meta::schema<Token>();
+    if (count_variants(&schema) != 2) {
+        return 1;
+    }
+    if (!chars_eq(schema.head.name, "Number")) {
+        return 2;
+    }
+    if (count_payloads(&schema.head.payload) != 1) {
+        return 3;
+    }
+    if (!chars_eq(schema.tail.head.name, "End")) {
+        return 4;
+    }
+
+    meta::Repr<Token> repr = choose_number(&schema, meta::type_tag<meta::Repr<Token>>());
+    Token token = meta::from_repr<Token>(repr);
+    switch (token) {
+        case Number(value):
+            return value - 77;
+        case End:
+            return 0;
+    }
+}

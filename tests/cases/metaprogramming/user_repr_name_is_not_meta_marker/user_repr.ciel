@@ -9,6 +9,10 @@ struct RefRepr<T> {
     *T value;
 }
 
+struct Schema<T> {
+    T value;
+}
+
 i64 read_repr(Repr<i64> value) {
     return value.value;
 }
@@ -17,9 +21,14 @@ i64 read_ref_repr(RefRepr<i64> value) {
     return *value.value;
 }
 
+i64 read_schema(Schema<i64> value) {
+    return value.value;
+}
+
 i64 main() {
     i64 @n = 20;
     Repr<i64> owned = { value: 22 };
     RefRepr<i64> borrowed = { value: &n };
-    return read_repr(owned) + read_ref_repr(borrowed) - 42;
+    Schema<i64> schema = { value: 5 };
+    return read_repr(owned) + read_ref_repr(borrowed) + read_schema(schema) - 47;
 }

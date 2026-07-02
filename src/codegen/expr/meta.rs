@@ -315,6 +315,98 @@ impl<'a> CGenerator<'a> {
         }
     }
 
+    pub(in crate::codegen) fn meta_schema_ty(
+        &self,
+        span: crate::span::Span,
+        ty: &Ty,
+    ) -> DiagResult<Ty> {
+        match ty {
+            Ty::Array { len, elem } => self.meta_schema_array_ty(span, *len, elem, ty),
+            Ty::Named { name, args } if meta_schema_marker_name(name) && args.len() == 1 => {
+                self.meta_schema_ty(span, &args[0])
+            }
+            Ty::Named { .. } => {
+                if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
+                    return Ok(meta_schema_product_ty(
+                        fields
+                            .iter()
+                            .map(|(_, field_ty)| {
+                                (
+                                    field_ty.clone(),
+                                    self.meta_owned_leaf_repr_ty(span, field_ty, ty)
+                                        .unwrap_or(Ty::Unknown),
+                                )
+                            })
+                            .collect::<Vec<_>>(),
+                    ));
+                }
+                if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
+                    return Ok(meta_schema_sum_ty(variants.iter().map(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .map(|payload| {
+                                (
+                                    payload.clone(),
+                                    self.meta_owned_leaf_repr_ty(span, payload, ty)
+                                        .unwrap_or(Ty::Unknown),
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                    })));
+                }
+                Err(vec![Diagnostic::new(
+                    span,
+                    format!("internal error: unsupported meta schema source `{ty}`"),
+                )])
+            }
+            Ty::ClosureInstance { .. } => {
+                let captures = self.meta_capture_fields_for_ty(span, ty)?;
+                Ok(meta_schema_product_ty(
+                    captures
+                        .iter()
+                        .map(|capture| {
+                            (
+                                capture.ty.clone(),
+                                self.meta_owned_leaf_repr_ty(span, &capture.ty, ty)
+                                    .unwrap_or(Ty::Unknown),
+                            )
+                        })
+                        .collect::<Vec<_>>(),
+                ))
+            }
+            other => Err(vec![Diagnostic::new(
+                span,
+                format!("internal error: unsupported meta schema source `{other}`"),
+            )]),
+        }
+    }
+
+    pub(super) fn meta_schema_array_ty(
+        &self,
+        span: crate::span::Span,
+        len: usize,
+        elem: &Ty,
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        if len == 0 {
+            return Ok(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let repr_ty = self.meta_owned_leaf_repr_ty(span, elem, root_ty)?;
+            let elem_schema = meta_named("ElementSchema", vec![elem.clone(), repr_ty]);
+            return Ok(meta_named(&format!("ArrayChunk{len}"), vec![elem_schema]));
+        }
+        let split = meta_array_split_len(len);
+        Ok(meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_schema_array_ty(span, split, elem, root_ty)?,
+                self.meta_schema_array_ty(span, len - split, elem, root_ty)?,
+            ],
+        ))
+    }
+
     pub(super) fn meta_array_repr_item_expr(
         &self,
         len: usize,
@@ -464,6 +556,9 @@ impl<'a> CGenerator<'a> {
                     if args.len() == 1 {
                         return std_meta_repr_marker_ty(borrowed, args[0].clone());
                     }
+                }
+                if meta_schema_marker_name(name) && args.len() == 1 {
+                    return std_meta_schema_marker_ty(args[0].clone());
                 }
                 Ty::Named {
                     name: name.clone(),
@@ -819,6 +914,214 @@ impl<'a> CGenerator<'a> {
             self.c_type(target_ty),
             self.closure_thunk_name(owner, id),
             env_temp
+        ))
+    }
+
+    pub(super) fn emit_meta_schema_expr(
+        &mut self,
+        expr: &TExpr,
+        source_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        if let Ty::Array { len, elem } = source_ty {
+            let (_, literal) =
+                self.emit_meta_array_schema_literal(expr.span, *len, elem, source_ty, indent)?;
+            return Ok(literal);
+        }
+        if let Ok(fields) = self.struct_fields_for_ty(expr.span, source_ty) {
+            let mut schema_fields = Vec::new();
+            for (name, field_ty) in fields {
+                let repr_ty = self.meta_owned_leaf_repr_ty(expr.span, &field_ty, source_ty)?;
+                schema_fields.push(MetaSchemaField {
+                    name,
+                    source_ty: field_ty,
+                    repr_ty,
+                });
+            }
+            let (_, literal) = self.meta_schema_product_literal(&schema_fields)?;
+            return Ok(literal);
+        }
+        if let Ok(variants) = self.enum_variants_for_ty(expr.span, source_ty) {
+            let (_, literal) = self.meta_schema_sum_literal(expr.span, &variants, source_ty)?;
+            return Ok(literal);
+        }
+        if matches!(source_ty, Ty::ClosureInstance { .. }) {
+            return self.emit_meta_closure_schema(expr, source_ty);
+        }
+        Err(vec![Diagnostic::new(
+            expr.span,
+            format!("internal error: unsupported schema source `{source_ty}`"),
+        )])
+    }
+
+    pub(super) fn emit_meta_closure_schema(
+        &self,
+        expr: &TExpr,
+        source_ty: &Ty,
+    ) -> DiagResult<String> {
+        let captures = self.meta_capture_fields_for_ty(expr.span, source_ty)?;
+        let fields = captures
+            .into_iter()
+            .map(|capture| {
+                let repr_ty = self
+                    .meta_owned_leaf_repr_ty(expr.span, &capture.ty, source_ty)
+                    .unwrap_or(Ty::Unknown);
+                MetaSchemaField {
+                    name: format!("capture#{}", capture.index),
+                    source_ty: capture.ty,
+                    repr_ty,
+                }
+            })
+            .collect::<Vec<_>>();
+        let (_, literal) = self.meta_schema_product_literal(&fields)?;
+        Ok(literal)
+    }
+
+    pub(super) fn emit_meta_array_schema_literal(
+        &mut self,
+        span: crate::span::Span,
+        len: usize,
+        elem: &Ty,
+        root_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<(Ty, String)> {
+        let schema_ty = self.meta_schema_array_ty(span, len, elem, root_ty)?;
+        if len == 0 {
+            return Ok((
+                schema_ty.clone(),
+                format!("({}){{0}}", self.c_type(&schema_ty)),
+            ));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let repr_ty = self.meta_owned_leaf_repr_ty(span, elem, root_ty)?;
+            let elem_literal = self.meta_element_schema_literal(elem, &repr_ty);
+            let fields = (0..len)
+                .map(|idx| format!(".item{idx} = {elem_literal}"))
+                .collect::<Vec<_>>();
+            return Ok((
+                schema_ty.clone(),
+                format!("({}){{ {} }}", self.c_type(&schema_ty), fields.join(", ")),
+            ));
+        }
+        let split = meta_array_split_len(len);
+        let (_, left) = self.emit_meta_array_schema_literal(span, split, elem, root_ty, indent)?;
+        let (_, right) =
+            self.emit_meta_array_schema_literal(span, len - split, elem, root_ty, indent)?;
+        Ok((
+            schema_ty.clone(),
+            format!(
+                "({}){{ .left = {left}, .right = {right} }}",
+                self.c_type(&schema_ty)
+            ),
+        ))
+    }
+
+    pub(super) fn meta_type_witness_literal(&self, ty: &Ty) -> String {
+        let witness_ty = meta_named("Type", vec![ty.clone()]);
+        format!("({}){{0}}", self.c_type(&witness_ty))
+    }
+
+    pub(super) fn meta_element_schema_literal(&self, source_ty: &Ty, repr_ty: &Ty) -> String {
+        let elem_schema_ty = meta_named("ElementSchema", vec![source_ty.clone(), repr_ty.clone()]);
+        format!(
+            "({}){{ .source_ty = {}, .repr_ty = {} }}",
+            self.c_type(&elem_schema_ty),
+            self.meta_type_witness_literal(source_ty),
+            self.meta_type_witness_literal(repr_ty)
+        )
+    }
+
+    pub(super) fn meta_schema_product_literal(
+        &self,
+        fields: &[MetaSchemaField],
+    ) -> DiagResult<(Ty, String)> {
+        let Some((field, rest)) = fields.split_first() else {
+            let ty = meta_named("HNil", Vec::new());
+            return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
+        };
+        let (tail_ty, tail) = self.meta_schema_product_literal(rest)?;
+        let head_ty = meta_named(
+            "FieldSchema",
+            vec![field.source_ty.clone(), field.repr_ty.clone()],
+        );
+        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let head = format!(
+            "({}){{ .name = {}, .source_ty = {}, .repr_ty = {} }}",
+            self.c_type(&head_ty),
+            self.meta_name_slice_literal(&field.name),
+            self.meta_type_witness_literal(&field.source_ty),
+            self.meta_type_witness_literal(&field.repr_ty)
+        );
+        Ok((
+            ty.clone(),
+            format!("({}){{ .head = {head}, .tail = {tail} }}", self.c_type(&ty)),
+        ))
+    }
+
+    pub(super) fn meta_schema_payload_literal(
+        &self,
+        fields: &[MetaSchemaPayload],
+    ) -> DiagResult<(Ty, String)> {
+        let Some((field, rest)) = fields.split_first() else {
+            let ty = meta_named("HNil", Vec::new());
+            return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
+        };
+        let (tail_ty, tail) = self.meta_schema_payload_literal(rest)?;
+        let head_ty = meta_named(
+            "PayloadSchema",
+            vec![field.source_ty.clone(), field.repr_ty.clone()],
+        );
+        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let head = format!(
+            "({}){{ .index = {}, .source_ty = {}, .repr_ty = {} }}",
+            self.c_type(&head_ty),
+            field.index,
+            self.meta_type_witness_literal(&field.source_ty),
+            self.meta_type_witness_literal(&field.repr_ty)
+        );
+        Ok((
+            ty.clone(),
+            format!("({}){{ .head = {head}, .tail = {tail} }}", self.c_type(&ty)),
+        ))
+    }
+
+    pub(super) fn meta_schema_sum_literal(
+        &self,
+        span: crate::span::Span,
+        variants: &[CheckedVariant],
+        root_ty: &Ty,
+    ) -> DiagResult<(Ty, String)> {
+        let Some((variant, rest)) = variants.split_first() else {
+            let ty = meta_named("HNil", Vec::new());
+            return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
+        };
+        let payloads = variant
+            .payload
+            .iter()
+            .enumerate()
+            .map(|(index, payload)| {
+                let repr_ty = self
+                    .meta_owned_leaf_repr_ty(span, payload, root_ty)
+                    .unwrap_or(Ty::Unknown);
+                MetaSchemaPayload {
+                    index,
+                    source_ty: payload.clone(),
+                    repr_ty,
+                }
+            })
+            .collect::<Vec<_>>();
+        let (payload_ty, payload_literal) = self.meta_schema_payload_literal(&payloads)?;
+        let head_ty = meta_named("VariantSchema", vec![payload_ty]);
+        let (tail_ty, tail) = self.meta_schema_sum_literal(span, rest, root_ty)?;
+        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let head = format!(
+            "({}){{ .name = {}, .payload = {payload_literal} }}",
+            self.c_type(&head_ty),
+            self.meta_name_slice_literal(&variant.name)
+        );
+        Ok((
+            ty.clone(),
+            format!("({}){{ .head = {head}, .tail = {tail} }}", self.c_type(&ty)),
         ))
     }
 

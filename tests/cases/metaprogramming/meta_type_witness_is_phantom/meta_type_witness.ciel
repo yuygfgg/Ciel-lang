@@ -1,0 +1,41 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/lib;
+import /std/meta as meta;
+
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+meta::Type<T> local_tag<T>() {
+    return {};
+}
+
+i64 consume_i64(meta::Type<i64> tag) {
+    return 21;
+}
+
+i64 consume_repr(meta::Type<meta::Repr<Packet>> tag) {
+    return 21;
+}
+
+i32 main() {
+    meta::Type<i64> inferred_i64 = local_tag();
+    if (consume_i64(inferred_i64) != 21) {
+        return 1;
+    }
+    if (consume_i64(local_tag()) != 21) {
+        return 2;
+    }
+
+    meta::Type<meta::Repr<Packet>> inferred_repr = local_tag();
+    if (consume_repr(inferred_repr) != 21) {
+        return 3;
+    }
+    if (consume_repr(local_tag()) != 21) {
+        return 4;
+    }
+    return 0;
+}

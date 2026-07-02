@@ -61,6 +61,21 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         allow_holes: bool,
     ) -> Option<Ty> {
+        if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "Schema") {
+            if args.len() != 1 {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    "meta::Schema requires exactly one type argument",
+                ));
+                return Some(Ty::Unknown);
+            }
+            let source_ty = self.lower_type_with_subst_inner(&args[0], subst, allow_holes);
+            if let Ty::Array { len, elem } = &source_ty {
+                self.check_meta_schema_array_budget(Some(span), &source_ty, *len, elem, true);
+            }
+            return Some(std_meta_schema_marker_ty(source_ty));
+        }
+
         let borrowed = if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "RefRepr") {
             true
         } else if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "Repr") {
@@ -190,6 +205,18 @@ impl TypeChecker {
         Some(self.meta_repr_ty(span, source_ty, borrowed))
     }
 
+    pub(super) fn meta_schema_marker_storage_ty(
+        &mut self,
+        marker: &Ty,
+        span: Option<crate::span::Span>,
+    ) -> Option<Ty> {
+        let source_ty = meta_schema_marker_source(marker)?;
+        if self.should_preserve_meta_repr_marker_source(source_ty) {
+            return Some(marker.clone());
+        }
+        Some(self.meta_schema_ty(span, source_ty))
+    }
+
     pub(super) fn meta_repr_marker_sop_ty(&mut self, marker: &Ty) -> Option<Ty> {
         let (borrowed, source_ty) = meta_repr_marker_source(marker)?;
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
@@ -198,12 +225,29 @@ impl TypeChecker {
         self.try_meta_repr_ty(source_ty, borrowed)
     }
 
+    pub(super) fn meta_schema_marker_sop_ty(&mut self, marker: &Ty) -> Option<Ty> {
+        let source_ty = meta_schema_marker_source(marker)?;
+        if contains_generic(source_ty) || contains_type_hole(source_ty) {
+            return None;
+        }
+        self.try_meta_schema_ty(source_ty)
+    }
+
     pub(super) fn meta_repr_field_view_ty(
         &mut self,
         ty: &Ty,
         span: impl Into<Option<crate::span::Span>>,
     ) -> Ty {
+        let span = span.into();
         let Some((borrowed, source_ty)) = meta_repr_marker_source(ty) else {
+            if let Some(source_ty) = meta_schema_marker_source(ty) {
+                if contains_generic(source_ty) || contains_type_hole(source_ty) {
+                    return ty.clone();
+                }
+                return self
+                    .meta_schema_marker_sop_ty(ty)
+                    .unwrap_or_else(|| self.meta_schema_ty(span, source_ty));
+            }
             return ty.clone();
         };
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
@@ -228,6 +272,16 @@ impl TypeChecker {
         {
             return sop_ty;
         }
+        if let Some(source_ty) = meta_schema_marker_source(ty)
+            && (contains_generic(source_ty) || contains_type_hole(source_ty))
+        {
+            return ty.clone();
+        }
+        if meta_schema_marker_source(ty).is_some()
+            && let Some(sop_ty) = self.meta_schema_marker_sop_ty(ty)
+        {
+            return sop_ty;
+        }
         self.meta_repr_storage_ty(ty, span)
     }
 
@@ -243,6 +297,17 @@ impl TypeChecker {
                     return self
                         .meta_repr_marker_storage_ty(ty, span)
                         .unwrap_or(Ty::Unknown);
+                }
+                if meta_schema_marker_name(name) {
+                    return self
+                        .meta_schema_marker_storage_ty(ty, span)
+                        .unwrap_or(Ty::Unknown);
+                }
+                if name == "Type" && args.len() == 1 {
+                    return meta_named(
+                        "Type",
+                        vec![self.meta_repr_storage_ty_inner(&args[0], span, false)],
+                    );
                 }
                 let original = Ty::Named {
                     name: name.clone(),
@@ -275,7 +340,7 @@ impl TypeChecker {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if meta_repr_marker_name(name).is_some() {
+                if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
@@ -293,6 +358,12 @@ impl TypeChecker {
                             })
                             .collect(),
                     };
+                }
+                if name == "Type" && args.len() == 1 {
+                    return meta_named(
+                        "Type",
+                        vec![self.meta_repr_storage_ty_inner(&args[0], span, false)],
+                    );
                 }
                 let original = Ty::Named {
                     name: name.clone(),
@@ -377,7 +448,7 @@ impl TypeChecker {
                 from_replacement: subst.contains_key(name),
             },
             Ty::Named { name, args } => {
-                if meta_repr_marker_name(name).is_some() {
+                if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     let args = args
                         .iter()
                         .map(|arg| {
@@ -413,6 +484,15 @@ impl TypeChecker {
                     emit_diagnostics,
                     child_in_meta_sop,
                 );
+                if name == "Type" && args.len() == 1 {
+                    return SubstitutedTy {
+                        ty: meta_named(
+                            "Type",
+                            vec![self.meta_repr_storage_ty_inner(&args[0], span, false)],
+                        ),
+                        from_replacement: has_replacement_arg,
+                    };
+                }
                 let original = Ty::Named {
                     name: name.clone(),
                     args,
@@ -1070,7 +1150,7 @@ impl TypeChecker {
     ) -> Ty {
         match ty {
             Ty::Named { name, args } => {
-                if meta_repr_marker_name(name).is_some() {
+                if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
@@ -1130,6 +1210,216 @@ impl TypeChecker {
             }
             other => Some(other.clone()),
         }
+    }
+
+    pub(super) fn meta_schema_ty(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+    ) -> Ty {
+        self.meta_schema_ty_inner(span.into(), source_ty, true)
+            .unwrap_or(Ty::Unknown)
+    }
+
+    pub(super) fn try_meta_schema_ty(&mut self, source_ty: &Ty) -> Option<Ty> {
+        self.meta_schema_ty_inner(None, source_ty, false)
+    }
+
+    pub(super) fn meta_schema_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        emit_diagnostics: bool,
+    ) -> Option<Ty> {
+        let root = source_ty.clone();
+        let mut expanding = HashSet::new();
+        self.meta_schema_ty_inner_rec(
+            span,
+            source_ty,
+            emit_diagnostics,
+            Some(&root),
+            &mut expanding,
+        )
+    }
+
+    pub(super) fn meta_schema_ty_inner_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if contains_generic(source_ty) || contains_type_hole(source_ty) {
+            return Some(std_meta_schema_marker_ty(source_ty.clone()));
+        }
+        match source_ty {
+            Ty::Array { len, elem } => {
+                self.meta_schema_array_ty_inner(span, *len, elem, emit_diagnostics, root, expanding)
+            }
+            Ty::Named { name, args } => {
+                if meta_schema_marker_name(name) {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    return self.meta_schema_ty_inner_rec(
+                        span,
+                        &args[0],
+                        emit_diagnostics,
+                        root,
+                        expanding,
+                    );
+                }
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !expanding.insert(instance_ty.clone()) {
+                    if emit_diagnostics {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!("meta schema reflection is recursive through `{source_ty}`"),
+                        ));
+                    }
+                    return None;
+                }
+                let instance_name = enum_instance_name(name, args);
+                self.deferred_meta_repr_roots.push(instance_ty.clone());
+                self.ensure_struct_instance(&instance_ty);
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
+                    let mut field_tys = Vec::new();
+                    for (_, ty) in fields {
+                        let Some(repr_ty) = self.meta_repr_field_ty(
+                            span,
+                            &ty,
+                            false,
+                            emit_diagnostics,
+                            root,
+                            expanding,
+                        ) else {
+                            self.deferred_meta_repr_roots.pop();
+                            expanding.remove(&instance_ty);
+                            return None;
+                        };
+                        field_tys.push((ty, repr_ty));
+                    }
+                    self.deferred_meta_repr_roots.pop();
+                    expanding.remove(&instance_ty);
+                    return Some(meta_schema_product_ty(field_tys));
+                }
+                self.ensure_enum_instance(&instance_ty);
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
+                    let mut variants = Vec::new();
+                    for variant in enm.variants {
+                        let mut payloads = Vec::new();
+                        for payload in variant.payload {
+                            let Some(repr_ty) = self.meta_repr_field_ty(
+                                span,
+                                &payload,
+                                false,
+                                emit_diagnostics,
+                                root,
+                                expanding,
+                            ) else {
+                                self.deferred_meta_repr_roots.pop();
+                                expanding.remove(&instance_ty);
+                                return None;
+                            };
+                            payloads.push((payload, repr_ty));
+                        }
+                        variants.push(payloads);
+                    }
+                    self.deferred_meta_repr_roots.pop();
+                    expanding.remove(&instance_ty);
+                    return Some(meta_schema_sum_ty(variants));
+                }
+                self.deferred_meta_repr_roots.pop();
+                expanding.remove(&instance_ty);
+                if emit_diagnostics {
+                    self.push_meta_unsupported_schema(span, source_ty);
+                }
+                None
+            }
+            Ty::ClosureInstance { captures, .. } => {
+                let mut capture_tys = Vec::new();
+                for ty in captures.iter().filter(|ty| !ty.is_erased_value()) {
+                    let repr_ty = self.meta_repr_field_ty(
+                        span,
+                        ty,
+                        false,
+                        emit_diagnostics,
+                        root,
+                        expanding,
+                    )?;
+                    capture_tys.push((ty.clone(), repr_ty));
+                }
+                Some(meta_schema_product_ty(capture_tys))
+            }
+            Ty::Closure { .. } => {
+                if emit_diagnostics {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "meta schema reflection requires a concrete closure value, got erased closure `{source_ty}`"
+                        ),
+                    ));
+                }
+                None
+            }
+            _ => {
+                if emit_diagnostics {
+                    self.push_meta_unsupported_schema(span, source_ty);
+                }
+                None
+            }
+        }
+    }
+
+    pub(super) fn meta_schema_array_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        len: usize,
+        elem: &Ty,
+        emit_diagnostics: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        let source_ty = Ty::Array {
+            len,
+            elem: Box::new(elem.clone()),
+        };
+        self.check_meta_schema_array_budget(span, &source_ty, len, elem, emit_diagnostics)?;
+        if len == 0 {
+            return Some(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let repr_ty =
+                self.meta_repr_owned_leaf_ty_inner(span, elem, emit_diagnostics, root, expanding)?;
+            let elem_ty = meta_named("ElementSchema", vec![elem.clone(), repr_ty]);
+            return Some(meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]));
+        }
+        let split = crate::types::meta_array_split_len(len);
+        Some(meta_named(
+            "ArrayCat",
+            vec![
+                self.meta_schema_array_ty_inner(
+                    span,
+                    split,
+                    elem,
+                    emit_diagnostics,
+                    root,
+                    expanding,
+                )?,
+                self.meta_schema_array_ty_inner(
+                    span,
+                    len - split,
+                    elem,
+                    emit_diagnostics,
+                    root,
+                    expanding,
+                )?,
+            ],
+        ))
     }
 
     pub(super) fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
@@ -1219,6 +1509,29 @@ impl TypeChecker {
         None
     }
 
+    pub(super) fn check_meta_schema_array_budget(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        len: usize,
+        elem: &Ty,
+        emit_diagnostics: bool,
+    ) -> Option<()> {
+        let cost = crate::types::meta_array_expansion_cost(len, elem)?;
+        if cost <= META_ARRAY_EXPANSION_BUDGET {
+            return Some(());
+        }
+        if emit_diagnostics {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "meta::Schema<{source_ty}> expands too many structural array nodes; use an explicit schema wrapper or an owned buffer type"
+                ),
+            ));
+        }
+        None
+    }
+
     pub(super) fn push_meta_unsupported_repr(
         &mut self,
         span: impl Into<Option<crate::span::Span>>,
@@ -1228,6 +1541,19 @@ impl TypeChecker {
             span,
             format!(
                 "meta structural representation supports visible structs, enums, and concrete closure values, got `{source_ty}`"
+            ),
+        ));
+    }
+
+    pub(super) fn push_meta_unsupported_schema(
+        &mut self,
+        span: impl Into<Option<crate::span::Span>>,
+        source_ty: &Ty,
+    ) {
+        self.diagnostics.push(Diagnostic::new(
+            span,
+            format!(
+                "meta schema reflection supports visible structs, enums, concrete closure values, and fixed-size arrays, got `{source_ty}`"
             ),
         ));
     }

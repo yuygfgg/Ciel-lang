@@ -157,6 +157,20 @@ pub(super) struct MetaPayloadField {
 }
 
 #[derive(Clone, Debug)]
+pub(super) struct MetaSchemaField {
+    pub(super) name: String,
+    pub(super) source_ty: Ty,
+    pub(super) repr_ty: Ty,
+}
+
+#[derive(Clone, Debug)]
+pub(super) struct MetaSchemaPayload {
+    pub(super) index: usize,
+    pub(super) source_ty: Ty,
+    pub(super) repr_ty: Ty,
+}
+
+#[derive(Clone, Debug)]
 pub(super) struct ResultLayout {
     pub(super) c_type: String,
     pub(super) ok_index: usize,

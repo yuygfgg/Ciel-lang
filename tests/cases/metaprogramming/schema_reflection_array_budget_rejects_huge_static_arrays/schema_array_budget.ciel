@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: meta::Schema<[5000]u8> expands too many structural array nodes
+
+import /std/meta as meta;
+
+i64 main() {
+    _ schema = meta::schema<[5000]u8>();
+    return 0;
+}

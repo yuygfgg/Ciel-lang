@@ -1,14 +1,19 @@
-// Returns the size in bytes of the concrete type argument.
+// Compiler-recognized intrinsic returning the size in bytes of the concrete
+// type argument.
 export usize type_size<T>();
 
-// Returns the alignment in bytes of the concrete type argument.
+// Compiler-recognized intrinsic returning the alignment in bytes of the
+// concrete type argument.
 export usize type_align<T>();
 
-// Returns whether the concrete type argument's runtime representation may
-// contain GC-managed pointers and therefore needs scanned storage.
+// Compiler-recognized intrinsic returning whether the concrete type argument's
+// runtime representation may contain GC-managed pointers and therefore needs
+// scanned storage.
 export bool type_needs_gc_scan<T>();
 
 // Zero-sized type witness used by APIs that need a type as an input value.
+// The compiler treats std meta::Type<T> as a phantom ABI witness: the type
+// checker keeps T, but generated code uses one shared representation.
 export struct Type<T> {}
 
 // Constructs a zero-sized type witness for APIs that need a type as a value.
@@ -23,6 +28,10 @@ export struct RefRepr<T> {}
 // Owned structural representation marker for a visible type.
 // Type checking normalizes this marker to the ordinary SOP types below.
 export struct Repr<T> {}
+
+// Instance-free structural schema marker for a visible type.
+// Type checking normalizes this marker to the ordinary schema node types below.
+export struct Schema<T> {}
 
 // Compiler-provided marker fact for Ciel ABI function-pointer values.
 // User code cannot implement this interface directly.
@@ -59,6 +68,13 @@ export struct Field<T> {
     T value;
 }
 
+// Instance-free named struct field schema.
+export struct FieldSchema<T, R> {
+    []const char name;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
 // Borrowed positional enum payload in a RefRepr sum variant.
 export struct PayloadRef<T> {
     usize index;
@@ -69,6 +85,13 @@ export struct PayloadRef<T> {
 export struct Payload<T> {
     usize index;
     T value;
+}
+
+// Instance-free positional enum payload schema.
+export struct PayloadSchema<T, R> {
+    usize index;
+    Type<T> source_ty;
+    Type<R> repr_ty;
 }
 
 // Empty sum-list node used in structural representations.
@@ -88,6 +111,18 @@ export struct VariantRef<P> {
 
 // Owned named enum variant in a Repr sum.
 export struct Variant<P> {
+    []const char name;
+    P payload;
+}
+
+// Instance-free fixed-size array element schema.
+export struct ElementSchema<T, R> {
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+// Instance-free named enum variant schema.
+export struct VariantSchema<P> {
     []const char name;
     P payload;
 }
@@ -301,11 +336,18 @@ export struct ArrayCat<L, R> {
     R right;
 }
 
-// Builds a borrowed structural representation from a visible value layout.
+// Compiler-recognized intrinsic building a borrowed structural representation
+// from a visible value layout.
 export RefRepr<T> as_ref_repr<T>(*const T value);
 
-// Builds an owned structural representation by copying from a visible value.
+// Compiler-recognized intrinsic building an owned structural representation by
+// copying from a visible value.
 export Repr<T> into_repr<T>(*const T value);
 
-// Reconstructs a visible value from its owned structural representation.
+// Compiler-recognized intrinsic reconstructing a visible value from its owned
+// structural representation.
 export T from_repr<T>(Repr<T> value);
+
+// Compiler-recognized intrinsic building an instance-free schema from a visible
+// value layout.
+export Schema<T> schema<T>();

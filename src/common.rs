@@ -11,6 +11,9 @@ pub fn is_nominal_type_def_kind(kind: &DefKind) -> bool {
 
 pub fn nominal_type_name(resolved: &ResolvedProgram, def_id: DefId) -> String {
     let def = resolved.def(def_id);
+    if resolved.modules[def.module.0].std_export.as_deref() == Some("/std/meta") {
+        return def.name.clone();
+    }
     let has_same_named_nominal = resolved.defs.iter().any(|other| {
         other.id != def.id && other.name == def.name && is_nominal_type_def_kind(&other.kind)
     });

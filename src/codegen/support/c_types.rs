@@ -1,5 +1,7 @@
 use super::*;
 
+const C_META_TYPE_TAG: &str = "CielMetaTypeTag";
+
 impl<'a> CGenerator<'a> {
     pub(in crate::codegen) fn c_return_decl(&self, ty: &Ty, name: &str) -> String {
         if ty.is_erased_value() {
@@ -79,8 +81,14 @@ impl<'a> CGenerator<'a> {
                 name: ty_name,
                 args,
             } => {
+                if self.is_std_meta_type_witness(ty_name, args) {
+                    return c_base_decl(&c_qualified_base(C_META_TYPE_TAG, top_const), name);
+                }
                 if let Some(repr_ty) = self.meta_repr_marker_storage_ty(ty_name, args) {
                     return self.c_decl_qualified(&repr_ty, name, top_const);
+                }
+                if let Some(schema_ty) = self.meta_schema_marker_storage_ty(ty_name, args) {
+                    return self.c_decl_qualified(&schema_ty, name, top_const);
                 }
                 c_base_decl(
                     &c_qualified_base(&self.c_named_type(ty_name, args), top_const),
@@ -187,6 +195,9 @@ impl<'a> CGenerator<'a> {
             | Ty::GeneratedFuture { .. } => true,
             Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer_inner(elem, visiting),
             Ty::Named { name, args } => {
+                if self.is_std_meta_type_witness(name, args) {
+                    return false;
+                }
                 if let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args) {
                     return self.ty_can_carry_gc_pointer_inner(&repr_ty, visiting);
                 }
@@ -270,13 +281,47 @@ impl<'a> CGenerator<'a> {
         )
     }
 
+    pub(in crate::codegen) fn meta_schema_marker_storage_ty(
+        &self,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Ty> {
+        if !meta_schema_marker_name(name) {
+            return None;
+        }
+        let source = args.first()?;
+        if args.len() != 1 {
+            return Some(Ty::Unknown);
+        }
+        let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
+        Some(self.meta_schema_ty(span, source).unwrap_or(Ty::Unknown))
+    }
+
     pub(in crate::codegen) fn c_type(&self, ty: &Ty) -> String {
+        if let Ty::Named { name, args } = ty
+            && self.is_std_meta_type_witness(name, args)
+        {
+            return C_META_TYPE_TAG.to_string();
+        }
         if let Ty::Named { name, args } = ty
             && let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args)
         {
             return self.c_decl(&repr_ty, "").trim().to_string();
         }
+        if let Ty::Named { name, args } = ty
+            && let Some(schema_ty) = self.meta_schema_marker_storage_ty(name, args)
+        {
+            return self.c_decl(&schema_ty, "").trim().to_string();
+        }
         self.c_decl(ty, "").trim().to_string()
+    }
+
+    pub(in crate::codegen) fn is_std_meta_type_witness(&self, name: &str, args: &[Ty]) -> bool {
+        args.len() == 1
+            && self.program.checked.resolved.defs.iter().any(|def| {
+                nominal_type_name(&self.program.checked.resolved, def.id) == name
+                    && std_id::is_std_meta_type(&self.program.checked.resolved, def.id, "Type")
+            })
     }
 
     pub(in crate::codegen) fn c_named_type(&self, name: &str, args: &[Ty]) -> String {

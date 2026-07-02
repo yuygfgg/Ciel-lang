@@ -367,6 +367,7 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.scan_expr(value);
                 self.escape_sources(value);
             }
+            TExprKind::MetaSchema { .. } => {}
             TExprKind::ActorSpawn {
                 state_arg, handler, ..
             } => {
@@ -600,6 +601,7 @@ impl<'a> FunctionAnalyzer<'a> {
             | TExprKind::MetaFromRepr { value, .. } => {
                 self.collect_storage_sources(value, out);
             }
+            TExprKind::MetaSchema { .. } => {}
             TExprKind::ActorSpawn {
                 state_arg, handler, ..
             } => {

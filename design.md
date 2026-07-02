@@ -1795,6 +1795,7 @@ The compiler-lowered functions are:
 meta::RefRepr<T> as_ref_repr<T>(*const T value);
 meta::Repr<T> into_repr<T>(*const T value);
 T from_repr<T>(meta::Repr<T> value);
+meta::Schema<T> schema<T>();
 ```
 
 `as_ref_repr` creates read-only pointers to visible fields, enum payloads, or
@@ -1804,6 +1805,68 @@ the corresponding `Coproduct` branch. `into_repr` copies from a read-only source
 pointer into the owned representation. `from_repr` reconstructs a struct, enum,
 or concrete closure instance from the owned representation by structural
 position.
+
+`meta::Schema<T>` is an instance-free structural schema marker. It normalizes to
+ordinary `/std/meta` schema nodes without requiring an existing `T` value.
+`schema<T>()` lowers to an ordinary schema value containing static field names,
+variant names, payload indices, and `meta::Type` witnesses for both the source
+type and the owned representation slot type.
+
+For a visible struct, `Schema<T>` is an `HCons` list of `FieldSchema<FieldType,
+FieldReprSlot>` nodes in declaration order:
+
+```ciel
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+meta::Schema<Packet>
+// meta::HCons<
+//     meta::FieldSchema<i64, i64>,
+//     meta::HCons<meta::FieldSchema<bool, bool>, meta::HNil>
+// >
+```
+
+The runtime schema value stores `"id"` and `"ok"` in the corresponding
+`FieldSchema.name` fields. For a nested visible field, `FieldReprSlot` is the
+same owned slot type that `meta::Repr<T>` uses. A field of visible type `Inner`
+therefore has source type `Inner` and a representation slot equal to the
+normalized type denoted by `meta::Repr<Inner>`, not the nominal `Inner` value.
+
+For a visible enum, `Schema<T>` is an `HCons` list of
+`VariantSchema<PayloadSchemaProduct>` nodes. The schema lists every variant,
+while `Repr<T>` remains a `Coproduct` containing only the active variant:
+
+```ciel
+enum Token {
+    Number(i64),
+    End,
+}
+
+meta::Schema<Token>
+// meta::HCons<
+//     meta::VariantSchema<
+//         meta::HCons<meta::PayloadSchema<i64, i64>, meta::HNil>
+//     >,
+//     meta::HCons<meta::VariantSchema<meta::HNil>, meta::HNil>
+// >
+```
+
+`PayloadSchema<T, R>.index` is the zero-based payload position inside its
+variant. Concrete closure schemas expose captures as `FieldSchema<T, R>` entries
+named `capture#0`, `capture#1`, and so on. Fixed-size array schemas use the same
+bounded `ArrayNil`, `ArrayChunk1` through `ArrayChunk16`, and balanced
+`ArrayCat<L, R>` tree shape as owned array representation, but the leaves are
+`ElementSchema<T, R>` values. Schema expansion uses the same static-array budget
+as `meta::Repr<T>`.
+
+Schema reflection enables generic deserialization. A decoder can obtain
+`meta::Schema<T>`, walk parsed input against field and variant names, construct
+`meta::Repr<T>`, and then call `meta::from_repr<T>`. Format-specific choices
+such as JSON null handling, field rename/default policy, unknown-field behavior,
+and variable-length container decoding are library policy rather than core
+schema semantics.
 
 Policies remain library code. A type opts into a policy by projecting itself
 and delegating to ordinary generic impls:
@@ -1858,10 +1921,10 @@ Structural metaprogramming is not a text macro system. It does not generate
 Ciel source, paste tokens, or run before name resolution. The order is:
 
 1. resolve imports and identify canonical `/std/meta` declarations
-2. normalize `RefRepr<T>` and `Repr<T>` while lowering types in semantic
-   analysis
+2. normalize `RefRepr<T>`, `Repr<T>`, and `Schema<T>` while lowering types in
+   semantic analysis
 3. type-check generic constraints and impl calls against the normalized types
-4. lower `as_ref_repr`, `into_repr`, and `from_repr`
+4. lower `as_ref_repr`, `into_repr`, `from_repr`, and `schema`
 5. run ordinary monomorphization, escape analysis, and C code generation
 
 ## 12. Enums and Pattern Matching
@@ -3598,6 +3661,7 @@ export Type<T> type_tag<T>();
 
 export struct RefRepr<T> {}
 export struct Repr<T> {}
+export struct Schema<T> {}
 
 export interface<T> bool ciel_fn_value_marker(*const T value);
 export interface CielFnValue = ciel_fn_value_marker;
@@ -3622,6 +3686,12 @@ export struct Field<T> {
     T value;
 }
 
+export struct FieldSchema<T, R> {
+    []const char name;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
 export struct PayloadRef<T> {
     usize index;
     *const T value;
@@ -3630,6 +3700,12 @@ export struct PayloadRef<T> {
 export struct Payload<T> {
     usize index;
     T value;
+}
+
+export struct PayloadSchema<T, R> {
+    usize index;
+    Type<T> source_ty;
+    Type<R> repr_ty;
 }
 
 export enum CoNil {}
@@ -3645,6 +3721,16 @@ export struct VariantRef<P> {
 }
 
 export struct Variant<P> {
+    []const char name;
+    P payload;
+}
+
+export struct ElementSchema<T, R> {
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+export struct VariantSchema<P> {
     []const char name;
     P payload;
 }
@@ -3676,6 +3762,7 @@ export struct ArrayCat<L, R> {
 export RefRepr<T> as_ref_repr<T>(*const T value);
 export Repr<T> into_repr<T>(*const T value);
 export T from_repr<T>(Repr<T> value);
+export Schema<T> schema<T>();
 ```
 
 ```ciel

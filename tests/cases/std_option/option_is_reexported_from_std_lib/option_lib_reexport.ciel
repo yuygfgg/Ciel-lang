@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 7
+
+import /std/lib;
+
+i64 main() {
+    Option<i64> value = Some(7);
+    switch (value) {
+        case Some(inner):
+            return inner;
+        case None:
+            return 0;
+    }
+}

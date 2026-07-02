@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.base64"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/base64" = "base64.ciel"

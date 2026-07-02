@@ -1,0 +1,176 @@
+// Reusable standard Base64 codec.
+export import /std/result;
+import /std/buf as buf;
+import /std/bytes as bytes;
+import /std/storage as storage;
+import /std/text as text;
+
+export enum Base64Error {
+    InvalidLength,
+    InvalidPadding,
+    InvalidChar,
+    Storage,
+}
+
+impl format_error(*const Base64Error error) {
+    switch (*error) {
+        case InvalidLength:
+            return "invalid base64 length";
+        case InvalidPadding:
+            return "invalid base64 padding";
+        case InvalidChar:
+            return "invalid base64 character";
+        case Storage:
+            return "base64 storage error";
+    }
+}
+
+char digit(u8 value) {
+    if (value < 26) {
+        return (value + ('A' as u8)) as char;
+    }
+    if (value < 52) {
+        return ((value - 26) + ('a' as u8)) as char;
+    }
+    if (value < 62) {
+        return ((value - 52) + ('0' as u8)) as char;
+    }
+    if (value == 62) {
+        return '+';
+    }
+    return '/';
+}
+
+Result<u8, Base64Error> value(char c) {
+    if (c >= 'A' && c <= 'Z') {
+        return Ok((c as u8) - ('A' as u8));
+    }
+    if (c >= 'a' && c <= 'z') {
+        return Ok(((c as u8) - ('a' as u8)) + 26);
+    }
+    if (c >= '0' && c <= '9') {
+        return Ok(((c as u8) - ('0' as u8)) + 52);
+    }
+    if (c == '+') {
+        return Ok(62);
+    }
+    if (c == '/') {
+        return Ok(63);
+    }
+    return Err(InvalidChar);
+}
+
+Result<void, Base64Error> push_byte(*buf::ByteBuf out, u8 value) {
+    []u8 @spare;
+    switch (buf::byte_buf_spare_mut_slice(out, 1)) {
+        case Ok(slice):
+            spare = slice;
+        case Err(_):
+            return Err(Storage);
+    }
+    spare[0] = value;
+    switch (buf::byte_buf_commit_tail(out, 1)) {
+        case Ok:
+            return Ok;
+        case Err(_):
+            return Err(Storage);
+    }
+}
+
+export Result<text::Text, Base64Error> encode([]const u8 data) {
+    usize out_len = ((data.len + 2) / 3) * 4;
+    storage::RawStorage<char> @raw;
+    switch (unsafe { storage::raw_zeroed<char>(out_len) }) {
+        case Ok(storage_value):
+            raw = storage_value;
+        case Err(_):
+            return Err(Storage);
+    }
+    []char out = storage::raw_slice<char>(&raw);
+    usize @i = 0;
+    usize @j = 0;
+    while (i < data.len) {
+        u8 b0 = data[i];
+        u8 @b1 = 0;
+        u8 @b2 = 0;
+        bool has1 = (i + 1) < data.len;
+        bool has2 = (i + 2) < data.len;
+        if (has1) {
+            b1 = data[i + 1];
+        }
+        if (has2) {
+            b2 = data[i + 2];
+        }
+
+        out[j] = digit(b0 >> 2);
+        out[j + 1] = digit(((b0 & 0x03) << 4) | (b1 >> 4));
+        if (has1) {
+            out[j + 2] = digit(((b1 & 0x0f) << 2) | (b2 >> 6));
+        } else {
+            out[j + 2] = '=';
+        }
+        if (has2) {
+            out[j + 3] = digit(b2 & 0x3f);
+        } else {
+            out[j + 3] = '=';
+        }
+        i = i + 3;
+        j = j + 4;
+    }
+    switch (text::text_copy(out[..])) {
+        case Ok(value):
+            return Ok(value);
+        case Err(_):
+            return Err(Storage);
+    }
+}
+
+export Result<bytes::Bytes, Base64Error> decode([]const char chars) {
+    if ((chars.len % 4) != 0) {
+        return Err(InvalidLength);
+    }
+    buf::ByteBuf @out;
+    switch (buf::byte_buf_new((chars.len / 4) * 3)) {
+        case Ok(value):
+            out = value;
+        case Err(_):
+            return Err(Storage);
+    }
+    usize @i = 0;
+    while (i < chars.len) {
+        char c0 = chars[i];
+        char c1 = chars[i + 1];
+        char c2 = chars[i + 2];
+        char c3 = chars[i + 3];
+        if (c0 == '=' || c1 == '=') {
+            return Err(InvalidPadding);
+        }
+        u8 v0 = value(c0)?;
+        u8 v1 = value(c1)?;
+        push_byte(&out, ((v0 << 2) | (v1 >> 4)) as u8)?;
+
+        if (c2 == '=') {
+            if (c3 != '=' || (i + 4) != chars.len) {
+                return Err(InvalidPadding);
+            }
+        } else {
+            u8 v2 = value(c2)?;
+            push_byte(&out, (((v1 & 0x0f) << 4) | (v2 >> 2)) as u8)?;
+            if (c3 == '=') {
+                if ((i + 4) != chars.len) {
+                    return Err(InvalidPadding);
+                }
+            } else {
+                u8 v3 = value(c3)?;
+                push_byte(&out, (((v2 & 0x03) << 6) | v3) as u8)?;
+            }
+        }
+        i = i + 4;
+    }
+    switch (buf::byte_buf_to_bytes(&out)) {
+        case Ok(value):
+            return Ok(value);
+        case Err(_):
+            return Err(Storage);
+    }
+}

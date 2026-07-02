@@ -1,6 +1,59 @@
 use super::*;
 
 impl<'a> CGenerator<'a> {
+    pub(super) fn emit_array_to_slice_temp(
+        &mut self,
+        ty: &Ty,
+        array: &TExpr,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let Ty::Slice {
+            mutability,
+            elem: slice_elem,
+        } = ty
+        else {
+            return Err(vec![Diagnostic::new(
+                None,
+                "internal error: array-to-slice emitted for non-slice type",
+            )]);
+        };
+        let Ty::Array { len, elem } = &array.ty else {
+            return Err(vec![Diagnostic::new(
+                array.span,
+                "internal error: array-to-slice emitted for non-array source",
+            )]);
+        };
+        if elem != slice_elem {
+            return Err(vec![Diagnostic::new(
+                array.span,
+                "internal error: array-to-slice element type mismatch",
+            )]);
+        }
+
+        let slice = self.next_temp("slice");
+        let slice_ty = self.slice_name(*mutability, elem);
+        if elem.is_erased_value() {
+            let value = self.gen_expr_in_stmt(array, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+            self.line_indent(
+                indent,
+                &format!("{slice_ty} {slice} = ({slice_ty}){{ .ptr = NULL, .len = {len} }};"),
+            );
+            return Ok(slice);
+        }
+
+        let ptr = if self.expr_is_stable_array_lvalue(array) {
+            self.gen_expr_in_stmt(array, indent)?
+        } else {
+            self.emit_heap_array_copy("slice_data", array, elem, *len, indent)?
+        };
+        self.line_indent(
+            indent,
+            &format!("{slice_ty} {slice} = ({slice_ty}){{ .ptr = {ptr}, .len = {len} }};"),
+        );
+        Ok(slice)
+    }
+
     pub(super) fn emit_slice_literal_temp(
         &mut self,
         ty: &Ty,
@@ -35,8 +88,7 @@ impl<'a> CGenerator<'a> {
         let alloc = self.c_array_alloc_expr(elem, &elements.len().to_string());
         self.line_indent(indent, &format!("{elem_c} *{data} = ({elem_c} *){alloc};"));
         for (idx, element) in elements.iter().enumerate() {
-            let value = self.gen_expr_in_stmt(element, indent)?;
-            self.line_indent(indent, &format!("{data}[{idx}] = {value};"));
+            self.emit_expr_store(&format!("{data}[{idx}]"), element, indent)?;
         }
         self.line_indent(
             indent,
@@ -120,9 +172,9 @@ impl<'a> CGenerator<'a> {
             }
         };
 
-        let base_code = self.gen_expr_in_stmt(base, indent)?;
         let (ptr_code, len_code) = match source {
             SliceBase::Slice => {
+                let base_code = self.gen_expr_in_stmt(base, indent)?;
                 let base_temp = self.next_temp("slice_base");
                 self.line_indent(
                     indent,
@@ -131,14 +183,21 @@ impl<'a> CGenerator<'a> {
                 (format!("{base_temp}.ptr"), format!("{base_temp}.len"))
             }
             SliceBase::Array { len, elem } => {
-                let base_temp = self.next_temp("slice_array");
-                if self.expr_is_decayed_array_parameter(base) {
+                if elem.is_erased_value() {
+                    let base_code = self.gen_expr_in_stmt(base, indent)?;
+                    self.line_indent(indent, &format!("(void)({base_code});"));
+                    ("NULL".to_string(), len.to_string())
+                } else if self.expr_is_decayed_array_parameter(base) {
+                    let base_code = self.gen_expr_in_stmt(base, indent)?;
+                    let base_temp = self.next_temp("slice_array");
                     self.line_indent(
                         indent,
                         &format!("{} *{base_temp} = {base_code};", self.c_type(&elem)),
                     );
                     (base_temp, len.to_string())
-                } else {
+                } else if self.expr_is_stable_array_lvalue(base) {
+                    let base_code = self.gen_expr_in_stmt(base, indent)?;
+                    let base_temp = self.next_temp("slice_array");
                     let array_ty = Ty::Array {
                         len,
                         elem: Box::new(elem),
@@ -151,6 +210,9 @@ impl<'a> CGenerator<'a> {
                         ),
                     );
                     (format!("(*{base_temp})"), len.to_string())
+                } else {
+                    let data = self.emit_heap_array_copy("slice_data", base, &elem, len, indent)?;
+                    (data, len.to_string())
                 }
             }
         };
@@ -186,10 +248,14 @@ impl<'a> CGenerator<'a> {
 
         let slice_temp = self.next_temp("slice");
         let slice_ty = self.c_type(&expr.ty);
+        let ptr_value = match &expr.ty {
+            Ty::Slice { elem, .. } if elem.is_erased_value() => "NULL".to_string(),
+            _ => format!("({ptr_code}) + {offset_temp}"),
+        };
         self.line_indent(
             indent,
             &format!(
-                "{} = ({slice_ty}){{ .ptr = ({ptr_code}) + {offset_temp}, .len = {end_temp} - {start_temp} }};",
+                "{} = ({slice_ty}){{ .ptr = {ptr_value}, .len = {end_temp} - {start_temp} }};",
                 self.c_decl(&expr.ty, &slice_temp)
             ),
         );
@@ -199,6 +265,82 @@ impl<'a> CGenerator<'a> {
     pub(super) fn expr_is_decayed_array_parameter(&self, expr: &TExpr) -> bool {
         matches!(expr.ty, Ty::Array { .. })
             && matches!(&expr.kind, TExprKind::Local(local_id, _) if self.current_param_locals.contains_key(local_id))
+    }
+
+    pub(super) fn expr_is_stable_array_lvalue(&self, expr: &TExpr) -> bool {
+        matches!(expr.ty, Ty::Array { .. }) && self.expr_is_stable_lvalue(expr)
+    }
+
+    fn expr_is_stable_lvalue(&self, expr: &TExpr) -> bool {
+        match &expr.kind {
+            TExprKind::Local(..) => true,
+            TExprKind::Field { base, .. } => self.expr_is_stable_lvalue(base),
+            TExprKind::Arrow { .. } => true,
+            TExprKind::Index { base, .. } => match &base.ty {
+                Ty::Slice { .. } => true,
+                Ty::Array { .. } => self.expr_is_stable_array_lvalue(base),
+                _ => false,
+            },
+            TExprKind::Unary {
+                op: UnaryOp::Deref, ..
+            } => true,
+            _ => false,
+        }
+    }
+
+    fn emit_heap_array_copy(
+        &mut self,
+        prefix: &str,
+        array: &TExpr,
+        elem: &Ty,
+        len: usize,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let array = self.array_copy_source(array);
+        let data = self.next_temp(prefix);
+        if elem.is_erased_value() {
+            let value = self.gen_expr_in_stmt(array, indent)?;
+            self.line_indent(indent, &format!("(void)({value});"));
+            return Ok("NULL".to_string());
+        }
+        let elem_c = self.c_type(elem);
+        let alloc = self.c_array_alloc_expr(elem, &len.to_string());
+        self.line_indent(indent, &format!("{elem_c} *{data} = ({elem_c} *){alloc};"));
+        match &array.kind {
+            TExprKind::ArrayLiteral(elements) => {
+                for (idx, element) in elements.iter().enumerate() {
+                    self.emit_expr_store(&format!("{data}[{idx}]"), element, indent)?;
+                }
+            }
+            TExprKind::ArrayRepeat {
+                element,
+                len: repeat_len,
+            } if *repeat_len == len => {
+                self.emit_array_repeat_init(&data, elem, element, *repeat_len, indent)?;
+            }
+            _ => {
+                let source = self.gen_expr_in_stmt(array, indent)?;
+                self.line_indent(
+                    indent,
+                    &format!(
+                        "memcpy({data}, {source}, sizeof({}) * {len});",
+                        self.c_sizeof_type(elem)
+                    ),
+                );
+            }
+        }
+        Ok(data)
+    }
+
+    fn array_copy_source<'b>(&self, expr: &'b TExpr) -> &'b TExpr {
+        match &expr.kind {
+            TExprKind::Cast { expr: inner, ty }
+                if expr.ty == *ty && matches!(ty, Ty::Array { .. }) =>
+            {
+                self.array_copy_source(inner)
+            }
+            _ => expr,
+        }
     }
 
     pub(super) fn emit_array_literal_init(

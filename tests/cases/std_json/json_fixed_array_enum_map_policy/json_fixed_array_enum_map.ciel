@@ -1,0 +1,240 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/map as map;
+import /std/meta as meta;
+import /std/result;
+import /std/text as text;
+import /std/wire as wire;
+
+struct Inner {
+    i64 id;
+    text::Text label;
+}
+
+impl wire::encode_value(*const Inner value, *json::Writer writer) {
+    _ schema = meta::schema<Inner>();
+    _ repr = meta::as_ref_repr(value);
+    return json::write_struct(&schema, &repr, writer);
+}
+
+impl wire::decode_value(meta::Type<Inner> target, *json::Reader reader) {
+    json::Value value = json::read_value(reader)?;
+    _ schema = meta::schema<Inner>();
+    return json::decode_struct_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<Inner>>(),
+        &value
+    );
+}
+
+struct Packet {
+    [3]i64 numbers;
+    [2][2]i64 grid;
+    [2]Inner inners;
+}
+
+enum Event {
+    Ping,
+    Data(i64, text::Text),
+    Nested(Inner),
+}
+
+impl wire::encode_value(*const Event value, *json::Writer writer) {
+    _ schema = meta::schema<Event>();
+    _ repr = meta::as_ref_repr(value);
+    return json::write_enum(&schema, &repr, writer);
+}
+
+impl wire::decode_value(meta::Type<Event> target, *json::Reader reader) {
+    json::Value value = json::read_value(reader)?;
+    _ schema = meta::schema<Event>();
+    return json::decode_enum_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<Event>>(),
+        &value
+    );
+}
+
+i64 kind_code(wire::WireErrorKind kind) {
+    switch (kind) {
+        case wire::Eof:
+            return 1;
+        case wire::Syntax:
+            return 2;
+        case wire::TypeMismatch:
+            return 3;
+        case wire::MissingField:
+            return 4;
+        case wire::DuplicateField:
+            return 5;
+        case wire::UnknownField:
+            return 6;
+        case wire::UnknownVariant:
+            return 7;
+        case wire::InvalidValue:
+            return 8;
+        case wire::UnsupportedType:
+            return 9;
+        case wire::Storage:
+            return 10;
+    }
+}
+
+bool is_event_error_kind(Result<Event, wire::WireError> result, wire::WireErrorKind kind) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind);
+    }
+}
+
+bool is_map_error_kind(
+    Result<map::HashMap<text::Text, i64>, wire::WireError> result,
+    wire::WireErrorKind kind
+) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind);
+    }
+}
+
+Inner inner(i64 id, []const char label) {
+    return { id: id, label: must(text::text_copy(label)) };
+}
+
+i64 get_i64(*const map::HashMap<text::Text, i64> table, []const char key) {
+    switch (must(map::hash_map_get<text::Text, i64>(table, must(text::text_copy(key))))) {
+        case map::GetResult::Found(value):
+            return value;
+        case map::GetResult::Missing:
+            return -1;
+    }
+}
+
+i64 check_packet(Packet packet) {
+    if (packet.numbers[0] != 1 || packet.numbers[1] != 2 || packet.numbers[2] != 3) {
+        return 1;
+    }
+    if (packet.grid[0][0] != 4 || packet.grid[0][1] != 5 ||
+        packet.grid[1][0] != 6 || packet.grid[1][1] != 7) {
+        return 2;
+    }
+    if (packet.inners[0].id != 8 || packet.inners[1].id != 9) {
+        return 3;
+    }
+    if (!text::text_equal_slice(packet.inners[0].label, "a") ||
+        !text::text_equal_slice(packet.inners[1].label, "b")) {
+        return 4;
+    }
+    return 0;
+}
+
+i64 main() {
+    [3]i64 numbers = [1, 2, 3];
+    text::Text direct_array = must(json::encode<[3]i64>(&numbers));
+    if (!text::text_equal_slice(direct_array, "[1,2,3]")) {
+        return 1;
+    }
+    [3]i64 decoded_numbers = must(json::decode(meta::type_tag<[3]i64>(), "[7,8,9]"));
+    if (decoded_numbers[0] != 7 || decoded_numbers[1] != 8 || decoded_numbers[2] != 9) {
+        return 2;
+    }
+
+    Packet packet = {
+        numbers: [1, 2, 3],
+        grid: [[4, 5], [6, 7]],
+        inners: [inner(8, "a"), inner(9, "b")],
+    };
+    _ packet_schema = meta::schema<Packet>();
+    _ packet_repr = meta::as_ref_repr(&packet);
+    text::Text packet_json = must(json::encode_struct(&packet_schema, &packet_repr));
+    if (!text::text_equal_slice(
+        packet_json,
+        "{\"numbers\":[1,2,3],\"grid\":[[4,5],[6,7]],\"inners\":[{\"id\":8,\"label\":\"a\"},{\"id\":9,\"label\":\"b\"}]}"
+    )) {
+        return 3;
+    }
+
+    Packet decoded_packet = must(json::decode_struct(
+        meta::type_tag<Packet>(),
+        &packet_schema,
+        meta::type_tag<meta::Repr<Packet>>(),
+        "{\"inners\":[{\"label\":\"a\",\"id\":8},{\"label\":\"b\",\"id\":9}],\"grid\":[[4,5],[6,7]],\"numbers\":[1,2,3]}"
+    ));
+    i64 packet_check = check_packet(decoded_packet);
+    if (packet_check != 0) {
+        return 10 + packet_check;
+    }
+
+    [2][2]i64 decoded_grid = must(json::decode(
+        meta::type_tag<[2][2]i64>(),
+        "[[4,5],[6,7]]"
+    ));
+    if (decoded_grid[0][0] != 4 || decoded_grid[0][1] != 5 ||
+        decoded_grid[1][0] != 6 || decoded_grid[1][1] != 7) {
+        return 15;
+    }
+
+    Event ping = Event::Ping;
+    text::Text ping_json = must(json::encode<Event>(&ping));
+    if (!text::text_equal_slice(ping_json, "{\"Ping\":null}")) {
+        return 20;
+    }
+    Event data = Event::Data(11, must(text::text_copy("ok")));
+    text::Text data_json = must(json::encode<Event>(&data));
+    if (!text::text_equal_slice(data_json, "{\"Data\":[11,\"ok\"]}")) {
+        return 21;
+    }
+    Event decoded_event = must(json::decode(
+        meta::type_tag<Event>(),
+        "{\"Nested\":[{\"id\":12,\"label\":\"wrapped\"}]}"
+    ));
+    switch (decoded_event) {
+        case Event::Nested(value):
+            if (value.id != 12 || !text::text_equal_slice(value.label, "wrapped")) {
+                return 22;
+            }
+        case Event::Ping:
+            return 23;
+        case Event::Data(_, _):
+            return 24;
+    }
+    if (!is_event_error_kind(
+        json::decode(meta::type_tag<Event>(), "{\"Missing\":[]}"),
+        wire::UnknownVariant
+    )) {
+        return 25;
+    }
+
+    map::HashMap<text::Text, i64> decoded_map = must(json::decode(
+        meta::type_tag<map::HashMap<text::Text, i64>>(),
+        "{\"a\":1,\"b\":2}"
+    ));
+    if (get_i64(&decoded_map, "a") != 1 || get_i64(&decoded_map, "b") != 2) {
+        return 30;
+    }
+    if (!is_map_error_kind(
+        json::decode(meta::type_tag<map::HashMap<text::Text, i64>>(), "{\"a\":1,\"a\":2}"),
+        wire::DuplicateField
+    )) {
+        return 31;
+    }
+
+    text::Text encoded_map = must(json::encode<map::HashMap<text::Text, i64>>(&decoded_map));
+    map::HashMap<text::Text, i64> roundtrip_map = must(json::decode(
+        meta::type_tag<map::HashMap<text::Text, i64>>(),
+        must(text::text_to_slice(encoded_map))
+    ));
+    if (get_i64(&roundtrip_map, "a") != 1 || get_i64(&roundtrip_map, "b") != 2) {
+        return 32;
+    }
+
+    return 0;
+}

@@ -1,0 +1,116 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/result;
+import /std/text as text;
+import /std/vec as vec;
+
+bool parses([]const char input) {
+    switch (json::parse(input)) {
+        case Ok(_):
+            return true;
+        case Err(_):
+            return false;
+    }
+}
+
+i64 require_parse([]const char input, i64 code) {
+    if (!parses(input)) {
+        return code;
+    }
+    return 0;
+}
+
+i64 require_roundtrip([]const char input, []const char canonical, i64 code) {
+    json::Value value = must(json::parse(input));
+    text::Text out = must(json::stringify(&value));
+    if (!text::text_equal_slice(out, canonical)) {
+        return code;
+    }
+    return 0;
+}
+
+i64 check_duplicate_keys() {
+    json::Value value = must(json::parse("{\"dup\":1,\"dup\":2,\"dup\":3}"));
+    switch (value) {
+        case json::Object(entries):
+            []const json::Value raw = entries.vec::slice();
+            if (raw.len != 6) {
+                return 60;
+            }
+            return 0;
+        case json::Null:
+            return 61;
+        case json::Bool(_):
+            return 61;
+        case json::Number(_):
+            return 61;
+        case json::String(_):
+            return 61;
+        case json::Array(_):
+            return 61;
+    }
+}
+
+i64 main() {
+    i64 @code = 0;
+
+    code = require_roundtrip("null", "null", 1);
+    if (code != 0) { return code; }
+    code = require_roundtrip(" true ", "true", 2);
+    if (code != 0) { return code; }
+    code = require_roundtrip("\nfalse\t", "false", 3);
+    if (code != 0) { return code; }
+
+    code = require_roundtrip("0", "0", 4);
+    if (code != 0) { return code; }
+    code = require_roundtrip("-0", "-0", 5);
+    if (code != 0) { return code; }
+    code = require_roundtrip("1234567890", "1234567890", 6);
+    if (code != 0) { return code; }
+    code = require_roundtrip("-987654321", "-987654321", 7);
+    if (code != 0) { return code; }
+    code = require_roundtrip("0.125", "0.125", 8);
+    if (code != 0) { return code; }
+    code = require_roundtrip("-12.5e2", "-12.5e2", 9);
+    if (code != 0) { return code; }
+    code = require_roundtrip("1E-10", "1E-10", 10);
+    if (code != 0) { return code; }
+    code = require_roundtrip("6.022e+23", "6.022e+23", 11);
+    if (code != 0) { return code; }
+
+    code = require_roundtrip("\"\"", "\"\"", 12);
+    if (code != 0) { return code; }
+    code = require_roundtrip("\"simple\"", "\"simple\"", 13);
+    if (code != 0) { return code; }
+    code = require_roundtrip("\"quote: \\\" slash: \\/ backslash: \\\\\"", "\"quote: \\\" slash: / backslash: \\\\\"", 14);
+    if (code != 0) { return code; }
+    code = require_roundtrip("\"line\\nbreak\\ttab\\rcarriage\"", "\"line\\nbreak\\ttab\\rcarriage\"", 15);
+    if (code != 0) { return code; }
+    code = require_roundtrip("\"\\u0041\\u005a\\u0030\"", "\"AZ0\"", 16);
+    if (code != 0) { return code; }
+    code = require_parse("\"\\uD834\\uDD1E\"", 17);
+    if (code != 0) { return code; }
+
+    code = require_roundtrip("[]", "[]", 18);
+    if (code != 0) { return code; }
+    code = require_roundtrip("[null,true,false,0,\"x\"]", "[null,true,false,0,\"x\"]", 19);
+    if (code != 0) { return code; }
+    code = require_roundtrip("[[],[1,2,3],{\"a\":[] }]", "[[],[1,2,3],{\"a\":[]}]", 20);
+    if (code != 0) { return code; }
+
+    code = require_roundtrip("{}", "{}", 21);
+    if (code != 0) { return code; }
+    code = require_roundtrip("{\"a\":1,\"b\":true,\"c\":null}", "{\"a\":1,\"b\":true,\"c\":null}", 22);
+    if (code != 0) { return code; }
+    code = require_roundtrip("{\"nested\":{\"arr\":[{\"x\":1},{\"y\":2}]}}", "{\"nested\":{\"arr\":[{\"x\":1},{\"y\":2}]}}", 23);
+    if (code != 0) { return code; }
+    code = require_roundtrip("{\"ws\" : [ 1 , 2 , 3 ] , \"empty\" : { } }", "{\"ws\":[1,2,3],\"empty\":{}}", 24);
+    if (code != 0) { return code; }
+
+    code = check_duplicate_keys();
+    if (code != 0) { return code; }
+
+    return 0;
+}

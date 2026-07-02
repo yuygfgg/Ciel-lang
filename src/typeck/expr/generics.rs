@@ -444,10 +444,9 @@ impl TypeChecker {
             let Some(constraint) = &generic.constraint else {
                 continue;
             };
-            let concrete_for_constraints = self.meta_repr_constraint_receiver_ty(concrete, span);
             let bounds = self.constraint_bounds(constraint, subst);
             for capability in bounds.positive {
-                if !self.type_implements_capability_ref(&capability, &concrete_for_constraints) {
+                if !self.type_implements_capability_ref(&capability, concrete) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
                         format!(
@@ -458,7 +457,7 @@ impl TypeChecker {
                 }
             }
             for capability in bounds.negative {
-                if self.type_implements_capability_ref(&capability, &concrete_for_constraints) {
+                if self.type_implements_capability_ref(&capability, concrete) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
                         format!(

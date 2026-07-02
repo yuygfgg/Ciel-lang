@@ -1,0 +1,63 @@
+export import /std/result;
+import /std/meta as meta;
+
+// Machine-readable wire encoding and decoding error categories.
+export enum WireErrorKind {
+    Eof,
+    Syntax,
+    TypeMismatch,
+    MissingField,
+    DuplicateField,
+    UnknownField,
+    UnknownVariant,
+    InvalidValue,
+    UnsupportedType,
+    Storage,
+}
+
+// Error returned by wire format parsers and structural policies.
+export struct WireError {
+    WireErrorKind kind;
+    []const char path;
+    []const char message;
+    usize byte_offset;
+    bool has_byte_offset;
+}
+
+impl format_error(*const WireError error) {
+    return unsafe { error->message };
+}
+
+// Builds an error without a source byte offset.
+export WireError wire_error(WireErrorKind kind, []const char message) {
+    return {
+        kind: kind,
+        path: "$",
+        message: message,
+        byte_offset: 0,
+        has_byte_offset: false,
+    };
+}
+
+// Builds an error with a source byte offset.
+export WireError wire_error_at(WireErrorKind kind, usize byte_offset, []const char message) {
+    return {
+        kind: kind,
+        path: "$",
+        message: message,
+        byte_offset: byte_offset,
+        has_byte_offset: true,
+    };
+}
+
+// Encodes a value into a format writer.
+export interface<T, W> Result<void, WireError> encode_value(
+    *const T value,
+    *W writer
+);
+
+// Decodes a value of T from a format reader.
+export interface<T, R> Result<T, WireError> decode_value(
+    meta::Type<T> target,
+    *R reader
+);

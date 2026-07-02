@@ -1,9 +1,11 @@
 // Re-exports Result for hash-map operations.
 export import /std/result;
+import /std/bytes as bytes;
 import /std/message;
 import /std/meta as meta;
 import /std/panic;
 import /std/storage as storage;
+import /std/text as text;
 
 unsafe extern "C" {
     ?*void ciel_box_copy(usize size, usize align, *const void source);
@@ -462,6 +464,52 @@ export Result<PopResult<K, V>, MapError> hash_map_pop_any<K: map_key, V>(
     return Ok(PopResult::Empty);
 }
 
+// Visits every stored entry without exposing bucket or node layout.
+export Result<void, E> hash_map_for_each<K: map_key, V, E: ErrorTrait>(
+    *const HashMap<K, V> map,
+    Result<void, E> |(*const K, *const V)| body
+) = .for_each {
+    usize capacity = unsafe { map->capacity };
+    usize @index = 0;
+    while (index < capacity) {
+        ?*Node<K, V> @current = bucket_head<K, V>(map, index);
+        while (true) {
+            if (current == null) {
+                break;
+            }
+            *Node<K, V> node = expect_node<K, V>(current);
+            body(&node->key, &node->value)?;
+            current = node->next;
+        }
+        index = index + 1;
+    }
+    return Ok;
+}
+
+// Visits every stored entry with a zero-based traversal index.
+export Result<void, E> hash_map_for_each_index<K: map_key, V, E: ErrorTrait>(
+    *const HashMap<K, V> map,
+    Result<void, E> |(usize, *const K, *const V)| body
+) = .for_each_index {
+    usize capacity = unsafe { map->capacity };
+    usize @entry_index = 0;
+    usize @index = 0;
+    while (index < capacity) {
+        ?*Node<K, V> @current = bucket_head<K, V>(map, index);
+        while (true) {
+            if (current == null) {
+                break;
+            }
+            *Node<K, V> node = expect_node<K, V>(current);
+            body(entry_index, &node->key, &node->value)?;
+            entry_index = entry_index + 1;
+            current = node->next;
+        }
+        index = index + 1;
+    }
+    return Ok;
+}
+
 // Gives body scoped mutable access to an existing value for key.
 export Result<R, MapWithError<E>> hash_map_with<K: map_key, V, R: Message, E: ErrorTrait>(
     *HashMap<K, V> map,
@@ -581,6 +629,21 @@ impl hash_key(*const usize value, u64 seed) {
 
 impl key_eq(*const usize left, *const usize right) {
     return *left == *right;
+}
+
+impl hash_key(*const text::Text value, u64 seed) {
+    []const u8 data = bytes::bytes_const_slice(value->bytes);
+    u64 @hash = mix_u64(data.len as u64, seed);
+    usize @i = 0;
+    while (i < data.len) {
+        hash = mix_u64(data[i] as u64, hash);
+        i = i + 1;
+    }
+    return hash;
+}
+
+impl key_eq(*const text::Text left, *const text::Text right) {
+    return text::text_equal(*left, *right);
 }
 
 impl hash_key(*const meta::HNil value, u64 seed) {

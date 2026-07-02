@@ -107,6 +107,12 @@ impl<'a> CGenerator<'a> {
             }
             TExprKind::Literal(literal) => self.gen_literal(expr.span, literal, &expr.ty),
             TExprKind::StructLiteral { fields, .. } => {
+                if let Some(indent) = stmt_indent {
+                    let struct_fields = self.struct_fields_for_ty(expr.span, &expr.ty)?;
+                    if self.struct_literal_needs_member_store(fields, &struct_fields) {
+                        return self.emit_struct_literal_temp(expr, fields, &struct_fields, indent);
+                    }
+                }
                 let mut emitted_fields = Vec::new();
                 for (name, value) in fields {
                     let value_code = self.value_initializer_for_checked_expr(value, stmt_indent)?;
@@ -133,6 +139,19 @@ impl<'a> CGenerator<'a> {
             } => {
                 let physical_payload =
                     self.checked_enum_variant_payload(type_name, *variant_index)?;
+                if let Some(indent) = stmt_indent
+                    && self.enum_literal_needs_member_store(payload, &physical_payload)
+                {
+                    return self.emit_enum_literal_temp(
+                        expr,
+                        type_name,
+                        variant_name,
+                        *variant_index,
+                        payload,
+                        &physical_payload,
+                        indent,
+                    );
+                }
                 let mut payload_fields = Vec::new();
                 let mut physical_idx = 0usize;
                 for value in payload {
@@ -192,6 +211,11 @@ impl<'a> CGenerator<'a> {
                         }
                     }
                     return Ok("((void)0)".to_string());
+                }
+                if matches!(expr.ty, Ty::Array { .. })
+                    && let Some(indent) = stmt_indent
+                {
+                    return self.emit_temp_value("array_literal", expr, indent);
                 }
                 let elements = elements
                     .iter()
@@ -329,8 +353,14 @@ impl<'a> CGenerator<'a> {
                 }
             }
             TExprKind::Cast { expr, ty } => {
-                if expr.ty == *ty && !matches!(expr.kind, TExprKind::ArrayLiteral(_)) {
+                if expr.ty == *ty {
                     return self.gen_expr_with_lowering(expr, stmt_indent);
+                }
+                if matches!(ty, Ty::Array { .. }) {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: array casts are only supported for already-typed literals",
+                    )]);
                 }
                 format!(
                     "(({}){})",
@@ -406,11 +436,20 @@ impl<'a> CGenerator<'a> {
                         "internal error: array-to-slice conversion has non-array source",
                     )]);
                 };
+                if let Some(indent) = stmt_indent {
+                    return self.emit_array_to_slice_temp(&expr.ty, inner, indent);
+                }
                 if elem.is_erased_value() {
                     return Ok(format!(
                         "({}){{ .ptr = NULL, .len = {len} }}",
                         self.slice_name(*mutability, elem)
                     ));
+                }
+                if !self.expr_is_stable_array_lvalue(inner) {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "array-to-slice conversion from a temporary array needs statement lowering",
+                    )]);
                 }
                 let inner_code = self.gen_expr_with_lowering(inner, stmt_indent)?;
                 format!(
@@ -874,6 +913,145 @@ impl<'a> CGenerator<'a> {
             }
         };
         Ok(code)
+    }
+
+    pub(super) fn struct_literal_needs_member_store(
+        &self,
+        fields: &[(String, TExpr)],
+        struct_fields: &[(String, Ty)],
+    ) -> bool {
+        fields.iter().any(|(name, value)| {
+            if value.ty.is_erased_value() {
+                return false;
+            }
+            struct_fields
+                .iter()
+                .find(|(field_name, _)| field_name == name)
+                .is_some_and(|(_, field_ty)| matches!(field_ty, Ty::Array { .. }))
+        })
+    }
+
+    pub(super) fn enum_literal_needs_member_store(
+        &self,
+        payload: &[TExpr],
+        physical_payload: &[Ty],
+    ) -> bool {
+        let mut physical_idx = 0usize;
+        for value in payload {
+            if value.ty.is_erased_value() {
+                continue;
+            }
+            let Some(target_ty) = physical_payload.get(physical_idx) else {
+                return false;
+            };
+            physical_idx += 1;
+            if matches!(target_ty, Ty::Array { .. }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    pub(super) fn emit_struct_literal_temp(
+        &mut self,
+        expr: &TExpr,
+        fields: &[(String, TExpr)],
+        struct_fields: &[(String, Ty)],
+        indent: usize,
+    ) -> DiagResult<String> {
+        let temp = self.next_temp("struct_literal");
+        self.line_indent(
+            indent,
+            &format!("{} = {{0}};", self.c_decl(&expr.ty, &temp)),
+        );
+        for (name, value) in fields {
+            if value.ty.is_erased_value() {
+                let value_code = self.gen_expr_in_stmt(value, indent)?;
+                self.line_indent(indent, &format!("(void)({value_code});"));
+                continue;
+            }
+            let Some((_, field_ty)) = struct_fields
+                .iter()
+                .find(|(field_name, _)| field_name == name)
+            else {
+                return Err(vec![Diagnostic::new(
+                    expr.span,
+                    format!("internal error: struct literal field `{name}` is missing from layout"),
+                )]);
+            };
+            self.emit_adapted_expr_store(
+                &format!("{temp}.{name}"),
+                value,
+                field_ty,
+                indent,
+                Some(expr.span),
+            )?;
+        }
+        Ok(temp)
+    }
+
+    pub(super) fn emit_enum_literal_temp(
+        &mut self,
+        expr: &TExpr,
+        type_name: &str,
+        variant_name: &str,
+        variant_index: usize,
+        payload: &[TExpr],
+        physical_payload: &[Ty],
+        indent: usize,
+    ) -> DiagResult<String> {
+        let temp = self.next_temp("enum_literal");
+        self.line_indent(
+            indent,
+            &format!("{} = {{0}};", self.c_decl(&expr.ty, &temp)),
+        );
+        self.line_indent(indent, &format!("{temp}.tag = {variant_index};"));
+        let mut physical_idx = 0usize;
+        for value in payload {
+            if value.ty.is_erased_value() {
+                let value_code = self.gen_expr_in_stmt(value, indent)?;
+                self.line_indent(indent, &format!("(void)({value_code});"));
+                continue;
+            }
+            let Some(target_ty) = physical_payload.get(physical_idx) else {
+                return Err(vec![Diagnostic::new(
+                    expr.span,
+                    format!(
+                        "internal error: enum `{type_name}` payload layout is missing field {physical_idx}"
+                    ),
+                )]);
+            };
+            let target = format!("{temp}.as.{variant_name}._{physical_idx}");
+            physical_idx += 1;
+            self.emit_adapted_expr_store(&target, value, target_ty, indent, Some(expr.span))?;
+        }
+        Ok(temp)
+    }
+
+    pub(super) fn emit_adapted_expr_store(
+        &mut self,
+        target: &str,
+        value: &TExpr,
+        target_ty: &Ty,
+        indent: usize,
+        span: Option<crate::span::Span>,
+    ) -> DiagResult<()> {
+        if &value.ty == target_ty {
+            return self.emit_expr_store(target, value, indent);
+        }
+        let source = self.gen_expr_in_stmt(value, indent)?;
+        let adapted = self.value_initializer_for_type(&value.ty, target_ty, &source, span)?;
+        if matches!(target_ty, Ty::Array { .. }) {
+            let temp = self.next_temp("adapted_value");
+            self.line_indent(
+                indent,
+                &format!("{} = {adapted};", self.c_decl(target_ty, &temp)),
+            );
+            self.emit_value_copy(target, &temp, target_ty, indent);
+        } else {
+            self.line_indent(indent, &format!("{target} = {adapted};"));
+        }
+        Ok(())
     }
 
     pub(super) fn emit_short_circuit_expr(

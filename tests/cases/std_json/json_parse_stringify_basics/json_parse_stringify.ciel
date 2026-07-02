@@ -1,0 +1,271 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/bytes as bytes;
+import /std/json as json;
+import /std/result;
+import /std/text as text;
+import /std/vec as vec;
+import /std/wire as wire;
+
+i64 kind_code(wire::WireErrorKind kind) {
+    switch (kind) {
+        case wire::Eof:
+            return 1;
+        case wire::Syntax:
+            return 2;
+        case wire::TypeMismatch:
+            return 3;
+        case wire::MissingField:
+            return 4;
+        case wire::DuplicateField:
+            return 5;
+        case wire::UnknownField:
+            return 6;
+        case wire::UnknownVariant:
+            return 7;
+        case wire::InvalidValue:
+            return 8;
+        case wire::UnsupportedType:
+            return 9;
+        case wire::Storage:
+            return 10;
+    }
+}
+
+bool is_kind(Result<json::Value, wire::WireError> result, wire::WireErrorKind kind) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind);
+    }
+}
+
+i64 check_main_value(json::Value value) {
+    switch (value) {
+        case json::Object(members):
+            []const json::Value entries = members.vec::slice();
+            if (entries.len != 4) {
+                return 10;
+            }
+            switch (entries[0]) {
+                case json::String(name_key):
+                    if (!text::text_equal_slice(name_key, "name")) {
+                        return 11;
+                    }
+                case json::Null:
+                    return 11;
+                case json::Bool(_):
+                    return 11;
+                case json::Number(_):
+                    return 11;
+                case json::Array(_):
+                    return 11;
+                case json::Object(_):
+                    return 11;
+            }
+            switch (entries[1]) {
+                case json::String(name):
+                    if (!text::text_equal_slice(name, "a\nB")) {
+                        return 12;
+                    }
+                case json::Null:
+                    return 13;
+                case json::Bool(_):
+                    return 13;
+                case json::Number(_):
+                    return 13;
+                case json::Array(_):
+                    return 13;
+                case json::Object(_):
+                    return 13;
+            }
+
+            switch (entries[2]) {
+                case json::String(items_key):
+                    if (!text::text_equal_slice(items_key, "items")) {
+                        return 14;
+                    }
+                case json::Null:
+                    return 14;
+                case json::Bool(_):
+                    return 14;
+                case json::Number(_):
+                    return 14;
+                case json::Array(_):
+                    return 14;
+                case json::Object(_):
+                    return 14;
+            }
+            switch (entries[3]) {
+                case json::Array(items):
+                    []const json::Value values = items.vec::slice();
+                    if (values.len != 3) {
+                        return 15;
+                    }
+                    switch (values[0]) {
+                        case json::Null:
+                            {}
+                        case json::Bool(_):
+                            return 16;
+                        case json::Number(_):
+                            return 16;
+                        case json::String(_):
+                            return 16;
+                        case json::Array(_):
+                            return 16;
+                        case json::Object(_):
+                            return 16;
+                    }
+                    switch (values[1]) {
+                        case json::Bool(flag):
+                            if (!flag) {
+                                return 17;
+                            }
+                        case json::Null:
+                            return 17;
+                        case json::Number(_):
+                            return 17;
+                        case json::String(_):
+                            return 17;
+                        case json::Array(_):
+                            return 17;
+                        case json::Object(_):
+                            return 17;
+                    }
+                    switch (values[2]) {
+                        case json::Number(number):
+                            if (!text::text_equal_slice(number.raw, "-12.5e2")) {
+                                return 18;
+                            }
+                        case json::Null:
+                            return 18;
+                        case json::Bool(_):
+                            return 18;
+                        case json::String(_):
+                            return 18;
+                        case json::Array(_):
+                            return 18;
+                        case json::Object(_):
+                            return 18;
+                    }
+                case json::Null:
+                    return 19;
+                case json::Bool(_):
+                    return 19;
+                case json::Number(_):
+                    return 19;
+                case json::String(_):
+                    return 19;
+                case json::Object(_):
+                    return 19;
+            }
+            return 0;
+        case json::Null:
+            return 20;
+        case json::Bool(_):
+            return 20;
+        case json::Number(_):
+            return 20;
+        case json::String(_):
+            return 20;
+        case json::Array(_):
+            return 20;
+    }
+}
+
+i64 check_unicode_escape() {
+    json::Value value = must(json::parse("\"\\u20ac\""));
+    switch (value) {
+        case json::String(out):
+            bytes::Bytes raw = must(text::text_to_bytes(out));
+            []const u8 data = bytes::bytes_const_slice(raw);
+            if (data.len != 3) {
+                return 30;
+            }
+            if (data[0] != (0xe2 as u8) || data[1] != (0x82 as u8) || data[2] != (0xac as u8)) {
+                return 31;
+            }
+            return 0;
+        case json::Null:
+            return 32;
+        case json::Bool(_):
+            return 32;
+        case json::Number(_):
+            return 32;
+        case json::Array(_):
+            return 32;
+        case json::Object(_):
+            return 32;
+    }
+}
+
+i64 main() {
+    json::Value value = must(json::parse("{\"name\":\"a\\n\\u0042\",\"items\":[null,true,-12.5e2]}"));
+    i64 @checked = check_main_value(value);
+    if (checked != 0) {
+        return checked;
+    }
+
+    text::Text encoded = must(json::stringify(&value));
+    if (!text::text_equal_slice(encoded, "{\"name\":\"a\\nB\",\"items\":[null,true,-12.5e2]}")) {
+        return 40;
+    }
+
+    checked = check_unicode_escape();
+    if (checked != 0) {
+        return checked;
+    }
+
+    json::Value duplicate_keys = must(json::parse("{\"a\":1,\"a\":2}"));
+    switch (duplicate_keys) {
+        case json::Object(entries):
+            if (entries.vec::slice().len != 4) {
+                return 50;
+            }
+        case json::Null:
+            return 50;
+        case json::Bool(_):
+            return 50;
+        case json::Number(_):
+            return 50;
+        case json::String(_):
+            return 50;
+        case json::Array(_):
+            return 50;
+    }
+    text::Text duplicate_encoded = must(json::stringify(&duplicate_keys));
+    if (!text::text_equal_slice(duplicate_encoded, "{\"a\":1,\"a\":2}")) {
+        return 50;
+    }
+    if (!is_kind(json::parse("01"), wire::Syntax)) {
+        return 51;
+    }
+    if (!is_kind(json::parse("[1,"), wire::Eof)) {
+        return 52;
+    }
+    if (!is_kind(json::parse("\x0bnull"), wire::Syntax)) {
+        return 53;
+    }
+    if (!is_kind(json::parse("\x0cnull"), wire::Syntax)) {
+        return 54;
+    }
+    json::Value spaced = must(json::parse(" \t\n\rnull \t\n\r"));
+    switch (spaced) {
+        case json::Null:
+            {}
+        case json::Bool(_):
+            return 55;
+        case json::Number(_):
+            return 55;
+        case json::String(_):
+            return 55;
+        case json::Array(_):
+            return 55;
+        case json::Object(_):
+            return 55;
+    }
+
+    return 0;
+}

@@ -73,11 +73,17 @@ export import /std/vec;
 // Re-exports owned immutable byte buffers.
 export import /std/bytes;
 
+// Re-exports Base64 text codec helpers.
+export import /std/base64;
+
 // Re-exports owned text values.
 export import /std/text;
 
 // Re-exports actor-local hash maps.
 export import /std/map;
+
+// Re-exports standard optional values.
+export import /std/option;
 
 // Re-exports static iterator abstractions and adapters.
 export import /std/iter;

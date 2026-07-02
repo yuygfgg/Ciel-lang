@@ -1,0 +1,9 @@
+manifest_version = 1
+
+[package]
+name = "std.wire"
+kind = "stdlib"
+root = "."
+
+[ciel.exports]
+"/std/wire" = "wire.ciel"

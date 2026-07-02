@@ -3097,8 +3097,9 @@ import /std/actor;
 `/std/meta`, `/std/actor`, `/std/channel`, `/std/sync`, `/std/atomic`,
 `/std/codec`, `/std/ord`, `/std/math`, `/std/ascii`, `/std/parse`,
 `/std/slice`, `/std/sort`, `/std/buf`, `/std/vec`, `/std/bytes`,
-`/std/text`, `/std/map`, `/std/iter`, `/std/shared_map`, `/std/time`,
-`/std/env`, `/std/crypto`, and `/std/net`.
+`/std/base64`, `/std/text`, `/std/map`, `/std/option`, `/std/wire`,
+`/std/json`, `/std/iter`, `/std/shared_map`, `/std/time`, `/std/env`,
+`/std/crypto`, and `/std/net`.
 It is still imported explicitly like any other file.
 
 String literals have compiler support because each occurrence emits
@@ -3375,6 +3376,464 @@ delegates to runtime C helpers, accepts decimal/exponent forms plus the C
 special values such as `inf`, `infinity`, and `nan`, and reports range errors
 as `Overflow` or `Underflow`. Implementations are provided for all integer
 primitives, `usize`, `f32`, and `f64`.
+
+```ciel
+// /std/option
+export enum Option<T> {
+    None,
+    Some(T),
+}
+
+export bool option_is_some<T>(Option<T> value);
+export bool option_is_none<T>(Option<T> value);
+export T option_unwrap_or<T>(Option<T> value, T fallback);
+```
+
+`/std/option` defines the canonical optional value type. `/std/lib` re-exports
+it because optional values are baseline data modeling vocabulary. Format
+libraries may attach their own policies to it; JSON maps `None` to `null` and
+`Some(value)` to the value's ordinary JSON representation.
+
+```ciel
+// /std/base64
+export import /std/result;
+import /std/bytes as bytes;
+import /std/text as text;
+
+export enum Base64Error {
+    InvalidLength,
+    InvalidPadding,
+    InvalidChar,
+    Storage,
+}
+
+export Result<text::Text, Base64Error> encode([]const u8 data);
+export Result<bytes::Bytes, Base64Error> decode([]const char text);
+```
+
+`/std/base64` implements the standard padded Base64 alphabet using `+`, `/`,
+and `=` padding. It is reusable standard-library codec surface. 
+JSON uses it for the default `Bytes` wire policy.
+
+```ciel
+// /std/wire
+export import /std/result;
+import /std/meta as meta;
+
+export enum WireErrorKind {
+    Eof,
+    Syntax,
+    TypeMismatch,
+    MissingField,
+    DuplicateField,
+    UnknownField,
+    UnknownVariant,
+    InvalidValue,
+    UnsupportedType,
+    Storage,
+}
+
+export struct WireError {
+    WireErrorKind kind;
+    []const char path;
+    []const char message;
+    usize byte_offset;
+    bool has_byte_offset;
+}
+
+export WireError wire_error(WireErrorKind kind, []const char message);
+export WireError wire_error_at(WireErrorKind kind, usize byte_offset, []const char message);
+
+export interface<T, W> Result<void, WireError> encode_value(*const T value, *W writer);
+export interface<T, R> Result<T, WireError> decode_value(meta::Type<T> target, *R reader);
+```
+
+`/std/wire` is format-neutral. It defines the common error shape and the
+opt-in encode/decode interfaces used by concrete formats. `WireError.path` is a
+rendered logical path such as `$`, `$.field`, or `$[3]`; concrete format
+helpers update it while walking structural fields, enum payloads, arrays, and
+object values.
+
+```ciel
+// /std/json
+export import /std/wire;
+import /std/base64 as base64;
+import /std/bytes as bytes;
+import /std/map as map;
+import /std/meta as meta;
+import /std/option as option;
+import /std/text as text;
+import /std/vec as vec;
+import /std/wire as wire;
+
+export struct JsonNumber {
+    text::Text raw;
+}
+
+export enum Value {
+    Null,
+    Bool(bool),
+    Number(JsonNumber),
+    String(text::Text),
+    Array(vec::Vec<Value>),
+    Object(vec::Vec<Value>),
+}
+
+export enum UnknownFieldPolicy {
+    Deny,
+    Ignore,
+}
+
+export struct Reader { []const char input; usize offset; }
+export struct Writer { /* ByteBuf-backed writer state */ }
+
+export Result<Value, wire::WireError> parse([]const char input);
+export Result<text::Text, wire::WireError> stringify(*const Value value);
+
+export Result<text::Text, wire::WireError> encode<T: wire::encode_value<Writer>>(*const T value);
+export Result<T, wire::WireError> decode<T: wire::decode_value<Reader>>(
+    meta::Type<T> target,
+    []const char input
+);
+
+export interface<K> Result<text::Text, wire::WireError> encode_object_key(*const K key);
+export interface<K> Result<K, wire::WireError> decode_object_key(
+    meta::Type<K> target,
+    text::Text key
+);
+export interface json_object_key = encode_object_key + decode_object_key;
+
+export Reader reader([]const char input);
+export Result<Writer, wire::WireError> writer_new();
+export Result<text::Text, wire::WireError> writer_finish(Writer writer);
+
+export Result<Value, wire::WireError> read_value(*Reader reader);
+export Result<void, wire::WireError> write_value(*const Value value, *Writer writer);
+
+export Result<void, wire::WireError> write_struct<S, R>(
+    *const S schema,
+    *const R repr,
+    *Writer writer
+);
+export Result<text::Text, wire::WireError> encode_struct<S, R>(
+    *const S schema,
+    *const R repr
+);
+export Result<T, wire::WireError> decode_struct<T, S, R>(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    []const char input
+);
+export Result<T, wire::WireError> decode_struct_value<T, S, R>(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    *const Value value
+);
+export Result<T, wire::WireError> decode_struct_with_policy<T, S, R>(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    []const char input,
+    UnknownFieldPolicy unknown_fields
+);
+
+export Result<void, wire::WireError> write_enum<S, R>(
+    *const S schema,
+    *const R repr,
+    *Writer writer
+);
+export Result<text::Text, wire::WireError> encode_enum<S, R>(
+    *const S schema,
+    *const R repr
+);
+export Result<T, wire::WireError> decode_enum<T, S, R>(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    []const char input
+);
+export Result<T, wire::WireError> decode_enum_value<T, S, R>(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    *const Value value
+);
+```
+
+`/std/json` owns JSON parsing, stringification, reader/writer state, typed JSON
+policies, and schema-guided structural helpers. The parser accepts all legal
+JSON values into `json::Value`, including duplicate object names. Duplicate
+handling is a typed policy decision: structural object decoding and map
+decoding reject duplicate names where uniqueness is required.
+
+`json::Value::Object` stores alternating key and value entries. Object keys in
+the value tree are always `Value::String`; this representation preserves
+duplicates and input order for low-level parsing and stringification tests. A
+typed object decoder then decides whether duplicate names are an error.
+
+`json::encode` and `json::decode` are the ordinary typed entry points:
+
+```ciel
+import /std/json as json;
+import /std/meta as meta;
+import /std/text as text;
+
+i64 value = 42;
+text::Text encoded = json::encode<i64>(&value)?;
+// encoded == "42"
+
+i64 decoded = json::decode(meta::type_tag<i64>(), "42")?;
+```
+
+`json::parse` and `json::stringify` expose the untyped JSON tree:
+
+```ciel
+json::Value value = json::parse("{\"ok\":true,\"ok\":false}")?;
+text::Text text = json::stringify(&value)?;
+```
+
+This layer understands JSON syntax only. It does not reject duplicate object
+names because duplicate names are valid JSON text.
+
+The default typed policies are:
+
+1. `json::Value` maps to the parsed JSON tree.
+2. `bool` maps to JSON booleans.
+3. signed and unsigned integer primitives plus `usize` map to JSON numbers with
+   range checks.
+4. `f32` and `f64` map to finite JSON numbers; non-finite values are rejected.
+5. `char` maps to a one-byte JSON string.
+6. `text::Text` maps to a JSON string.
+7. `bytes::Bytes` maps to a padded Base64 JSON string through `/std/base64`.
+8. `option::Option<T>` maps `None` to `null` and `Some(T)` to `T`.
+9. `vec::Vec<T>` maps to a JSON array.
+10. fixed arrays `[0]T` through `[16]T` map to exact-length JSON arrays.
+11. `map::HashMap<K, V>` maps to a JSON object when `K: json_object_key` and
+    `V` has a JSON value policy. Standard key policies are provided for
+    `text::Text`, `char`, `bool`, integer primitives, and `usize`.
+
+Concrete examples:
+
+```ciel
+import /std/bytes as bytes;
+import /std/json as json;
+import /std/map as map;
+import /std/meta as meta;
+import /std/option as option;
+import /std/text as text;
+import /std/vec as vec;
+
+option::Option<i64> absent = option::None;
+text::Text null_text = json::encode<option::Option<i64>>(&absent)?;
+// null_text == "null"
+
+bytes::Bytes payload = bytes::bytes_from_text("hi")?;
+text::Text payload_text = json::encode<bytes::Bytes>(&payload)?;
+// payload_text == "\"aGk=\""
+
+char marker = 'Z';
+text::Text marker_text = json::encode<char>(&marker)?;
+// marker_text == "\"Z\""
+
+vec::Vec<i64> values = json::decode(meta::type_tag<vec::Vec<i64>>(), "[1,2,3]")?;
+```
+
+Map keys are converted through `json_object_key`, then written as JSON object
+member names:
+
+```ciel
+map::HashMap<i64, text::Text> table = map::hash_map_new<i64, text::Text>()?;
+map::hash_map_insert<i64, text::Text>(&table, 7, text::text_copy("seven")?)?;
+
+text::Text encoded = json::encode<map::HashMap<i64, text::Text>>(&table)?;
+// encoded == "{\"7\":\"seven\"}" for this one-entry map.
+
+map::HashMap<i64, text::Text> decoded = json::decode(
+    meta::type_tag<map::HashMap<i64, text::Text>>(),
+    "{\"7\":\"seven\"}"
+)?;
+```
+
+Additional key types opt in by implementing both key interfaces:
+
+```ciel
+import /std/format as format;
+import /std/parse as parse;
+
+struct UserId {
+    i64 raw;
+}
+
+impl json::encode_object_key(*const UserId key) {
+    return text::text_copy(format::i64_to_string(key->raw));
+}
+
+impl json::decode_object_key(meta::Type<UserId> target, text::Text key) {
+    i64 raw = parse::parse_number(meta::type_tag<i64>(), text::text_to_slice(key)?)?;
+    return Ok({ raw: raw });
+}
+```
+
+The type must also be usable as a `map::HashMap` key, so it needs the ordinary
+`map::hash_key` and `map::key_eq` impls.
+
+Visible structs and enums can opt into structural JSON through thin wrappers in
+the module where the type shape is visible:
+
+```ciel
+impl wire::encode_value(*const Packet value, *json::Writer writer) {
+    _ schema = meta::schema<Packet>();
+    _ repr = meta::as_ref_repr(value);
+    return json::write_struct(&schema, &repr, writer);
+}
+
+impl wire::decode_value(meta::Type<Packet> target, *json::Reader reader) {
+    json::Value value = json::read_value(reader)?;
+    _ schema = meta::schema<Packet>();
+    return json::decode_struct_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<Packet>>(),
+        &value
+    );
+}
+```
+
+The wrapper must live in a module where `Packet`'s fields are visible. The JSON
+module cannot reflect imported private shape by itself. Nested nominal types
+need their own wrappers when they appear inside containers or other structural
+types:
+
+```ciel
+struct Inner {
+    i64 id;
+    text::Text label;
+}
+
+struct Packet {
+    i64 sequence;
+    [2]Inner items;
+}
+```
+
+`Packet`'s structural helper can walk the array and field list, but each
+`Inner` value is still a nominal leaf at the container policy boundary. A module
+that owns `Inner` should provide the same `wire::encode_value` and
+`wire::decode_value` wrappers for `Inner`.
+
+A caller may also use structural helpers directly without publishing a typed
+wire impl:
+
+```ciel
+Packet packet = {
+    sequence: 3,
+    items: [inner(1, "a"), inner(2, "b")],
+};
+
+_ schema = meta::schema<Packet>();
+_ repr = meta::as_ref_repr(&packet);
+text::Text text = json::encode_struct(&schema, &repr)?;
+
+Packet decoded = json::decode_struct(
+    meta::type_tag<Packet>(),
+    &schema,
+    meta::type_tag<meta::Repr<Packet>>(),
+    text::text_to_slice(text)?
+)?;
+```
+
+Struct helpers encode source field names exactly by default. Decode denies
+unknown fields:
+
+```ciel
+Result<Packet, wire::WireError> packet = json::decode_struct(
+    meta::type_tag<Packet>(),
+    &schema,
+    meta::type_tag<meta::Repr<Packet>>(),
+    "{\"sequence\":3,\"items\":[{\"id\":1,\"label\":\"a\"},{\"id\":2,\"label\":\"b\"}],\"extra\":true}"
+);
+// returns WireError { kind: UnknownField, path: "$", ... }
+```
+
+Callers that intentionally accept additive input fields use the policy-taking
+helper:
+
+```ciel
+Packet packet = json::decode_struct_with_policy(
+    meta::type_tag<Packet>(),
+    &schema,
+    meta::type_tag<meta::Repr<Packet>>(),
+    "{\"sequence\":3,\"items\":[{\"id\":1,\"label\":\"a\"},{\"id\":2,\"label\":\"b\"}],\"extra\":true}",
+    json::Ignore
+)?;
+```
+
+Missing fields remain errors unless a hand-written wrapper or future metadata
+policy supplies a default:
+
+```text
+{"items": []}
+```
+
+decoding as `Packet` reports `WireErrorKind::MissingField` at path
+`$.sequence`.
+
+Enums use one-object-member externally tagged JSON by default. Unit variants
+encode as `{"Variant": null}` and payload variants encode as
+`{"Variant": [payload0, ...]}`:
+
+```ciel
+enum Event {
+    Ping,
+    Data(i64, text::Text),
+    Nested(Inner),
+}
+
+impl wire::encode_value(*const Event value, *json::Writer writer) {
+    _ schema = meta::schema<Event>();
+    _ repr = meta::as_ref_repr(value);
+    return json::write_enum(&schema, &repr, writer);
+}
+
+impl wire::decode_value(meta::Type<Event> target, *json::Reader reader) {
+    json::Value value = json::read_value(reader)?;
+    _ schema = meta::schema<Event>();
+    return json::decode_enum_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<Event>>(),
+        &value
+    );
+}
+
+Event ping = Event::Ping;
+// json::encode<Event>(&ping)? == "{\"Ping\":null}"
+
+Event data = Event::Data(11, text::text_copy("ok")?);
+// json::encode<Event>(&data)? == "{\"Data\":[11,\"ok\"]}"
+```
+
+Errors carry logical paths when structural and container policies can attach
+them:
+
+```ciel
+json::decode(meta::type_tag<vec::Vec<i64>>(), "[1,\"bad\"]");
+// Err(WireError { kind: TypeMismatch, path: "$[1]", ... })
+
+json::decode_struct(
+    meta::type_tag<Packet>(),
+    &schema,
+    meta::type_tag<meta::Repr<Packet>>(),
+    "{\"sequence\":\"bad\",\"items\":[]}"
+);
+// Err(WireError { kind: TypeMismatch, path: "$.sequence", ... })
+```
+
+The current path representation is a rendered string. It is deliberately
+format-neutral in `/std/wire`; `/std/json` is responsible for constructing
+field, index, variant, and payload segments while it decodes.
 
 ```ciel
 // /std/panic

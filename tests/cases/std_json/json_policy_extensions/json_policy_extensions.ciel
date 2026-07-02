@@ -1,0 +1,172 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/bytes as bytes;
+import /std/json as json;
+import /std/map as map;
+import /std/meta as meta;
+import /std/result;
+import /std/text as text;
+import /std/vec as vec;
+import /std/wire as wire;
+
+struct Small {
+    i64 id;
+}
+
+bool chars_equal([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i64 kind_code(wire::WireErrorKind kind) {
+    switch (kind) {
+        case wire::Eof:
+            return 1;
+        case wire::Syntax:
+            return 2;
+        case wire::TypeMismatch:
+            return 3;
+        case wire::MissingField:
+            return 4;
+        case wire::DuplicateField:
+            return 5;
+        case wire::UnknownField:
+            return 6;
+        case wire::UnknownVariant:
+            return 7;
+        case wire::InvalidValue:
+            return 8;
+        case wire::UnsupportedType:
+            return 9;
+        case wire::Storage:
+            return 10;
+    }
+}
+
+bool small_error(Result<Small, wire::WireError> result, wire::WireErrorKind kind, []const char path) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind) && chars_equal(error.path, path);
+    }
+}
+
+bool vec_error(Result<vec::Vec<i64>, wire::WireError> result, wire::WireErrorKind kind, []const char path) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind) && chars_equal(error.path, path);
+    }
+}
+
+bool bytes_equal_text(bytes::Bytes value, []const char expected) {
+    []const u8 data = bytes::bytes_const_slice(value);
+    if (data.len != expected.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < data.len) {
+        if (data[i] != (expected[i] as u8)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    bytes::Bytes payload = must(bytes::bytes_from_text("hi"));
+    text::Text bytes_json = must(json::encode<bytes::Bytes>(&payload));
+    if (!text::text_equal_slice(bytes_json, "\"aGk=\"")) {
+        return 1;
+    }
+    bytes::Bytes decoded_payload = must(json::decode(meta::type_tag<bytes::Bytes>(), "\"aGk=\""));
+    if (!bytes_equal_text(decoded_payload, "hi")) {
+        return 2;
+    }
+
+    char marker = 'Z';
+    text::Text char_json = must(json::encode<char>(&marker));
+    if (!text::text_equal_slice(char_json, "\"Z\"")) {
+        return 3;
+    }
+    if (must(json::decode(meta::type_tag<char>(), "\"Q\"")) != 'Q') {
+        return 4;
+    }
+
+    map::HashMap<i64, text::Text> @table = must(map::hash_map_new<i64, text::Text>());
+    must(map::hash_map_insert<i64, text::Text>(&table, 7, must(text::text_copy("seven"))));
+    text::Text map_json = must(json::encode<map::HashMap<i64, text::Text>>(&table));
+    if (!text::text_equal_slice(map_json, "{\"7\":\"seven\"}")) {
+        return 5;
+    }
+    map::HashMap<i64, text::Text> decoded_map = must(json::decode(
+        meta::type_tag<map::HashMap<i64, text::Text>>(),
+        "{\"7\":\"seven\"}"
+    ));
+    switch (must(map::hash_map_get<i64, text::Text>(&decoded_map, 7))) {
+        case map::GetResult::Found(value):
+            if (!text::text_equal_slice(value, "seven")) {
+                return 6;
+            }
+        case map::GetResult::Missing:
+            return 7;
+    }
+
+    _ schema = meta::schema<Small>();
+    Small ignored = must(json::decode_struct_with_policy(
+        meta::type_tag<Small>(),
+        &schema,
+        meta::type_tag<meta::Repr<Small>>(),
+        "{\"id\":9,\"extra\":1}",
+        json::Ignore
+    ));
+    if (ignored.id != 9) {
+        return 8;
+    }
+    if (!small_error(
+        json::decode_struct(
+            meta::type_tag<Small>(),
+            &schema,
+            meta::type_tag<meta::Repr<Small>>(),
+            "{\"id\":9,\"extra\":1}"
+        ),
+        wire::UnknownField,
+        "$"
+    )) {
+        return 9;
+    }
+    if (!small_error(
+        json::decode_struct(
+            meta::type_tag<Small>(),
+            &schema,
+            meta::type_tag<meta::Repr<Small>>(),
+            "{\"id\":\"bad\"}"
+        ),
+        wire::TypeMismatch,
+        "$.id"
+    )) {
+        return 10;
+    }
+    if (!vec_error(
+        json::decode(meta::type_tag<vec::Vec<i64>>(), "[1,\"bad\"]"),
+        wire::TypeMismatch,
+        "$[1]"
+    )) {
+        return 11;
+    }
+
+    return 0;
+}

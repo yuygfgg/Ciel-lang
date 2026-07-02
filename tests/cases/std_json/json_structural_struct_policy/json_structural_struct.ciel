@@ -1,0 +1,159 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/meta as meta;
+import /std/option as option;
+import /std/result;
+import /std/text as text;
+import /std/vec as vec;
+import /std/wire as wire;
+
+struct Inner {
+    i64 count;
+    text::Text label;
+}
+
+impl wire::encode_value(*const Inner value, *json::Writer writer) {
+    _ schema = meta::schema<Inner>();
+    _ repr = meta::as_ref_repr(value);
+    return json::write_struct(&schema, &repr, writer);
+}
+
+impl wire::decode_value(meta::Type<Inner> target, *json::Reader reader) {
+    json::Value value = json::read_value(reader)?;
+    _ schema = meta::schema<Inner>();
+    return json::decode_struct_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<Inner>>(),
+        &value
+    );
+}
+
+struct Packet {
+    i64 id;
+    bool ok;
+    text::Text name;
+    vec::Vec<i64> scores;
+    option::Option<text::Text> note;
+    Inner inner;
+}
+
+i64 kind_code(wire::WireErrorKind kind) {
+    switch (kind) {
+        case wire::Eof:
+            return 1;
+        case wire::Syntax:
+            return 2;
+        case wire::TypeMismatch:
+            return 3;
+        case wire::MissingField:
+            return 4;
+        case wire::DuplicateField:
+            return 5;
+        case wire::UnknownField:
+            return 6;
+        case wire::UnknownVariant:
+            return 7;
+        case wire::InvalidValue:
+            return 8;
+        case wire::UnsupportedType:
+            return 9;
+        case wire::Storage:
+            return 10;
+    }
+}
+
+bool is_packet_error_kind(Result<Packet, wire::WireError> result, wire::WireErrorKind kind) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind);
+    }
+}
+
+Packet make_packet() {
+    vec::Vec<i64> @scores = must(vec::vec_new<i64>(0));
+    must(scores.vec::push(3));
+    must(scores.vec::push(5));
+    return {
+        id: 7,
+        ok: true,
+        name: must(text::text_copy("alpha")),
+        scores: scores,
+        note: option::Some(must(text::text_copy("ready"))),
+        inner: {
+            count: 2,
+            label: must(text::text_copy("nested")),
+        },
+    };
+}
+
+i64 check_packet(Packet packet, i64 id, bool ok, []const char name, usize scores_len) {
+    if (packet.id != id || packet.ok != ok) {
+        return 1;
+    }
+    if (!text::text_equal_slice(packet.name, name)) {
+        return 2;
+    }
+    if (packet.scores.vec::slice().len != scores_len) {
+        return 3;
+    }
+    return 0;
+}
+
+i64 main() {
+    Packet packet = make_packet();
+    _ schema = meta::schema<Packet>();
+    _ packet_repr = meta::as_ref_repr(&packet);
+    text::Text encoded = must(json::encode_struct(&schema, &packet_repr));
+    if (!text::text_equal_slice(
+        encoded,
+        "{\"id\":7,\"ok\":true,\"name\":\"alpha\",\"scores\":[3,5],\"note\":\"ready\",\"inner\":{\"count\":2,\"label\":\"nested\"}}"
+    )) {
+        return 10;
+    }
+
+    Packet decoded = must(json::decode_struct(
+        meta::type_tag<Packet>(),
+        &schema,
+        meta::type_tag<meta::Repr<Packet>>(),
+        "{\"inner\":{\"label\":\"n\",\"count\":9},\"note\":null,\"scores\":[1,2,3],\"name\":\"beta\",\"ok\":false,\"id\":44}"
+    ));
+    i64 checked = check_packet(decoded, 44, false, "beta", 3);
+    if (checked != 0) {
+        return 20 + checked;
+    }
+    switch (decoded.note) {
+        case option::Some(_):
+            return 25;
+        case option::None:
+            {}
+    }
+    if (decoded.inner.count != 9 || !text::text_equal_slice(decoded.inner.label, "n")) {
+        return 26;
+    }
+
+    if (!is_packet_error_kind(
+        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"},\"extra\":0}"),
+        wire::UnknownField
+    )) {
+        return 30;
+    }
+    if (!is_packet_error_kind(
+        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"),
+        wire::MissingField
+    )) {
+        return 31;
+    }
+    if (!is_packet_error_kind(
+        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"id\":2,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"),
+        wire::DuplicateField
+    )) {
+        return 32;
+    }
+
+    return 0;
+}

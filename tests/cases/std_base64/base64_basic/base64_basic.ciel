@@ -1,0 +1,56 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/base64 as base64;
+import /std/bytes as bytes;
+import /std/result;
+import /std/text as text;
+
+bool bytes_equal_text(bytes::Bytes value, []const char expected) {
+    []const u8 data = bytes::bytes_const_slice(value);
+    if (data.len != expected.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < data.len) {
+        if (data[i] != (expected[i] as u8)) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    bytes::Bytes payload = must(bytes::bytes_from_text("hello"));
+    text::Text encoded = must(base64::encode(bytes::bytes_const_slice(payload)));
+    if (!text::text_equal_slice(encoded, "aGVsbG8=")) {
+        return 1;
+    }
+
+    bytes::Bytes decoded = must(base64::decode("aGVsbG8="));
+    if (!bytes_equal_text(decoded, "hello")) {
+        return 2;
+    }
+
+    bytes::Bytes empty = must(base64::decode(""));
+    if (bytes::bytes_len(empty) != 0) {
+        return 3;
+    }
+
+    switch (base64::decode("abc")) {
+        case Ok(_):
+            return 4;
+        case Err(_):
+            {}
+    }
+
+    switch (base64::decode("ab=c")) {
+        case Ok(_):
+            return 5;
+        case Err(_):
+            {}
+    }
+
+    return 0;
+}

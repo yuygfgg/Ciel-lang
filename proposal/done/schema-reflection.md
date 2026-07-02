@@ -20,7 +20,7 @@ before it can build `meta::Repr<T>`.
 ```text
 metaprogramming < schema-reflection
 
-schema-reflection :> serde[instance-free structural decode schema]
+schema-reflection :> wire[instance-free structural decode schema]
 schema-reflection || pure-library-message[leaf policy boundaries]
 ```
 
@@ -77,7 +77,7 @@ metadata surface.
 5. Preserve current module visibility and leaf-policy boundaries.
 6. Support generic construction of `meta::Repr<T>` from parsed data, followed by
    `meta::from_repr<T>`.
-7. Keep format-specific parsing, JSON policy choices, and serde-style
+7. Keep format-specific parsing, JSON policy choices, and wire-style
    customization as library or later-proposal work.
 
 ## Non-Goals

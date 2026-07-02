@@ -1,0 +1,140 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/meta as meta;
+import /std/option as option;
+import /std/result;
+import /std/text as text;
+import /std/vec as vec;
+
+i64 check_i64_vec() {
+    vec::Vec<i64> @numbers = must(vec::vec_new<i64>(0));
+    must(numbers.vec::push(1));
+    must(numbers.vec::push(-2));
+    must(numbers.vec::push(3));
+    text::Text encoded = must(json::encode(&numbers));
+    if (!text::text_equal_slice(encoded, "[1,-2,3]")) {
+        return 1;
+    }
+
+    vec::Vec<i64> decoded = must(json::decode(meta::type_tag<vec::Vec<i64>>(), "[ 1, -2, 3 ]"));
+    []const i64 values = decoded.vec::slice();
+    if (values.len != 3 || values[0] != 1 || values[1] != -2 || values[2] != 3) {
+        return 2;
+    }
+    return 0;
+}
+
+i64 check_nested_vec() {
+    vec::Vec<vec::Vec<i64>> decoded =
+        must(json::decode(meta::type_tag<vec::Vec<vec::Vec<i64>>>(), "[[1,2],[],[3]]"));
+    []const vec::Vec<i64> outer = decoded.vec::slice();
+    if (outer.len != 3) {
+        return 10;
+    }
+    if (outer[0].vec::slice().len != 2 || outer[0].vec::slice()[1] != 2) {
+        return 11;
+    }
+    if (outer[1].vec::slice().len != 0) {
+        return 12;
+    }
+    if (outer[2].vec::slice().len != 1 || outer[2].vec::slice()[0] != 3) {
+        return 13;
+    }
+    text::Text encoded = must(json::encode(&decoded));
+    if (!text::text_equal_slice(encoded, "[[1,2],[],[3]]")) {
+        return 14;
+    }
+    return 0;
+}
+
+i64 check_option_vec() {
+    vec::Vec<option::Option<text::Text>> decoded =
+        must(json::decode(meta::type_tag<vec::Vec<option::Option<text::Text>>>(), "[\"a\",null,\"b\"]"));
+    []const option::Option<text::Text> values = decoded.vec::slice();
+    if (values.len != 3) {
+        return 20;
+    }
+    switch (values[0]) {
+        case option::Some(first):
+            if (!text::text_equal_slice(first, "a")) {
+                return 21;
+            }
+        case option::None:
+            return 22;
+    }
+    switch (values[1]) {
+        case option::Some(_):
+            return 23;
+        case option::None:
+            {}
+    }
+    switch (values[2]) {
+        case option::Some(last):
+            if (!text::text_equal_slice(last, "b")) {
+                return 24;
+            }
+        case option::None:
+            return 25;
+    }
+    text::Text encoded = must(json::encode(&decoded));
+    if (!text::text_equal_slice(encoded, "[\"a\",null,\"b\"]")) {
+        return 26;
+    }
+    return 0;
+}
+
+i64 check_float_values() {
+    f64 decoded64 = must(json::decode(meta::type_tag<f64>(), "1.25e2"));
+    if (decoded64 != 125.0) {
+        return 30;
+    }
+    f32 decoded32 = must(json::decode(meta::type_tag<f32>(), "-3.5"));
+    if (decoded32 != (-3.5 as f32)) {
+        return 31;
+    }
+
+    f64 value64 = 12.5;
+    text::Text encoded64 = must(json::encode(&value64));
+    []const char encoded64_chars = must(text::text_to_slice(encoded64));
+    f64 round64 = must(json::decode(meta::type_tag<f64>(), encoded64_chars));
+    if (round64 != 12.5) {
+        return 32;
+    }
+
+    f32 value32 = 0.25 as f32;
+    text::Text encoded32 = must(json::encode(&value32));
+    []const char encoded32_chars = must(text::text_to_slice(encoded32));
+    f32 round32 = must(json::decode(meta::type_tag<f32>(), encoded32_chars));
+    if (round32 != (0.25 as f32)) {
+        return 33;
+    }
+
+    vec::Vec<f64> floats = must(json::decode(meta::type_tag<vec::Vec<f64>>(), "[0,1.5,-2.25e1]"));
+    []const f64 values = floats.vec::slice();
+    if (values.len != 3 || values[0] != 0.0 || values[1] != 1.5 || values[2] != -22.5) {
+        return 34;
+    }
+    return 0;
+}
+
+i64 main() {
+    i64 @code = check_i64_vec();
+    if (code != 0) {
+        return code;
+    }
+    code = check_nested_vec();
+    if (code != 0) {
+        return code;
+    }
+    code = check_option_vec();
+    if (code != 0) {
+        return code;
+    }
+    code = check_float_values();
+    if (code != 0) {
+        return code;
+    }
+    return 0;
+}

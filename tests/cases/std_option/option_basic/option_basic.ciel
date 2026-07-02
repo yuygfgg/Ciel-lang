@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/option as option;
+
+i64 main() {
+    option::Option<i64> some = option::Some(5);
+    if (!some.option::is_some()) {
+        return 1;
+    }
+    if (some.option::is_none()) {
+        return 2;
+    }
+    if (some.option::unwrap_or(9) != 5) {
+        return 3;
+    }
+
+    option::Option<i64> none = option::None;
+    if (!none.option::is_none()) {
+        return 4;
+    }
+    if (none.option::is_some()) {
+        return 5;
+    }
+    if (none.option::unwrap_or(11) != 11) {
+        return 6;
+    }
+
+    return 0;
+}

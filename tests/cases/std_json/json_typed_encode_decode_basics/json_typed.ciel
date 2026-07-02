@@ -1,0 +1,111 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/meta as meta;
+import /std/option as option;
+import /std/result;
+import /std/text as text;
+import /std/wire as wire;
+
+i64 kind_code(wire::WireErrorKind kind) {
+    switch (kind) {
+        case wire::Eof:
+            return 1;
+        case wire::Syntax:
+            return 2;
+        case wire::TypeMismatch:
+            return 3;
+        case wire::MissingField:
+            return 4;
+        case wire::DuplicateField:
+            return 5;
+        case wire::UnknownField:
+            return 6;
+        case wire::UnknownVariant:
+            return 7;
+        case wire::InvalidValue:
+            return 8;
+        case wire::UnsupportedType:
+            return 9;
+        case wire::Storage:
+            return 10;
+    }
+}
+
+bool is_i64_error_kind(Result<i64, wire::WireError> result, wire::WireErrorKind kind) {
+    switch (result) {
+        case Ok(_):
+            return false;
+        case Err(error):
+            return kind_code(error.kind) == kind_code(kind);
+    }
+}
+
+i64 main() {
+    bool flag = true;
+    text::Text flag_json = must(json::encode(&flag));
+    if (!text::text_equal_slice(flag_json, "true")) {
+        return 1;
+    }
+    if (!must(json::decode(meta::type_tag<bool>(), " true "))) {
+        return 2;
+    }
+
+    i64 number = -42;
+    text::Text number_json = must(json::encode(&number));
+    if (!text::text_equal_slice(number_json, "-42")) {
+        return 3;
+    }
+    if (must(json::decode(meta::type_tag<i64>(), " -42 ")) != -42) {
+        return 4;
+    }
+    if (must(json::decode(meta::type_tag<u8>(), "255")) != (255 as u8)) {
+        return 5;
+    }
+    if (!is_i64_error_kind(json::decode(meta::type_tag<i64>(), "\"nope\""), wire::TypeMismatch)) {
+        return 6;
+    }
+
+    text::Text message = must(text::text_copy("a\nB"));
+    text::Text message_json = must(json::encode(&message));
+    if (!text::text_equal_slice(message_json, "\"a\\nB\"")) {
+        return 7;
+    }
+    text::Text decoded_message = must(json::decode(meta::type_tag<text::Text>(), "\"a\\n\\u0042\""));
+    if (!text::text_equal_slice(decoded_message, "a\nB")) {
+        return 8;
+    }
+
+    option::Option<i64> some = option::Some(-7);
+    text::Text some_json = must(json::encode(&some));
+    if (!text::text_equal_slice(some_json, "-7")) {
+        return 9;
+    }
+    option::Option<i64> decoded_some =
+        must(json::decode(meta::type_tag<option::Option<i64>>(), " -7 "));
+    switch (decoded_some) {
+        case option::Some(value):
+            if (value != -7) {
+                return 10;
+            }
+        case option::None:
+            return 11;
+    }
+
+    option::Option<i64> none = option::None;
+    text::Text none_json = must(json::encode(&none));
+    if (!text::text_equal_slice(none_json, "null")) {
+        return 12;
+    }
+    option::Option<i64> decoded_none =
+        must(json::decode(meta::type_tag<option::Option<i64>>(), " null "));
+    switch (decoded_none) {
+        case option::Some(_):
+            return 13;
+        case option::None:
+            {}
+    }
+
+    return 0;
+}

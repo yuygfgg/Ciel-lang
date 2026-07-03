@@ -5,7 +5,7 @@ use std::{
 
 use crate::{
     ast::*,
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     span::Span,
 };
 
@@ -121,6 +121,7 @@ impl ResolvedProgram {
                 ExternItem::Function { signature, .. } => signature.name.name == def.name,
                 ExternItem::TypeAlias(alias) => alias.name.name == def.name,
             }),
+            ItemKind::Error => false,
             _ => false,
         })
     }
@@ -529,6 +530,15 @@ impl ResolvedProgram {
 }
 
 pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram> {
+    let result = resolve_modules_lossy(modules);
+    if result.diagnostics.is_empty() {
+        Ok(result.value)
+    } else {
+        Err(result.diagnostics)
+    }
+}
+
+pub fn resolve_modules_lossy(modules: Vec<ParsedModule>) -> WithDiagnostics<ResolvedProgram> {
     let mut diagnostics = Vec::new();
     let mut defs = Vec::new();
     let mut resolved_modules = Vec::new();
@@ -719,6 +729,7 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                     }
                 }
                 ItemKind::CInclude(_) => {}
+                ItemKind::Error => {}
             }
         }
 
@@ -734,14 +745,19 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
 
     resolve_import_targets(&mut diagnostics, &mut resolved_modules);
 
-    if diagnostics.is_empty() {
-        Ok(ResolvedProgram {
+    for diagnostic in &mut diagnostics {
+        if diagnostic.phase.is_none() {
+            diagnostic.phase = Some(DiagnosticPhase::Resolve);
+        }
+    }
+
+    WithDiagnostics {
+        value: ResolvedProgram {
             modules: resolved_modules,
             defs,
             impls,
-        })
-    } else {
-        Err(diagnostics)
+        },
+        diagnostics,
     }
 }
 
@@ -881,7 +897,8 @@ fn item_declared_names(item: &Item) -> Vec<&str> {
         | ItemKind::Impl(_)
         | ItemKind::DerivableImpl(_)
         | ItemKind::Derive(_)
-        | ItemKind::CInclude(_) => Vec::new(),
+        | ItemKind::CInclude(_)
+        | ItemKind::Error => Vec::new(),
     }
 }
 

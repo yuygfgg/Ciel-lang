@@ -142,6 +142,7 @@ pub enum Ty {
 impl Ty {
     pub fn from_ast(ty: &Type) -> Self {
         match &ty.kind {
+            TypeKind::Error => Ty::Unknown,
             TypeKind::Never => Ty::Never,
             TypeKind::Hole => Ty::Unknown,
             TypeKind::Void => Ty::Void,

@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use crate::{
     capture::collect_closure_capture_ids,
     checked::CheckedProgram,
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     hir::*,
     layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ModuleId},
@@ -698,6 +698,15 @@ impl ThirVisitor for AsyncSuspensionCapabilityVisitor<'_> {
 }
 
 pub fn type_check(hir: HirProgram) -> DiagResult<CheckedProgram> {
+    let result = type_check_lossy(hir);
+    if result.diagnostics.is_empty() {
+        Ok(result.value)
+    } else {
+        Err(result.diagnostics)
+    }
+}
+
+pub fn type_check_lossy(hir: HirProgram) -> WithDiagnostics<CheckedProgram> {
     TypeChecker::for_program(hir).check()
 }
 
@@ -884,7 +893,7 @@ impl TypeChecker {
         }
     }
 
-    fn check(mut self) -> DiagResult<CheckedProgram> {
+    fn check(mut self) -> WithDiagnostics<CheckedProgram> {
         self.collect_interfaces();
         self.collect_type_aliases_and_opaque_structs();
         self.collect_structs();
@@ -902,9 +911,6 @@ impl TypeChecker {
         self.validate_receiver_selector_conflicts();
         self.validate_c_abi_functions();
         self.check_by_value_layout_cycles();
-        if self.fatal_impl_coherence_error {
-            return Err(self.diagnostics);
-        }
 
         let mut checked_functions = Vec::new();
 
@@ -916,251 +922,262 @@ impl TypeChecker {
             )
         });
         let mut checked_function_defs = HashSet::new();
-        for opaque_pass in [true, false] {
-            for module in &modules {
-                for item in &module.items {
-                    let ItemKind::Function(function) = &item.kind else {
-                        continue;
-                    };
-                    let is_opaque = matches!(
-                        function.signature.ret,
-                        FunctionReturnType::OpaqueConstraint { .. }
-                    );
-                    if opaque_pass != (is_opaque && function.signature.generics.is_empty()) {
-                        continue;
-                    }
-                    self.current_module = module.id;
-                    if let Some(checked) = self.check_function_item(function, item.export)
-                        && checked_function_defs.insert(checked.def_id)
-                    {
-                        checked_functions.push(checked);
+        if !self.fatal_impl_coherence_error {
+            for opaque_pass in [true, false] {
+                for module in &modules {
+                    for item in &module.items {
+                        let ItemKind::Function(function) = &item.kind else {
+                            continue;
+                        };
+                        let is_opaque = matches!(
+                            function.signature.ret,
+                            FunctionReturnType::OpaqueConstraint { .. }
+                        );
+                        if opaque_pass != (is_opaque && function.signature.generics.is_empty()) {
+                            continue;
+                        }
+                        self.current_module = module.id;
+                        if let Some(checked) = self.check_function_item(function, item.export)
+                            && checked_function_defs.insert(checked.def_id)
+                        {
+                            checked_functions.push(checked);
+                        }
                     }
                 }
             }
-        }
-        for module in &modules {
-            for item in &module.items {
-                match &item.kind {
-                    ItemKind::Function(_) => {}
-                    ItemKind::ExternBlock(block) => {
-                        for extern_item in &block.items {
-                            if let ExternItem::Function {
-                                noescape,
-                                signature,
-                            } = extern_item
-                            {
-                                let FunctionReturnType::Type(ret_ty) = &signature.ret else {
-                                    continue;
-                                };
-                                let ret = self.lower_type(ret_ty);
-                                let params = signature
-                                    .params
-                                    .iter()
-                                    .map(|param| {
-                                        (None, param.name.name.clone(), self.lower_type(&param.ty))
-                                    })
-                                    .collect::<Vec<_>>();
-                                if let Some(sig) =
-                                    self.function_sig_for(module.id, &signature.name.name)
+            for module in &modules {
+                for item in &module.items {
+                    match &item.kind {
+                        ItemKind::Function(_) => {}
+                        ItemKind::ExternBlock(block) => {
+                            for extern_item in &block.items {
+                                if let ExternItem::Function {
+                                    noescape,
+                                    signature,
+                                } = extern_item
                                 {
-                                    checked_functions.push(CheckedFunction {
-                                        def_id: sig.def_id,
-                                        name: signature.name.name.clone(),
-                                        is_unsafe: sig.is_unsafe,
-                                        is_async: sig.is_async,
-                                        async_facts: None,
-                                        abi: Some(block.abi.clone()),
-                                        noescape: *noescape,
-                                        exported: item.export,
-                                        ret,
-                                        params,
-                                        body: None,
-                                    });
+                                    let FunctionReturnType::Type(ret_ty) = &signature.ret else {
+                                        continue;
+                                    };
+                                    let ret = self.lower_type(ret_ty);
+                                    let params = signature
+                                        .params
+                                        .iter()
+                                        .map(|param| {
+                                            (
+                                                None,
+                                                param.name.name.clone(),
+                                                self.lower_type(&param.ty),
+                                            )
+                                        })
+                                        .collect::<Vec<_>>();
+                                    if let Some(sig) =
+                                        self.function_sig_for(module.id, &signature.name.name)
+                                    {
+                                        checked_functions.push(CheckedFunction {
+                                            def_id: sig.def_id,
+                                            name: signature.name.name.clone(),
+                                            is_unsafe: sig.is_unsafe,
+                                            is_async: sig.is_async,
+                                            async_facts: None,
+                                            abi: Some(block.abi.clone()),
+                                            noescape: *noescape,
+                                            exported: item.export,
+                                            ret,
+                                            params,
+                                            body: None,
+                                        });
+                                    }
                                 }
                             }
                         }
+                        ItemKind::Impl(_)
+                        | ItemKind::DerivableImpl(_)
+                        | ItemKind::Derive(_)
+                        | ItemKind::Interface(_)
+                        | ItemKind::InterfaceAlias(_) => {
+                            // Collected and checked through the global interface/impl tables.
+                        }
+                        _ => {}
                     }
-                    ItemKind::Impl(_)
-                    | ItemKind::DerivableImpl(_)
-                    | ItemKind::Derive(_)
-                    | ItemKind::Interface(_)
-                    | ItemKind::InterfaceAlias(_) => {
-                        // Collected and checked through the global interface/impl tables.
-                    }
-                    _ => {}
                 }
             }
+            checked_functions.append(&mut self.generated_functions);
+            self.drain_pending_impl_bodies();
+            checked_functions.append(&mut self.generated_functions);
+            self.check_by_value_layout_cycles();
+            self.drain_pending_impl_bodies();
+            checked_functions.append(&mut self.generated_functions);
         }
-        checked_functions.append(&mut self.generated_functions);
-        self.drain_pending_impl_bodies();
-        checked_functions.append(&mut self.generated_functions);
-        self.check_by_value_layout_cycles();
-        self.drain_pending_impl_bodies();
-        checked_functions.append(&mut self.generated_functions);
-
-        if self.diagnostics.is_empty() {
-            let mut checked_structs = self
-                .ctx
-                .structs
-                .iter()
-                .map(|(name, fields)| CheckedStruct {
-                    name: name.clone(),
-                    is_resource: self.ctx.resource_structs.contains(name),
-                    fields: fields.clone(),
-                })
-                .collect::<Vec<_>>();
-            checked_structs.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut checked_opaque_structs = self
-                .ctx
-                .opaque_structs
-                .iter()
-                .cloned()
-                .map(|name| CheckedOpaqueStruct { name })
-                .collect::<Vec<_>>();
-            checked_opaque_structs.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut checked_enums = self.ctx.checked_enums.values().cloned().collect::<Vec<_>>();
-            checked_enums.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut checked_impls = self
-                .ctx
-                .impls
-                .iter()
-                .map(|implementation| CheckedImpl {
-                    interface_def: implementation.interface_def,
-                    interface_name: implementation.interface_name.clone(),
-                    interface_args: implementation.interface_args.clone(),
-                    receiver_ty: implementation.receiver_ty.clone(),
-                    function_def: implementation.function_def,
-                    ret: implementation.ret.clone(),
-                    params: implementation.params.clone(),
-                })
-                .collect::<Vec<_>>();
-            checked_impls.sort_by(|a, b| {
-                a.interface_name
-                    .cmp(&b.interface_name)
-                    .then_with(|| a.function_def.0.cmp(&b.function_def.0))
-            });
-            let interface_values = self
-                .ctx
-                .interfaces
-                .iter()
-                .map(|(def_id, interface)| (*def_id, interface.clone()))
-                .collect::<Vec<_>>();
-            let mut checked_interfaces = interface_values
-                .iter()
-                .map(|interface| {
-                    let (def_id, interface) = interface;
-                    self.current_module = self.ctx.resolved.def(*def_id).module;
-                    let generics = interface.generics.clone();
-                    let subst = generics
+        let mut checked_structs = self
+            .ctx
+            .structs
+            .iter()
+            .map(|(name, fields)| CheckedStruct {
+                name: name.clone(),
+                is_resource: self.ctx.resource_structs.contains(name),
+                fields: fields.clone(),
+            })
+            .collect::<Vec<_>>();
+        checked_structs.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut checked_opaque_structs = self
+            .ctx
+            .opaque_structs
+            .iter()
+            .cloned()
+            .map(|name| CheckedOpaqueStruct { name })
+            .collect::<Vec<_>>();
+        checked_opaque_structs.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut checked_enums = self.ctx.checked_enums.values().cloned().collect::<Vec<_>>();
+        checked_enums.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut checked_impls = self
+            .ctx
+            .impls
+            .iter()
+            .map(|implementation| CheckedImpl {
+                interface_def: implementation.interface_def,
+                interface_name: implementation.interface_name.clone(),
+                interface_args: implementation.interface_args.clone(),
+                receiver_ty: implementation.receiver_ty.clone(),
+                function_def: implementation.function_def,
+                ret: implementation.ret.clone(),
+                params: implementation.params.clone(),
+            })
+            .collect::<Vec<_>>();
+        checked_impls.sort_by(|a, b| {
+            a.interface_name
+                .cmp(&b.interface_name)
+                .then_with(|| a.function_def.0.cmp(&b.function_def.0))
+        });
+        let interface_values = self
+            .ctx
+            .interfaces
+            .iter()
+            .map(|(def_id, interface)| (*def_id, interface.clone()))
+            .collect::<Vec<_>>();
+        let mut checked_interfaces = interface_values
+            .iter()
+            .map(|interface| {
+                let (def_id, interface) = interface;
+                self.current_module = self.ctx.resolved.def(*def_id).module;
+                let generics = interface.generics.clone();
+                let subst = generics
+                    .iter()
+                    .cloned()
+                    .map(|name| {
+                        let generic = Ty::Generic(name.clone());
+                        (name, generic)
+                    })
+                    .collect::<HashMap<_, _>>();
+                CheckedInterface {
+                    def_id: *def_id,
+                    name: interface.name.clone(),
+                    is_unsafe: interface.is_unsafe,
+                    generics,
+                    ret: self.lower_type_with_subst(&interface.ret, &subst),
+                    params: interface
+                        .params
                         .iter()
-                        .cloned()
-                        .map(|name| {
-                            let generic = Ty::Generic(name.clone());
-                            (name, generic)
+                        .map(|param| self.lower_type_with_subst(&param.ty, &subst))
+                        .collect(),
+                }
+            })
+            .collect::<Vec<_>>();
+        checked_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
+        let alias_def_ids = self
+            .ctx
+            .interface_aliases
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut checked_aliases = alias_def_ids
+            .iter()
+            .filter_map(|def_id| {
+                let name = self.ctx.resolved.def(*def_id).name.clone();
+                let alias = self.ctx.interface_aliases.get(def_id).cloned()?;
+                self.current_module = self.ctx.resolved.def(*def_id).module;
+                let generics = alias
+                    .generics
+                    .iter()
+                    .map(|generic| generic.name.clone())
+                    .collect::<Vec<_>>();
+                let alias_args = generics
+                    .iter()
+                    .cloned()
+                    .map(Ty::Generic)
+                    .collect::<Vec<_>>();
+                let view = self.interface_view_for_def(*def_id, &alias_args);
+                Some(CheckedInterfaceAlias {
+                    def_id: *def_id,
+                    name,
+                    generics,
+                    positive: view
+                        .positive
+                        .into_iter()
+                        .map(|entry| CheckedInterfaceRef {
+                            def_id: entry.def_id,
+                            name: entry.name,
+                            args: entry.args,
                         })
-                        .collect::<HashMap<_, _>>();
-                    CheckedInterface {
-                        def_id: *def_id,
-                        name: interface.name.clone(),
-                        is_unsafe: interface.is_unsafe,
-                        generics,
-                        ret: self.lower_type_with_subst(&interface.ret, &subst),
-                        params: interface
-                            .params
-                            .iter()
-                            .map(|param| self.lower_type_with_subst(&param.ty, &subst))
-                            .collect(),
-                    }
+                        .collect(),
+                    negative: view
+                        .negative
+                        .into_iter()
+                        .map(|entry| CheckedInterfaceRef {
+                            def_id: entry.def_id,
+                            name: entry.name,
+                            args: entry.args,
+                        })
+                        .collect(),
                 })
-                .collect::<Vec<_>>();
-            checked_interfaces.sort_by(|a, b| a.name.cmp(&b.name));
-            let alias_def_ids = self
-                .ctx
-                .interface_aliases
-                .keys()
-                .copied()
-                .collect::<Vec<_>>();
-            let mut checked_aliases = alias_def_ids
-                .iter()
-                .filter_map(|def_id| {
-                    let name = self.ctx.resolved.def(*def_id).name.clone();
-                    let alias = self.ctx.interface_aliases.get(def_id).cloned()?;
-                    self.current_module = self.ctx.resolved.def(*def_id).module;
-                    let generics = alias
+            })
+            .collect::<Vec<_>>();
+        checked_aliases.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut checked_generic_functions = self
+            .ctx
+            .generic_functions
+            .iter()
+            .filter_map(|(def_id, template)| {
+                let sig = self.ctx.functions_by_def.get(def_id)?;
+                Some(CheckedGenericFunction {
+                    def_id: *def_id,
+                    module: sig.module,
+                    name: sig.name.clone(),
+                    is_unsafe: sig.is_unsafe,
+                    is_async: sig.is_async,
+                    abi: sig.abi.clone(),
+                    noescape: sig.noescape,
+                    exported: template.exported,
+                    generics: sig
                         .generics
                         .iter()
-                        .map(|generic| generic.name.clone())
-                        .collect::<Vec<_>>();
-                    let alias_args = generics
-                        .iter()
-                        .cloned()
-                        .map(Ty::Generic)
-                        .collect::<Vec<_>>();
-                    let view = self.interface_view_for_def(*def_id, &alias_args);
-                    Some(CheckedInterfaceAlias {
-                        def_id: *def_id,
-                        name,
-                        generics,
-                        positive: view
-                            .positive
-                            .into_iter()
-                            .map(|entry| CheckedInterfaceRef {
-                                def_id: entry.def_id,
-                                name: entry.name,
-                                args: entry.args,
-                            })
-                            .collect(),
-                        negative: view
-                            .negative
-                            .into_iter()
-                            .map(|entry| CheckedInterfaceRef {
-                                def_id: entry.def_id,
-                                name: entry.name,
-                                args: entry.args,
-                            })
-                            .collect(),
-                    })
+                        .map(|param| CheckedGenericParam {
+                            name: param.name.clone(),
+                            is_resource: param.is_resource,
+                            is_hidden: param.is_hidden,
+                            constraint: param.constraint.clone(),
+                        })
+                        .collect(),
+                    ret: sig.ret.clone(),
+                    params: sig.params.clone(),
+                    function: template.function.clone(),
                 })
-                .collect::<Vec<_>>();
-            checked_aliases.sort_by(|a, b| a.name.cmp(&b.name));
-            let mut checked_generic_functions = self
-                .ctx
-                .generic_functions
-                .iter()
-                .filter_map(|(def_id, template)| {
-                    let sig = self.ctx.functions_by_def.get(def_id)?;
-                    Some(CheckedGenericFunction {
-                        def_id: *def_id,
-                        module: sig.module,
-                        name: sig.name.clone(),
-                        is_unsafe: sig.is_unsafe,
-                        is_async: sig.is_async,
-                        abi: sig.abi.clone(),
-                        noescape: sig.noescape,
-                        exported: template.exported,
-                        generics: sig
-                            .generics
-                            .iter()
-                            .map(|param| CheckedGenericParam {
-                                name: param.name.clone(),
-                                is_resource: param.is_resource,
-                                is_hidden: param.is_hidden,
-                                constraint: param.constraint.clone(),
-                            })
-                            .collect(),
-                        ret: sig.ret.clone(),
-                        params: sig.params.clone(),
-                        function: template.function.clone(),
-                    })
-                })
-                .collect::<Vec<_>>();
-            checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
-            let share_handle_templates =
-                collect_policy_marker_templates(&self.ctx, STD_MESSAGE_SHARE_HANDLE_INTERFACE);
-            let thread_local_templates =
-                collect_policy_marker_templates(&self.ctx, STD_MESSAGE_THREAD_LOCAL_INTERFACE);
-            let ty_ctx = self.ctx.clone();
-            Ok(CheckedProgram {
+            })
+            .collect::<Vec<_>>();
+        checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
+        let share_handle_templates =
+            collect_policy_marker_templates(&self.ctx, STD_MESSAGE_SHARE_HANDLE_INTERFACE);
+        let thread_local_templates =
+            collect_policy_marker_templates(&self.ctx, STD_MESSAGE_THREAD_LOCAL_INTERFACE);
+        let ty_ctx = self.ctx.clone();
+        let mut diagnostics = self.diagnostics;
+        for diagnostic in &mut diagnostics {
+            if diagnostic.phase.is_none() {
+                diagnostic.phase = Some(DiagnosticPhase::TypeCheck);
+            }
+        }
+        WithDiagnostics {
+            value: CheckedProgram {
                 ty_ctx,
                 resolved: self.ctx.resolved.clone(),
                 hir_modules: self.ctx.hir_modules.clone(),
@@ -1176,9 +1193,8 @@ impl TypeChecker {
                 functions: checked_functions,
                 generic_functions: checked_generic_functions,
                 opaque_returns: self.opaque_returns.clone(),
-            })
-        } else {
-            Err(self.diagnostics)
+            },
+            diagnostics,
         }
     }
 }

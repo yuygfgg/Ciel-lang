@@ -1,7 +1,7 @@
 use logos::Logos;
 
 use crate::{
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     span::{FileId, Span},
 };
 
@@ -12,6 +12,8 @@ use crate::{
 pub enum TokenKind {
     #[token("__CielEofSentinel__")]
     Eof,
+
+    Error,
 
     #[token("#if")]
     HashIf,
@@ -209,6 +211,15 @@ pub struct Token {
 }
 
 pub fn lex(file: FileId, source: &str) -> DiagResult<Vec<Token>> {
+    let result = lex_lossy(file, source);
+    if result.diagnostics.is_empty() {
+        Ok(result.value)
+    } else {
+        Err(result.diagnostics)
+    }
+}
+
+pub fn lex_lossy(file: FileId, source: &str) -> WithDiagnostics<Vec<Token>> {
     let mut lexer = TokenKind::lexer(source);
     let mut tokens = Vec::new();
     let mut diagnostics = Vec::new();
@@ -221,10 +232,19 @@ pub fn lex(file: FileId, source: &str) -> DiagResult<Vec<Token>> {
                 lexeme: source[range.clone()].to_string(),
                 span: Span::new(file, range.start, range.end),
             }),
-            Err(()) => diagnostics.push(Diagnostic::new(
-                Span::new(file, range.start, range.end),
-                format!("unrecognized token `{}`", &source[range]),
-            )),
+            Err(()) => {
+                let span = Span::new(file, range.start, range.end);
+                let lexeme = source[range.clone()].to_string();
+                tokens.push(Token {
+                    kind: TokenKind::Error,
+                    lexeme: lexeme.clone(),
+                    span,
+                });
+                diagnostics.push(
+                    Diagnostic::new(span, format!("unrecognized token `{lexeme}`"))
+                        .with_phase(DiagnosticPhase::Lex),
+                );
+            }
         }
     }
 
@@ -234,9 +254,8 @@ pub fn lex(file: FileId, source: &str) -> DiagResult<Vec<Token>> {
         span: Span::new(file, source.len(), source.len()),
     });
 
-    if diagnostics.is_empty() {
-        Ok(tokens)
-    } else {
-        Err(diagnostics)
+    WithDiagnostics {
+        value: tokens,
+        diagnostics,
     }
 }

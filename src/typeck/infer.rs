@@ -419,7 +419,9 @@ impl TypeChecker {
             TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
             TypeKind::Named(name, args) => {
                 let display_name = &name.display;
-                if args.is_empty()
+                if matches!(name.kind, TypeNameKind::Error) {
+                    Ty::Unknown
+                } else if args.is_empty()
                     && let TypeNameKind::Generic(generic_name) = &name.kind
                     && let Some(replacement) = subst.get(generic_name)
                 {
@@ -429,6 +431,10 @@ impl TypeChecker {
                         self.ensure_struct_instance(&replacement);
                     }
                     return replacement;
+                } else if args.is_empty()
+                    && let TypeNameKind::Generic(generic_name) = &name.kind
+                {
+                    Ty::Generic(generic_name.clone())
                 } else if let TypeNameKind::Def(def_id) = &name.kind {
                     let def_id = *def_id;
                     let def = self.ctx.resolved.def(def_id).clone();
@@ -561,10 +567,6 @@ impl TypeChecker {
                             args: canonical_args.unwrap_or_default(),
                         }
                     }
-                } else if args.is_empty()
-                    && let TypeNameKind::Generic(generic_name) = &name.kind
-                {
-                    Ty::Generic(generic_name.clone())
                 } else {
                     self.diagnostics.push(Diagnostic::new(
                         ty.span,

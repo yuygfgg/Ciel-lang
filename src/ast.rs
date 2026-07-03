@@ -32,6 +32,7 @@ pub enum ItemKind {
     Derive(DeriveDecl),
     Function(FunctionDecl),
     ExternBlock(ExternBlock),
+    Error,
 }
 
 #[derive(Clone, Debug)]
@@ -303,6 +304,7 @@ pub struct Type {
 
 #[derive(Clone, Debug)]
 pub enum TypeKind {
+    Error,
     Hole,
     Never,
     Void,
@@ -356,6 +358,7 @@ pub struct Stmt {
 #[derive(Clone, Debug)]
 pub enum StmtKind {
     Block(Block),
+    Error,
     VarDecl {
         ty: Type,
         name: Ident,
@@ -423,6 +426,7 @@ pub enum Pattern {
         mutability: BindingMutability,
     },
     Wildcard(Span),
+    Error(Span),
 }
 
 #[derive(Clone, Debug)]
@@ -440,6 +444,7 @@ pub struct SelectArm {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    Error,
     Name(Vec<Ident>),
     Literal(Literal),
     StructLiteral(Vec<FieldInit>),

@@ -1,11 +1,21 @@
 use crate::{
     ast::*,
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     lexer::{Token, TokenKind},
+    span::Span,
 };
 
 pub fn parse_file(tokens: Vec<Token>) -> DiagResult<AstFile> {
-    Parser::new(tokens).parse_file()
+    let result = parse_file_lossy(tokens);
+    if result.diagnostics.is_empty() {
+        Ok(result.value)
+    } else {
+        Err(result.diagnostics)
+    }
+}
+
+pub fn parse_file_lossy(tokens: Vec<Token>) -> WithDiagnostics<AstFile> {
+    Parser::new(tokens).parse_file_lossy()
 }
 
 struct Parser {
@@ -25,26 +35,45 @@ impl Parser {
         }
     }
 
-    fn parse_file(mut self) -> DiagResult<AstFile> {
+    fn parse_file_lossy(mut self) -> WithDiagnostics<AstFile> {
         let mut items = Vec::new();
         while !self.at(TokenKind::Eof) {
+            let start = self.peek().span;
             match self.parse_item() {
                 Ok(item) => items.push(item),
                 Err(diagnostic) => {
-                    self.diagnostics.push(diagnostic);
-                    self.synchronize_item();
+                    self.push_diagnostic(diagnostic);
+                    let span = self.synchronize_item(start);
+                    items.push(Item {
+                        export: false,
+                        span,
+                        kind: ItemKind::Error,
+                    });
                 }
             }
         }
 
-        if self.diagnostics.is_empty() {
-            Ok(AstFile { items })
-        } else {
-            Err(self.diagnostics)
+        for diagnostic in &mut self.diagnostics {
+            if diagnostic.phase.is_none() {
+                diagnostic.phase = Some(DiagnosticPhase::Parse);
+            }
+        }
+
+        WithDiagnostics {
+            value: AstFile { items },
+            diagnostics: self.diagnostics,
         }
     }
 
     fn parse_item(&mut self) -> Result<Item, Diagnostic> {
+        if self.at(TokenKind::Error) {
+            let span = self.advance().span;
+            return Ok(Item {
+                export: false,
+                span,
+                kind: ItemKind::Error,
+            });
+        }
         let export = self.eat(TokenKind::Export).is_some();
         let start = self.peek().span;
         let is_resource = if self.at_ident_named("resource")
@@ -229,15 +258,39 @@ impl Parser {
         self.expect(TokenKind::Struct, "expected `struct`")?;
         let name = self.expect_ident("expected struct name")?;
         let generics = self.parse_generic_param_list_opt()?;
-        self.expect(TokenKind::LBrace, "expected `{` in struct declaration")?;
+        if self.eat(TokenKind::LBrace).is_none() {
+            self.push_diagnostic(
+                self.recovery_diagnostic(self.missing_span(), "expected `{` in struct declaration"),
+            );
+            return Ok(StructDecl {
+                is_resource,
+                is_unsafe,
+                name,
+                generics,
+                fields: Vec::new(),
+            });
+        }
         let mut fields = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            let ty = self.parse_type()?;
-            let name = self.expect_ident("expected field name")?;
-            self.expect(TokenKind::Semi, "expected `;` after field")?;
+            let ty = self.parse_type_recovering(
+                &[TokenKind::Semi, TokenKind::RBrace],
+                "expected field type",
+            );
+            let name = if self.at(TokenKind::Ident) {
+                self.expect_ident("expected field name")?
+            } else {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(self.missing_span(), "expected field name"),
+                );
+                Ident {
+                    name: "_error".to_string(),
+                    span: self.missing_span(),
+                }
+            };
+            self.expect_or_missing(TokenKind::Semi, "expected `;` after field");
             fields.push(FieldDecl { ty, name });
         }
-        self.expect(TokenKind::RBrace, "expected `}` after struct declaration")?;
+        self.expect_or_missing(TokenKind::RBrace, "expected `}` after struct declaration");
         Ok(StructDecl {
             is_resource,
             is_unsafe,
@@ -251,7 +304,7 @@ impl Parser {
         self.expect(TokenKind::Enum, "expected `enum`")?;
         let name = self.expect_ident("expected enum name")?;
         let generics = self.parse_generic_param_list_opt()?;
-        self.expect(TokenKind::LBrace, "expected `{` in enum declaration")?;
+        self.expect_or_missing(TokenKind::LBrace, "expected `{` in enum declaration");
         let mut variants = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             let variant = self.expect_ident("expected enum variant name")?;
@@ -261,7 +314,7 @@ impl Parser {
                 } else {
                     self.parse_type_list()?
                 };
-                self.expect(TokenKind::RParen, "expected `)` after variant payload")?;
+                self.expect_or_missing(TokenKind::RParen, "expected `)` after variant payload");
                 tys
             } else {
                 Vec::new()
@@ -274,7 +327,7 @@ impl Parser {
                 break;
             }
         }
-        self.expect(TokenKind::RBrace, "expected `}` after enum declaration")?;
+        self.expect_or_missing(TokenKind::RBrace, "expected `}` after enum declaration");
         Ok(EnumDecl {
             name,
             generics,
@@ -389,7 +442,12 @@ impl Parser {
         let args = if self.at(TokenKind::Lt) {
             self.expect(TokenKind::Lt, "expected `<`")?;
             let list = self.parse_type_list_with_binding_context(None)?;
-            self.expect_type_gt("expected `>` after derive arguments")?;
+            if self.eat_type_gt().is_none() {
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected `>` after derive arguments",
+                ));
+            }
             list
         } else {
             return Err(Diagnostic::new(
@@ -562,8 +620,24 @@ impl Parser {
             return Ok(params);
         }
         loop {
-            let ty = self.parse_type()?;
-            let (name, mutability) = self.parse_binding_name("expected parameter name")?;
+            let ty = self.parse_type_recovering(
+                &[TokenKind::Comma, TokenKind::RParen, TokenKind::Semi],
+                "expected parameter type",
+            );
+            let (name, mutability) = if self.at(TokenKind::Ident) || self.at(TokenKind::At) {
+                self.parse_binding_name("expected parameter name")?
+            } else {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(self.missing_span(), "expected parameter name"),
+                );
+                (
+                    Ident {
+                        name: "_error".to_string(),
+                        span: self.missing_span(),
+                    },
+                    BindingMutability::Immutable,
+                )
+            };
             params.push(Param {
                 ty,
                 name,
@@ -573,8 +647,23 @@ impl Parser {
                 if self.eat(TokenKind::RParen).is_some() {
                     break;
                 }
+            } else if self.at(TokenKind::RParen) {
+                self.advance();
+                break;
+            } else if self.can_start_type() {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `,` between parameters",
+                    ),
+                );
             } else {
-                self.expect(TokenKind::RParen, "expected `)` after parameter list")?;
+                self.push_diagnostic(
+                    self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `)` after parameter list",
+                    ),
+                );
                 break;
             }
         }
@@ -609,13 +698,37 @@ impl Parser {
             return Ok(params);
         }
         loop {
-            params.push(self.parse_generic_param()?);
+            match self.parse_generic_param() {
+                Ok(param) => params.push(param),
+                Err(diagnostic) => {
+                    self.push_diagnostic(diagnostic);
+                    params.push(GenericParam {
+                        is_resource: false,
+                        name: Ident {
+                            name: "_error".to_string(),
+                            span: self.missing_span(),
+                        },
+                        constraint: None,
+                    });
+                }
+            }
             if self.eat(TokenKind::Comma).is_some() {
                 if self.eat_type_gt().is_some() {
                     break;
                 }
+            } else if self.at_type_gt() {
+                self.eat_type_gt();
+                break;
+            } else if self.at_ident_named("resource") || self.at(TokenKind::Ident) {
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected `,` between generic parameters",
+                ));
             } else {
-                self.expect_type_gt("expected `>` after generic parameter list")?;
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected `>` after generic parameter list",
+                ));
                 break;
             }
         }
@@ -798,7 +911,14 @@ impl Parser {
         if self.at(TokenKind::Lt) {
             self.expect(TokenKind::Lt, "expected `<`")?;
             let list = self.parse_type_list_with_binding_context(None)?;
-            self.expect_type_gt("expected `>` after type arguments")?;
+            if self.eat_type_gt().is_none() {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `>` after type arguments",
+                    ),
+                );
+            }
             Ok(list)
         } else {
             Ok(Vec::new())
@@ -810,7 +930,12 @@ impl Parser {
             self.expect(TokenKind::Lt, "expected `<`")?;
             let list =
                 self.parse_type_list_with_binding_context(Some("interface alias declarations"))?;
-            self.expect_type_gt("expected `>` after interface arguments")?;
+            if self.eat_type_gt().is_none() {
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected `>` after interface arguments",
+                ));
+            }
             Ok(list)
         } else {
             Ok(Vec::new())
@@ -842,12 +967,32 @@ impl Parser {
                 };
                 return Err(Diagnostic::new(self.peek().span, message));
             }
-            list.push(self.parse_type()?);
+            list.push(self.parse_type_recovering(
+                &[
+                    TokenKind::Comma,
+                    TokenKind::RParen,
+                    TokenKind::Gt,
+                    TokenKind::GtGt,
+                    TokenKind::Semi,
+                ],
+                "expected type",
+            ));
             if self.eat(TokenKind::Comma).is_some() {
                 if self.at_type_gt() || self.at(TokenKind::RParen) {
                     break;
                 }
+            } else if self.at_type_gt() || self.at(TokenKind::RParen) {
+                break;
+            } else if self.can_start_type() {
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected `,` between type arguments",
+                ));
             } else {
+                self.push_diagnostic(self.recovery_diagnostic(
+                    self.missing_span(),
+                    "expected list terminator after type",
+                ));
                 break;
             }
         }
@@ -942,6 +1087,18 @@ impl Parser {
         Ok(ty)
     }
 
+    fn parse_type_recovering(&mut self, stop_before: &[TokenKind], message: &str) -> Type {
+        match self.parse_type() {
+            Ok(ty) => ty,
+            Err(diagnostic) => {
+                self.push_diagnostic(diagnostic);
+                self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), message));
+                let expr = self.recover_expr_until(stop_before);
+                self.error_type(expr.span)
+            }
+        }
+    }
+
     fn parse_prefix_type(&mut self) -> Result<Type, Diagnostic> {
         if self.eat(TokenKind::Star).is_some() {
             let start = self.previous().span;
@@ -988,6 +1145,10 @@ impl Parser {
 
     fn parse_primary_type(&mut self) -> Result<Type, Diagnostic> {
         let token = self.peek().clone();
+        if token.kind == TokenKind::Error {
+            self.advance();
+            return Ok(self.error_type(token.span));
+        }
         if token.kind == TokenKind::Ident && token.lexeme == "_" {
             self.advance();
             return Ok(Type {
@@ -1053,7 +1214,15 @@ impl Parser {
                     } else {
                         ViewMutability::Writable
                     };
-                    let elem = self.parse_type()?;
+                    let elem = self.parse_type_recovering(
+                        &[
+                            TokenKind::Comma,
+                            TokenKind::Semi,
+                            TokenKind::RParen,
+                            TokenKind::RBracket,
+                        ],
+                        "expected slice element type",
+                    );
                     Ok(Type {
                         span: start.merge(elem.span),
                         kind: TypeKind::Slice {
@@ -1069,8 +1238,16 @@ impl Parser {
                     let len = parse_usize_literal(&len_token.lexeme).ok_or_else(|| {
                         Diagnostic::new(len_token.span, "array length is not a valid usize")
                     })?;
-                    self.expect(TokenKind::RBracket, "expected `]` after array length")?;
-                    let elem = self.parse_type()?;
+                    self.expect_or_missing(TokenKind::RBracket, "expected `]` after array length");
+                    let elem = self.parse_type_recovering(
+                        &[
+                            TokenKind::Comma,
+                            TokenKind::Semi,
+                            TokenKind::RParen,
+                            TokenKind::RBracket,
+                        ],
+                        "expected array element type",
+                    );
                     Ok(Type {
                         span: start.merge(elem.span),
                         kind: TypeKind::Array {
@@ -1082,8 +1259,11 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let ty = self.parse_type()?;
-                self.expect(TokenKind::RParen, "expected `)` after type")?;
+                let ty = self.parse_type_recovering(
+                    &[TokenKind::RParen, TokenKind::Semi],
+                    "expected type after `(`",
+                );
+                self.expect_or_missing(TokenKind::RParen, "expected `)` after type");
                 Ok(ty)
             }
             _ => Err(Diagnostic::new(token.span, "expected type")),
@@ -1113,9 +1293,23 @@ impl Parser {
         let start = self.expect(TokenKind::LBrace, "expected `{`")?.span;
         let mut statements = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            statements.push(self.parse_statement()?);
+            let stmt_start = self.peek().span;
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(diagnostic) => {
+                    self.push_diagnostic(diagnostic);
+                    let span = self.synchronize_statement(stmt_start);
+                    statements.push(self.error_stmt(span));
+                }
+            }
         }
-        let end = self.expect(TokenKind::RBrace, "expected `}`")?.span;
+        let end = self
+            .eat(TokenKind::RBrace)
+            .map(|token| token.span)
+            .unwrap_or_else(|| {
+                self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), "expected `}`"));
+                self.missing_span()
+            });
         Ok(Block {
             span: start.merge(end),
             statements,
@@ -1138,8 +1332,11 @@ impl Parser {
             TokenKind::Switch => self.parse_switch_statement(),
             TokenKind::Defer => {
                 self.advance();
-                let call = self.parse_expr()?;
-                self.expect(TokenKind::Semi, "expected `;` after defer")?;
+                let call = self.parse_expr_recovering(
+                    &[TokenKind::Semi, TokenKind::RBrace],
+                    "expected expression after `defer`",
+                );
+                self.expect_or_missing(TokenKind::Semi, "expected `;` after defer");
                 Ok(Stmt {
                     span: start.merge(call.span),
                     kind: StmtKind::Defer(call),
@@ -1150,10 +1347,13 @@ impl Parser {
                 let expr = if self.at(TokenKind::Semi) {
                     None
                 } else {
-                    Some(self.parse_expr()?)
+                    Some(self.parse_expr_recovering(
+                        &[TokenKind::Semi, TokenKind::RBrace],
+                        "expected expression after `return`",
+                    ))
                 };
                 let end = self
-                    .expect(TokenKind::Semi, "expected `;` after return")?
+                    .expect_or_missing(TokenKind::Semi, "expected `;` after return")
                     .span;
                 Ok(Stmt {
                     span: start.merge(end),
@@ -1163,7 +1363,7 @@ impl Parser {
             TokenKind::Break => {
                 self.advance();
                 let end = self
-                    .expect(TokenKind::Semi, "expected `;` after break")?
+                    .expect_or_missing(TokenKind::Semi, "expected `;` after break")
                     .span;
                 Ok(Stmt {
                     span: start.merge(end),
@@ -1173,7 +1373,7 @@ impl Parser {
             TokenKind::Continue => {
                 self.advance();
                 let end = self
-                    .expect(TokenKind::Semi, "expected `;` after continue")?
+                    .expect_or_missing(TokenKind::Semi, "expected `;` after continue")
                     .span;
                 Ok(Stmt {
                     span: start.merge(end),
@@ -1186,9 +1386,12 @@ impl Parser {
                 }
                 let expr = self.parse_expr()?;
                 if self.eat(TokenKind::Eq).is_some() {
-                    let value = self.parse_expr()?;
+                    let value = self.parse_expr_recovering(
+                        &[TokenKind::Semi, TokenKind::RBrace],
+                        "expected expression after `=`",
+                    );
                     let end = self
-                        .expect(TokenKind::Semi, "expected `;` after assignment")?
+                        .expect_or_missing(TokenKind::Semi, "expected `;` after assignment")
                         .span;
                     Ok(Stmt {
                         span: expr.span.merge(end),
@@ -1199,7 +1402,7 @@ impl Parser {
                     })
                 } else {
                     let end = self
-                        .expect(TokenKind::Semi, "expected `;` after expression")?
+                        .expect_or_missing(TokenKind::Semi, "expected `;` after expression")
                         .span;
                     Ok(Stmt {
                         span: expr.span.merge(end),
@@ -1218,29 +1421,40 @@ impl Parser {
             self.parse_type()?;
         }
         let save = self.pos;
+        let token_save = self.tokens.clone();
+        let diag_save = self.diagnostics.len();
         let ty = match self.parse_type() {
             Ok(ty) => ty,
             Err(_) => {
                 self.pos = save;
+                self.tokens = token_save;
+                self.diagnostics.truncate(diag_save);
                 return Ok(None);
             }
         };
         if !(self.at(TokenKind::Ident) || self.at(TokenKind::At)) {
             self.pos = save;
+            self.tokens = token_save;
+            self.diagnostics.truncate(diag_save);
             return Ok(None);
         }
         let (name, mutability) = self.parse_binding_name("expected local name")?;
         if !(self.at(TokenKind::Eq) || self.at(TokenKind::Semi)) {
             self.pos = save;
+            self.tokens = token_save;
+            self.diagnostics.truncate(diag_save);
             return Ok(None);
         }
         let init = if self.eat(TokenKind::Eq).is_some() {
-            Some(self.parse_expr()?)
+            Some(self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RBrace],
+                "expected initializer expression",
+            ))
         } else {
             None
         };
         let end = self
-            .expect(TokenKind::Semi, "expected `;` after local declaration")?
+            .expect_or_missing(TokenKind::Semi, "expected `;` after local declaration")
             .span;
         Ok(Some(Stmt {
             span: ty.span.merge(end),
@@ -1255,9 +1469,12 @@ impl Parser {
 
     fn parse_if_statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::If, "expected `if`")?.span;
-        self.expect(TokenKind::LParen, "expected `(` after `if`")?;
-        let cond = self.parse_expr()?;
-        self.expect(TokenKind::RParen, "expected `)` after if condition")?;
+        self.expect_or_missing(TokenKind::LParen, "expected `(` after `if`");
+        let cond = self.parse_expr_recovering(
+            &[TokenKind::RParen, TokenKind::LBrace],
+            "expected `if` condition",
+        );
+        self.expect_or_missing(TokenKind::RParen, "expected `)` after if condition");
         let then_block = self.parse_block()?;
         let else_branch = if self.eat(TokenKind::Else).is_some() {
             if self.at(TokenKind::If) {
@@ -1289,9 +1506,12 @@ impl Parser {
 
     fn parse_while_statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::While, "expected `while`")?.span;
-        self.expect(TokenKind::LParen, "expected `(` after `while`")?;
-        let cond = self.parse_expr()?;
-        self.expect(TokenKind::RParen, "expected `)` after while condition")?;
+        self.expect_or_missing(TokenKind::LParen, "expected `(` after `while`");
+        let cond = self.parse_expr_recovering(
+            &[TokenKind::RParen, TokenKind::LBrace],
+            "expected `while` condition",
+        );
+        self.expect_or_missing(TokenKind::RParen, "expected `)` after while condition");
         let body = self.parse_block()?;
         Ok(Stmt {
             span: start.merge(body.span),
@@ -1301,25 +1521,28 @@ impl Parser {
 
     fn parse_for_statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::For, "expected `for`")?.span;
-        self.expect(TokenKind::LParen, "expected `(` after `for`")?;
+        self.expect_or_missing(TokenKind::LParen, "expected `(` after `for`");
         let init = if self.at(TokenKind::Semi) {
             None
         } else {
             Some(self.parse_for_init()?)
         };
-        self.expect(TokenKind::Semi, "expected `;` after for initializer")?;
+        self.expect_or_missing(TokenKind::Semi, "expected `;` after for initializer");
         let cond = if self.at(TokenKind::Semi) {
             None
         } else {
-            Some(self.parse_expr()?)
+            Some(self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RParen],
+                "expected `for` condition",
+            ))
         };
-        self.expect(TokenKind::Semi, "expected `;` after for condition")?;
+        self.expect_or_missing(TokenKind::Semi, "expected `;` after for condition");
         let step = if self.at(TokenKind::RParen) {
             None
         } else {
             Some(self.parse_for_step()?)
         };
-        self.expect(TokenKind::RParen, "expected `)` after for clauses")?;
+        self.expect_or_missing(TokenKind::RParen, "expected `)` after for clauses");
         let body = self.parse_block()?;
         Ok(Stmt {
             span: start.merge(body.span),
@@ -1338,12 +1561,17 @@ impl Parser {
                 self.parse_type()?;
             }
             let save = self.pos;
+            let token_save = self.tokens.clone();
+            let diag_save = self.diagnostics.len();
             if let Ok(ty) = self.parse_type() {
                 if self.at(TokenKind::Ident) || self.at(TokenKind::At) {
                     let (name, mutability) =
                         self.parse_binding_name("expected for variable name")?;
                     let init = if self.eat(TokenKind::Eq).is_some() {
-                        Some(self.parse_expr()?)
+                        Some(self.parse_expr_recovering(
+                            &[TokenKind::Semi, TokenKind::RParen],
+                            "expected initializer expression",
+                        ))
                     } else {
                         None
                     };
@@ -1356,10 +1584,15 @@ impl Parser {
                 }
             }
             self.pos = save;
+            self.tokens = token_save;
+            self.diagnostics.truncate(diag_save);
         }
         let expr = self.parse_expr()?;
         if self.eat(TokenKind::Eq).is_some() {
-            let value = self.parse_expr()?;
+            let value = self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RParen],
+                "expected expression after `=`",
+            );
             Ok(ForInit::Assign {
                 target: expr,
                 value,
@@ -1372,7 +1605,8 @@ impl Parser {
     fn parse_for_step(&mut self) -> Result<ForInit, Diagnostic> {
         let expr = self.parse_expr()?;
         if self.eat(TokenKind::Eq).is_some() {
-            let value = self.parse_expr()?;
+            let value =
+                self.parse_expr_recovering(&[TokenKind::RParen], "expected expression after `=`");
             Ok(ForInit::Assign {
                 target: expr,
                 value,
@@ -1384,17 +1618,30 @@ impl Parser {
 
     fn parse_switch_statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.expect(TokenKind::Switch, "expected `switch`")?.span;
-        self.expect(TokenKind::LParen, "expected `(` after `switch`")?;
-        let expr = self.parse_expr()?;
-        self.expect(TokenKind::RParen, "expected `)` after switch expression")?;
-        self.expect(TokenKind::LBrace, "expected `{` after switch expression")?;
+        self.expect_or_missing(TokenKind::LParen, "expected `(` after `switch`");
+        let expr = self.parse_expr_recovering(
+            &[TokenKind::RParen, TokenKind::LBrace],
+            "expected `switch` expression",
+        );
+        self.expect_or_missing(TokenKind::RParen, "expected `)` after switch expression");
+        self.expect_or_missing(TokenKind::LBrace, "expected `{` after switch expression");
         let mut cases = Vec::new();
         let mut has_default = false;
         let mut default = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             if self.eat(TokenKind::Case).is_some() {
-                let pattern = self.parse_pattern()?;
-                self.expect(TokenKind::Colon, "expected `:` after case pattern")?;
+                let pattern = match self.parse_pattern() {
+                    Ok(pattern) => pattern,
+                    Err(diagnostic) => {
+                        self.push_diagnostic(diagnostic);
+                        self.push_diagnostic(self.recovery_diagnostic(
+                            self.missing_span(),
+                            "expected pattern after `case`",
+                        ));
+                        self.error_pattern(self.missing_span())
+                    }
+                };
+                self.expect_or_missing(TokenKind::Colon, "expected `:` after case pattern");
                 let statements = self.parse_case_body()?;
                 cases.push(CaseClause {
                     pattern,
@@ -1402,7 +1649,7 @@ impl Parser {
                 });
             } else if self.eat(TokenKind::Default).is_some() {
                 has_default = true;
-                self.expect(TokenKind::Colon, "expected `:` after default")?;
+                self.expect_or_missing(TokenKind::Colon, "expected `:` after default");
                 default = self.parse_case_body()?;
             } else {
                 return Err(Diagnostic::new(
@@ -1412,8 +1659,14 @@ impl Parser {
             }
         }
         let end = self
-            .expect(TokenKind::RBrace, "expected `}` after switch")?
-            .span;
+            .eat(TokenKind::RBrace)
+            .map(|token| token.span)
+            .unwrap_or_else(|| {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(self.missing_span(), "expected `}` after switch"),
+                );
+                self.missing_span()
+            });
         Ok(Stmt {
             span: start.merge(end),
             kind: StmtKind::Switch {
@@ -1432,12 +1685,24 @@ impl Parser {
             && !self.at(TokenKind::RBrace)
             && !self.at(TokenKind::Eof)
         {
-            statements.push(self.parse_statement()?);
+            let start = self.peek().span;
+            match self.parse_statement() {
+                Ok(stmt) => statements.push(stmt),
+                Err(diagnostic) => {
+                    self.push_diagnostic(diagnostic);
+                    let span = self.synchronize_statement(start);
+                    statements.push(self.error_stmt(span));
+                }
+            }
         }
         Ok(statements)
     }
 
     fn parse_pattern(&mut self) -> Result<Pattern, Diagnostic> {
+        if self.at(TokenKind::Error) {
+            let span = self.advance().span;
+            return Ok(self.error_pattern(span));
+        }
         if self.at(TokenKind::At) {
             let (name, mutability) = self.parse_binding_name("expected pattern binding name")?;
             return Ok(Pattern::Binding { name, mutability });
@@ -1454,17 +1719,37 @@ impl Parser {
             let mut args = Vec::new();
             if !self.at(TokenKind::RParen) {
                 loop {
-                    args.push(self.parse_pattern()?);
+                    match self.parse_pattern() {
+                        Ok(pattern) => args.push(pattern),
+                        Err(diagnostic) => {
+                            self.push_diagnostic(diagnostic);
+                            args.push(self.error_pattern(self.missing_span()));
+                        }
+                    }
                     if self.eat(TokenKind::Comma).is_some() {
                         if self.at(TokenKind::RParen) {
                             break;
                         }
+                    } else if self.at(TokenKind::RParen) {
+                        break;
+                    } else if self.at(TokenKind::At)
+                        || self.at(TokenKind::Ident)
+                        || self.at(TokenKind::Error)
+                    {
+                        self.push_diagnostic(self.recovery_diagnostic(
+                            self.missing_span(),
+                            "expected `,` between pattern arguments",
+                        ));
                     } else {
+                        self.push_diagnostic(self.recovery_diagnostic(
+                            self.missing_span(),
+                            "expected `)` after pattern",
+                        ));
                         break;
                     }
                 }
             }
-            self.expect(TokenKind::RParen, "expected `)` after pattern")?;
+            self.expect_or_missing(TokenKind::RParen, "expected `)` after pattern");
             args
         } else {
             Vec::new()
@@ -1476,10 +1761,37 @@ impl Parser {
         self.parse_logical_or()
     }
 
+    fn parse_expr_recovering(&mut self, stop_before: &[TokenKind], message: &str) -> Expr {
+        match self.parse_expr() {
+            Ok(expr) => expr,
+            Err(diagnostic) => {
+                self.push_diagnostic(diagnostic);
+                self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), message));
+                self.recover_expr_until(stop_before)
+            }
+        }
+    }
+
+    fn recover_expr_with(
+        &mut self,
+        parse: impl FnOnce(&mut Self) -> Result<Expr, Diagnostic>,
+        message: &str,
+    ) -> Expr {
+        match parse(self) {
+            Ok(expr) => expr,
+            Err(diagnostic) => {
+                self.push_diagnostic(diagnostic);
+                self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), message));
+                self.recover_expr_until(self.expr_recovery_stops())
+            }
+        }
+    }
+
     fn parse_logical_or(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_logical_and()?;
         while self.eat(TokenKind::PipePipe).is_some() {
-            let right = self.parse_logical_and()?;
+            let right =
+                self.recover_expr_with(Self::parse_logical_and, "expected expression after `||`");
             expr = self.binary(expr, BinaryOp::Or, right);
         }
         Ok(expr)
@@ -1488,7 +1800,8 @@ impl Parser {
     fn parse_logical_and(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_bitwise_or()?;
         while self.eat(TokenKind::AmpAmp).is_some() {
-            let right = self.parse_bitwise_or()?;
+            let right =
+                self.recover_expr_with(Self::parse_bitwise_or, "expected expression after `&&`");
             expr = self.binary(expr, BinaryOp::And, right);
         }
         Ok(expr)
@@ -1497,7 +1810,8 @@ impl Parser {
     fn parse_bitwise_or(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_bitwise_xor()?;
         while self.eat(TokenKind::Pipe).is_some() {
-            let right = self.parse_bitwise_xor()?;
+            let right =
+                self.recover_expr_with(Self::parse_bitwise_xor, "expected expression after `|`");
             expr = self.binary(expr, BinaryOp::BitOr, right);
         }
         Ok(expr)
@@ -1506,7 +1820,8 @@ impl Parser {
     fn parse_bitwise_xor(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_bitwise_and()?;
         while self.eat(TokenKind::Caret).is_some() {
-            let right = self.parse_bitwise_and()?;
+            let right =
+                self.recover_expr_with(Self::parse_bitwise_and, "expected expression after `^`");
             expr = self.binary(expr, BinaryOp::BitXor, right);
         }
         Ok(expr)
@@ -1515,7 +1830,8 @@ impl Parser {
     fn parse_bitwise_and(&mut self) -> Result<Expr, Diagnostic> {
         let mut expr = self.parse_equality()?;
         while self.eat(TokenKind::Amp).is_some() {
-            let right = self.parse_equality()?;
+            let right =
+                self.recover_expr_with(Self::parse_equality, "expected expression after `&`");
             expr = self.binary(expr, BinaryOp::BitAnd, right);
         }
         Ok(expr)
@@ -1530,7 +1846,10 @@ impl Parser {
                 self.expect(TokenKind::BangEq, "expected equality operator")?;
                 BinaryOp::Ne
             };
-            let right = self.parse_relational()?;
+            let right = self.recover_expr_with(
+                Self::parse_relational,
+                "expected expression after equality operator",
+            );
             expr = self.binary(expr, op, right);
         }
         Ok(expr)
@@ -1549,7 +1868,10 @@ impl Parser {
                 TokenKind::GtEq => BinaryOp::Ge,
                 _ => unreachable!(),
             };
-            let right = self.parse_shift()?;
+            let right = self.recover_expr_with(
+                Self::parse_shift,
+                "expected expression after relational operator",
+            );
             expr = self.binary(expr, op, right);
         }
         Ok(expr)
@@ -1564,7 +1886,10 @@ impl Parser {
                 self.expect(TokenKind::GtGt, "expected shift operator")?;
                 BinaryOp::Shr
             };
-            let right = self.parse_additive()?;
+            let right = self.recover_expr_with(
+                Self::parse_additive,
+                "expected expression after shift operator",
+            );
             expr = self.binary(expr, op, right);
         }
         Ok(expr)
@@ -1579,7 +1904,10 @@ impl Parser {
                 self.expect(TokenKind::Minus, "expected additive operator")?;
                 BinaryOp::Sub
             };
-            let right = self.parse_multiplicative()?;
+            let right = self.recover_expr_with(
+                Self::parse_multiplicative,
+                "expected expression after additive operator",
+            );
             expr = self.binary(expr, op, right);
         }
         Ok(expr)
@@ -1597,7 +1925,10 @@ impl Parser {
                 TokenKind::Percent => BinaryOp::Rem,
                 _ => unreachable!(),
             };
-            let right = self.parse_cast()?;
+            let right = self.recover_expr_with(
+                Self::parse_cast,
+                "expected expression after multiplicative operator",
+            );
             expr = self.binary(expr, op, right);
         }
         Ok(expr)
@@ -1606,7 +1937,15 @@ impl Parser {
     fn parse_cast(&mut self) -> Result<Expr, Diagnostic> {
         let expr = self.parse_unary()?;
         if self.eat(TokenKind::As).is_some() {
-            let ty = self.parse_type()?;
+            let ty = self.parse_type_recovering(
+                &[
+                    TokenKind::Comma,
+                    TokenKind::Semi,
+                    TokenKind::RParen,
+                    TokenKind::RBracket,
+                ],
+                "expected type after `as`",
+            );
             let span = expr.span.merge(ty.span);
             Ok(Expr {
                 span,
@@ -1661,7 +2000,8 @@ impl Parser {
             if self.at(TokenKind::Lt) {
                 let save = self.pos;
                 let token_save = self.tokens.clone();
-                if let Ok(type_args) = self.parse_type_arg_list_opt() {
+                let diag_save = self.diagnostics.len();
+                if let Some(type_args) = self.try_parse_postfix_type_args() {
                     if self.eat(TokenKind::LParen).is_some() {
                         let args = self.parse_arg_list_after_lparen()?;
                         let span = expr.span.merge(self.previous().span);
@@ -1686,9 +2026,10 @@ impl Parser {
                         };
                         continue;
                     }
+                    self.pos = save;
+                    self.tokens = token_save;
+                    self.diagnostics.truncate(diag_save);
                 }
-                self.pos = save;
-                self.tokens = token_save;
             }
             if self.eat(TokenKind::LParen).is_some() {
                 let args = self.parse_arg_list_after_lparen()?;
@@ -1735,10 +2076,13 @@ impl Parser {
                     let range_end = if self.at(TokenKind::RBracket) {
                         None
                     } else {
-                        Some(Box::new(self.parse_expr()?))
+                        Some(Box::new(self.parse_expr_recovering(
+                            &[TokenKind::RBracket, TokenKind::Semi],
+                            "expected slice end expression",
+                        )))
                     };
                     let end = self
-                        .expect(TokenKind::RBracket, "expected `]` after slice range")?
+                        .expect_or_missing(TokenKind::RBracket, "expected `]` after slice range")
                         .span;
                     expr = Expr {
                         span: expr.span.merge(end),
@@ -1749,15 +2093,24 @@ impl Parser {
                         },
                     };
                 } else {
-                    let first = self.parse_expr()?;
+                    let first = self.parse_expr_recovering(
+                        &[TokenKind::DotDot, TokenKind::RBracket, TokenKind::Semi],
+                        "expected index expression",
+                    );
                     if self.eat(TokenKind::DotDot).is_some() {
                         let range_end = if self.at(TokenKind::RBracket) {
                             None
                         } else {
-                            Some(Box::new(self.parse_expr()?))
+                            Some(Box::new(self.parse_expr_recovering(
+                                &[TokenKind::RBracket, TokenKind::Semi],
+                                "expected slice end expression",
+                            )))
                         };
                         let end = self
-                            .expect(TokenKind::RBracket, "expected `]` after slice range")?
+                            .expect_or_missing(
+                                TokenKind::RBracket,
+                                "expected `]` after slice range",
+                            )
                             .span;
                         expr = Expr {
                             span: expr.span.merge(end),
@@ -1769,7 +2122,7 @@ impl Parser {
                         };
                     } else {
                         let end = self
-                            .expect(TokenKind::RBracket, "expected `]` after index")?
+                            .expect_or_missing(TokenKind::RBracket, "expected `]` after index")
                             .span;
                         expr = Expr {
                             span: expr.span.merge(end),
@@ -1798,13 +2151,28 @@ impl Parser {
             return Ok(args);
         }
         loop {
-            args.push(self.parse_expr()?);
+            args.push(self.parse_expr_recovering(
+                &[TokenKind::Comma, TokenKind::RParen, TokenKind::Semi],
+                "expected expression in argument list",
+            ));
             if self.eat(TokenKind::Comma).is_some() {
                 if self.eat(TokenKind::RParen).is_some() {
                     break;
                 }
+            } else if self.at(TokenKind::RParen) {
+                self.advance();
+                break;
+            } else if self.can_start_expr_for_recovery() {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(self.missing_span(), "expected `,` between arguments"),
+                );
             } else {
-                self.expect(TokenKind::RParen, "expected `)` after argument list")?;
+                self.push_diagnostic(
+                    self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `)` after argument list",
+                    ),
+                );
                 break;
             }
         }
@@ -1846,6 +2214,10 @@ impl Parser {
             {
                 self.advance();
                 self.parse_closure_expr_with_async(token.span, true)
+            }
+            TokenKind::Error => {
+                self.advance();
+                Ok(self.error_expr(token.span))
             }
             TokenKind::Ident => {
                 let mut path = vec![self.expect_ident("expected identifier")?];
@@ -1907,8 +2279,11 @@ impl Parser {
             TokenKind::LBracket => self.parse_array_literal(),
             TokenKind::LParen => {
                 self.advance();
-                let expr = self.parse_expr()?;
-                self.expect(TokenKind::RParen, "expected `)` after expression")?;
+                let expr = self.parse_expr_recovering(
+                    &[TokenKind::RParen, TokenKind::Semi],
+                    "expected expression after `(`",
+                );
+                self.expect_or_missing(TokenKind::RParen, "expected `)` after expression");
                 Ok(expr)
             }
             TokenKind::Unsafe => self.parse_unsafe_block_expr(),
@@ -1921,15 +2296,21 @@ impl Parser {
         start: crate::span::Span,
         biased: bool,
     ) -> Result<Expr, Diagnostic> {
-        self.expect(TokenKind::LBrace, "expected `{` after select")?;
+        self.expect_or_missing(TokenKind::LBrace, "expected `{` after select");
         let mut arms = Vec::new();
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
-            self.expect(TokenKind::Case, "expected `case` in select")?;
+            self.expect_or_missing(TokenKind::Case, "expected `case` in select");
             let binding = self.expect_ident("expected select arm binding")?;
-            self.expect(TokenKind::Eq, "expected `=` after select arm binding")?;
-            let future = self.parse_expr()?;
-            self.expect(TokenKind::Colon, "expected `:` after select arm future")?;
-            let body = self.parse_expr()?;
+            self.expect_or_missing(TokenKind::Eq, "expected `=` after select arm binding");
+            let future = self.parse_expr_recovering(
+                &[TokenKind::Colon, TokenKind::Semi, TokenKind::RBrace],
+                "expected select arm future",
+            );
+            self.expect_or_missing(TokenKind::Colon, "expected `:` after select arm future");
+            let body = self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RBrace],
+                "expected select arm body",
+            );
             if self.at(TokenKind::Semi) {
                 self.advance();
             }
@@ -1940,8 +2321,14 @@ impl Parser {
             });
         }
         let end = self
-            .expect(TokenKind::RBrace, "expected `}` after select")?
-            .span;
+            .eat(TokenKind::RBrace)
+            .map(|token| token.span)
+            .unwrap_or_else(|| {
+                self.push_diagnostic(
+                    self.recovery_diagnostic(self.missing_span(), "expected `}` after select"),
+                );
+                self.missing_span()
+            });
         Ok(Expr {
             span: start.merge(end),
             kind: ExprKind::Select { biased, arms },
@@ -1962,23 +2349,37 @@ impl Parser {
         &mut self,
         start: crate::span::Span,
     ) -> Result<ExprBlock, Diagnostic> {
-        self.expect(TokenKind::LBrace, "expected `{` after `unsafe`")?;
+        self.expect_or_missing(TokenKind::LBrace, "expected `{` after `unsafe`");
         let mut statements = Vec::new();
         let mut value = None;
         while !self.at(TokenKind::RBrace) && !self.at(TokenKind::Eof) {
             if self.expr_block_next_is_statement_head() {
-                statements.push(self.parse_statement()?);
+                let stmt_start = self.peek().span;
+                match self.parse_statement() {
+                    Ok(stmt) => statements.push(stmt),
+                    Err(diagnostic) => {
+                        self.push_diagnostic(diagnostic);
+                        let span = self.synchronize_statement(stmt_start);
+                        statements.push(self.error_stmt(span));
+                    }
+                }
                 continue;
             }
             if let Some(stmt) = self.try_parse_var_decl_statement()? {
                 statements.push(stmt);
                 continue;
             }
-            let expr = self.parse_expr()?;
+            let expr = self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RBrace],
+                "expected expression in unsafe block",
+            );
             if self.eat(TokenKind::Eq).is_some() {
-                let rhs = self.parse_expr()?;
+                let rhs = self.parse_expr_recovering(
+                    &[TokenKind::Semi, TokenKind::RBrace],
+                    "expected expression after `=`",
+                );
                 let end = self
-                    .expect(TokenKind::Semi, "expected `;` after assignment")?
+                    .expect_or_missing(TokenKind::Semi, "expected `;` after assignment")
                     .span;
                 statements.push(Stmt {
                     span: expr.span.merge(end),
@@ -1998,9 +2399,16 @@ impl Parser {
                 break;
             }
         }
-        let end = self
-            .expect(TokenKind::RBrace, "expected `}` after unsafe block")?
-            .span;
+        let end =
+            self.eat(TokenKind::RBrace)
+                .map(|token| token.span)
+                .unwrap_or_else(|| {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `}` after unsafe block",
+                    ));
+                    self.missing_span()
+                });
         Ok(ExprBlock {
             span: start.merge(end),
             statements,
@@ -2039,27 +2447,49 @@ impl Parser {
         let params = if self.eat(TokenKind::PipePipe).is_some() {
             Vec::new()
         } else {
-            self.expect(TokenKind::Pipe, "expected `|` to start closure")?;
+            self.expect_or_missing(TokenKind::Pipe, "expected `|` to start closure");
             let mut params = Vec::new();
             if !self.at(TokenKind::Pipe) {
                 loop {
-                    params.push(self.parse_closure_param()?);
+                    match self.parse_closure_param() {
+                        Ok(param) => params.push(param),
+                        Err(diagnostic) => {
+                            self.push_diagnostic(diagnostic);
+                        }
+                    }
                     if self.eat(TokenKind::Comma).is_some() {
                         if self.at(TokenKind::Pipe) {
                             break;
                         }
+                    } else if self.at(TokenKind::Pipe) {
+                        break;
+                    } else if self.can_start_type()
+                        || self.at(TokenKind::At)
+                        || self.at(TokenKind::Ident)
+                    {
+                        self.push_diagnostic(self.recovery_diagnostic(
+                            self.missing_span(),
+                            "expected `,` between closure parameters",
+                        ));
                     } else {
+                        self.push_diagnostic(self.recovery_diagnostic(
+                            self.missing_span(),
+                            "expected `|` after closure parameters",
+                        ));
                         break;
                     }
                 }
             }
-            self.expect(TokenKind::Pipe, "expected `|` after closure parameters")?;
+            self.expect_or_missing(TokenKind::Pipe, "expected `|` after closure parameters");
             params
         };
         let body = if self.at(TokenKind::LBrace) {
             ClosureBody::Block(self.parse_block()?)
         } else {
-            ClosureBody::Expr(Box::new(self.parse_expr()?))
+            ClosureBody::Expr(Box::new(self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::RBrace],
+                "expected closure body expression",
+            )))
         };
         let end = match &body {
             ClosureBody::Expr(expr) => expr.span,
@@ -2102,21 +2532,42 @@ impl Parser {
         if !self.at(TokenKind::RBrace) {
             loop {
                 let name = self.expect_ident("expected field name in struct literal")?;
-                self.expect(TokenKind::Colon, "expected `:` after field name")?;
-                let expr = self.parse_expr()?;
+                self.expect_or_missing(TokenKind::Colon, "expected `:` after field name");
+                let expr = self.parse_expr_recovering(
+                    &[TokenKind::Comma, TokenKind::RBrace, TokenKind::Semi],
+                    "expected expression in struct literal",
+                );
                 fields.push(FieldInit { name, expr });
                 if self.eat(TokenKind::Comma).is_some() {
                     if self.at(TokenKind::RBrace) {
                         break;
                     }
+                } else if self.at(TokenKind::RBrace) {
+                    break;
+                } else if self.at(TokenKind::Ident) {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `,` between struct literal fields",
+                    ));
                 } else {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `}` after struct literal",
+                    ));
                     break;
                 }
             }
         }
-        let end = self
-            .expect(TokenKind::RBrace, "expected `}` after struct literal")?
-            .span;
+        let end =
+            self.eat(TokenKind::RBrace)
+                .map(|token| token.span)
+                .unwrap_or_else(|| {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `}` after struct literal",
+                    ));
+                    self.missing_span()
+                });
         Ok(Expr {
             span: start.merge(end),
             kind: ExprKind::StructLiteral(fields),
@@ -2127,7 +2578,10 @@ impl Parser {
         let start = self.expect(TokenKind::LBracket, "expected `[`")?.span;
         let mut elements = Vec::new();
         if !self.at(TokenKind::RBracket) {
-            let first = self.parse_expr()?;
+            let first = self.parse_expr_recovering(
+                &[TokenKind::Semi, TokenKind::Comma, TokenKind::RBracket],
+                "expected array literal element",
+            );
             if self.eat(TokenKind::Semi).is_some() {
                 let len = if self.at(TokenKind::RBracket) {
                     None
@@ -2141,10 +2595,10 @@ impl Parser {
                     })?)
                 };
                 let end = self
-                    .expect(
+                    .expect_or_missing(
                         TokenKind::RBracket,
                         "expected `]` after array repeat literal",
-                    )?
+                    )
                     .span;
                 return Ok(Expr {
                     span: start.merge(end),
@@ -2160,14 +2614,32 @@ impl Parser {
                     if self.at(TokenKind::RBracket) {
                         break;
                     }
-                    elements.push(self.parse_expr()?);
+                    elements.push(self.parse_expr_recovering(
+                        &[TokenKind::Comma, TokenKind::RBracket, TokenKind::Semi],
+                        "expected array literal element",
+                    ));
+                } else if self.at(TokenKind::RBracket) {
+                    break;
+                } else if self.can_start_expr_for_recovery() {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `,` between array literal elements",
+                    ));
+                    elements.push(self.parse_expr_recovering(
+                        &[TokenKind::Comma, TokenKind::RBracket, TokenKind::Semi],
+                        "expected array literal element",
+                    ));
                 } else {
+                    self.push_diagnostic(self.recovery_diagnostic(
+                        self.missing_span(),
+                        "expected `]` after array literal",
+                    ));
                     break;
                 }
             }
         }
         let end = self
-            .expect(TokenKind::RBracket, "expected `]` after array literal")?
+            .expect_or_missing(TokenKind::RBracket, "expected `]` after array literal")
             .span;
         Ok(Expr {
             span: start.merge(end),
@@ -2216,16 +2688,272 @@ impl Parser {
         )
     }
 
-    fn synchronize_item(&mut self) {
-        let start = self.pos;
-        while !self.at(TokenKind::Eof) {
-            if self.pos > start
-                && (self.previous().kind == TokenKind::Semi
-                    || self.previous().kind == TokenKind::RBrace)
-            {
-                return;
+    fn can_start_expr_for_recovery(&self) -> bool {
+        matches!(
+            self.peek().kind,
+            TokenKind::Ident
+                | TokenKind::Int
+                | TokenKind::IntDec
+                | TokenKind::Float
+                | TokenKind::FloatExp
+                | TokenKind::CharLit
+                | TokenKind::String
+                | TokenKind::True
+                | TokenKind::False
+                | TokenKind::Null
+                | TokenKind::PipePipe
+                | TokenKind::Pipe
+                | TokenKind::LBrace
+                | TokenKind::LBracket
+                | TokenKind::LParen
+                | TokenKind::Unsafe
+                | TokenKind::Bang
+                | TokenKind::Minus
+                | TokenKind::Tilde
+                | TokenKind::Amp
+                | TokenKind::Star
+                | TokenKind::Error
+        )
+    }
+
+    fn try_parse_postfix_type_args(&mut self) -> Option<Vec<Type>> {
+        let save = self.pos;
+        let token_save = self.tokens.clone();
+        let diag_save = self.diagnostics.len();
+
+        let result = (|| {
+            self.expect(TokenKind::Lt, "expected `<`").ok()?;
+            let mut list = Vec::new();
+            if self.eat_type_gt().is_some() {
+                return Some(list);
             }
+            loop {
+                list.push(self.parse_type().ok()?);
+                if self.eat(TokenKind::Comma).is_some() {
+                    if self.eat_type_gt().is_some() {
+                        break;
+                    }
+                } else if self.eat_type_gt().is_some() {
+                    break;
+                } else {
+                    return None;
+                }
+            }
+            Some(list)
+        })();
+
+        if result.is_none() {
+            self.pos = save;
+            self.tokens = token_save;
+            self.diagnostics.truncate(diag_save);
+        }
+
+        result
+    }
+
+    fn push_diagnostic(&mut self, diagnostic: Diagnostic) {
+        self.diagnostics.push(diagnostic);
+    }
+
+    fn recovery_diagnostic(
+        &self,
+        span: impl Into<Option<Span>>,
+        message: impl Into<String>,
+    ) -> Diagnostic {
+        Diagnostic::new(span, message).with_phase(DiagnosticPhase::Recovery)
+    }
+
+    fn error_stmt(&self, span: Span) -> Stmt {
+        Stmt {
+            span,
+            kind: StmtKind::Error,
+        }
+    }
+
+    fn error_expr(&self, span: Span) -> Expr {
+        Expr {
+            span,
+            kind: ExprKind::Error,
+        }
+    }
+
+    fn error_type(&self, span: Span) -> Type {
+        Type {
+            span,
+            kind: TypeKind::Error,
+        }
+    }
+
+    fn error_pattern(&self, span: Span) -> Pattern {
+        Pattern::Error(span)
+    }
+
+    fn missing_span(&self) -> Span {
+        let span = self.peek().span;
+        Span::new(span.file, span.start, span.start)
+    }
+
+    fn statement_starter_at_current(&self) -> bool {
+        self.expr_block_next_is_statement_head() || self.can_start_type()
+    }
+
+    fn expr_recovery_stops(&self) -> &'static [TokenKind] {
+        &[
+            TokenKind::Comma,
+            TokenKind::Semi,
+            TokenKind::Colon,
+            TokenKind::RParen,
+            TokenKind::RBracket,
+            TokenKind::RBrace,
+            TokenKind::Case,
+            TokenKind::Default,
+        ]
+    }
+
+    fn likely_item_starter_at_current(&self) -> bool {
+        if matches!(
+            self.peek().kind,
+            TokenKind::Import
+                | TokenKind::Type
+                | TokenKind::Struct
+                | TokenKind::Enum
+                | TokenKind::Interface
+                | TokenKind::Impl
+                | TokenKind::Extern
+                | TokenKind::Unsafe
+                | TokenKind::Export
+        ) {
+            return true;
+        }
+        self.at_ident_named("resource")
+            || self.at_ident_named("derive")
+            || self.at_ident_named("derivable")
+    }
+
+    fn synchronize_item(&mut self, start: Span) -> Span {
+        let mut last = start;
+        let mut paren = 0usize;
+        let mut brace = 0usize;
+        let mut bracket = 0usize;
+        let mut skipped = false;
+        while !self.at(TokenKind::Eof) {
+            if paren == 0
+                && brace == 0
+                && bracket == 0
+                && (skipped || self.peek().span != start)
+                && self.likely_item_starter_at_current()
+            {
+                break;
+            }
+            let token = self.peek().clone();
+            if paren == 0 && brace == 0 && bracket == 0 {
+                if token.kind == TokenKind::Semi {
+                    last = token.span;
+                    self.advance();
+                    break;
+                }
+                if token.kind == TokenKind::RBrace {
+                    last = token.span;
+                    self.advance();
+                    break;
+                }
+            }
+            skipped = true;
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren = paren.saturating_sub(1),
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace = brace.saturating_sub(1),
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+                _ => {}
+            }
+            last = token.span;
             self.advance();
+        }
+        start.merge(last)
+    }
+
+    fn synchronize_statement(&mut self, start: Span) -> Span {
+        let mut last = start;
+        let mut paren = 0usize;
+        let mut brace = 0usize;
+        let mut bracket = 0usize;
+        let mut skipped = false;
+        while !self.at(TokenKind::Eof) {
+            if paren == 0
+                && brace == 0
+                && bracket == 0
+                && (skipped || self.peek().span != start)
+                && (self.at(TokenKind::RBrace)
+                    || self.at(TokenKind::Case)
+                    || self.at(TokenKind::Default)
+                    || self.statement_starter_at_current())
+            {
+                break;
+            }
+            let token = self.peek().clone();
+            if paren == 0 && brace == 0 && bracket == 0 && token.kind == TokenKind::Semi {
+                last = token.span;
+                self.advance();
+                break;
+            }
+            skipped = true;
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren = paren.saturating_sub(1),
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace = brace.saturating_sub(1),
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+                _ => {}
+            }
+            last = token.span;
+            self.advance();
+        }
+        start.merge(last)
+    }
+
+    fn recover_expr_until(&mut self, stop_before: &[TokenKind]) -> Expr {
+        let start = self.peek().span;
+        let mut last = self.missing_span();
+        let mut paren = 0usize;
+        let mut brace = 0usize;
+        let mut bracket = 0usize;
+        while !self.at(TokenKind::Eof) {
+            if paren == 0
+                && brace == 0
+                && bracket == 0
+                && stop_before.iter().any(|kind| self.at(*kind))
+            {
+                break;
+            }
+            let token = self.peek().clone();
+            match token.kind {
+                TokenKind::LParen => paren += 1,
+                TokenKind::RParen => paren = paren.saturating_sub(1),
+                TokenKind::LBrace => brace += 1,
+                TokenKind::RBrace => brace = brace.saturating_sub(1),
+                TokenKind::LBracket => bracket += 1,
+                TokenKind::RBracket => bracket = bracket.saturating_sub(1),
+                _ => {}
+            }
+            last = token.span;
+            self.advance();
+        }
+        self.error_expr(start.merge(last))
+    }
+
+    fn expect_or_missing(&mut self, kind: TokenKind, message: &str) -> Token {
+        if self.at(kind) {
+            self.advance().clone()
+        } else {
+            self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), message));
+            Token {
+                kind,
+                lexeme: String::new(),
+                span: self.missing_span(),
+            }
         }
     }
 

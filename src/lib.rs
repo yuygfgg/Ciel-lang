@@ -24,5 +24,5 @@ pub mod typeck;
 pub mod types;
 
 pub use build::{BuildPlan, BuildProfile};
-pub use diagnostic::{DiagResult, Diagnostic};
+pub use diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics};
 pub use driver::{CompileOptions, compile_to_build_plan, compile_to_c};

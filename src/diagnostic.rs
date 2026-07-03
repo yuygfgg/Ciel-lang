@@ -4,11 +4,27 @@ use crate::{source::SourceMap, span::Span};
 
 pub type DiagResult<T> = Result<T, Vec<Diagnostic>>;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DiagnosticPhase {
+    Lex,
+    Parse,
+    Recovery,
+    Resolve,
+    TypeCheck,
+}
+
 #[derive(Clone, Debug)]
 pub struct Diagnostic {
     pub span: Option<Span>,
     pub message: String,
     pub notes: Vec<String>,
+    pub phase: Option<DiagnosticPhase>,
+}
+
+#[derive(Clone, Debug)]
+pub struct WithDiagnostics<T> {
+    pub value: T,
+    pub diagnostics: Vec<Diagnostic>,
 }
 
 impl Diagnostic {
@@ -17,11 +33,17 @@ impl Diagnostic {
             span: span.into(),
             message: message.into(),
             notes: Vec::new(),
+            phase: None,
         }
     }
 
     pub fn note(mut self, note: impl Into<String>) -> Self {
         self.notes.push(note.into());
+        self
+    }
+
+    pub fn with_phase(mut self, phase: DiagnosticPhase) -> Self {
+        self.phase = Some(phase);
         self
     }
 }

@@ -5971,7 +5971,7 @@ unsafe extern "C" {
 Function type ABI is explicit:
 
 ```ciel
-i32 fn(i64)                    // Ciel ABI
+i32 fn(i64)                     // Ciel ABI
 extern "C" i32 fn(*void, *void) // C ABI
 ```
 

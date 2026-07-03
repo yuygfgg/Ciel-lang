@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use crate::{
     ast,
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     resolve::{DefId, DefKind, LookupError, ModuleId, ResolvedImport, ResolvedProgram},
     span::{FileId, Span},
 };
@@ -542,6 +542,15 @@ pub enum NameRefKind {
 }
 
 pub fn lower_to_hir(resolved: ResolvedProgram) -> DiagResult<HirProgram> {
+    let result = lower_to_hir_lossy(resolved);
+    if result.diagnostics.is_empty() {
+        Ok(result.value)
+    } else {
+        Err(result.diagnostics)
+    }
+}
+
+pub fn lower_to_hir_lossy(resolved: ResolvedProgram) -> WithDiagnostics<HirProgram> {
     let modules = resolved.modules.clone();
     let (hir_modules, locals, diagnostics) = {
         let mut lowerer = Lowerer {
@@ -555,14 +564,19 @@ pub fn lower_to_hir(resolved: ResolvedProgram) -> DiagResult<HirProgram> {
             .collect::<Vec<_>>();
         (hir_modules, lowerer.locals, lowerer.diagnostics)
     };
-    if diagnostics.is_empty() {
-        Ok(HirProgram {
+    let mut diagnostics = diagnostics;
+    for diagnostic in &mut diagnostics {
+        if diagnostic.phase.is_none() {
+            diagnostic.phase = Some(DiagnosticPhase::Resolve);
+        }
+    }
+    WithDiagnostics {
+        value: HirProgram {
             resolved,
             modules: hir_modules,
             locals,
-        })
-    } else {
-        Err(diagnostics)
+        },
+        diagnostics,
     }
 }
 
@@ -599,7 +613,7 @@ impl<'a> Lowerer<'a> {
             .ast
             .items
             .iter()
-            .map(|item| ctx.lower_item(item))
+            .filter_map(|item| ctx.lower_item(item))
             .collect();
         Module {
             id: module.id,
@@ -611,7 +625,10 @@ impl<'a> Lowerer<'a> {
 }
 
 impl<'a, 'b> ModuleLowerer<'a, 'b> {
-    fn lower_item(&mut self, item: &ast::Item) -> Item {
+    fn lower_item(&mut self, item: &ast::Item) -> Option<Item> {
+        if matches!(item.kind, ast::ItemKind::Error) {
+            return None;
+        }
         let def_ids = self.item_def_ids(item);
         for def_id in &def_ids {
             let def = self.lowerer.resolved.def(*def_id);
@@ -752,13 +769,14 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             ast::ItemKind::ExternBlock(block) => {
                 ItemKind::ExternBlock(self.lower_extern_block(block))
             }
+            ast::ItemKind::Error => unreachable!("error items are filtered before lowering"),
         };
-        Item {
+        Some(Item {
             export: item.export,
             span: item.span,
             def_ids,
             kind,
-        }
+        })
     }
 
     fn lower_impl_decl(&mut self, decl: &ast::ImplDecl) -> ImplDecl {
@@ -823,7 +841,8 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             | ast::ItemKind::Impl(_)
             | ast::ItemKind::DerivableImpl(_)
             | ast::ItemKind::Derive(_)
-            | ast::ItemKind::CInclude(_) => Vec::new(),
+            | ast::ItemKind::CInclude(_)
+            | ast::ItemKind::Error => Vec::new(),
         }
     }
 
@@ -1023,6 +1042,14 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn lower_type(&mut self, ty: &ast::Type) -> Type {
         let kind = match &ty.kind {
+            ast::TypeKind::Error => TypeKind::Named(
+                TypeName {
+                    display: "<error>".to_string(),
+                    span: ty.span,
+                    kind: TypeNameKind::Error,
+                },
+                Vec::new(),
+            ),
             ast::TypeKind::Never => TypeKind::Never,
             ast::TypeKind::Hole => TypeKind::Hole,
             ast::TypeKind::Void => TypeKind::Void,
@@ -1081,7 +1108,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         let statements = block
             .statements
             .iter()
-            .map(|stmt| self.lower_stmt(stmt))
+            .filter_map(|stmt| self.lower_stmt(stmt))
             .collect();
         Block {
             span: block.span,
@@ -1096,8 +1123,9 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         block
     }
 
-    fn lower_stmt(&mut self, stmt: &ast::Stmt) -> Stmt {
+    fn lower_stmt(&mut self, stmt: &ast::Stmt) -> Option<Stmt> {
         let kind = match &stmt.kind {
+            ast::StmtKind::Error => return None,
             ast::StmtKind::Block(block) => StmtKind::Block(self.lower_block(block)),
             ast::StmtKind::VarDecl {
                 ty,
@@ -1130,7 +1158,8 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 then_block: self.lower_block(then_block),
                 else_branch: else_branch
                     .as_ref()
-                    .map(|stmt| Box::new(self.lower_stmt(stmt))),
+                    .and_then(|stmt| self.lower_stmt(stmt))
+                    .map(Box::new),
             },
             ast::StmtKind::While { cond, body } => StmtKind::While {
                 cond: self.lower_expr(cond),
@@ -1170,7 +1199,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         let statements = case
                             .statements
                             .iter()
-                            .map(|stmt| self.lower_stmt(stmt))
+                            .filter_map(|stmt| self.lower_stmt(stmt))
                             .collect();
                         self.pop_scope();
                         CaseClause {
@@ -1182,7 +1211,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 has_default: *has_default,
                 default: {
                     self.push_scope();
-                    let default = default.iter().map(|stmt| self.lower_stmt(stmt)).collect();
+                    let default = default
+                        .iter()
+                        .filter_map(|stmt| self.lower_stmt(stmt))
+                        .collect();
                     self.pop_scope();
                     default
                 },
@@ -1195,10 +1227,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             ast::StmtKind::Continue => StmtKind::Continue,
             ast::StmtKind::Expr(expr) => StmtKind::Expr(self.lower_expr(expr)),
         };
-        Stmt {
+        Some(Stmt {
             span: stmt.span,
             kind,
-        }
+        })
     }
 
     fn lower_for_init(&mut self, init: &ast::ForInit) -> ForInit {
@@ -1231,6 +1263,15 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn lower_pattern(&mut self, pattern: &ast::Pattern, is_case_head: bool) -> Pattern {
         match pattern {
+            ast::Pattern::Error(span) => Pattern::Variant(
+                PatternName {
+                    path: Vec::new(),
+                    display: "<error>".to_string(),
+                    span: *span,
+                    kind: PatternNameKind::Error,
+                },
+                Vec::new(),
+            ),
             ast::Pattern::Wildcard(span) => Pattern::Wildcard(*span),
             ast::Pattern::Binding { name, mutability } => {
                 let local_id = self.alloc_local(name);
@@ -1317,6 +1358,11 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn lower_expr(&mut self, expr: &ast::Expr) -> Expr {
         let kind = match &expr.kind {
+            ast::ExprKind::Error => ExprKind::Name(NameRef {
+                display: "<error>".to_string(),
+                span: expr.span,
+                kind: NameRefKind::Error,
+            }),
             ast::ExprKind::Name(path) => ExprKind::Name(self.resolve_name(path, "name")),
             ast::ExprKind::Literal(literal) => ExprKind::Literal(literal.clone()),
             ast::ExprKind::StructLiteral(fields) => ExprKind::StructLiteral(
@@ -1454,7 +1500,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         let statements = block
             .statements
             .iter()
-            .map(|stmt| self.lower_stmt(stmt))
+            .filter_map(|stmt| self.lower_stmt(stmt))
             .collect();
         let value = block
             .value

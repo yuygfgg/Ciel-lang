@@ -162,6 +162,13 @@ impl TypeChecker {
     ) -> Option<TExpr> {
         let result = match &expr.kind {
             ExprKind::Name(name_ref) => {
+                if matches!(name_ref.kind, NameRefKind::Error) {
+                    return Some(TExpr {
+                        span: expr.span,
+                        ty: Ty::Unknown,
+                        kind: TExprKind::Literal(Literal::Null),
+                    });
+                }
                 if let Some(local_id) = self.resolved_local_id(name_ref)
                     && let Some(binding) = scopes.get(local_id)
                 {

@@ -11,15 +11,15 @@ use crate::{
         planner::build_plan_for_generated_c_with_packages,
     },
     codegen::generate_c,
-    diagnostic::{DiagResult, Diagnostic},
+    diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     escape::analyze_escapes,
-    hir::lower_to_hir,
-    lexer::{Token, TokenKind, lex},
+    hir::lower_to_hir_lossy,
+    lexer::{Token, TokenKind, lex_lossy},
     mono::monomorphize,
-    parser::parse_file,
-    resolve::{ModuleId, ParsedModule, resolve_modules},
+    parser::parse_file_lossy,
+    resolve::{ModuleId, ParsedModule, resolve_modules_lossy},
     source::SourceMap,
-    typeck::type_check,
+    typeck::type_check_lossy,
 };
 
 const COMPILER_PRELUDE_IMPORTS: &[&str] =
@@ -97,20 +97,9 @@ impl CompileOptions {
 }
 
 pub fn compile_to_c(options: CompileOptions) -> DiagResult<String> {
-    let config = ConfigEnv::from_options(&options);
-    let mut loader = ModuleLoader::new(
-        options.project_manifest,
-        options.std_paths,
-        options.package_roots,
-        config,
-    )?;
-    let modules = loader.load_entry(&options.entry)?;
-    let resolved = resolve_modules(modules)?;
-    let hir = lower_to_hir(resolved)?;
-    let checked = type_check(hir)?;
-    let mono = monomorphize(checked)?;
-    let escapes = analyze_escapes(&mono);
-    generate_c(&mono, &escapes, &loader.source_map)
+    compile_to_c_with_sources(options)
+        .map(|(generated_c, _source_map)| generated_c)
+        .map_err(|(diagnostics, _source_map)| diagnostics)
 }
 
 pub fn compile_to_c_with_sources(
@@ -138,37 +127,38 @@ fn compile_to_c_context(
         Ok(loader) => loader,
         Err(diagnostics) => return Err((diagnostics, SourceMap::default())),
     };
-    match loader.load_entry(&options.entry) {
-        Ok(modules) => {
-            let resolved = match resolve_modules(modules) {
-                Ok(resolved) => resolved,
-                Err(diags) => return Err((diags, loader.source_map)),
-            };
-            let hir = match lower_to_hir(resolved) {
-                Ok(hir) => hir,
-                Err(diags) => return Err((diags, loader.source_map)),
-            };
-            let checked = match type_check(hir) {
-                Ok(checked) => checked,
-                Err(diags) => return Err((diags, loader.source_map)),
-            };
-            let mono = match monomorphize(checked) {
-                Ok(mono) => mono,
-                Err(diags) => return Err((diags, loader.source_map)),
-            };
-            let result = {
-                let escapes = analyze_escapes(&mono);
-                generate_c(&mono, &escapes, &loader.source_map)
-            };
-            match result {
-                Ok(generated_c) => Ok(CompileOutput {
-                    generated_c,
-                    source_map: loader.source_map,
-                    package_manifests: loader.loaded_package_manifests,
-                }),
-                Err(diags) => Err((diags, loader.source_map)),
-            }
-        }
+    let loaded = loader.load_entry_lossy(&options.entry);
+    let mut diagnostics = loaded.diagnostics;
+
+    let resolved = resolve_modules_lossy(loaded.value);
+    diagnostics.extend(resolved.diagnostics);
+
+    let hir = lower_to_hir_lossy(resolved.value);
+    diagnostics.extend(hir.diagnostics);
+
+    let checked = type_check_lossy(hir.value);
+    diagnostics.extend(checked.diagnostics);
+
+    // The default compile path keeps recovery alive through type checking so
+    // users see as many actionable diagnostics as possible before we reject.
+    if !diagnostics.is_empty() {
+        return Err((diagnostics, loader.source_map));
+    }
+
+    let mono = match monomorphize(checked.value) {
+        Ok(mono) => mono,
+        Err(diags) => return Err((diags, loader.source_map)),
+    };
+    let result = {
+        let escapes = analyze_escapes(&mono);
+        generate_c(&mono, &escapes, &loader.source_map)
+    };
+    match result {
+        Ok(generated_c) => Ok(CompileOutput {
+            generated_c,
+            source_map: loader.source_map,
+            package_manifests: loader.loaded_package_manifests,
+        }),
         Err(diags) => Err((diags, loader.source_map)),
     }
 }
@@ -250,37 +240,60 @@ impl ModuleLoader {
         })
     }
 
-    fn load_entry(&mut self, entry: &Path) -> DiagResult<Vec<ParsedModule>> {
+    fn load_entry_lossy(&mut self, entry: &Path) -> WithDiagnostics<Vec<ParsedModule>> {
+        let mut diagnostics = Vec::new();
         for import in COMPILER_PRELUDE_IMPORTS {
             let import_path = self.resolve_import_path(Path::new("."), import);
-            self.load_file(&import_path)?;
+            self.load_file_lossy(&import_path, &mut diagnostics);
         }
         let path = self.normalize_path(entry);
-        self.load_file(&path)?;
-        Ok(std::mem::take(&mut self.modules))
+        self.load_file_lossy(&path, &mut diagnostics);
+        WithDiagnostics {
+            value: std::mem::take(&mut self.modules),
+            diagnostics,
+        }
     }
 
-    fn load_file(&mut self, path: &Path) -> DiagResult<ModuleId> {
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn load_file_lossy(
+        &mut self,
+        path: &Path,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) -> Option<ModuleId> {
         let path = self.normalize_path(path);
         if let Some(id) = self.loaded.get(&path) {
-            return Ok(*id);
+            return Some(*id);
         }
         if !self.loading.insert(path.clone()) {
-            return Err(vec![Diagnostic::new(
-                None,
-                format!("import cycle involving `{}`", path.display()),
-            )]);
+            diagnostics.push(
+                Diagnostic::new(None, format!("import cycle involving `{}`", path.display()))
+                    .with_phase(DiagnosticPhase::Resolve),
+            );
+            return None;
         }
 
-        let text = fs::read_to_string(&path).map_err(|error| {
-            vec![Diagnostic::new(
-                None,
-                format!("failed to read `{}`: {error}", path.display()),
-            )]
-        })?;
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                diagnostics.push(
+                    Diagnostic::new(
+                        None,
+                        format!("failed to read `{}`: {error}", path.display()),
+                    )
+                    .with_phase(DiagnosticPhase::Resolve),
+                );
+                self.loading.remove(&path);
+                return None;
+            }
+        };
         let file_id = self.source_map.add(path.clone(), text.clone());
-        let tokens = preprocess_config(lex(file_id, &text)?, &self.config)?;
-        let ast = parse_file(tokens)?;
+        let lexed = lex_lossy(file_id, &text);
+        diagnostics.extend(lexed.diagnostics);
+        let preprocessed = preprocess_config_lossy(lexed.value, &self.config);
+        diagnostics.extend(preprocessed.diagnostics);
+        let parsed = parse_file_lossy(preprocessed.value);
+        diagnostics.extend(parsed.diagnostics);
+        let ast = parsed.value;
         let id = ModuleId(self.modules.len());
         self.loaded.insert(path.clone(), id);
         self.record_package_for_source(&path);
@@ -310,11 +323,11 @@ impl ModuleLoader {
         });
 
         for import_path in import_paths {
-            self.load_file(&import_path)?;
+            self.load_file_lossy(&import_path, diagnostics);
         }
 
-        self.loading.remove(&self.normalize_path(&path));
-        Ok(id)
+        self.loading.remove(&path);
+        Some(id)
     }
 
     fn resolve_import_path(&self, parent: &Path, raw: &str) -> PathBuf {
@@ -411,9 +424,12 @@ impl ConfigEnv {
     }
 }
 
-fn preprocess_config(tokens: Vec<Token>, config: &ConfigEnv) -> DiagResult<Vec<Token>> {
+fn preprocess_config_lossy(tokens: Vec<Token>, config: &ConfigEnv) -> WithDiagnostics<Vec<Token>> {
     let Some(eof) = tokens.last().cloned() else {
-        return Ok(tokens);
+        return WithDiagnostics {
+            value: tokens,
+            diagnostics: Vec::new(),
+        };
     };
     let mut preprocessor = ConfigPreprocessor {
         tokens: &tokens,
@@ -431,10 +447,14 @@ fn preprocess_config(tokens: Vec<Token>, config: &ConfigEnv) -> DiagResult<Vec<T
         ));
     }
     out.push(eof);
-    if preprocessor.diagnostics.is_empty() {
-        Ok(out)
-    } else {
-        Err(preprocessor.diagnostics)
+    for diagnostic in &mut preprocessor.diagnostics {
+        if diagnostic.phase.is_none() {
+            diagnostic.phase = Some(DiagnosticPhase::Parse);
+        }
+    }
+    WithDiagnostics {
+        value: out,
+        diagnostics: preprocessor.diagnostics,
     }
 }
 
@@ -699,4 +719,65 @@ fn decode_config_string(raw: &str) -> String {
         .and_then(|value| value.strip_suffix('"'))
         .unwrap_or(raw)
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "ciel-driver-recovery-{name}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn lossy_module_loading_keeps_valid_imports_after_malformed_import() {
+        let dir = temp_dir("imports");
+        let good = dir.join("good.ciel");
+        let main = dir.join("main.ciel");
+        fs::write(&good, "void good() {}\n").unwrap();
+        fs::write(
+            &main,
+            "import ./broken as ;\nimport ./good;\nvoid main() {}\n",
+        )
+        .unwrap();
+
+        let config = ConfigEnv {
+            target_os: std::env::consts::OS.to_string(),
+            target_arch: std::env::consts::ARCH.to_string(),
+            features: HashSet::new(),
+        };
+        let mut loader = ModuleLoader::new(
+            None,
+            vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
+            Vec::new(),
+            config,
+        )
+        .unwrap();
+        let mut diagnostics = Vec::new();
+        loader.load_file_lossy(&main, &mut diagnostics);
+        let normalized_good = loader.normalize_path(&good);
+
+        assert!(!diagnostics.is_empty());
+        assert!(
+            loader
+                .modules
+                .iter()
+                .any(|module| module.path == normalized_good)
+        );
+        let entry = loader
+            .modules
+            .iter()
+            .find(|module| module.path == loader.normalize_path(&main))
+            .unwrap();
+        assert_eq!(entry.import_paths, vec![normalized_good]);
+    }
 }

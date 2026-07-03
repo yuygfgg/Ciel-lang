@@ -6,7 +6,7 @@ use crate::{
     diagnostic::{DiagResult, Diagnostic},
     hir::*,
     layout::check_checked_aggregate_layouts,
-    resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
+    resolve::{DefId, DefKind, ModuleId},
     std_id,
     thir::*,
     types::{
@@ -171,11 +171,27 @@ struct ImplSig {
 #[derive(Clone, Debug)]
 struct GenericImplTemplate {
     module: ModuleId,
+    body_reflection_module: Option<ModuleId>,
     item_span: crate::span::Span,
     interface_def: DefId,
     interface_name: String,
     generics: Vec<GenericInfo>,
     generic_constraints: Vec<GenericConstraintBounds>,
+    interface_args: Vec<Ty>,
+    receiver_ty: Option<Ty>,
+    ret: Ty,
+    params: Vec<Ty>,
+    decl: ImplDecl,
+    body_subst: HashMap<String, Ty>,
+}
+
+#[derive(Clone, Debug)]
+struct DerivableImplTemplate {
+    module: ModuleId,
+    requires_unsafe: bool,
+    interface_def: DefId,
+    interface_name: String,
+    generics: Vec<GenericInfo>,
     interface_args: Vec<Ty>,
     receiver_ty: Option<Ty>,
     ret: Ty,
@@ -202,6 +218,12 @@ struct ImplAnalysis {
     params: Vec<Ty>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MarkerImplOverlapKind {
+    GenericTemplate,
+    ConcreteImpl,
+}
+
 #[derive(Clone, Debug)]
 struct PendingImplBody {
     decl: ImplDecl,
@@ -215,6 +237,37 @@ struct PendingImplBody {
 struct QueuedImplBody {
     pending: PendingImplBody,
     subst: HashMap<String, Ty>,
+    reflection_module: Option<ModuleId>,
+}
+
+#[derive(Clone, Debug)]
+struct PendingDerivedGenericImpl {
+    derive_display: String,
+    derive_span: crate::span::Span,
+    validation_module: ModuleId,
+    reflection_module: ModuleId,
+    template_generics: Vec<GenericInfo>,
+    template: GenericImplTemplate,
+}
+
+#[derive(Clone, Debug)]
+struct PendingDerivedTemplateConstraintCheck {
+    derive_span: crate::span::Span,
+    derive_generics: Vec<GenericInfo>,
+    generic_constraints: Vec<GenericConstraintBounds>,
+    template_generics: Vec<GenericInfo>,
+    body_subst: HashMap<String, Ty>,
+    implementation: ImplSig,
+}
+
+#[derive(Clone, Debug)]
+struct PendingDerivedNegativeCapabilityCheck {
+    derive_display: String,
+    derive_span: crate::span::Span,
+    derive_generics: Vec<GenericInfo>,
+    generic_constraints: Vec<GenericConstraintBounds>,
+    receiver_ty: Ty,
+    capability: InterfaceRefTy,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -655,130 +708,33 @@ pub struct CheckedGenericInstance {
     pub opaque_returns: HashMap<OpaqueReturnKey, Ty>,
 }
 
-fn lower_ast_type_static(ty: &Type, subst: &HashMap<String, Ty>, resolved: &ResolvedProgram) -> Ty {
-    match &ty.kind {
-        TypeKind::Hole => Ty::Unknown,
-        TypeKind::Never => Ty::Never,
-        TypeKind::Void => Ty::Void,
-        TypeKind::Primitive(primitive) => ty_from_primitive(primitive),
-        TypeKind::Named(type_name, args) => {
-            let name = match &type_name.kind {
-                TypeNameKind::Def(def_id) => nominal_type_name(resolved, *def_id),
-                TypeNameKind::Generic(generic) => generic.clone(),
-                TypeNameKind::Error => return Ty::Unknown,
-            };
-            if args.is_empty()
-                && let Some(replacement) = subst.get(&name)
-            {
-                return replacement.clone();
-            }
-            Ty::Named {
-                name,
-                args: args
-                    .iter()
-                    .map(|arg| lower_ast_type_static(arg, subst, resolved))
-                    .collect(),
-            }
-        }
-        TypeKind::Pointer {
-            nullable,
-            mutability,
-            inner,
-        } => Ty::Pointer {
-            nullable: *nullable,
-            mutability: *mutability,
-            inner: Box::new(lower_ast_type_static(inner, subst, resolved)),
-        },
-        TypeKind::Array { len, elem } => Ty::Array {
-            len: *len,
-            elem: Box::new(lower_ast_type_static(elem, subst, resolved)),
-        },
-        TypeKind::Slice { mutability, elem } => Ty::Slice {
-            mutability: *mutability,
-            elem: Box::new(lower_ast_type_static(elem, subst, resolved)),
-        },
-        TypeKind::Function {
-            is_unsafe,
-            abi,
-            ret,
-            params,
-        } => Ty::Function {
-            is_unsafe: *is_unsafe,
-            abi: abi.clone(),
-            ret: Box::new(lower_ast_type_static(ret, subst, resolved)),
-            params: params
-                .iter()
-                .map(|param| lower_ast_type_static(param, subst, resolved))
-                .collect(),
-        },
-        TypeKind::Closure { ret, params, .. } => Ty::Closure {
-            ret: Box::new(lower_ast_type_static(ret, subst, resolved)),
-            params: params
-                .iter()
-                .map(|param| lower_ast_type_static(param, subst, resolved))
-                .collect(),
-            constraints: ConstraintBounds::default(),
-        },
-    }
-}
-
-fn collect_policy_marker_templates(
-    modules: &[Module],
-    resolved: &ResolvedProgram,
-    interface_name: &str,
-) -> Vec<Ty> {
-    let mut templates = Vec::new();
-    for module in modules {
-        for item in &module.items {
-            let ItemKind::Impl(decl) = &item.kind else {
-                continue;
-            };
-            if !impl_targets_std_policy_marker(resolved, decl, interface_name)
-                || !decl.args.is_empty()
-                || decl
+fn collect_policy_marker_templates(ctx: &TyCtx, interface_name: &str) -> Vec<Ty> {
+    ctx.generic_impls
+        .iter()
+        .filter_map(|template| {
+            if !matches!(
+                interface_name,
+                STD_MESSAGE_SHARE_HANDLE_INTERFACE | STD_MESSAGE_THREAD_LOCAL_INTERFACE
+            ) || !std_id::is_std_message_interface(
+                &ctx.resolved,
+                template.interface_def,
+                interface_name,
+            ) || !interface_non_receiver_args(&template.interface_args).is_empty()
+                || template
                     .generics
                     .iter()
                     .any(|generic| generic.constraint.is_some())
+                || template
+                    .generic_constraints
+                    .iter()
+                    .any(|constraint| constraint.is_resource || !constraint.bounds.is_empty())
             {
-                continue;
+                return None;
             }
-            let Some(param) = decl.params.first() else {
-                continue;
-            };
-            let subst = decl
-                .generics
-                .iter()
-                .map(|generic| {
-                    (
-                        generic.name.name.clone(),
-                        Ty::Generic(generic.name.name.clone()),
-                    )
-                })
-                .collect::<HashMap<_, _>>();
-            let receiver =
-                receiver_ty_from_value_ty(&lower_ast_type_static(&param.ty, &subst, resolved));
-            if contains_generic(&receiver) {
-                templates.push(receiver);
-            }
-        }
-    }
-    templates
-}
-
-fn impl_targets_std_policy_marker(
-    resolved: &ResolvedProgram,
-    decl: &ImplDecl,
-    interface_name: &str,
-) -> bool {
-    let NameRefKind::Def(def_id) = decl.name.kind else {
-        return false;
-    };
-    match interface_name {
-        STD_MESSAGE_SHARE_HANDLE_INTERFACE | STD_MESSAGE_THREAD_LOCAL_INTERFACE => {
-            std_id::is_std_message_interface(resolved, def_id, interface_name)
-        }
-        _ => false,
-    }
+            let receiver = template.receiver_ty.as_ref()?;
+            contains_generic(receiver).then(|| receiver.clone())
+        })
+        .collect()
 }
 
 pub fn type_check_generic_instance(
@@ -846,10 +802,17 @@ struct TypeChecker {
     visiting_enums: HashSet<String>,
     generated_functions: Vec<CheckedFunction>,
     pending_impl_bodies: Vec<QueuedImplBody>,
+    pending_derived_generic_impls: Vec<PendingDerivedGenericImpl>,
+    pending_derived_template_constraint_checks: Vec<PendingDerivedTemplateConstraintCheck>,
+    pending_derived_negative_checks: Vec<PendingDerivedNegativeCapabilityCheck>,
     capability_resolution_stack: HashSet<CapabilityResolutionKey>,
+    symbolic_impl_resolution_depth: usize,
+    symbolic_capability_resolution_stack: HashSet<CapabilityResolutionKey>,
+    symbolic_constraint_env_stack: Vec<Vec<GenericConstraintBounds>>,
     fatal_impl_coherence_error: bool,
     type_subst_stack: Vec<HashMap<String, Ty>>,
     generic_env_stack: Vec<Vec<GenericInfo>>,
+    meta_reflection_module_stack: Vec<ModuleId>,
     opaque_returns: HashMap<OpaqueReturnKey, Ty>,
     current_opaque_return: Option<OpaqueReturnState>,
     opaque_return_probe_stack: HashSet<OpaqueReturnKey>,
@@ -890,10 +853,17 @@ impl TypeChecker {
             visiting_enums: HashSet::new(),
             generated_functions: Vec::new(),
             pending_impl_bodies: Vec::new(),
+            pending_derived_generic_impls: Vec::new(),
+            pending_derived_template_constraint_checks: Vec::new(),
+            pending_derived_negative_checks: Vec::new(),
             capability_resolution_stack: HashSet::new(),
+            symbolic_impl_resolution_depth: 0,
+            symbolic_capability_resolution_stack: HashSet::new(),
+            symbolic_constraint_env_stack: Vec::new(),
             fatal_impl_coherence_error: false,
             type_subst_stack: Vec::new(),
             generic_env_stack: Vec::new(),
+            meta_reflection_module_stack: Vec::new(),
             opaque_returns: HashMap::new(),
             current_opaque_return: None,
             opaque_return_probe_stack: HashSet::new(),
@@ -920,12 +890,13 @@ impl TypeChecker {
         self.collect_structs();
         self.collect_enums();
         self.collect_impl_signatures();
+        self.instantiate_declared_aggregate_instances();
+        self.collect_functions();
+        self.drain_pending_derived_generic_impls();
         self.diagnostics
             .extend(capability_solve::check_determined_coherence(
                 &CapabilityTable::new(&self.ctx),
             ));
-        self.instantiate_declared_aggregate_instances();
-        self.collect_functions();
         self.normalize_function_sigs();
         self.collect_receiver_selectors();
         self.validate_receiver_selector_conflicts();
@@ -1009,7 +980,11 @@ impl TypeChecker {
                             }
                         }
                     }
-                    ItemKind::Impl(_) | ItemKind::Interface(_) | ItemKind::InterfaceAlias(_) => {
+                    ItemKind::Impl(_)
+                    | ItemKind::DerivableImpl(_)
+                    | ItemKind::Derive(_)
+                    | ItemKind::Interface(_)
+                    | ItemKind::InterfaceAlias(_) => {
                         // Collected and checked through the global interface/impl tables.
                     }
                     _ => {}
@@ -1020,6 +995,8 @@ impl TypeChecker {
         self.drain_pending_impl_bodies();
         checked_functions.append(&mut self.generated_functions);
         self.check_by_value_layout_cycles();
+        self.drain_pending_impl_bodies();
+        checked_functions.append(&mut self.generated_functions);
 
         if self.diagnostics.is_empty() {
             let mut checked_structs = self
@@ -1178,16 +1155,10 @@ impl TypeChecker {
                 })
                 .collect::<Vec<_>>();
             checked_generic_functions.sort_by(|a, b| a.name.cmp(&b.name));
-            let share_handle_templates = collect_policy_marker_templates(
-                &self.ctx.hir_modules,
-                &self.ctx.resolved,
-                STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-            );
-            let thread_local_templates = collect_policy_marker_templates(
-                &self.ctx.hir_modules,
-                &self.ctx.resolved,
-                STD_MESSAGE_THREAD_LOCAL_INTERFACE,
-            );
+            let share_handle_templates =
+                collect_policy_marker_templates(&self.ctx, STD_MESSAGE_SHARE_HANDLE_INTERFACE);
+            let thread_local_templates =
+                collect_policy_marker_templates(&self.ctx, STD_MESSAGE_THREAD_LOCAL_INTERFACE);
             let ty_ctx = self.ctx.clone();
             Ok(CheckedProgram {
                 ty_ctx,

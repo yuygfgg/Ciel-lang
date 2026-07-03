@@ -196,17 +196,11 @@ impl format_error(*const AsyncNetError error) {
     }
 }
 
-unsafe impl cancel_safe_marker(*const AsyncAccept op) {
-    return true;
-}
+unsafe derive cancel_safe_marker<AsyncAccept>;
 
-unsafe impl cancel_safe_marker(*const AsyncConnect op) {
-    return true;
-}
+unsafe derive cancel_safe_marker<AsyncConnect>;
 
-unsafe impl cancel_safe_marker(*const AsyncBufferedRead op) {
-    return true;
-}
+unsafe derive cancel_safe_marker<AsyncBufferedRead>;
 
 unsafe impl clone_message(*const ReadIntoResult value) {
     buf::ByteBuf cloned = clone_message(&value->buffer)?;

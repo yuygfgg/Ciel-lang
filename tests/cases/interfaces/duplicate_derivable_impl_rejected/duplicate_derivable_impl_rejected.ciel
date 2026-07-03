@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: duplicate derivable impl
+
+interface<T> bool marker(*const T value);
+
+derivable impl<T> marker(*const T value) {
+    return true;
+}
+
+derivable impl<T> marker(*const T value) {
+    return true;
+}
+
+i64 main() {
+    return 0;
+}

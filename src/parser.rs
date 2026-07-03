@@ -57,55 +57,87 @@ impl Parser {
         };
         let is_unsafe = self.eat(TokenKind::Unsafe).is_some();
 
-        let kind = match self.peek().kind {
-            TokenKind::Import | TokenKind::HashCInclude | TokenKind::Type | TokenKind::Enum
-                if is_unsafe || is_resource =>
-            {
+        let kind = if self.at_ident_named("derive") {
+            if export {
                 return Err(Diagnostic::new(
                     start,
-                    "item modifier is valid only on functions, extern blocks, interfaces, impls, structs, and unsafe blocks",
+                    "`derive` declarations cannot be exported",
                 ));
             }
-            TokenKind::Import => ItemKind::Import(self.parse_import_decl()?),
-            TokenKind::HashCInclude => {
-                self.advance();
-                let include = self.expect_string("expected include string after #c_include")?;
-                self.eat(TokenKind::Semi);
-                ItemKind::CInclude(include)
-            }
-            TokenKind::Type => ItemKind::TypeAlias(self.parse_type_alias_decl(None)?),
-            TokenKind::Struct => ItemKind::Struct(self.parse_struct_decl(is_resource, is_unsafe)?),
-            TokenKind::Enum => ItemKind::Enum(self.parse_enum_decl()?),
-            TokenKind::Interface => self.parse_interface_item(is_unsafe)?,
-            TokenKind::Impl => {
-                if export {
-                    return Err(Diagnostic::new(
-                        start,
-                        "`impl` declarations cannot be exported",
-                    ));
-                }
-                ItemKind::Impl(self.parse_impl_decl(is_unsafe)?)
-            }
-            TokenKind::Extern => self.parse_extern_or_function_item(is_unsafe)?,
-            TokenKind::Noescape => {
-                return Err(Diagnostic::new(
-                    start,
-                    "`noescape` is allowed only inside `extern \"C\"` blocks",
-                ));
-            }
-            TokenKind::HashIf => {
-                return Err(Diagnostic::new(
-                    start,
-                    "configuration gates are not implemented in this compiler slice",
-                ));
-            }
-            _ if is_resource => {
+            if is_resource {
                 return Err(Diagnostic::new(
                     start,
                     "`resource` is valid only on struct declarations",
                 ));
             }
-            _ => ItemKind::Function(self.parse_function_decl(None, is_unsafe)?),
+            ItemKind::Derive(self.parse_derive_decl(is_unsafe)?)
+        } else if self.at_ident_named("derivable") {
+            if export {
+                return Err(Diagnostic::new(
+                    start,
+                    "`derivable impl` declarations cannot be exported",
+                ));
+            }
+            if is_resource {
+                return Err(Diagnostic::new(
+                    start,
+                    "`resource` is valid only on struct declarations",
+                ));
+            }
+            ItemKind::DerivableImpl(self.parse_derivable_impl_decl(is_unsafe)?)
+        } else {
+            match self.peek().kind {
+                TokenKind::Import | TokenKind::HashCInclude | TokenKind::Type | TokenKind::Enum
+                    if is_unsafe || is_resource =>
+                {
+                    return Err(Diagnostic::new(
+                        start,
+                        "item modifier is valid only on functions, extern blocks, interfaces, impls, structs, and unsafe blocks",
+                    ));
+                }
+                TokenKind::Import => ItemKind::Import(self.parse_import_decl()?),
+                TokenKind::HashCInclude => {
+                    self.advance();
+                    let include = self.expect_string("expected include string after #c_include")?;
+                    self.eat(TokenKind::Semi);
+                    ItemKind::CInclude(include)
+                }
+                TokenKind::Type => ItemKind::TypeAlias(self.parse_type_alias_decl(None)?),
+                TokenKind::Struct => {
+                    ItemKind::Struct(self.parse_struct_decl(is_resource, is_unsafe)?)
+                }
+                TokenKind::Enum => ItemKind::Enum(self.parse_enum_decl()?),
+                TokenKind::Interface => self.parse_interface_item(is_unsafe)?,
+                TokenKind::Impl => {
+                    if export {
+                        return Err(Diagnostic::new(
+                            start,
+                            "`impl` declarations cannot be exported",
+                        ));
+                    }
+                    ItemKind::Impl(self.parse_impl_decl(is_unsafe)?)
+                }
+                TokenKind::Extern => self.parse_extern_or_function_item(is_unsafe)?,
+                TokenKind::Noescape => {
+                    return Err(Diagnostic::new(
+                        start,
+                        "`noescape` is allowed only inside `extern \"C\"` blocks",
+                    ));
+                }
+                TokenKind::HashIf => {
+                    return Err(Diagnostic::new(
+                        start,
+                        "configuration gates are not implemented in this compiler slice",
+                    ));
+                }
+                _ if is_resource => {
+                    return Err(Diagnostic::new(
+                        start,
+                        "`resource` is valid only on struct declarations",
+                    ));
+                }
+                _ => ItemKind::Function(self.parse_function_decl(None, is_unsafe)?),
+            }
         };
 
         let end = self.previous().span;
@@ -329,6 +361,48 @@ impl Parser {
             args,
             params,
             body,
+        })
+    }
+
+    fn parse_derivable_impl_decl(
+        &mut self,
+        requires_unsafe: bool,
+    ) -> Result<DerivableImplDecl, Diagnostic> {
+        self.expect_ident_named("derivable", "expected `derivable`")?;
+        let generated_unsafe = self.eat(TokenKind::Unsafe).is_some();
+        let impl_decl = self.parse_impl_decl(generated_unsafe)?;
+        Ok(DerivableImplDecl {
+            requires_unsafe,
+            impl_decl,
+        })
+    }
+
+    fn parse_derive_decl(&mut self, is_unsafe: bool) -> Result<DeriveDecl, Diagnostic> {
+        self.expect_ident_named("derive", "expected `derive`")?;
+        let generics = if self.at(TokenKind::Lt) {
+            self.parse_generic_param_list()?
+        } else {
+            Vec::new()
+        };
+        let name =
+            self.parse_qualified_ident_path("expected interface or alias name after `derive`")?;
+        let args = if self.at(TokenKind::Lt) {
+            self.expect(TokenKind::Lt, "expected `<`")?;
+            let list = self.parse_type_list_with_binding_context(None)?;
+            self.expect_type_gt("expected `>` after derive arguments")?;
+            list
+        } else {
+            return Err(Diagnostic::new(
+                self.peek().span,
+                "expected derive type arguments",
+            ));
+        };
+        self.expect(TokenKind::Semi, "expected `;` after derive declaration")?;
+        Ok(DeriveDecl {
+            is_unsafe,
+            generics,
+            name,
+            args,
         })
     }
 
@@ -2229,6 +2303,14 @@ impl Parser {
                 name: token.lexeme,
                 span: token.span,
             })
+        } else {
+            Err(Diagnostic::new(self.peek().span, message))
+        }
+    }
+
+    fn expect_ident_named(&mut self, name: &str, message: &str) -> Result<Ident, Diagnostic> {
+        if self.at_ident_named(name) {
+            self.expect_ident(message)
         } else {
             Err(Diagnostic::new(self.peek().span, message))
         }

@@ -1,0 +1,26 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/lib;
+import /std/meta as meta;
+import /std/text as text;
+
+struct Box<T> {
+    T value;
+}
+
+derive<T: json::Wire> json::Wire<Box<T>>;
+
+i64 main() {
+    Box<i64> original = { value: 5 };
+    text::Text encoded = must(json::encode<Box<i64>>(&original));
+    if (!text::text_equal_slice(encoded, "{\"value\":5}")) {
+        return 1;
+    }
+    Box<i64> decoded = must(json::decode(meta::type_tag<Box<i64>>(), "{\"value\":9}"));
+    if (decoded.value != 9) {
+        return 2;
+    }
+    return 0;
+}

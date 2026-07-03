@@ -1,0 +1,17 @@
+// ciel-test: compile
+
+import /std/channel as channel;
+import /std/lib;
+import /std/meta as meta;
+
+struct Packet {
+    channel::Channel<i64> channel;
+}
+
+i64 main() {
+    channel::Channel<i64> ch = must(channel::make_channel<i64>());
+    Packet packet = { channel: ch };
+    meta::Repr<Packet> repr = meta::into_repr(&packet);
+    Packet copied = meta::from_repr<Packet>(repr);
+    return 0;
+}

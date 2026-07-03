@@ -273,8 +273,13 @@ impl TypeChecker {
         });
         for module in &modules {
             for item in &module.items {
-                let ItemKind::Impl(decl) = &item.kind else {
-                    continue;
+                let decl = match &item.kind {
+                    ItemKind::Impl(decl) => decl,
+                    ItemKind::DerivableImpl(decl) => {
+                        self.collect_derivable_impl_template(module.id, item.span, decl);
+                        continue;
+                    }
+                    _ => continue,
                 };
                 self.current_module = module.id;
                 let Some(interface_def) =
@@ -359,11 +364,12 @@ impl TypeChecker {
                         analysis.ret,
                         analysis.params,
                     ) {
-                        self.queue_impl_body(pending, HashMap::new());
+                        self.queue_impl_body(pending, HashMap::new(), None);
                     }
                 } else {
                     self.ctx.generic_impls.push(GenericImplTemplate {
                         module: module.id,
+                        body_reflection_module: None,
                         item_span: item.span,
                         interface_def: analysis.interface_def,
                         interface_name: analysis.interface_name,
@@ -374,10 +380,964 @@ impl TypeChecker {
                         ret: analysis.ret,
                         params: analysis.params,
                         decl: decl.clone(),
+                        body_subst: HashMap::new(),
                     });
                 }
             }
         }
+        for module in &modules {
+            for item in &module.items {
+                let ItemKind::Derive(decl) = &item.kind else {
+                    continue;
+                };
+                self.current_module = module.id;
+                self.collect_derive_decl(module.id, item.span, decl);
+            }
+        }
+        self.drain_pending_derived_template_constraint_checks();
+        self.drain_pending_derived_negative_checks();
+    }
+
+    fn collect_derivable_impl_template(
+        &mut self,
+        module: ModuleId,
+        item_span: crate::span::Span,
+        decl: &DerivableImplDecl,
+    ) {
+        self.current_module = module;
+        let impl_decl = &decl.impl_decl;
+        let Some(interface_def) =
+            self.name_def_of_kind(&impl_decl.name, &[DefKind::Interface], "interface")
+        else {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "unknown interface `{}` in derivable impl",
+                    impl_decl.name.display
+                ),
+            ));
+            return;
+        };
+        let Some(interface) = self.ctx.interfaces.get(&interface_def).cloned() else {
+            return;
+        };
+        if interface.is_unsafe && !impl_decl.is_unsafe {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "derivable impl `{}` requires `unsafe impl` because the interface is unsafe",
+                    interface.name
+                ),
+            ));
+            return;
+        }
+        if !interface.is_unsafe && impl_decl.is_unsafe {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "`unsafe impl` cannot implement safe interface `{}`",
+                    interface.name
+                ),
+            ));
+            return;
+        }
+        if self.is_compiler_provided_meta_marker_def(interface_def) {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "`{}` is a compiler-provided marker and cannot be derived in source",
+                    interface.name
+                ),
+            ));
+            return;
+        }
+        let Some(analysis) = self.analyze_impl_signature(item_span, impl_decl, &interface) else {
+            return;
+        };
+        if self.resource_handle_message_impl_forbidden(impl_decl.name.span, &analysis) {
+            return;
+        }
+        let generic_names = analysis
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .collect::<HashSet<_>>();
+        if interface_non_receiver_args(&analysis.interface_args)
+            .iter()
+            .any(|arg| contains_any_generic_name(arg, &generic_names))
+        {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "derivable impl `{}` must fix all non-receiver interface arguments",
+                    analysis.interface_name
+                ),
+            ));
+            return;
+        }
+        if self.ctx.derivable_impls.iter().any(|existing| {
+            existing.interface_def == analysis.interface_def
+                && interface_non_receiver_args(&existing.interface_args)
+                    == interface_non_receiver_args(&analysis.interface_args)
+        }) {
+            self.diagnostics.push(Diagnostic::new(
+                impl_decl.name.span,
+                format!(
+                    "duplicate derivable impl for interface `{}`",
+                    analysis.interface_name
+                ),
+            ));
+            return;
+        }
+        self.ctx.derivable_impls.push(DerivableImplTemplate {
+            module,
+            requires_unsafe: decl.requires_unsafe,
+            interface_def: analysis.interface_def,
+            interface_name: analysis.interface_name,
+            generics: analysis.generics,
+            interface_args: analysis.interface_args,
+            receiver_ty: analysis.receiver_ty,
+            ret: analysis.ret,
+            params: analysis.params,
+            decl: impl_decl.clone(),
+        });
+    }
+
+    fn collect_derive_decl(
+        &mut self,
+        module: ModuleId,
+        item_span: crate::span::Span,
+        decl: &DeriveDecl,
+    ) {
+        let derive_generics = decl
+            .generics
+            .iter()
+            .map(|param| GenericInfo {
+                name: param.name.name.clone(),
+                is_resource: param.is_resource,
+                is_hidden: param.is_hidden,
+                constraint: param.constraint.clone(),
+            })
+            .collect::<Vec<_>>();
+        self.validate_generic_bindings("derive declaration", &derive_generics);
+        let resource_generics = Self::resource_generic_scope(&derive_generics);
+        self.resource_generic_stack.push(resource_generics);
+        self.with_generic_env(&derive_generics, |checker| {
+            checker.collect_derive_decl_with_generics(
+                module,
+                item_span,
+                decl,
+                derive_generics.clone(),
+            );
+        });
+        self.resource_generic_stack.pop();
+    }
+
+    fn collect_derive_decl_with_generics(
+        &mut self,
+        module: ModuleId,
+        item_span: crate::span::Span,
+        decl: &DeriveDecl,
+        derive_generics: Vec<GenericInfo>,
+    ) {
+        if decl.args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "derive target `{}` expects exactly one receiver type argument, got {}",
+                    decl.name.display,
+                    decl.args.len()
+                ),
+            ));
+            return;
+        }
+        let derive_subst = derive_generics
+            .iter()
+            .map(|generic| (generic.name.clone(), Ty::Generic(generic.name.clone())))
+            .collect::<HashMap<_, _>>();
+        let receiver_ty = self.lower_type_with_subst(&decl.args[0], &derive_subst);
+        let Some(target_def) = self.name_def_of_kind(
+            &decl.name,
+            &[DefKind::Interface, DefKind::InterfaceAlias],
+            "interface or alias",
+        ) else {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "unknown interface or alias `{}` in derive",
+                    decl.name.display
+                ),
+            ));
+            return;
+        };
+        let target_def_kind = self.ctx.resolved.def(target_def).kind.clone();
+        let view = match target_def_kind {
+            DefKind::Interface => {
+                let Some(interface) = self.ctx.interfaces.get(&target_def).cloned() else {
+                    return;
+                };
+                if interface.generics.len() != 1 {
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!(
+                            "derive target `{}` must not have unfixed non-receiver type parameters",
+                            interface.name
+                        ),
+                    ));
+                    return;
+                }
+                InterfaceView {
+                    positive: vec![InterfaceRefTy {
+                        def_id: target_def,
+                        name: interface.name,
+                        args: Vec::new(),
+                    }],
+                    negative: Vec::new(),
+                }
+            }
+            DefKind::InterfaceAlias => {
+                let Some(alias) = self.ctx.interface_aliases.get(&target_def) else {
+                    return;
+                };
+                if !alias.generics.is_empty() {
+                    let name = self.ctx.resolved.def(target_def).name.clone();
+                    self.diagnostics.push(Diagnostic::new(
+                        decl.name.span,
+                        format!(
+                            "derive target `{name}` must be a one-argument alias with no extra type parameters"
+                        ),
+                    ));
+                    return;
+                }
+                self.interface_view_for_def(target_def, &[])
+            }
+            _ => return,
+        };
+
+        let generic_constraints =
+            self.derived_impl_generic_constraints(&derive_generics, &derive_subst);
+        for capability in &view.positive {
+            self.derive_positive_capability(
+                module,
+                item_span,
+                decl,
+                &derive_generics,
+                &generic_constraints,
+                &receiver_ty,
+                capability,
+            );
+        }
+        self.pending_derived_negative_checks
+            .extend(view.negative.into_iter().map(|capability| {
+                PendingDerivedNegativeCapabilityCheck {
+                    derive_display: decl.name.display.clone(),
+                    derive_span: decl.name.span,
+                    derive_generics: derive_generics.clone(),
+                    generic_constraints: generic_constraints.clone(),
+                    receiver_ty: receiver_ty.clone(),
+                    capability,
+                }
+            }));
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn derive_positive_capability(
+        &mut self,
+        module: ModuleId,
+        item_span: crate::span::Span,
+        decl: &DeriveDecl,
+        derive_generics: &[GenericInfo],
+        generic_constraints: &[GenericConstraintBounds],
+        receiver_ty: &Ty,
+        capability: &InterfaceRefTy,
+    ) {
+        if self.is_compiler_provided_meta_marker_def(capability.def_id) {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "`{}` is a compiler-provided marker and cannot be derived in source",
+                    capability.name
+                ),
+            ));
+            return;
+        }
+        let full_args = std::iter::once(receiver_ty.clone())
+            .chain(capability.args.iter().cloned())
+            .collect::<Vec<_>>();
+        if self
+            .find_impl_by_full_args(
+                capability.def_id,
+                &capability.name,
+                &full_args,
+                Some(receiver_ty),
+            )
+            .is_some()
+        {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "derive `{}` conflicts with an existing impl of `{}` for `{}`",
+                    decl.name.display, capability.name, receiver_ty
+                ),
+            ));
+            return;
+        }
+        let Some(template) = self
+            .ctx
+            .derivable_impls
+            .iter()
+            .find(|template| {
+                template.interface_def == capability.def_id
+                    && interface_non_receiver_args(&template.interface_args) == capability.args
+            })
+            .cloned()
+        else {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!("no derivable impl is available for `{}`", capability.name),
+            ));
+            return;
+        };
+        if template.requires_unsafe && !decl.is_unsafe {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "derive `{}` requires `unsafe derive` because `{}` has an unsafe derivation template",
+                    decl.name.display, capability.name
+                ),
+            ));
+            return;
+        }
+        let body_subst =
+            self.derivable_template_subst(&template, &full_args, Some(receiver_ty), decl.name.span);
+        let Some(body_subst) = body_subst else {
+            return;
+        };
+        let params = template
+            .params
+            .iter()
+            .map(|ty| self.substitute_derived_template_ty(ty, &body_subst, item_span))
+            .collect::<Vec<_>>();
+        let ret = self.substitute_derived_template_ty(&template.ret, &body_subst, item_span);
+        let interface_args = template
+            .interface_args
+            .iter()
+            .map(|ty| self.substitute_derived_template_ty(ty, &body_subst, item_span))
+            .collect::<Vec<_>>();
+        let concrete_receiver = template
+            .receiver_ty
+            .as_ref()
+            .map(|ty| self.substitute_derived_template_ty(ty, &body_subst, item_span));
+        let analysis = ImplAnalysis {
+            interface_def: template.interface_def,
+            interface_name: template.interface_name.clone(),
+            generics: derive_generics.to_vec(),
+            generic_constraints: generic_constraints.to_vec(),
+            interface_args,
+            receiver_ty: concrete_receiver,
+            ret,
+            params,
+        };
+        if self.reject_uninferable_derive_generics(decl.name.span, &analysis) {
+            return;
+        }
+        if self.resource_handle_message_impl_forbidden(decl.name.span, &analysis) {
+            return;
+        }
+        if self.generic_marker_impl_overlaps_existing(item_span, &analysis) {
+            return;
+        }
+        if derive_generics.is_empty() {
+            if let Some(pending) = self.register_impl_signature(
+                template.module,
+                &template.decl,
+                analysis.interface_def,
+                &analysis.interface_name,
+                analysis.interface_args,
+                analysis.receiver_ty,
+                analysis.ret,
+                analysis.params,
+            ) {
+                self.pending_derived_template_constraint_checks.push(
+                    PendingDerivedTemplateConstraintCheck {
+                        derive_span: decl.name.span,
+                        derive_generics: derive_generics.to_vec(),
+                        generic_constraints: generic_constraints.to_vec(),
+                        template_generics: template.generics.clone(),
+                        body_subst: body_subst.clone(),
+                        implementation: pending.implementation.clone(),
+                    },
+                );
+                self.queue_impl_body(pending, body_subst, Some(module));
+            }
+        } else {
+            self.pending_derived_generic_impls
+                .push(PendingDerivedGenericImpl {
+                    derive_display: decl.name.display.clone(),
+                    derive_span: decl.name.span,
+                    validation_module: template.module,
+                    reflection_module: module,
+                    template_generics: template.generics.clone(),
+                    template: GenericImplTemplate {
+                        module: template.module,
+                        body_reflection_module: Some(module),
+                        item_span,
+                        interface_def: analysis.interface_def,
+                        interface_name: analysis.interface_name,
+                        generics: analysis.generics,
+                        generic_constraints: analysis.generic_constraints,
+                        interface_args: analysis.interface_args,
+                        receiver_ty: analysis.receiver_ty,
+                        ret: analysis.ret,
+                        params: analysis.params,
+                        decl: template.decl,
+                        body_subst,
+                    },
+                });
+        }
+    }
+
+    fn reject_uninferable_derive_generics(
+        &mut self,
+        span: crate::span::Span,
+        analysis: &ImplAnalysis,
+    ) -> bool {
+        if analysis.generics.is_empty() {
+            return false;
+        }
+        let mut rejected = false;
+        for generic in &analysis.generics {
+            let name = std::slice::from_ref(&generic.name)
+                .iter()
+                .cloned()
+                .collect::<HashSet<_>>();
+            let inferable = analysis
+                .interface_args
+                .iter()
+                .any(|arg| contains_any_generic_name(arg, &name))
+                || analysis
+                    .receiver_ty
+                    .as_ref()
+                    .is_some_and(|receiver| contains_any_generic_name(receiver, &name));
+            if !inferable {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "derive generic parameter `{}` cannot be inferred from the derived impl receiver or interface arguments",
+                        generic.name
+                    ),
+                ));
+                rejected = true;
+            }
+        }
+        rejected
+    }
+
+    fn derive_receiver_implements_forbidden_capability(
+        &mut self,
+        derive_generics: &[GenericInfo],
+        generic_constraints: &[GenericConstraintBounds],
+        capability: &InterfaceRefTy,
+        receiver_ty: &Ty,
+    ) -> bool {
+        let resource_generics = Self::resource_generic_scope(derive_generics);
+        self.resource_generic_stack.push(resource_generics);
+        self.generic_env_stack.push(derive_generics.to_vec());
+        let implements = {
+            if !derive_generics.is_empty() {
+                let interface_args = std::iter::once(receiver_ty.clone())
+                    .chain(capability.args.iter().cloned())
+                    .collect::<Vec<_>>();
+                let analysis = ImplAnalysis {
+                    interface_def: capability.def_id,
+                    interface_name: capability.name.clone(),
+                    generics: derive_generics.to_vec(),
+                    generic_constraints: generic_constraints.to_vec(),
+                    interface_args,
+                    receiver_ty: Some(receiver_ty.clone()),
+                    ret: Ty::Void,
+                    params: Vec::new(),
+                };
+                if self.marker_capability_impl_overlaps_existing(&analysis) {
+                    true
+                } else {
+                    self.derive_receiver_implements_capability_ref(
+                        derive_generics,
+                        generic_constraints,
+                        capability,
+                        receiver_ty,
+                    )
+                }
+            } else {
+                self.derive_receiver_implements_capability_ref(
+                    derive_generics,
+                    generic_constraints,
+                    capability,
+                    receiver_ty,
+                )
+            }
+        };
+        self.generic_env_stack.pop();
+        self.resource_generic_stack.pop();
+        implements
+    }
+
+    fn derive_receiver_implements_capability_ref(
+        &mut self,
+        derive_generics: &[GenericInfo],
+        generic_constraints: &[GenericConstraintBounds],
+        capability: &InterfaceRefTy,
+        receiver_ty: &Ty,
+    ) -> bool {
+        if !derive_generics.is_empty() {
+            self.symbolic_constraint_env_stack
+                .push(generic_constraints.to_vec());
+        }
+        let implements = self.with_symbolic_impl_resolution(|checker| {
+            checker.type_implements_capability_ref(capability, receiver_ty)
+        });
+        if !derive_generics.is_empty() {
+            self.symbolic_constraint_env_stack.pop();
+        }
+        implements
+    }
+
+    fn substitute_derived_template_ty(
+        &mut self,
+        ty: &Ty,
+        subst: &HashMap<String, Ty>,
+        span: crate::span::Span,
+    ) -> Ty {
+        let substituted = substitute_ty(ty, subst);
+        self.normalize_meta_repr_markers(&substituted, span)
+    }
+
+    fn derivable_template_subst(
+        &mut self,
+        template: &DerivableImplTemplate,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+        span: crate::span::Span,
+    ) -> Option<HashMap<String, Ty>> {
+        if template.interface_args.len() != interface_args.len() {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "derivable impl `{}` does not match requested interface arguments",
+                    template.interface_name
+                ),
+            ));
+            return None;
+        }
+        let scoped_names = template
+            .generics
+            .iter()
+            .map(|generic| {
+                (
+                    generic.name.clone(),
+                    format!(
+                        "$derivable_template${}${}",
+                        template.interface_name, generic.name
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let scoped_subst = scoped_names
+            .iter()
+            .map(|(name, scoped)| (name.clone(), Ty::Generic(scoped.clone())))
+            .collect::<HashMap<_, _>>();
+        let mut subst = scoped_names
+            .values()
+            .map(|name| (name.clone(), Ty::Generic(name.clone())))
+            .collect::<HashMap<_, _>>();
+        for (pattern, actual) in template.interface_args.iter().zip(interface_args.iter()) {
+            let pattern = substitute_ty(pattern, &scoped_subst);
+            if !unify_ty(&pattern, actual, &mut subst) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "derivable impl `{}` does not match requested receiver",
+                        template.interface_name
+                    ),
+                ));
+                return None;
+            }
+        }
+        if let (Some(pattern), Some(actual)) = (template.receiver_ty.as_ref(), receiver_ty) {
+            let pattern = substitute_ty(pattern, &scoped_subst);
+            if !unify_ty(&pattern, actual, &mut subst) {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    format!(
+                        "derivable impl `{}` does not match requested receiver",
+                        template.interface_name
+                    ),
+                ));
+                return None;
+            }
+        }
+        let scoped_name_set = scoped_names.values().cloned().collect::<HashSet<_>>();
+        let mut body_subst = HashMap::new();
+        let mut unresolved = false;
+        for generic in &template.generics {
+            let Some(scoped_name) = scoped_names.get(&generic.name) else {
+                unresolved = true;
+                continue;
+            };
+            let Some(value) = subst.get(scoped_name).cloned() else {
+                unresolved = true;
+                continue;
+            };
+            let value = self.substitute_ty_normalized_silent(&value, &subst);
+            if contains_any_generic_name(&value, &scoped_name_set) {
+                unresolved = true;
+                continue;
+            }
+            body_subst.insert(generic.name.clone(), value);
+        }
+        if unresolved {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "derivable impl `{}` leaves template generic parameters unresolved",
+                    template.interface_name
+                ),
+            ));
+            return None;
+        }
+        Some(body_subst)
+    }
+
+    fn validate_derived_template_constraints(
+        &mut self,
+        derive_generics: &[GenericInfo],
+        generic_constraints: &[GenericConstraintBounds],
+        template_generics: &[GenericInfo],
+        body_subst: &HashMap<String, Ty>,
+        span: crate::span::Span,
+    ) -> bool {
+        let diagnostic_count = self.diagnostics.len();
+        let resource_generics = Self::resource_generic_scope(derive_generics);
+        self.resource_generic_stack.push(resource_generics);
+        self.generic_env_stack.push(derive_generics.to_vec());
+        self.symbolic_constraint_env_stack
+            .push(generic_constraints.to_vec());
+        self.with_symbolic_impl_resolution(|checker| {
+            checker.check_generic_constraints(template_generics, body_subst, span);
+        });
+        self.symbolic_constraint_env_stack.pop();
+        self.generic_env_stack.pop();
+        self.resource_generic_stack.pop();
+        self.diagnostics.len() == diagnostic_count
+    }
+
+    fn drain_pending_derived_template_constraint_checks(&mut self) {
+        let mut candidates = std::mem::take(&mut self.pending_derived_template_constraint_checks);
+        if candidates.is_empty() {
+            return;
+        }
+
+        let pending_defs = candidates
+            .iter()
+            .map(|check| check.implementation.function_def)
+            .collect::<HashSet<_>>();
+        self.ctx
+            .impls
+            .retain(|implementation| !pending_defs.contains(&implementation.function_def));
+
+        while !candidates.is_empty() {
+            let mut next = Vec::new();
+            let mut progressed = false;
+            for check in candidates {
+                let diagnostic_count = self.diagnostics.len();
+                if self.validate_derived_template_constraints(
+                    &check.derive_generics,
+                    &check.generic_constraints,
+                    &check.template_generics,
+                    &check.body_subst,
+                    check.derive_span,
+                ) {
+                    self.restore_derived_concrete_impl(check.implementation);
+                    progressed = true;
+                } else {
+                    let diagnostics = self.diagnostics.split_off(diagnostic_count);
+                    next.push((check, diagnostics));
+                }
+            }
+            if next.is_empty() {
+                return;
+            }
+            if !progressed {
+                for (check, diagnostics) in next {
+                    self.restore_derived_concrete_impl(check.implementation);
+                    self.diagnostics.extend(diagnostics);
+                }
+                return;
+            }
+            candidates = next.into_iter().map(|(check, _)| check).collect();
+        }
+    }
+
+    fn restore_derived_concrete_impl(&mut self, implementation: ImplSig) {
+        if self
+            .find_impl_by_full_args(
+                implementation.interface_def,
+                &implementation.interface_name,
+                &implementation.interface_args,
+                implementation.receiver_ty.as_ref(),
+            )
+            .is_none()
+        {
+            self.ctx.impls.push(implementation);
+        }
+    }
+
+    fn drain_pending_derived_negative_checks(&mut self) {
+        let checks = std::mem::take(&mut self.pending_derived_negative_checks);
+        for check in checks {
+            if self.derive_receiver_implements_forbidden_capability(
+                &check.derive_generics,
+                &check.generic_constraints,
+                &check.capability,
+                &check.receiver_ty,
+            ) {
+                self.diagnostics.push(Diagnostic::new(
+                    check.derive_span,
+                    format!(
+                        "cannot derive `{}` for `{}` because it already implements forbidden capability `{}`",
+                        check.derive_display, check.receiver_ty, check.capability.name
+                    ),
+                ));
+            }
+        }
+    }
+
+    pub(super) fn derived_impl_generic_constraints(
+        &mut self,
+        derive_generics: &[GenericInfo],
+        derive_subst: &HashMap<String, Ty>,
+    ) -> Vec<GenericConstraintBounds> {
+        derive_generics
+            .iter()
+            .map(|generic| GenericConstraintBounds {
+                name: generic.name.clone(),
+                is_resource: generic.is_resource,
+                bounds: generic
+                    .constraint
+                    .as_ref()
+                    .map(|constraint| self.constraint_bounds(constraint, derive_subst))
+                    .unwrap_or_default(),
+            })
+            .collect()
+    }
+
+    pub(super) fn validate_derived_generic_impl_body(
+        &mut self,
+        module: ModuleId,
+        derive_display: &str,
+        derive_span: crate::span::Span,
+        reflection_module: Option<ModuleId>,
+        analysis: &ImplAnalysis,
+        template_decl: &ImplDecl,
+        body_subst: &HashMap<String, Ty>,
+    ) -> bool {
+        let validation_names = analysis
+            .generics
+            .iter()
+            .map(|generic| {
+                (
+                    generic.name.clone(),
+                    format!(
+                        "$derive_validation${}${}",
+                        analysis.interface_name, generic.name
+                    ),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let validation_subst = validation_names
+            .iter()
+            .map(|(name, scoped)| (name.clone(), Ty::Generic(scoped.clone())))
+            .collect::<HashMap<_, _>>();
+        let validation_generics = analysis
+            .generics
+            .iter()
+            .map(|generic| GenericInfo {
+                name: validation_names
+                    .get(&generic.name)
+                    .cloned()
+                    .unwrap_or_else(|| generic.name.clone()),
+                is_resource: generic.is_resource,
+                is_hidden: generic.is_hidden,
+                constraint: None,
+            })
+            .collect::<Vec<_>>();
+        let validation_constraints = analysis
+            .generic_constraints
+            .iter()
+            .map(|constraint| GenericConstraintBounds {
+                name: validation_names
+                    .get(&constraint.name)
+                    .cloned()
+                    .unwrap_or_else(|| constraint.name.clone()),
+                is_resource: constraint.is_resource,
+                bounds: substitute_constraint_bounds(&constraint.bounds, &validation_subst),
+            })
+            .collect::<Vec<_>>();
+        let validation_body_subst = body_subst
+            .iter()
+            .map(|(name, ty)| {
+                (
+                    name.clone(),
+                    self.substitute_ty_normalized_silent(ty, &validation_subst),
+                )
+            })
+            .collect::<HashMap<_, _>>();
+        let validation_params = analysis
+            .params
+            .iter()
+            .map(|ty| self.substitute_ty_normalized_silent(ty, &validation_subst))
+            .collect::<Vec<_>>();
+        let validation_ret = self.substitute_ty_normalized_silent(&analysis.ret, &validation_subst);
+        let function_sig = FunctionSig {
+            def_id: self.alloc_synthetic_def(),
+            module,
+            name: impl_function_name(&analysis.interface_name, &validation_params),
+            is_unsafe: false,
+            is_async: false,
+            abi: None,
+            noescape: false,
+            has_body: true,
+            ret: validation_ret,
+            params: validation_params,
+            generics: validation_generics.clone(),
+            exported: false,
+        };
+        let body_params = template_decl
+            .params
+            .iter()
+            .zip(function_sig.params.iter())
+            .filter_map(|(param, ty)| {
+                param.local_id.map(|local_id| {
+                    (
+                        local_id,
+                        param.name.name.clone(),
+                        ty.clone(),
+                        param.mutability,
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        let diagnostic_count = self.diagnostics.len();
+        let previous_module = self.current_module;
+        self.current_module = module;
+        self.type_subst_stack.push(validation_body_subst);
+        if let Some(module) = reflection_module {
+            self.meta_reflection_module_stack.push(module);
+        }
+        self.symbolic_constraint_env_stack
+            .push(validation_constraints);
+        self.with_generic_env(&validation_generics, |checker| {
+            checker.with_symbolic_impl_resolution(|checker| {
+                checker.check_function_body(&function_sig, &body_params, &template_decl.body);
+            });
+        });
+        self.symbolic_constraint_env_stack.pop();
+        if reflection_module.is_some() {
+            self.meta_reflection_module_stack.pop();
+        }
+        self.type_subst_stack.pop();
+        self.current_module = previous_module;
+        if self.diagnostics.len() == diagnostic_count {
+            return true;
+        }
+        let details = self.diagnostics.split_off(diagnostic_count);
+        let detail = details
+            .first()
+            .map(|diagnostic| diagnostic.message.clone())
+            .unwrap_or_else(|| "generated impl body does not type-check".to_string());
+        let receiver = analysis
+            .receiver_ty
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_else(|| "<none>".to_string());
+        self.diagnostics.push(Diagnostic::new(
+            derive_span,
+            format!(
+                "derive `{}` for `{receiver}` is not valid under its generic constraints: {detail}",
+                derive_display
+            ),
+        ));
+        false
+    }
+
+    pub(super) fn drain_pending_derived_generic_impls(&mut self) {
+        let mut candidates = std::mem::take(&mut self.pending_derived_generic_impls);
+        let mut rejected_diagnostics = Vec::new();
+        while !candidates.is_empty() {
+            self.pending_derived_generic_impls = candidates.clone();
+            let mut validated = Vec::new();
+            let mut rejected = Vec::new();
+            for pending in candidates {
+                let template = pending.template.clone();
+                let analysis = ImplAnalysis {
+                    interface_def: template.interface_def,
+                    interface_name: template.interface_name.clone(),
+                    generics: template.generics.clone(),
+                    generic_constraints: template.generic_constraints.clone(),
+                    interface_args: template.interface_args.clone(),
+                    receiver_ty: template.receiver_ty.clone(),
+                    ret: template.ret.clone(),
+                    params: template.params.clone(),
+                };
+                let diagnostic_count = self.diagnostics.len();
+                let valid = self.validate_derived_template_constraints(
+                    &template.generics,
+                    &template.generic_constraints,
+                    &pending.template_generics,
+                    &template.body_subst,
+                    pending.derive_span,
+                ) && self.validate_derived_generic_impl_body(
+                    pending.validation_module,
+                    &pending.derive_display,
+                    pending.derive_span,
+                    Some(pending.reflection_module),
+                    &analysis,
+                    &template.decl,
+                    &template.body_subst,
+                );
+                if valid {
+                    debug_assert_eq!(self.diagnostics.len(), diagnostic_count);
+                    validated.push(pending);
+                } else {
+                    rejected.extend(self.diagnostics.split_off(diagnostic_count));
+                }
+            }
+            if rejected.is_empty() {
+                self.pending_derived_generic_impls.clear();
+                self.ctx
+                    .generic_impls
+                    .extend(validated.into_iter().map(|pending| pending.template));
+                self.diagnostics.extend(rejected_diagnostics);
+                return;
+            }
+            rejected_diagnostics.extend(rejected);
+            candidates = validated;
+        }
+        self.pending_derived_generic_impls.clear();
+        self.diagnostics.extend(rejected_diagnostics);
+    }
+
+    pub(super) fn visible_generic_impl_templates(&self) -> Vec<GenericImplTemplate> {
+        self.ctx
+            .generic_impls
+            .iter()
+            .cloned()
+            .chain(
+                self.pending_derived_generic_impls
+                    .iter()
+                    .map(|pending| pending.template.clone()),
+            )
+            .collect()
     }
 
     pub(super) fn generic_marker_impl_overlaps_existing(
@@ -385,14 +1345,51 @@ impl TypeChecker {
         span: crate::span::Span,
         analysis: &ImplAnalysis,
     ) -> bool {
-        if analysis.generics.is_empty()
-            || !self.is_std_message_capability_interface_def(analysis.interface_def)
-        {
+        if !self.is_std_message_capability_interface_def(analysis.interface_def) {
             return false;
+        }
+        if let Some(conflict) = self.marker_capability_impl_overlap_kind(analysis) {
+            self.fatal_impl_coherence_error = true;
+            let message = match conflict {
+                MarkerImplOverlapKind::GenericTemplate if analysis.generics.is_empty() => {
+                    format!(
+                        "marker impl for `{}` conflicts with an existing generic impl",
+                        analysis.interface_name
+                    )
+                }
+                MarkerImplOverlapKind::GenericTemplate => {
+                    format!(
+                        "ambiguous generic impls for marker interface `{}`",
+                        analysis.interface_name
+                    )
+                }
+                MarkerImplOverlapKind::ConcreteImpl => {
+                    format!(
+                        "generic marker impl for `{}` conflicts with an existing concrete impl",
+                        analysis.interface_name
+                    )
+                }
+            };
+            self.push_diagnostic_once(span, message);
+            return true;
+        }
+        false
+    }
+
+    fn marker_capability_impl_overlaps_existing(&mut self, analysis: &ImplAnalysis) -> bool {
+        self.marker_capability_impl_overlap_kind(analysis).is_some()
+    }
+
+    fn marker_capability_impl_overlap_kind(
+        &mut self,
+        analysis: &ImplAnalysis,
+    ) -> Option<MarkerImplOverlapKind> {
+        if !self.is_std_message_capability_interface_def(analysis.interface_def) {
+            return None;
         }
         let current_domain =
             self.compiler_marker_domain_for_impl(&analysis.generics, analysis.receiver_ty.as_ref());
-        let templates = self.ctx.generic_impls.clone();
+        let templates = self.visible_generic_impl_templates();
         for template in &templates {
             if template.interface_def != analysis.interface_def {
                 continue;
@@ -413,16 +1410,11 @@ impl TypeChecker {
                 &analysis.interface_args,
                 analysis.receiver_ty.as_ref(),
             ) {
-                self.fatal_impl_coherence_error = true;
-                self.push_diagnostic_once(
-                    span,
-                    format!(
-                        "ambiguous generic impls for marker interface `{}`",
-                        analysis.interface_name
-                    ),
-                );
-                return true;
+                return Some(MarkerImplOverlapKind::GenericTemplate);
             }
+        }
+        if analysis.generics.is_empty() {
+            return None;
         }
         for existing in &self.ctx.impls {
             if existing.interface_def != analysis.interface_def {
@@ -442,18 +1434,10 @@ impl TypeChecker {
                 &analysis.interface_args,
                 analysis.receiver_ty.as_ref(),
             ) {
-                self.fatal_impl_coherence_error = true;
-                self.push_diagnostic_once(
-                    span,
-                    format!(
-                        "generic marker impl for `{}` conflicts with an existing concrete impl",
-                        analysis.interface_name
-                    ),
-                );
-                return true;
+                return Some(MarkerImplOverlapKind::ConcreteImpl);
             }
         }
-        false
+        None
     }
 
     pub(super) fn resource_handle_message_impl_forbidden(
@@ -704,6 +1688,7 @@ impl TypeChecker {
     pub(super) fn instantiate_impl_body(
         &mut self,
         module: ModuleId,
+        reflection_module: Option<ModuleId>,
         decl: &ImplDecl,
         interface_def: DefId,
         interface_name: &str,
@@ -738,7 +1723,7 @@ impl TypeChecker {
             params_ty,
         )?;
         let implementation = pending.implementation.clone();
-        self.queue_impl_body(pending, subst.clone());
+        self.queue_impl_body(pending, subst.clone(), reflection_module);
         Some(implementation)
     }
 
@@ -812,6 +1797,7 @@ impl TypeChecker {
         &mut self,
         pending: &PendingImplBody,
         subst: &HashMap<String, Ty>,
+        reflection_module: Option<ModuleId>,
     ) {
         let params = pending
             .decl
@@ -839,8 +1825,14 @@ impl TypeChecker {
         let previous_module = self.current_module;
         self.current_module = pending.module;
         self.type_subst_stack.push(subst.clone());
+        if let Some(module) = reflection_module {
+            self.meta_reflection_module_stack.push(module);
+        }
         let body =
             self.check_function_body(&pending.function_sig, &body_params, &pending.decl.body);
+        if reflection_module.is_some() {
+            self.meta_reflection_module_stack.pop();
+        }
         self.type_subst_stack.pop();
         self.current_module = previous_module;
         if let Some(body) = body {
@@ -860,7 +1852,12 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn queue_impl_body(&mut self, pending: PendingImplBody, subst: HashMap<String, Ty>) {
+    pub(super) fn queue_impl_body(
+        &mut self,
+        pending: PendingImplBody,
+        subst: HashMap<String, Ty>,
+        reflection_module: Option<ModuleId>,
+    ) {
         if self
             .generated_functions
             .iter()
@@ -872,8 +1869,11 @@ impl TypeChecker {
         {
             return;
         }
-        self.pending_impl_bodies
-            .push(QueuedImplBody { pending, subst });
+        self.pending_impl_bodies.push(QueuedImplBody {
+            pending,
+            subst,
+            reflection_module,
+        });
     }
 
     pub(super) fn drain_pending_impl_bodies(&mut self) {
@@ -885,7 +1885,11 @@ impl TypeChecker {
             {
                 continue;
             }
-            self.check_registered_impl_body(&queued.pending, &queued.subst);
+            self.check_registered_impl_body(
+                &queued.pending,
+                &queued.subst,
+                queued.reflection_module,
+            );
         }
     }
 

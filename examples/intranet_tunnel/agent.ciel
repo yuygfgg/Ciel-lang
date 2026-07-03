@@ -2,7 +2,6 @@ import /std/async as async;
 import /std/async_net as anet;
 import /std/bytes as bytes;
 import /std/io as io;
-import /std/meta as meta;
 import /std/net as net;
 import /std/result;
 import ./cli as cli;
@@ -109,8 +108,8 @@ async Result<void, Error> send_agent_open_result_error(
 async Result<void, Error> agent_stream_worker(
     u32 stream_id,
     AgentControlState control,
-    async::Receiver<meta::Repr<rt::StreamEvent>> receiver,
-    async::Sender<meta::Repr<rt::StreamEvent>> local_events
+    async::Receiver<rt::StreamEvent> receiver,
+    async::Sender<rt::StreamEvent> local_events
 ) {
     _ connected = await control.target_addr.anet::connect_timeout(2000);
     switch (connected) {
@@ -133,10 +132,9 @@ async Result<void, Error> agent_stream_worker(
             bool @remote_write_closed = false;
             bool @local_write_closed = false;
             while (true) {
-                _ next = await async::recv<meta::Repr<rt::StreamEvent>>(receiver);
+                _ next = await async::recv<rt::StreamEvent>(receiver);
                 switch (next) {
-                    case Ok(event_message):
-                        rt::StreamEvent event = rt::stream_event_from_message(event_message);
+                    case Ok(event):
                         switch (event) {
                             case rt::StreamLocalFailed(message):
                                 await rt::send_close_stream_text(
@@ -244,7 +242,7 @@ async Result<void, Error> agent_control_reader(
                         rt::stream_registry_close_all(control.streams)?;
                         return Err(text_error("protocol error: malformed OpenStream"));
                     }
-                    _ events = async::channel<meta::Repr<rt::StreamEvent>>(64)?;
+                    _ events = async::channel<rt::StreamEvent>(64)?;
                     rt::stream_registry_insert(control.streams, incoming.stream_id, events.sender)?;
                     _ worker = async::spawn<void>(agent_stream_worker(
                         incoming.stream_id,

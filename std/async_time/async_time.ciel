@@ -55,9 +55,7 @@ impl format_error(*const AsyncTimeError error) {
     }
 }
 
-unsafe impl cancel_safe_marker(*const AsyncSleep op) {
-    return true;
-}
+unsafe derive cancel_safe_marker<AsyncSleep>;
 
 AsyncTimeError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };

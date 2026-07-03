@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: does not implement `a`
+
+interface<T> bool a(*const T value);
+
+struct Box {
+    i64 value;
+}
+
+derivable impl<T: a> a(*const T value) {
+    return true;
+}
+
+derive a<Box>;
+
+i64 main() {
+    return 0;
+}

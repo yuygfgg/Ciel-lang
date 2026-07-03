@@ -44,9 +44,7 @@ unsafe impl<T> clone_message(*const Channel<T> value) {
     return Ok(*value);
 }
 
-unsafe impl<T> share_handle_marker(*const Channel<T> value) {
-    return true;
-}
+unsafe derive<T> share_handle_marker<Channel<T>>;
 
 ChannelError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };

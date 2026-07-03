@@ -1,0 +1,18 @@
+// ciel-test: run
+// expect-exit: 0
+
+import ./template_symbols;
+
+struct Packet {
+    i64 value;
+}
+
+derive derived_value<Packet>;
+
+i64 main() {
+    Packet packet = { value: 1 };
+    if (derived_value(&packet) != 7) {
+        return 1;
+    }
+    return 0;
+}

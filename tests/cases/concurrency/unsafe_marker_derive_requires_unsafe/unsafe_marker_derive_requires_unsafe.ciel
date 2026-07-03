@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: requires `unsafe derive`
+
+import /std/message as message;
+
+struct Handle {
+    i64 raw;
+}
+
+derive message::share_handle_marker<Handle>;
+
+i64 main() {
+    return 0;
+}

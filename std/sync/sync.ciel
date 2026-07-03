@@ -66,9 +66,7 @@ unsafe impl<T> clone_message(*const Mutex<T> value) {
     return Ok(*value);
 }
 
-unsafe impl<T> share_handle_marker(*const Mutex<T> value) {
-    return true;
-}
+unsafe derive<T> share_handle_marker<Mutex<T>>;
 
 SyncError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };

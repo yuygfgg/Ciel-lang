@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/lib;
+import /std/meta as meta;
+import /std/text as text;
+
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+derive json::Wire<Packet>;
+
+i64 main() {
+    Packet packet = { id: 7, ok: true };
+    text::Text encoded = must(json::encode<Packet>(&packet));
+    if (!text::text_equal_slice(encoded, "{\"id\":7,\"ok\":true}")) {
+        return 1;
+    }
+    Packet decoded = must(json::decode(meta::type_tag<Packet>(), "{\"id\":8,\"ok\":false}"));
+    if (decoded.id != 8) {
+        return 2;
+    }
+    if (decoded.ok) {
+        return 3;
+    }
+    return 0;
+}

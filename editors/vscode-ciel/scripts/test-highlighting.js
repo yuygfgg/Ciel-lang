@@ -10,6 +10,9 @@ const highlightQueryPath = path.join(extensionRoot, 'tree-sitter-ciel', 'queries
 const source = [
     'import /std/async as async;',
     'import /std/resource as resource;',
+    'import /std/message as message;',
+    'import /std/derive as derive;',
+    'import /std/derivable as derivable;',
     'async void f() {',
     '    plain_call();',
     '    await async::block_on(task);',
@@ -28,6 +31,10 @@ const source = [
     'enum Event { Data(i64), Timeout, }',
     'void match_one(Result<Event, Error> x) { switch (x) { case Result::Ok(Event::Data(value)): break; case Result::Ok(Event::Timeout): break; case Result::Err(_): break; } }',
     'void make_event() { Event::Data(1); Event::Timeout; }',
+    'derive message::Message<Box>;',
+    'unsafe derive message::share_handle_marker<Box>;',
+    'derivable unsafe impl<T> clone_message(*const T value) { return Ok(*value); }',
+    'unsafe derivable unsafe impl<T> share_handle_marker(*const T value) { return true; }',
     '',
 ].join('\n');
 
@@ -93,7 +100,7 @@ function assertHighlightQuery(language, Query, rootNode) {
     );
     assert.deepStrictEqual(
         asyncKeywordCaptures.map(formatPosition),
-        ['2:0'],
+        ['5:0'],
         '`async` should only be a query keyword capture in the async function modifier',
     );
 
@@ -102,8 +109,26 @@ function assertHighlightQuery(language, Query, rootNode) {
     );
     assert.deepStrictEqual(
         resourceKeywordCaptures.map(formatPosition),
-        ['12:0', '12:24'],
+        ['15:0', '15:24'],
         '`resource` should only be a query keyword capture in resource modifier positions',
+    );
+
+    const deriveKeywordCaptures = captures.filter(capture =>
+        capture.name === 'keyword' && capture.text === 'derive'
+    );
+    assert.deepStrictEqual(
+        deriveKeywordCaptures.map(formatPosition),
+        ['23:0', '24:7'],
+        '`derive` should only be a query keyword capture in derive declarations',
+    );
+
+    const derivableKeywordCaptures = captures.filter(capture =>
+        capture.name === 'keyword' && capture.text === 'derivable'
+    );
+    assert.deepStrictEqual(
+        derivableKeywordCaptures.map(formatPosition),
+        ['25:0', '26:7'],
+        '`derivable` should only be a query keyword capture in derivable impl declarations',
     );
 
     for (const text of ['await', 'biased', 'select', 'fn']) {
@@ -126,6 +151,8 @@ function assertHighlightQuery(language, Query, rootNode) {
     assertCapture(captures, 'type.parameter', 'T');
     assertCapture(captures, 'type', 'Readable');
     assertCapture(captures, 'type', 'PlainReadable');
+    assertCapture(captures, 'type', 'Message');
+    assertCapture(captures, 'type', 'share_handle_marker');
     assertCapture(captures, 'constant', 'Ok');
     assertCapture(captures, 'constant', 'Err');
     assertCapture(captures, 'constant', 'Data');
@@ -141,7 +168,7 @@ function assertSemanticClassifier(rootNode) {
     assert(asyncTokens.length > 1, 'expected all async spellings to receive semantic tokens');
     assert.deepStrictEqual(
         asyncTokens.filter(token => token.type === 'keyword').map(formatPosition),
-        ['2:0'],
+        ['5:0'],
         '`async` should only be a semantic keyword in the async function modifier',
     );
     assert(
@@ -153,12 +180,36 @@ function assertSemanticClassifier(rootNode) {
     assert(resourceTokens.length > 2, 'expected all resource spellings to receive semantic tokens');
     assert.deepStrictEqual(
         resourceTokens.filter(token => token.type === 'keyword').map(formatPosition),
-        ['12:0', '12:24'],
+        ['15:0', '15:24'],
         '`resource` should only be a semantic keyword in resource modifier positions',
     );
     assert(
         resourceTokens.filter(token => token.type !== 'keyword').every(token => token.type === 'namespace'),
         '`resource` module path, import alias, and qualified-name prefixes should be namespaces',
+    );
+
+    const deriveTokens = tokens.filter(token => token.text === 'derive');
+    assert(deriveTokens.length > 2, 'expected all derive spellings to receive semantic tokens');
+    assert.deepStrictEqual(
+        deriveTokens.filter(token => token.type === 'keyword').map(formatPosition),
+        ['23:0', '24:7'],
+        '`derive` should only be a semantic keyword in derive declarations',
+    );
+    assert(
+        deriveTokens.filter(token => token.type !== 'keyword').every(token => token.type === 'namespace'),
+        '`derive` module path and import alias spellings should be namespaces',
+    );
+
+    const derivableTokens = tokens.filter(token => token.text === 'derivable');
+    assert(derivableTokens.length > 2, 'expected all derivable spellings to receive semantic tokens');
+    assert.deepStrictEqual(
+        derivableTokens.filter(token => token.type === 'keyword').map(formatPosition),
+        ['25:0', '26:7'],
+        '`derivable` should only be a semantic keyword in derivable impl declarations',
+    );
+    assert(
+        derivableTokens.filter(token => token.type !== 'keyword').every(token => token.type === 'namespace'),
+        '`derivable` module path and import alias spellings should be namespaces',
     );
 
     assertToken(tokens, 'function', 'plain_call');
@@ -173,6 +224,8 @@ function assertSemanticClassifier(rootNode) {
     assertToken(tokens, 'typeParameter', 'T');
     assertToken(tokens, 'interface', 'Readable');
     assertToken(tokens, 'interface', 'PlainReadable');
+    assertToken(tokens, 'interface', 'Message');
+    assertToken(tokens, 'interface', 'share_handle_marker');
     assertToken(tokens, 'enumMember', 'Ok');
     assertToken(tokens, 'enumMember', 'Err');
     assertToken(tokens, 'enumMember', 'Data');

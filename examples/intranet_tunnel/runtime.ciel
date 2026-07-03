@@ -3,7 +3,7 @@ import /std/async_net as anet;
 import /std/bytes as bytes;
 import /std/buf as buf;
 import /std/map as map;
-import /std/meta as meta;
+import /std/message as message;
 import /std/result;
 import /std/shared_map as shared_map;
 import /std/text as text;
@@ -23,12 +23,14 @@ export enum StreamEvent {
     StreamLocalFailed(text::Text),
 }
 
+derive message::Message<StreamEvent>;
+
 export struct StreamRegistry {
-    shared_map::SharedMap<u32, async::Sender<meta::Repr<StreamEvent>>> streams;
+    shared_map::SharedMap<u32, async::Sender<StreamEvent>> streams;
 }
 
 export enum StreamRegistryGet {
-    StreamRegistryFound(async::Sender<meta::Repr<StreamEvent>>),
+    StreamRegistryFound(async::Sender<StreamEvent>),
     StreamRegistryMissing,
 }
 
@@ -63,14 +65,14 @@ export Result<AuthConfig, Error> auth_config_new(text::Text route, bytes::Bytes 
 }
 
 export Result<StreamRegistry, Error> stream_registry_new() {
-    _ streams = shared_map::shared_map_new<u32, async::Sender<meta::Repr<StreamEvent>>>()?;
+    _ streams = shared_map::shared_map_new<u32, async::Sender<StreamEvent>>()?;
     return Ok({ streams: streams });
 }
 
 export Result<void, Error> stream_registry_insert(
     StreamRegistry registry,
     u32 stream_id,
-    async::Sender<meta::Repr<StreamEvent>> sender
+    async::Sender<StreamEvent> sender
 ) {
     _ inserted = registry.streams.shared_map::insert(stream_id, sender)?;
     switch (inserted) {
@@ -283,18 +285,18 @@ export async Result<void, Error> send_close_stream_text(
 
 
 export async Result<void, Error> send_stream_event(
-    async::Sender<meta::Repr<StreamEvent>> events,
+    async::Sender<StreamEvent> events,
     StreamEvent event
 ) {
-    await events.async::send(meta::into_repr(&event))?;
+    await events.async::send(event)?;
     return Ok;
 }
 
 export Result<Result<void, Error>, Error> try_send_stream_event(
-    async::Sender<meta::Repr<StreamEvent>> events,
+    async::Sender<StreamEvent> events,
     StreamEvent event
 ) {
-    switch (async::try_send<meta::Repr<StreamEvent>>(events, meta::into_repr(&event))) {
+    switch (async::try_send<StreamEvent>(events, event)) {
         case Ok:
             return Ok(Ok);
         case Err(error):
@@ -302,7 +304,7 @@ export Result<Result<void, Error>, Error> try_send_stream_event(
     }
 }
 
-export Result<void, Error> notify_stream_local_closed(async::Sender<meta::Repr<StreamEvent>> events) {
+export Result<void, Error> notify_stream_local_closed(async::Sender<StreamEvent> events) {
     _ sent = try_send_stream_event(events, StreamLocalClosed)?;
     switch (sent) {
         case Ok:
@@ -313,7 +315,7 @@ export Result<void, Error> notify_stream_local_closed(async::Sender<meta::Repr<S
 }
 
 export Result<void, Error> notify_stream_local_failed(
-    async::Sender<meta::Repr<StreamEvent>> events,
+    async::Sender<StreamEvent> events,
     Error error
 ) {
     text::Text message = text::text_copy(error_message(&error))?;
@@ -330,7 +332,7 @@ export async Result<void, Error> local_stream_reader(
     u32 stream_id,
     anet::BufferedStreamReader reader,
     async::Sender<bytes::Bytes> control,
-    async::Sender<meta::Repr<StreamEvent>> events
+    async::Sender<StreamEvent> events
 ) {
     while (true) {
         _ read = await anet::read_buffered(&reader, 16384);
@@ -361,13 +363,9 @@ export Result<async::Task<void>, Error> spawn_local_reader(
     u32 stream_id,
     anet::BufferedStreamReader reader,
     async::Sender<bytes::Bytes> control,
-    async::Sender<meta::Repr<StreamEvent>> events
+    async::Sender<StreamEvent> events
 ) {
     return Ok(async::spawn<void>(local_stream_reader(stream_id, reader, control, events))?);
-}
-
-export StreamEvent stream_event_from_message(meta::Repr<StreamEvent> message) {
-    return meta::from_repr<StreamEvent>(message);
 }
 
 export bool kind_is(frame::FrameKind left, frame::FrameKind right) {

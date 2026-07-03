@@ -1,0 +1,11 @@
+// ciel-test: dependency
+
+export interface<T> i64 derived_value(*const T value);
+
+i64 hidden_template_value<T>(*const T value) = .template_value {
+    return 7;
+}
+
+derivable impl<T> derived_value(*const T value) {
+    return value.template_value();
+}

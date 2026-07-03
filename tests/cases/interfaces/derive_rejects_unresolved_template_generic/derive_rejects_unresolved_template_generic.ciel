@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: leaves template generic parameters unresolved
+
+interface<T> bool marker(*const T value);
+
+derivable impl<T, U> marker(*const T value) {
+    return true;
+}
+
+derive marker<i64>;
+
+i32 main() {
+    return 0;
+}

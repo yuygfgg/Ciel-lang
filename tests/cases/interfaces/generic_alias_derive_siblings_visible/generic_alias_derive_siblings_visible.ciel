@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+
+interface<T> i64 a(*const T value);
+interface<T> i64 b(*const T value);
+interface AB = a + b;
+
+struct Box<T> {
+    T value;
+}
+
+derivable impl<T> a(*const Box<T> value) {
+    return b(value);
+}
+
+derivable impl<T> b(*const Box<T> value) {
+    return 7;
+}
+
+derive<T> AB<Box<T>>;
+
+i64 main() {
+    Box<i64> box = { value: 1 };
+    return a(&box) - 7;
+}

@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: forbidden capability `thread_local_marker`
+
+import /std/lib;
+import /std/message as message;
+
+struct Envelope<T> {
+    T item;
+}
+
+unsafe derive<T> message::ThreadLocal<Envelope<T>>;
+derive<T: Message> Message<Envelope<T>>;
+
+i64 main() {
+    return 0;
+}

@@ -43,9 +43,7 @@ unsafe impl clone_message(*const Text value) {
     return Ok({ bytes: copied });
 }
 
-unsafe impl share_handle_marker(*const Text value) {
-    return true;
-}
+unsafe derive share_handle_marker<Text>;
 
 impl iter::next<char>(*TextCharIter iter) {
     if (iter->index >= iter->data.len) {

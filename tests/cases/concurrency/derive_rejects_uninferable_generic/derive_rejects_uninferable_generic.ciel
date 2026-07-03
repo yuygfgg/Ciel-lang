@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: cannot be inferred
+
+import /std/lib;
+
+struct Packet {
+    i64 id;
+}
+
+derive<T> Message<Packet>;
+
+i32 main() {
+    return 0;
+}

@@ -122,17 +122,11 @@ unsafe impl clone_message(*const SystemRng value) {
     return Ok(*value);
 }
 
-unsafe impl share_handle_marker(*const SystemRng value) {
-    return true;
-}
+unsafe derive share_handle_marker<SystemRng>;
 
-unsafe impl thread_local_marker(*const Hash value) {
-    return true;
-}
+unsafe derive thread_local_marker<Hash>;
 
-unsafe impl thread_local_marker(*const Mac value) {
-    return true;
-}
+unsafe derive thread_local_marker<Mac>;
 
 CryptoError crypto_error(c::c_int code) {
     if ((code as i64) < 0) {

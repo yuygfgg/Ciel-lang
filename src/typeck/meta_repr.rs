@@ -113,6 +113,11 @@ impl TypeChecker {
     pub(super) fn meta_repr_source_visible_from_current_module(&self, source_ty: &Ty) -> bool {
         match source_ty {
             Ty::Named { name, args: _ } => {
+                let current_module = self
+                    .meta_reflection_module_stack
+                    .last()
+                    .copied()
+                    .unwrap_or(self.current_module);
                 let Some(def_id) = self.ctx.nominal_type_defs.get(name) else {
                     return false;
                 };
@@ -120,17 +125,17 @@ impl TypeChecker {
                 if !matches!(def.kind, DefKind::Struct | DefKind::Enum) {
                     return true;
                 }
-                if def.module == self.current_module {
+                if def.module == current_module {
                     return true;
                 }
                 if std_id::is_std_module(&self.ctx.resolved, def.module)
-                    && std_id::is_std_module(&self.ctx.resolved, self.current_module)
+                    && std_id::is_std_module(&self.ctx.resolved, current_module)
                 {
                     return true;
                 }
                 matches!(
                     self.ctx.resolved
-                        .lookup_bare(self.current_module, &def.name, std::slice::from_ref(&def.kind)),
+                        .lookup_bare(current_module, &def.name, std::slice::from_ref(&def.kind)),
                     Ok(Some(visible_def_id)) if visible_def_id == *def_id
                 )
             }
@@ -283,6 +288,351 @@ impl TypeChecker {
             return sop_ty;
         }
         self.meta_repr_storage_ty(ty, span)
+    }
+
+    pub(super) fn meta_repr_symbolic_constraint_receiver_ty(
+        &mut self,
+        ty: &Ty,
+        span: impl Into<Option<crate::span::Span>>,
+    ) -> Ty {
+        let span = span.into();
+        if let Some((borrowed, source_ty)) = meta_repr_marker_source(ty)
+            && contains_generic(source_ty)
+            && !contains_type_hole(source_ty)
+        {
+            let root = (!borrowed).then(|| source_ty.clone());
+            let mut expanding = HashSet::new();
+            return self
+                .symbolic_meta_repr_ty_inner_rec(
+                    span,
+                    source_ty,
+                    borrowed,
+                    root.as_ref(),
+                    &mut expanding,
+                )
+                .unwrap_or_else(|| ty.clone());
+        }
+        if let Some(source_ty) = meta_schema_marker_source(ty)
+            && contains_generic(source_ty)
+            && !contains_type_hole(source_ty)
+        {
+            let root = source_ty.clone();
+            let mut expanding = HashSet::new();
+            return self
+                .symbolic_meta_schema_ty_inner_rec(span, source_ty, Some(&root), &mut expanding)
+                .unwrap_or_else(|| ty.clone());
+        }
+        self.meta_repr_constraint_receiver_ty(ty, span)
+    }
+
+    pub(super) fn symbolic_meta_repr_ty_inner_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        borrowed: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if contains_type_hole(source_ty) || matches!(source_ty, Ty::Generic(_)) {
+            return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
+        }
+        match source_ty {
+            Ty::Array { len, elem } => {
+                self.check_meta_array_budget(span, source_ty, *len, elem, false)?;
+                Some(if borrowed {
+                    meta_ref_array_repr_ty(*len, elem)
+                } else {
+                    self.symbolic_meta_array_repr_ty_inner(span, *len, elem, root, expanding)?
+                })
+            }
+            Ty::Named { name, args } => {
+                if let Some(marker_borrowed) = meta_repr_marker_name(name) {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    return self.symbolic_meta_repr_ty_inner_rec(
+                        span,
+                        &args[0],
+                        marker_borrowed,
+                        root,
+                        expanding,
+                    );
+                }
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !contains_generic(&instance_ty)
+                    && !borrowed
+                    && self.is_owned_meta_policy_leaf(&instance_ty, root)
+                {
+                    return Some(self.meta_repr_policy_leaf_ty(&instance_ty, root));
+                }
+                if !expanding.insert(instance_ty.clone()) {
+                    return None;
+                }
+                if let Some(fields) = self.symbolic_struct_fields(name, args) {
+                    let mut field_tys = Vec::new();
+                    for (_, ty) in fields {
+                        let Some(field_ty) =
+                            self.symbolic_meta_repr_field_ty(span, &ty, borrowed, root, expanding)
+                        else {
+                            expanding.remove(&instance_ty);
+                            return None;
+                        };
+                        field_tys.push(field_ty);
+                    }
+                    expanding.remove(&instance_ty);
+                    return Some(meta_product_ty(
+                        field_tys,
+                        if borrowed { "FieldRef" } else { "Field" },
+                    ));
+                }
+                if let Some(variants) = self.symbolic_enum_variants(name, args) {
+                    let mut variant_tys = Vec::new();
+                    for payload in variants {
+                        let mut payload_tys = Vec::new();
+                        for payload_ty in payload {
+                            let Some(field_ty) = self.symbolic_meta_repr_field_ty(
+                                span,
+                                &payload_ty,
+                                borrowed,
+                                root,
+                                expanding,
+                            ) else {
+                                expanding.remove(&instance_ty);
+                                return None;
+                            };
+                            payload_tys.push(field_ty);
+                        }
+                        variant_tys.push(payload_tys);
+                    }
+                    expanding.remove(&instance_ty);
+                    return Some(meta_sum_ty(variant_tys, borrowed));
+                }
+                expanding.remove(&instance_ty);
+                Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()))
+            }
+            _ => Some(std_meta_repr_marker_ty(borrowed, source_ty.clone())),
+        }
+    }
+
+    pub(super) fn symbolic_meta_repr_field_ty(
+        &mut self,
+        span: Option<crate::span::Span>,
+        ty: &Ty,
+        borrowed: bool,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if borrowed {
+            return Some(meta_repr_borrowed_array_leaf_ty(ty));
+        }
+        match ty {
+            Ty::Array { .. } | Ty::Named { .. } => {
+                self.symbolic_meta_repr_ty_inner_rec(span, ty, false, root, expanding)
+            }
+            other => Some(other.clone()),
+        }
+    }
+
+    pub(super) fn symbolic_meta_array_repr_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        len: usize,
+        elem: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if len == 0 {
+            return Some(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let elem_ty = self.symbolic_meta_repr_field_ty(span, elem, false, root, expanding)?;
+            return Some(meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]));
+        }
+        let split = crate::types::meta_array_split_len(len);
+        Some(meta_named(
+            "ArrayCat",
+            vec![
+                self.symbolic_meta_array_repr_ty_inner(span, split, elem, root, expanding)?,
+                self.symbolic_meta_array_repr_ty_inner(span, len - split, elem, root, expanding)?,
+            ],
+        ))
+    }
+
+    pub(super) fn symbolic_meta_schema_ty_inner_rec(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        if contains_type_hole(source_ty) || matches!(source_ty, Ty::Generic(_)) {
+            return Some(std_meta_schema_marker_ty(source_ty.clone()));
+        }
+        match source_ty {
+            Ty::Array { len, elem } => {
+                self.symbolic_meta_schema_array_ty_inner(span, *len, elem, root, expanding)
+            }
+            Ty::Named { name, args } => {
+                if meta_schema_marker_name(name) {
+                    if args.len() != 1 {
+                        return None;
+                    }
+                    return self.symbolic_meta_schema_ty_inner_rec(span, &args[0], root, expanding);
+                }
+                let instance_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !expanding.insert(instance_ty.clone()) {
+                    return None;
+                }
+                if let Some(fields) = self.symbolic_struct_fields(name, args) {
+                    let mut field_tys = Vec::new();
+                    for (_, ty) in fields {
+                        let Some(repr_ty) =
+                            self.symbolic_meta_repr_field_ty(span, &ty, false, root, expanding)
+                        else {
+                            expanding.remove(&instance_ty);
+                            return None;
+                        };
+                        field_tys.push((ty, repr_ty));
+                    }
+                    expanding.remove(&instance_ty);
+                    return Some(meta_schema_product_ty(field_tys));
+                }
+                if let Some(variants) = self.symbolic_enum_variants(name, args) {
+                    let mut variant_tys = Vec::new();
+                    for payload in variants {
+                        let mut payload_tys = Vec::new();
+                        for payload_ty in payload {
+                            let Some(repr_ty) = self.symbolic_meta_repr_field_ty(
+                                span,
+                                &payload_ty,
+                                false,
+                                root,
+                                expanding,
+                            ) else {
+                                expanding.remove(&instance_ty);
+                                return None;
+                            };
+                            payload_tys.push((payload_ty, repr_ty));
+                        }
+                        variant_tys.push(payload_tys);
+                    }
+                    expanding.remove(&instance_ty);
+                    return Some(meta_schema_sum_ty(variant_tys));
+                }
+                expanding.remove(&instance_ty);
+                Some(std_meta_schema_marker_ty(source_ty.clone()))
+            }
+            _ => Some(std_meta_schema_marker_ty(source_ty.clone())),
+        }
+    }
+
+    pub(super) fn symbolic_meta_schema_array_ty_inner(
+        &mut self,
+        span: Option<crate::span::Span>,
+        len: usize,
+        elem: &Ty,
+        root: Option<&Ty>,
+        expanding: &mut HashSet<Ty>,
+    ) -> Option<Ty> {
+        let source_ty = Ty::Array {
+            len,
+            elem: Box::new(elem.clone()),
+        };
+        self.check_meta_schema_array_budget(span, &source_ty, len, elem, false)?;
+        if len == 0 {
+            return Some(meta_named("ArrayNil", Vec::new()));
+        }
+        if len <= crate::types::META_ARRAY_CHUNK_SIZE {
+            let repr_ty = self.symbolic_meta_repr_field_ty(span, elem, false, root, expanding)?;
+            let elem_ty = meta_named("ElementSchema", vec![elem.clone(), repr_ty]);
+            return Some(meta_named(&format!("ArrayChunk{len}"), vec![elem_ty]));
+        }
+        let split = crate::types::meta_array_split_len(len);
+        Some(meta_named(
+            "ArrayCat",
+            vec![
+                self.symbolic_meta_schema_array_ty_inner(span, split, elem, root, expanding)?,
+                self.symbolic_meta_schema_array_ty_inner(span, len - split, elem, root, expanding)?,
+            ],
+        ))
+    }
+
+    pub(super) fn symbolic_struct_fields(
+        &mut self,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<(String, Ty)>> {
+        let instance_name = enum_instance_name(name, args);
+        if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
+            return Some(fields);
+        }
+        let template = self.ctx.struct_templates.get(name).cloned()?;
+        if args.len() != template.generics.len() {
+            return None;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        Some(
+            template
+                .fields
+                .iter()
+                .map(|field| {
+                    (
+                        field.name.name.clone(),
+                        self.lower_type_with_subst_no_normalize(&field.ty, &subst),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    pub(super) fn symbolic_enum_variants(
+        &mut self,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<Vec<Ty>>> {
+        let instance_name = enum_instance_name(name, args);
+        if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
+            return Some(
+                enm.variants
+                    .into_iter()
+                    .map(|variant| variant.payload)
+                    .collect(),
+            );
+        }
+        let template = self.ctx.enum_templates.get(name).cloned()?;
+        if args.len() != template.generics.len() {
+            return None;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        Some(
+            template
+                .variants
+                .iter()
+                .map(|variant| {
+                    variant
+                        .payload
+                        .iter()
+                        .map(|payload| self.lower_type_with_subst_no_normalize(payload, &subst))
+                        .collect()
+                })
+                .collect(),
+        )
     }
 
     pub(super) fn meta_repr_storage_ty_inner(

@@ -582,6 +582,10 @@ export Result<T, wire::WireError> decode<T: wire::decode_value<Reader>>(
     return Ok(value);
 }
 
+export interface Encode = wire::encode_value<Writer>;
+export interface Decode = wire::decode_value<Reader>;
+export interface Wire = Encode + Decode;
+
 Result<void, wire::WireError> write_text_value(*buf::ByteBuf out, text::Text value) {
     bytes::Bytes @raw;
     switch (text::text_to_bytes(value)) {
@@ -1260,6 +1264,53 @@ export Result<T, wire::WireError> decode_struct_with_policy<T, S: decode_struct_
     return Ok(meta::from_repr<T>(decoded_repr));
 }
 
+interface<S, R> Result<void, wire::WireError> encode_derived_value(
+    *const S schema,
+    *const R repr,
+    *Writer writer
+);
+
+interface<T, S, R> Result<T, wire::WireError> decode_derived_value(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    *const Value value
+);
+
+impl<S: encode_struct_fields<R>, R> encode_derived_value(
+    *const S schema,
+    *const R repr,
+    *Writer writer
+) {
+    return write_struct(schema, repr, writer);
+}
+
+impl<T, S: decode_struct_fields<R>, R> decode_derived_value(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    *const Value value
+) {
+    return decode_struct_value(target, schema, repr, value);
+}
+
+derivable impl<T> wire::encode_value(*const T value, *Writer writer) {
+    _ schema = meta::schema<T>();
+    _ repr = meta::as_ref_repr(value);
+    return encode_derived_value(&schema, &repr, writer);
+}
+
+derivable impl<T> wire::decode_value(meta::Type<T> target, *Reader reader) {
+    Value value = read_value(reader)?;
+    _ schema = meta::schema<T>();
+    return decode_derived_value(
+        target,
+        &schema,
+        meta::type_tag<meta::Repr<T>>(),
+        &value
+    );
+}
+
 impl encode_enum_variant(*const meta::HNil schema, *const meta::CoNil repr, *Writer writer) {
     switch (*repr) {
     }
@@ -1527,6 +1578,23 @@ export Result<T, wire::WireError> decode_enum<T, S: decode_enum_variant<R>, R>(
 ) {
     R decoded_repr = decode_enum_repr(schema, repr, input)?;
     return Ok(meta::from_repr<T>(decoded_repr));
+}
+
+impl<S: encode_enum_variant<R>, R> encode_derived_value(
+    *const S schema,
+    *const R repr,
+    *Writer writer
+) {
+    return write_enum(schema, repr, writer);
+}
+
+impl<T, S: decode_enum_variant<R>, R> decode_derived_value(
+    meta::Type<T> target,
+    *const S schema,
+    meta::Type<R> repr,
+    *const Value value
+) {
+    return decode_enum_value(target, schema, repr, value);
 }
 
 impl<T: wire::decode_value<Reader>> decode_json_slot(

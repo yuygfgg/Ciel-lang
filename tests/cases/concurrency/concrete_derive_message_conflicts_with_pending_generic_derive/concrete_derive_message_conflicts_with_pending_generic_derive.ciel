@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: conflicts with an existing generic impl
+
+import /std/lib;
+
+struct Envelope<T> {
+    T item;
+}
+
+derive<T: Message> Message<Envelope<T>>;
+derive Message<Envelope<i64>>;
+
+i64 main() {
+    return 0;
+}

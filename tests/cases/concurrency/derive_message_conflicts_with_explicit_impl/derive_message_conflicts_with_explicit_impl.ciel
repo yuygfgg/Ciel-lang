@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: conflicts with an existing impl
+
+import /std/lib;
+
+struct Packet {
+    i64 value;
+}
+
+unsafe impl clone_message(*const Packet value) {
+    return Ok(*value);
+}
+
+derive Message<Packet>;
+
+i64 main() {
+    return 0;
+}

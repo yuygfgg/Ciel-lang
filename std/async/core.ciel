@@ -84,6 +84,10 @@ export unsafe interface<F> bool cancel_safe_marker(*const F future);
 // Constraint alias for cancel-safe futures.
 export interface CancelSafe = cancel_safe_marker;
 
+unsafe derivable unsafe impl<T> cancel_safe_marker(*const T future) {
+    return true;
+}
+
 // Unsafe interface hole: aborts a future or task so pending runtime operations
 // can be released. Implementations must make repeated abort/close paths safe.
 export unsafe interface<F> Result<void, Error> abort_future(*F future);
@@ -144,9 +148,7 @@ export Result<void, AsyncError> cancel<T>(*const Task<T> task) = .cancel;
 // Returns whether a task has reached a terminal state.
 export Result<bool, AsyncError> is_finished<T>(*const Task<T> task) = .is_finished;
 
-unsafe impl<T> cancel_safe_marker(*const Task<T> task) {
-    return true;
-}
+unsafe derive<T> cancel_safe_marker<Task<T>>;
 
 unsafe impl<T> abort_future(*Task<T> task) {
     cancel(task)?;
@@ -161,9 +163,7 @@ unsafe impl<T: Message> clone_message(*const Task<T> value) {
     return Ok(*value);
 }
 
-unsafe impl<T: Message> share_handle_marker(*const Task<T> value) {
-    return true;
-}
+unsafe derive<T: Message> share_handle_marker<Task<T>>;
 
 // Send half of a bounded async channel.
 export struct Sender<T> {
@@ -195,9 +195,7 @@ unsafe impl<T: Message> clone_message(*const Sender<T> value) {
     return Ok({ handle: raw as *void });
 }
 
-unsafe impl<T: Message> share_handle_marker(*const Sender<T> value) {
-    return true;
-}
+unsafe derive<T: Message> share_handle_marker<Sender<T>>;
 
 unsafe impl<T: Message> clone_message(*const Receiver<T> value) {
     ?*CielAsyncReceiver raw =
@@ -208,9 +206,7 @@ unsafe impl<T: Message> clone_message(*const Receiver<T> value) {
     return Ok({ handle: raw as *void });
 }
 
-unsafe impl<T: Message> share_handle_marker(*const Receiver<T> value) {
-    return true;
-}
+unsafe derive<T: Message> share_handle_marker<Receiver<T>>;
 
 // Creates a bounded async channel with the requested capacity.
 export Result<ChannelPair<T>, AsyncError> channel<T>(usize capacity) {

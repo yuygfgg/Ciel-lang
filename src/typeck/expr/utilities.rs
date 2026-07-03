@@ -152,6 +152,16 @@ impl TypeChecker {
         {
             return false;
         }
+        if self.symbolic_impl_resolution_depth > 0
+            && self.symbolically_proves_capability_by_def(
+                interface_def,
+                interface_name,
+                args,
+                receiver_ty,
+            )
+        {
+            return true;
+        }
         if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
             return true;
         }
@@ -384,6 +394,27 @@ impl TypeChecker {
                     visiting.remove(ty);
                     return affine;
                 }
+                if args.iter().any(contains_generic)
+                    && let Some(template) = self.ctx.struct_templates.get(name).cloned()
+                    && args.len() == template.generics.len()
+                {
+                    if template.is_resource {
+                        visiting.remove(ty);
+                        return true;
+                    }
+                    let subst = template
+                        .generics
+                        .iter()
+                        .map(|generic| generic.name.clone())
+                        .zip(args.iter().cloned())
+                        .collect::<HashMap<_, _>>();
+                    let affine = template.fields.iter().any(|field| {
+                        let field_ty = self.lower_type_with_subst_no_normalize(&field.ty, &subst);
+                        self.type_is_affine_inner(&field_ty, visiting)
+                    });
+                    visiting.remove(ty);
+                    return affine;
+                }
                 self.ensure_enum_instance(ty);
                 if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     let affine = enm.variants.iter().any(|variant| {
@@ -391,6 +422,26 @@ impl TypeChecker {
                             .payload
                             .iter()
                             .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
+                    });
+                    visiting.remove(ty);
+                    return affine;
+                }
+                if args.iter().any(contains_generic)
+                    && let Some(template) = self.ctx.enum_templates.get(name).cloned()
+                    && args.len() == template.generics.len()
+                {
+                    let subst = template
+                        .generics
+                        .iter()
+                        .map(|generic| generic.name.clone())
+                        .zip(args.iter().cloned())
+                        .collect::<HashMap<_, _>>();
+                    let affine = template.variants.iter().any(|variant| {
+                        variant.payload.iter().any(|payload| {
+                            let payload_ty =
+                                self.lower_type_with_subst_no_normalize(payload, &subst);
+                            self.type_is_affine_inner(&payload_ty, visiting)
+                        })
                     });
                     visiting.remove(ty);
                     return affine;
@@ -899,6 +950,14 @@ impl TypeChecker {
         ) {
             return Some(implementation);
         }
+        if let Some(implementation) = self.find_symbolic_impl_by_full_args(
+            interface_def,
+            interface_name,
+            interface_args,
+            receiver_ty,
+        ) {
+            return Some(implementation);
+        }
         let storage_interface_args = interface_args
             .iter()
             .map(|ty| self.meta_repr_constraint_receiver_ty(ty, span))
@@ -926,7 +985,352 @@ impl TypeChecker {
         {
             return Some(implementation);
         }
+        if self.symbolic_impl_resolution_depth > 0 {
+            let storage_interface_args = interface_args
+                .iter()
+                .map(|ty| self.meta_repr_symbolic_constraint_receiver_ty(ty, span))
+                .collect::<Vec<_>>();
+            let storage_receiver_ty =
+                receiver_ty.map(|ty| self.meta_repr_symbolic_constraint_receiver_ty(ty, span));
+            if (storage_interface_args.as_slice() != interface_args
+                || storage_receiver_ty.as_ref() != receiver_ty)
+                && let Some(implementation) = self.find_symbolic_impl_by_full_args(
+                    interface_def,
+                    interface_name,
+                    &storage_interface_args,
+                    storage_receiver_ty.as_ref(),
+                )
+            {
+                return Some(implementation);
+            }
+        }
         None
+    }
+
+    pub(in crate::typeck) fn with_symbolic_impl_resolution<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.symbolic_impl_resolution_depth += 1;
+        let result = f(self);
+        self.symbolic_impl_resolution_depth -= 1;
+        result
+    }
+
+    pub(super) fn find_symbolic_impl_by_full_args(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+    ) -> Option<ImplSig> {
+        if self.symbolic_impl_resolution_depth == 0 {
+            return None;
+        }
+        let receiver_ty = receiver_ty?;
+        let non_receiver_args = interface_non_receiver_args(interface_args);
+        if !self.symbolically_proves_capability_by_def(
+            interface_def,
+            interface_name,
+            non_receiver_args,
+            receiver_ty,
+        ) {
+            return None;
+        }
+        let interface = self.ctx.interfaces.get(&interface_def).cloned()?;
+        if interface.generics.len() != interface_args.len() {
+            return None;
+        }
+        let subst = interface
+            .generics
+            .iter()
+            .cloned()
+            .zip(interface_args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        let ret = self.lower_type_with_subst(&interface.ret, &subst);
+        let params = interface
+            .params
+            .iter()
+            .map(|param| self.lower_type_with_subst(&param.ty, &subst))
+            .collect::<Vec<_>>();
+        Some(ImplSig {
+            interface_def,
+            interface_name: interface_name.to_string(),
+            interface_args: interface_args.to_vec(),
+            receiver_ty: Some(receiver_ty.clone()),
+            function_def: self.alloc_synthetic_def(),
+            ret,
+            params,
+        })
+    }
+
+    pub(super) fn symbolically_proves_capability_by_def(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        let key = CapabilityResolutionKey {
+            interface_def,
+            interface_name: interface_name.to_string(),
+            args: args.to_vec(),
+            receiver_ty: receiver_ty.clone(),
+        };
+        if !self
+            .symbolic_capability_resolution_stack
+            .insert(key.clone())
+        {
+            return false;
+        }
+        let proves = self.symbolically_proves_capability_inner(
+            interface_def,
+            interface_name,
+            args,
+            receiver_ty,
+        );
+        self.symbolic_capability_resolution_stack.remove(&key);
+        proves
+    }
+
+    pub(super) fn symbolically_proves_capability_inner(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        if (self.is_std_message_clone_interface_def(interface_def)
+            || self.is_std_message_share_handle_marker_def(interface_def))
+            && args.is_empty()
+            && self.type_is_affine(receiver_ty)
+        {
+            return false;
+        }
+        if self.is_std_message_capability_interface_def(interface_def)
+            && args.is_empty()
+            && self.type_is_affine(receiver_ty)
+        {
+            return false;
+        }
+        if self.symbolic_generic_env_proves_capability(interface_def, args, receiver_ty) {
+            return true;
+        }
+        if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
+            return true;
+        }
+        if let Ty::GeneratedFuture {
+            output,
+            cancel_safe,
+            abortable,
+            ..
+        } = receiver_ty
+        {
+            return (std_id::is_std_async_interface(
+                &self.ctx.resolved,
+                interface_def,
+                STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+            ) && args.len() == 1
+                && args.first() == Some(output))
+                || (std_id::is_std_async_interface(
+                    &self.ctx.resolved,
+                    interface_def,
+                    STD_ASYNC_CANCEL_SAFE_INTERFACE,
+                ) && args.is_empty()
+                    && *cancel_safe)
+                || (std_id::is_std_async_interface(
+                    &self.ctx.resolved,
+                    interface_def,
+                    STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                ) && args.is_empty()
+                    && *abortable);
+        }
+        if retained_closure_proves_capability(receiver_ty, interface_def, args) {
+            return true;
+        }
+        if CapabilityTable::new(&self.ctx)
+            .find_impl(interface_def, args, receiver_ty)
+            .is_some()
+        {
+            return true;
+        }
+        if self.symbolic_generic_impl_proves_capability(
+            interface_def,
+            interface_name,
+            args,
+            receiver_ty,
+        ) {
+            return true;
+        }
+        let storage_receiver_ty = self.meta_repr_symbolic_constraint_receiver_ty(receiver_ty, None);
+        let storage_args = args
+            .iter()
+            .map(|arg| self.meta_repr_symbolic_constraint_receiver_ty(arg, None))
+            .collect::<Vec<_>>();
+        if &storage_receiver_ty != receiver_ty || storage_args.as_slice() != args {
+            return self.symbolically_proves_capability_by_def(
+                interface_def,
+                interface_name,
+                &storage_args,
+                &storage_receiver_ty,
+            );
+        }
+        false
+    }
+
+    pub(super) fn symbolic_generic_env_proves_capability(
+        &mut self,
+        interface_def: DefId,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        let Ty::Generic(receiver_name) = receiver_ty else {
+            return false;
+        };
+        for env in self.symbolic_constraint_env_stack.iter().rev() {
+            let Some(generic_constraint) = env
+                .iter()
+                .find(|constraint| constraint.name == *receiver_name)
+            else {
+                continue;
+            };
+            if generic_constraint
+                .bounds
+                .positive
+                .iter()
+                .any(|entry| entry.def_id == interface_def && entry.args == args)
+            {
+                return true;
+            }
+            if generic_constraint
+                .bounds
+                .negative
+                .iter()
+                .any(|entry| entry.def_id == interface_def && entry.args == args)
+            {
+                return false;
+            }
+        }
+        let envs = self.generic_env_stack.clone();
+        for env in envs {
+            let Some(generic) = env.iter().find(|generic| generic.name == *receiver_name) else {
+                continue;
+            };
+            let Some(constraint) = &generic.constraint else {
+                continue;
+            };
+            let subst = Self::initial_generic_subst(&env);
+            let bounds = self.constraint_bounds(constraint, &subst);
+            if bounds
+                .positive
+                .iter()
+                .any(|entry| entry.def_id == interface_def && entry.args == args)
+            {
+                return true;
+            }
+            if bounds
+                .negative
+                .iter()
+                .any(|entry| entry.def_id == interface_def && entry.args == args)
+            {
+                return false;
+            }
+        }
+        false
+    }
+
+    pub(super) fn symbolic_generic_impl_proves_capability(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
+        let full_args = std::iter::once(receiver_ty.clone())
+            .chain(args.iter().cloned())
+            .collect::<Vec<_>>();
+        let templates = self.visible_generic_impl_templates();
+        templates.iter().any(|template| {
+            if template.interface_def != interface_def
+                || template.interface_args.len() != full_args.len()
+            {
+                return false;
+            }
+            let scoped_names = template
+                .generics
+                .iter()
+                .map(|generic| {
+                    (
+                        generic.name.clone(),
+                        format!("$symbolic_impl${interface_name}${}", generic.name),
+                    )
+                })
+                .collect::<HashMap<_, _>>();
+            let scoped_subst = scoped_names
+                .iter()
+                .map(|(name, scoped)| (name.clone(), Ty::Generic(scoped.clone())))
+                .collect::<HashMap<_, _>>();
+            let mut subst = scoped_names
+                .values()
+                .map(|name| (name.clone(), Ty::Generic(name.clone())))
+                .collect::<HashMap<_, _>>();
+            for (pattern, actual) in template.interface_args.iter().zip(full_args.iter()) {
+                let pattern = substitute_ty(pattern, &scoped_subst);
+                if !unify_ty(&pattern, actual, &mut subst) {
+                    return false;
+                }
+            }
+            if let Some(pattern) = template.receiver_ty.as_ref() {
+                let pattern = substitute_ty(pattern, &scoped_subst);
+                if !unify_ty(&pattern, receiver_ty, &mut subst) {
+                    return false;
+                }
+            }
+            let scoped_name_set = scoped_names.values().cloned().collect::<HashSet<_>>();
+            if scoped_names.values().any(|name| {
+                subst
+                    .get(name)
+                    .is_none_or(|ty| contains_any_generic_name(ty, &scoped_name_set))
+            }) {
+                return false;
+            }
+            template.generic_constraints.iter().all(|constraint| {
+                let Some(scoped_name) = scoped_names.get(&constraint.name) else {
+                    return false;
+                };
+                let Some(concrete) = subst.get(scoped_name).cloned() else {
+                    return false;
+                };
+                if constraint.is_resource && !self.type_is_affine(&concrete) {
+                    return false;
+                }
+                let scoped_bounds = substitute_constraint_bounds(&constraint.bounds, &scoped_subst);
+                let bounds = substitute_constraint_bounds(&scoped_bounds, &subst);
+                self.symbolic_constraint_bounds_satisfied(&concrete, &bounds)
+            })
+        })
+    }
+
+    pub(super) fn symbolic_constraint_bounds_satisfied(
+        &mut self,
+        receiver_ty: &Ty,
+        bounds: &ConstraintBounds,
+    ) -> bool {
+        bounds.positive.iter().all(|capability| {
+            self.symbolically_proves_capability_by_def(
+                capability.def_id,
+                &capability.name,
+                &capability.args,
+                receiver_ty,
+            )
+        }) && bounds.negative.iter().all(|capability| {
+            !self.symbolically_proves_capability_by_def(
+                capability.def_id,
+                &capability.name,
+                &capability.args,
+                receiver_ty,
+            )
+        })
     }
 
     pub(super) fn instantiate_generic_impl_for_receiver(
@@ -1045,8 +1449,16 @@ impl TypeChecker {
         if let Some((template, concrete_interface_args, concrete_receiver, ret, params, subst)) =
             matches.into_iter().next()
         {
+            let mut body_subst = subst.clone();
+            for (name, ty) in &template.body_subst {
+                body_subst.insert(
+                    name.clone(),
+                    self.substitute_ty_normalized(ty, &subst, span.unwrap_or(template.item_span)),
+                );
+            }
             return self.instantiate_impl_body(
                 template.module,
+                template.body_reflection_module,
                 &template.decl,
                 template.interface_def,
                 &template.interface_name,
@@ -1054,7 +1466,7 @@ impl TypeChecker {
                 concrete_receiver,
                 ret,
                 params,
-                &subst,
+                &body_subst,
             );
         }
         None

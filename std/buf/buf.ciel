@@ -229,6 +229,4 @@ unsafe impl clone_message(*const ByteBuf value) {
     return Ok(out);
 }
 
-unsafe impl async_frame_opt_in_marker(*const ByteBuf value) {
-    return true;
-}
+unsafe derive async_frame_opt_in_marker<ByteBuf>;

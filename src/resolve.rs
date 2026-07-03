@@ -651,6 +651,16 @@ pub fn resolve_modules(modules: Vec<ParsedModule>) -> DiagResult<ResolvedProgram
                         });
                     }
                 }
+                ItemKind::DerivableImpl(decl) => {
+                    if let Some(name) = decl.impl_decl.name.last() {
+                        impls.push(ImplRecord {
+                            module: module.id,
+                            interface_name: name.name.clone(),
+                            span: item.span,
+                        });
+                    }
+                }
+                ItemKind::Derive(_) => {}
                 ItemKind::Function(decl) => {
                     let kind = if decl.abi.as_deref() == Some("C") && decl.body.is_none() {
                         DefKind::ExternFunction
@@ -867,7 +877,11 @@ fn item_declared_names(item: &Item) -> Vec<&str> {
                 ExternItem::TypeAlias(alias) => alias.name.name.as_str(),
             })
             .collect(),
-        ItemKind::Import(_) | ItemKind::Impl(_) | ItemKind::CInclude(_) => Vec::new(),
+        ItemKind::Import(_)
+        | ItemKind::Impl(_)
+        | ItemKind::DerivableImpl(_)
+        | ItemKind::Derive(_)
+        | ItemKind::CInclude(_) => Vec::new(),
     }
 }
 

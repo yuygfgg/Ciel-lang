@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: forbidden capability `clone_message`
+
+import /std/lib;
+import /std/message as message;
+
+struct Envelope<T> {
+    T item;
+}
+
+derive<T: Message> Message<Envelope<T>>;
+unsafe derive message::ThreadLocal<Envelope<i64>>;
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/lib;
+
+struct Packet {
+    i64 value;
+    bool ok;
+}
+
+derive Message<Packet>;
+
+i64 main() {
+    Packet packet = { value: 7, ok: true };
+    Packet copied = must(clone_message(&packet));
+    if (!copied.ok) {
+        return 1;
+    }
+    must(print("{}", [copied.value]));
+    return 0;
+}

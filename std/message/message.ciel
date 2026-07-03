@@ -109,6 +109,24 @@ unsafe impl<T: ShareHandle> async_frame_opt_in_marker(*const T value) {
     return true;
 }
 
+derivable unsafe impl<T> clone_message(*const T value) {
+    meta::Repr<T> repr = meta::into_repr(value);
+    meta::Repr<T> copied = clone_message(&repr)?;
+    return Ok(meta::from_repr<T>(copied));
+}
+
+unsafe derivable unsafe impl<T> share_handle_marker(*const T value) {
+    return true;
+}
+
+unsafe derivable unsafe impl<T> thread_local_marker(*const T value) {
+    return true;
+}
+
+unsafe derivable unsafe impl<T> async_frame_opt_in_marker(*const T value) {
+    return true;
+}
+
 unsafe impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {
     switch (*value) {
         case Ok(ok):

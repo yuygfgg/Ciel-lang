@@ -31,6 +31,14 @@ impl TypeChecker {
         self.lower_type_with_subst_inner(ty, subst, true)
     }
 
+    pub(super) fn lower_type_with_subst_no_normalize(
+        &mut self,
+        ty: &Type,
+        subst: &HashMap<String, Ty>,
+    ) -> Ty {
+        self.lower_type_with_subst_inner_mode(ty, subst, false, false)
+    }
+
     pub(super) fn lower_function_return_type(
         &mut self,
         def_id: DefId,
@@ -382,6 +390,16 @@ impl TypeChecker {
         subst: &HashMap<String, Ty>,
         allow_holes: bool,
     ) -> Ty {
+        self.lower_type_with_subst_inner_mode(ty, subst, allow_holes, true)
+    }
+
+    pub(super) fn lower_type_with_subst_inner_mode(
+        &mut self,
+        ty: &Type,
+        subst: &HashMap<String, Ty>,
+        allow_holes: bool,
+        normalize_meta_repr: bool,
+    ) -> Ty {
         let lowered = match &ty.kind {
             TypeKind::Hole => {
                 if allow_holes {
@@ -446,14 +464,26 @@ impl TypeChecker {
                             args: args
                                 .iter()
                                 .map(|arg| {
-                                    self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                    self.lower_type_with_subst_inner_mode(
+                                        arg,
+                                        subst,
+                                        allow_holes,
+                                        normalize_meta_repr,
+                                    )
                                 })
                                 .collect(),
                         }
                     } else if self.ctx.interface_aliases.contains_key(&def_id) {
                         let alias_args = args
                             .iter()
-                            .map(|arg| self.lower_type_with_subst_inner(arg, subst, allow_holes))
+                            .map(|arg| {
+                                self.lower_type_with_subst_inner_mode(
+                                    arg,
+                                    subst,
+                                    allow_holes,
+                                    normalize_meta_repr,
+                                )
+                            })
                             .collect::<Vec<_>>();
                         let view = self.interface_view_for_def(def_id, &alias_args);
                         for entry in view.positive.iter().chain(view.negative.iter()) {
@@ -516,7 +546,12 @@ impl TypeChecker {
                             Some(
                                 args.iter()
                                     .map(|arg| {
-                                        self.lower_type_with_subst_inner(arg, subst, allow_holes)
+                                        self.lower_type_with_subst_inner_mode(
+                                            arg,
+                                            subst,
+                                            allow_holes,
+                                            normalize_meta_repr,
+                                        )
                                     })
                                     .collect(),
                             )
@@ -545,15 +580,30 @@ impl TypeChecker {
             } => Ty::Pointer {
                 nullable: *nullable,
                 mutability: *mutability,
-                inner: Box::new(self.lower_type_with_subst_inner(inner, subst, allow_holes)),
+                inner: Box::new(self.lower_type_with_subst_inner_mode(
+                    inner,
+                    subst,
+                    allow_holes,
+                    normalize_meta_repr,
+                )),
             },
             TypeKind::Array { len, elem } => Ty::Array {
                 len: *len,
-                elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
+                elem: Box::new(self.lower_type_with_subst_inner_mode(
+                    elem,
+                    subst,
+                    allow_holes,
+                    normalize_meta_repr,
+                )),
             },
             TypeKind::Slice { mutability, elem } => Ty::Slice {
                 mutability: *mutability,
-                elem: Box::new(self.lower_type_with_subst_inner(elem, subst, allow_holes)),
+                elem: Box::new(self.lower_type_with_subst_inner_mode(
+                    elem,
+                    subst,
+                    allow_holes,
+                    normalize_meta_repr,
+                )),
             },
             TypeKind::Function {
                 is_unsafe,
@@ -563,10 +613,22 @@ impl TypeChecker {
             } => Ty::Function {
                 is_unsafe: *is_unsafe,
                 abi: abi.clone(),
-                ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
+                ret: Box::new(self.lower_type_with_subst_inner_mode(
+                    ret,
+                    subst,
+                    allow_holes,
+                    normalize_meta_repr,
+                )),
                 params: params
                     .iter()
-                    .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
+                    .map(|param| {
+                        self.lower_type_with_subst_inner_mode(
+                            param,
+                            subst,
+                            allow_holes,
+                            normalize_meta_repr,
+                        )
+                    })
                     .collect(),
             },
             TypeKind::Closure {
@@ -581,10 +643,22 @@ impl TypeChecker {
                     );
                 }
                 Ty::Closure {
-                    ret: Box::new(self.lower_type_with_subst_inner(ret, subst, allow_holes)),
+                    ret: Box::new(self.lower_type_with_subst_inner_mode(
+                        ret,
+                        subst,
+                        allow_holes,
+                        normalize_meta_repr,
+                    )),
                     params: params
                         .iter()
-                        .map(|param| self.lower_type_with_subst_inner(param, subst, allow_holes))
+                        .map(|param| {
+                            self.lower_type_with_subst_inner_mode(
+                                param,
+                                subst,
+                                allow_holes,
+                                normalize_meta_repr,
+                            )
+                        })
                         .collect(),
                     constraints: constraint
                         .as_ref()
@@ -593,10 +667,13 @@ impl TypeChecker {
                 }
             }
         };
-        let lowered = self.normalize_meta_repr_markers(&lowered, ty.span);
-        if !contains_type_hole(&lowered) {
-            self.ensure_enum_instance(&lowered);
-            self.ensure_struct_instance(&lowered);
+        if normalize_meta_repr {
+            let lowered = self.normalize_meta_repr_markers(&lowered, ty.span);
+            if !contains_type_hole(&lowered) {
+                self.ensure_enum_instance(&lowered);
+                self.ensure_struct_instance(&lowered);
+            }
+            return lowered;
         }
         lowered
     }

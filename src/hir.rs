@@ -55,6 +55,8 @@ pub enum ItemKind {
     Interface(InterfaceDecl),
     InterfaceAlias(InterfaceAliasDecl),
     Impl(ImplDecl),
+    DerivableImpl(DerivableImplDecl),
+    Derive(DeriveDecl),
     Function(FunctionDecl),
     ExternBlock(ExternBlock),
 }
@@ -136,6 +138,20 @@ pub struct ImplDecl {
     pub args: Vec<Type>,
     pub params: Vec<Param>,
     pub body: Block,
+}
+
+#[derive(Clone, Debug)]
+pub struct DerivableImplDecl {
+    pub requires_unsafe: bool,
+    pub impl_decl: ImplDecl,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeriveDecl {
+    pub is_unsafe: bool,
+    pub generics: Vec<GenericParam>,
+    pub name: NameRef,
+    pub args: Vec<Type>,
 }
 
 #[derive(Clone, Debug)]
@@ -685,34 +701,27 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     expr,
                 })
             }
-            ast::ItemKind::Impl(decl) => {
-                let hidden = self.hidden_generics_for(&decl.generics);
-                self.push_generics_with_hidden(&decl.generics, &hidden);
-                self.push_scope();
-                let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
-                let name = self.resolve_name(&decl.name, "interface");
-                self.require_def_kind(&name, &[DefKind::Interface], "interface");
+            ast::ItemKind::Impl(decl) => ItemKind::Impl(self.lower_impl_decl(decl)),
+            ast::ItemKind::DerivableImpl(decl) => ItemKind::DerivableImpl(DerivableImplDecl {
+                requires_unsafe: decl.requires_unsafe,
+                impl_decl: self.lower_impl_decl(&decl.impl_decl),
+            }),
+            ast::ItemKind::Derive(decl) => {
+                self.push_generics(&decl.generics);
+                let generics = self.lower_generics(&decl.generics);
+                let name = self.resolve_name(&decl.name, "interface or alias");
+                self.require_def_kind(
+                    &name,
+                    &[DefKind::Interface, DefKind::InterfaceAlias],
+                    "interface or alias",
+                );
                 let args = decl.args.iter().map(|ty| self.lower_type(ty)).collect();
-                let params = decl
-                    .params
-                    .iter()
-                    .map(|param| self.lower_param(param, true))
-                    .collect::<Vec<_>>();
-                for param in &params {
-                    if let Some(local_id) = param.local_id {
-                        self.insert_existing_local(param.name.clone(), local_id);
-                    }
-                }
-                let body = self.lower_block_with_existing_scope(&decl.body);
-                self.pop_scope();
                 self.pop_generics();
-                ItemKind::Impl(ImplDecl {
+                ItemKind::Derive(DeriveDecl {
                     is_unsafe: decl.is_unsafe,
                     generics,
                     name,
                     args,
-                    params,
-                    body,
                 })
             }
             ast::ItemKind::Function(decl) => {
@@ -752,6 +761,37 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         }
     }
 
+    fn lower_impl_decl(&mut self, decl: &ast::ImplDecl) -> ImplDecl {
+        let hidden = self.hidden_generics_for(&decl.generics);
+        self.push_generics_with_hidden(&decl.generics, &hidden);
+        self.push_scope();
+        let generics = self.lower_generics_with_hidden(&decl.generics, &hidden);
+        let name = self.resolve_name(&decl.name, "interface");
+        self.require_def_kind(&name, &[DefKind::Interface], "interface");
+        let args = decl.args.iter().map(|ty| self.lower_type(ty)).collect();
+        let params = decl
+            .params
+            .iter()
+            .map(|param| self.lower_param(param, true))
+            .collect::<Vec<_>>();
+        for param in &params {
+            if let Some(local_id) = param.local_id {
+                self.insert_existing_local(param.name.clone(), local_id);
+            }
+        }
+        let body = self.lower_block_with_existing_scope(&decl.body);
+        self.pop_scope();
+        self.pop_generics();
+        ImplDecl {
+            is_unsafe: decl.is_unsafe,
+            generics,
+            name,
+            args,
+            params,
+            body,
+        }
+    }
+
     fn item_def_ids(&self, item: &ast::Item) -> Vec<DefId> {
         self.item_declared_names(item)
             .into_iter()
@@ -779,9 +819,11 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     ast::ExternItem::TypeAlias(alias) => alias.name.name.as_str(),
                 })
                 .collect(),
-            ast::ItemKind::Import(_) | ast::ItemKind::Impl(_) | ast::ItemKind::CInclude(_) => {
-                Vec::new()
-            }
+            ast::ItemKind::Import(_)
+            | ast::ItemKind::Impl(_)
+            | ast::ItemKind::DerivableImpl(_)
+            | ast::ItemKind::Derive(_)
+            | ast::ItemKind::CInclude(_) => Vec::new(),
         }
     }
 

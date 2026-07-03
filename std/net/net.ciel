@@ -96,9 +96,7 @@ unsafe impl clone_message(*const SocketAddr value) {
     return Ok(*value);
 }
 
-unsafe impl share_handle_marker(*const SocketAddr value) {
-    return true;
-}
+unsafe derive share_handle_marker<SocketAddr>;
 
 NetError last_error() {
     c::c_int code = unsafe { ciel_errno() };

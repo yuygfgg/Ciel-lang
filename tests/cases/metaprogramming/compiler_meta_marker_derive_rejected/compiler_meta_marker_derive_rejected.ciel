@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: compiler-provided marker
+
+import /std/meta as meta;
+
+derive meta::ciel_fn_value_marker<i64>;
+
+i64 main() {
+    return 0;
+}

@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: conflicts with an existing generic impl
+
+import /std/lib;
+
+struct Envelope<T> {
+    T item;
+}
+
+unsafe impl<T: Message> clone_message(*const Envelope<T> value) {
+    T item = clone_message(&value->item)?;
+    return Ok({ item: item });
+}
+
+derive Message<Envelope<i64>>;
+
+i64 main() {
+    return 0;
+}

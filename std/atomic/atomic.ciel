@@ -78,41 +78,33 @@ export unsafe interface<T> bool atomic_integer_marker(*const T value);
 // Constraint alias for atomic integer types.
 export interface AtomicInteger = atomic_integer_marker;
 
-unsafe impl atomic_value_marker(*const bool value) {
+unsafe derivable unsafe impl<T> atomic_value_marker(*const T value) {
     return true;
 }
 
-unsafe impl atomic_value_marker(*const i64 value) {
+unsafe derivable unsafe impl<T> atomic_integer_marker(*const T value) {
     return true;
 }
 
-unsafe impl atomic_value_marker(*const u64 value) {
-    return true;
-}
+unsafe derive atomic_value_marker<bool>;
 
-unsafe impl atomic_value_marker(*const usize value) {
-    return true;
-}
+unsafe derive atomic_value_marker<i64>;
 
-unsafe impl atomic_integer_marker(*const i64 value) {
-    return true;
-}
+unsafe derive atomic_value_marker<u64>;
 
-unsafe impl atomic_integer_marker(*const u64 value) {
-    return true;
-}
+unsafe derive atomic_value_marker<usize>;
 
-unsafe impl atomic_integer_marker(*const usize value) {
-    return true;
-}
+unsafe derive atomic_integer_marker<i64>;
+
+unsafe derive atomic_integer_marker<u64>;
+
+unsafe derive atomic_integer_marker<usize>;
 
 unsafe impl<T> clone_message(*const Atomic<T> value) {
     return Ok(*value);
 }
 
-unsafe impl<T> share_handle_marker(*const Atomic<T> value) {
-    return true;
-}
+unsafe derive<T> share_handle_marker<Atomic<T>>;
 
 AtomicError runtime_error() {
     c::c_int code = unsafe { ciel_errno() };

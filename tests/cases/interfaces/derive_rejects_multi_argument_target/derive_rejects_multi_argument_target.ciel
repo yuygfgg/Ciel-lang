@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: expects exactly one receiver type argument
+
+interface<T, U> bool related(*const T value, *const U other);
+
+derivable impl<T> related<i64>(*const T value, *const i64 other) {
+    return true;
+}
+
+derive related<i64, i64>;
+
+i64 main() {
+    return 0;
+}

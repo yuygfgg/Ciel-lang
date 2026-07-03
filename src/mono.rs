@@ -1210,6 +1210,12 @@ impl MonoContext {
             self.mark_message_clone_impls(ty);
             return;
         }
+        let mut collector = AggregateCollector::new(&self.checked);
+        let storage_ty = collector.meta_marker_storage_ty(ty);
+        if &storage_ty != ty {
+            self.mark_message_clone_impls(&storage_ty);
+            return;
+        }
         if !matches!(
             ty,
             Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }
@@ -1942,6 +1948,11 @@ impl<'a> AggregateCollector<'a> {
 
     fn collect_task_boundary_clone_result_tys(&mut self, ty: &Ty) {
         self.collect_message_clone_result_tys(ty);
+        let storage_ty = self.meta_marker_storage_ty(ty);
+        if &storage_ty != ty {
+            self.collect_message_clone_result_tys(&storage_ty);
+            return;
+        }
         if !matches!(
             ty,
             Ty::Array { .. } | Ty::Named { .. } | Ty::ClosureInstance { .. }

@@ -107,7 +107,8 @@ await expressions, and select expressions. They remain ordinary identifiers in
 module paths and other positions, so `/std/async` is a valid import path.
 `resource` is also contextual syntax. It is recognized as a modifier before
 `struct` declarations and before generic parameter names; elsewhere it remains
-an ordinary identifier.
+an ordinary identifier. `derive` and `derivable` are contextual item-start
+syntax. They remain ordinary identifiers outside item declarations.
 
 Primitive type names are also reserved:
 
@@ -154,6 +155,8 @@ ConfigFunc      ::= "has_feature" | "is_target_os" | "is_target_arch"
 
 TopLevel        ::= [ "export" ] ( ExportableItem | ExternBlock )
                  | ImplDecl
+                 | DerivableImplDecl
+                 | DeriveDecl
                  | CIncludeDecl
 
 ExportableItem  ::= ImportDecl
@@ -601,6 +604,9 @@ InterfaceTerm       ::= [ "!" ] Identifier [ TypeArgList ]
 
 ImplDecl            ::= [ "unsafe" ] "impl" [ GenericParamList ] Identifier [ TypeArgList ]
                         "(" [ ParamList ] ")" Block
+DerivableImplDecl   ::= [ "unsafe" ] "derivable" ImplDecl
+DeriveDecl          ::= [ "unsafe" ] "derive" [ GenericParamList ]
+                        Identifier TypeArgList ";"
 
 FunctionDecl        ::= [ "unsafe" ] [ AbiSpec ] [ "async" ] FunctionSignature
                         [ ReceiverSelector ] ( Block | ";" )
@@ -633,6 +639,52 @@ ExternItem          ::= OpaqueStructDecl
                      | CSpellingTypeDecl
 OpaqueStructDecl    ::= "opaque" "struct" Identifier ";"
 ```
+
+`derive` declarations and `derivable impl` templates are not exportable items.
+They affect the current imported program by adding impls at explicit derive
+sites.
+
+`derivable impl` has the same signature shape as an ordinary impl, but it is an
+inert template until a `derive` declaration requests a matching interface term.
+The optional `unsafe` before `derivable` means instantiating the template
+requires `unsafe derive`. The optional `unsafe` inside `ImplDecl` keeps its
+ordinary meaning: the generated impl implements an unsafe interface.
+
+In the first version, a public derive target must have exactly one type
+argument, the receiver type:
+
+```ciel
+derive message::Message<Event>;
+unsafe derive message::share_handle_marker<Handle>;
+derive<T: message::Message> message::Message<Envelope<T>>;
+```
+
+The optional `GenericParamList` after `derive` introduces generic parameters
+scoped to that derive declaration. These parameters are binders, not interface
+arguments; they may appear in the receiver type supplied as the derive target
+and may carry the same resource qualifiers and constraints as ordinary generic
+parameters. For example, `derive<T: message::Message>
+message::Message<Envelope<T>>;` requests a generic generated impl for every
+`Envelope<T>` whose `T` satisfies the declared constraint.
+
+A generic derive declaration is accepted only if the generated impl body is
+well-typed under the constraints written on the derive declaration. If the
+template body needs `T: message::Message`, then `derive<T>
+message::Message<Envelope<T>>;` is rejected instead of registering an
+under-constrained generic impl template for later capability solving.
+Likewise, derived impls must satisfy the same receiver safety rules as ordinary
+impls: affine or resource receiver types cannot derive message cloning or share
+handle marker interfaces that would bypass resource ownership policy.
+
+Interfaces with additional policy parameters expose one-argument interface
+aliases for derivation. For example, a JSON module can publish
+`interface Wire = Encode + Decode;` and users write `derive json::Wire<T>;`
+instead of deriving the low-level multi-argument wire interfaces directly.
+
+For each fully applied interface term, excluding the receiver type supplied by
+the derive declaration, the imported program may contain at most one
+`derivable impl` template. A type may either derive an interface term or provide
+an explicit impl for that same term, but not both.
 
 Local variables and function parameters are declared with type syntax.
 `BindingName` controls whether the binding may be assigned again:
@@ -1881,9 +1933,9 @@ impl hash(*const Packet value, u64 seed) {
 }
 ```
 
-The core mechanism remains explicit projection plus ordinary policy code. A
-future declaration-level convenience may auto-emit those wrapper impls, but it
-does not change the SOP representation.
+The core mechanism remains explicit projection plus ordinary policy code.
+Declaration-level derive templates can auto-emit those wrapper impls at explicit
+`derive` sites, but they do not change the SOP representation.
 
 `Message` uses this mechanism for structural user data. Ordinary structs and
 enums do not automatically implement `Message`; their owned representation can:
@@ -1903,9 +1955,9 @@ type PacketMessage = meta::Repr<Packet>;
 `HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and `Payload`. If a field or
 payload leaf lacks `Message`, or has a capability forbidden by `Message`,
 ordinary generic constraint checking rejects the representation. Code that wants
-the original nominal type itself to cross an actor or channel boundary must write
-an explicit `clone_message(*const T)` policy and must not mark the type with a
-capability excluded by `Message`.
+the original nominal type itself to cross an actor or channel boundary derives
+or writes an explicit `clone_message(*const T)` policy and must not mark the
+type with a capability excluded by `Message`.
 
 Owned representation recursively expands structs, enums, concrete closures, and
 fixed-size arrays where no nominal policy boundary exists. A named field or
@@ -2459,6 +2511,16 @@ interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInternal;
 interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
 
+The standard library provides derive templates for the structural nominal
+`Message` policy and for explicit unsafe marker opt-ins:
+
+```ciel
+derive message::Message<Event>;
+unsafe derive message::share_handle_marker<Handle>;
+unsafe derive message::thread_local_marker<RawFd>;
+unsafe derive message::async_frame_opt_in_marker<FrameLocalBuffer>;
+```
+
 `clone_message` constructs the value that will be owned by the receiver. It may
 copy fields, allocate fresh backing storage, serialize and decode, duplicate a
 shareable synchronized handle, intern immutable data, or report an error. It
@@ -2552,25 +2614,32 @@ use an owned representation or write an explicit `clone_message(*const T)`
 policy for the nominal type.
 
 Compiler-derived `Message` no longer applies to user structs or enums. Programs
-that want structural behavior use the owned representation at the boundary:
+that want structural nominal behavior derive `Message` explicitly:
 
 ```ciel
-import /std/meta as meta;
+import /std/message as message;
 
 struct Event {
     i64 value;
     bool ok;
 }
 
-type EventMessage = meta::Repr<Event>;
+derive message::Message<Event>;
 
-Result<void, Error> send_event(*const Channel<EventMessage> channel, Event event) {
-    return channel_send(channel, meta::into_repr(&event));
+Result<void, Error> send_event(*const Channel<Event> channel, Event event) {
+    return channel_send(channel, event);
 }
 ```
 
-An explicit user-defined impl is still the way to make the original nominal
-type itself a message type:
+The owned representation remains the low-level structural boundary type when an
+API intentionally exposes it:
+
+```ciel
+type EventMessage = meta::Repr<Event>;
+```
+
+An explicit user-defined impl is still the way to provide a custom nominal
+message policy:
 
 ```ciel
 unsafe impl clone_message(*const Event value) {
@@ -3679,32 +3748,17 @@ impl json::decode_object_key(meta::Type<UserId> target, text::Text key) {
 The type must also be usable as a `map::HashMap` key, so it needs the ordinary
 `map::hash_key` and `map::key_eq` impls.
 
-Visible structs and enums can opt into structural JSON through thin wrappers in
-the module where the type shape is visible:
+Visible structs and enums can opt into the default structural JSON policy in the
+module where the type shape is visible:
 
 ```ciel
-impl wire::encode_value(*const Packet value, *json::Writer writer) {
-    _ schema = meta::schema<Packet>();
-    _ repr = meta::as_ref_repr(value);
-    return json::write_struct(&schema, &repr, writer);
-}
-
-impl wire::decode_value(meta::Type<Packet> target, *json::Reader reader) {
-    json::Value value = json::read_value(reader)?;
-    _ schema = meta::schema<Packet>();
-    return json::decode_struct_value(
-        target,
-        &schema,
-        meta::type_tag<meta::Repr<Packet>>(),
-        &value
-    );
-}
+derive json::Wire<Packet>;
 ```
 
-The wrapper must live in a module where `Packet`'s fields are visible. The JSON
-module cannot reflect imported private shape by itself. Nested nominal types
-need their own wrappers when they appear inside containers or other structural
-types:
+The derive declaration must live in a module where `Packet`'s fields are
+visible. The JSON module cannot reflect imported private shape by itself.
+Nested nominal types need their own wire policy when they appear inside
+containers or other structural types:
 
 ```ciel
 struct Inner {
@@ -3720,8 +3774,8 @@ struct Packet {
 
 `Packet`'s structural helper can walk the array and field list, but each
 `Inner` value is still a nominal leaf at the container policy boundary. A module
-that owns `Inner` should provide the same `wire::encode_value` and
-`wire::decode_value` wrappers for `Inner`.
+that owns `Inner` should use `derive json::Wire<Inner>;` or provide custom
+`wire::encode_value` and `wire::decode_value` impls for `Inner`.
 
 A caller may also use structural helpers directly without publishing a typed
 wire impl:
@@ -3791,22 +3845,7 @@ enum Event {
     Nested(Inner),
 }
 
-impl wire::encode_value(*const Event value, *json::Writer writer) {
-    _ schema = meta::schema<Event>();
-    _ repr = meta::as_ref_repr(value);
-    return json::write_enum(&schema, &repr, writer);
-}
-
-impl wire::decode_value(meta::Type<Event> target, *json::Reader reader) {
-    json::Value value = json::read_value(reader)?;
-    _ schema = meta::schema<Event>();
-    return json::decode_enum_value(
-        target,
-        &schema,
-        meta::type_tag<meta::Repr<Event>>(),
-        &value
-    );
-}
+derive json::Wire<Event>;
 
 Event ping = Event::Ping;
 // json::encode<Event>(&ping)? == "{\"Ping\":null}"

@@ -713,11 +713,11 @@ impl TypeChecker {
         }
         self.infer_interface_determined_parameters(&interface, &mut subst);
         for generic in &interface.generics {
-            if subst.get(generic).is_none_or(contains_generic)
-                || subst
-                    .get(generic)
-                    .is_some_and(|ty| contains_type_hole(&self.resolve_type_holes(ty)))
-            {
+            let unresolved_generic = subst.get(generic).is_none_or(contains_generic);
+            let unresolved_hole = subst
+                .get(generic)
+                .is_some_and(|ty| contains_type_hole(&self.resolve_type_holes(ty)));
+            if unresolved_hole || (unresolved_generic && self.symbolic_impl_resolution_depth == 0) {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!("could not infer interface generic parameter `{generic}` for `{name}`"),
@@ -758,6 +758,14 @@ impl TypeChecker {
             && let Some(witness_ty) = self.meta_repr_owned_message_witness_ty(message_ty)
             && self.type_implements_capability_by_def(def_id, &name, &[], &witness_ty)
         {
+            let witness_interface_args = vec![witness_ty.clone()];
+            self.find_or_instantiate_impl_by_full_args(
+                def_id,
+                &name,
+                &witness_interface_args,
+                Some(&witness_ty),
+                span,
+            );
             let value = checked_args.remove(receiver_index);
             let ret = std_result_ty(message_ty.clone(), std_error_ty());
             return Some(TExpr {

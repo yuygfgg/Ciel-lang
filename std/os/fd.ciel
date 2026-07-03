@@ -6,9 +6,7 @@ export unsafe struct RawFd {
     c::c_int raw;
 }
 
-unsafe impl thread_local_marker(*const RawFd value) {
-    return true;
-}
+unsafe derive thread_local_marker<RawFd>;
 
 // Unsafe hole: adopts an integer as a RawFd. The caller must guarantee the
 // integer is a valid descriptor for the intended platform operation and that

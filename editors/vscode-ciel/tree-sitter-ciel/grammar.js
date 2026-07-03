@@ -39,6 +39,8 @@ module.exports = grammar({
         [$.binary_expression, $.call_expression, $.await_expression],
         [$.function_declaration, $.contextual_identifier],
         [$.select_expression, $.contextual_identifier],
+        [$.derive_declaration, $.contextual_identifier],
+        [$.expression, $.argument],
     ],
 
     rules: {
@@ -63,6 +65,8 @@ module.exports = grammar({
                 $.interface_declaration,
                 $.interface_alias_declaration,
                 $.impl_declaration,
+                $.derivable_impl_declaration,
+                $.derive_declaration,
                 $.extern_block,
                 $.function_declaration,
             ),
@@ -242,6 +246,21 @@ module.exports = grammar({
             optional($.type_argument_list),
             field('parameters', $.parameter_list),
             field('body', $.block),
+        ),
+
+        derivable_impl_declaration: $ => seq(
+            optional('unsafe'),
+            'derivable',
+            $.impl_declaration,
+        ),
+
+        derive_declaration: $ => seq(
+            optional('unsafe'),
+            'derive',
+            optional($.generic_parameter_list),
+            field('name', choice($.identifier, $.qualified_name)),
+            $.type_argument_list,
+            ';',
         ),
 
         extern_block: $ => seq(
@@ -680,6 +699,19 @@ module.exports = grammar({
             $.try_expression,
         ),
 
+        generic_item_expression: $ => prec.dynamic(-1, seq(
+            field('function', choice($.identifier, $.qualified_name)),
+            $.generic_item_type_argument_list,
+            optional($.argument_list),
+            optional('?'),
+        )),
+
+        generic_item_type_argument_list: $ => seq(
+            token.immediate('<'),
+            $.type_list,
+            '>',
+        ),
+
         parenthesized_expression: $ => seq(
             '(',
             $.expression,
@@ -732,8 +764,14 @@ module.exports = grammar({
 
         argument_list: $ => seq(
             '(',
-            optional(commaSep1($.expression)),
+            optional(commaSep1($.argument)),
             ')',
+        ),
+
+        argument: $ => choice(
+            $.call_expression,
+            $.expression,
+            $.generic_item_expression,
         ),
 
         field_expression: $ => prec(PREC.member, seq(
@@ -931,6 +969,8 @@ module.exports = grammar({
             'select',
             'fn',
             'resource',
+            'derive',
+            'derivable',
         ),
     },
 });

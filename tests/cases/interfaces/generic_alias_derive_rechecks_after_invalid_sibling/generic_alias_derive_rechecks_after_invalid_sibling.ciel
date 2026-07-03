@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: no impl of `b`
+
+interface<T> i64 a(*const T value);
+interface<T> i64 b(*const T value);
+interface<T> i64 c(*const T value);
+interface AB = a + b;
+
+struct Box<T> {
+    T value;
+}
+
+derivable impl<T> a(*const Box<T> value) {
+    return b(value);
+}
+
+derivable impl<T> b(*const Box<T> value) {
+    return c(value);
+}
+
+derive<T> AB<Box<T>>;
+
+i64 main() {
+    return 0;
+}

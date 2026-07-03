@@ -28,6 +28,8 @@ pub enum ItemKind {
     Interface(InterfaceDecl),
     InterfaceAlias(InterfaceAliasDecl),
     Impl(ImplDecl),
+    DerivableImpl(DerivableImplDecl),
+    Derive(DeriveDecl),
     Function(FunctionDecl),
     ExternBlock(ExternBlock),
 }
@@ -127,6 +129,20 @@ pub struct ImplDecl {
     pub args: Vec<Type>,
     pub params: Vec<Param>,
     pub body: Block,
+}
+
+#[derive(Clone, Debug)]
+pub struct DerivableImplDecl {
+    pub requires_unsafe: bool,
+    pub impl_decl: ImplDecl,
+}
+
+#[derive(Clone, Debug)]
+pub struct DeriveDecl {
+    pub is_unsafe: bool,
+    pub generics: Vec<GenericParam>,
+    pub name: Vec<Ident>,
+    pub args: Vec<Type>,
 }
 
 #[derive(Clone, Debug)]

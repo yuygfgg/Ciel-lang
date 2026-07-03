@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+struct Envelope<T> {
+    T item;
+}
+
+derive<T> Message<Envelope<T>>;
+
+i32 main() {
+    return 0;
+}

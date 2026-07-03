@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: forbidden capability `b`
+
+interface<T> bool a(*const T value);
+interface<T> bool b(*const T value);
+interface Safe = a + !b;
+
+struct Box {
+    i64 value;
+}
+
+derivable impl<T> a(*const T value) {
+    return true;
+}
+
+derivable impl<T> b(*const T value) {
+    return true;
+}
+
+derive Safe<Box>;
+derive b<Box>;
+
+i64 main() {
+    return 0;
+}

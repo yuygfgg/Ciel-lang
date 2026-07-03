@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: resource type `Payload` cannot implement `clone_message`
+
+import /std/io as io;
+import /std/message;
+
+resource struct Payload {
+    io::File file;
+}
+
+derive Message<Payload>;
+
+i32 main() {
+    return 0;
+}

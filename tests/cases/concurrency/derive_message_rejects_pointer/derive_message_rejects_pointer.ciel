@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: does not implement `Message`
+
+import /std/lib;
+
+struct Bad {
+    *i64 ptr;
+}
+
+derive Message<Bad>;
+
+i64 main() {
+    return 0;
+}

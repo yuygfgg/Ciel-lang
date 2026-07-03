@@ -16,9 +16,7 @@ unsafe impl<M> clone_message(*const Actor<M> value) {
     return Ok(*value);
 }
 
-unsafe impl<M> share_handle_marker(*const Actor<M> value) {
-    return true;
-}
+unsafe derive<M> share_handle_marker<Actor<M>>;
 
 // Spawns an actor with cloned message-safe state and a value-in/value-out handler.
 // Compiler built-in: lowers to the runtime actor backend.

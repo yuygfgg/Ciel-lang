@@ -39,6 +39,8 @@
 (fn_suffix "fn" @keyword)
 (struct_declaration "resource" @keyword)
 (generic_parameter "resource" @keyword)
+(derive_declaration "derive" @keyword)
+(derivable_impl_declaration "derivable" @keyword)
 
 (primitive_type) @type.builtin
 (never_type) @type.builtin
@@ -56,6 +58,10 @@
 (receiver_selector name: (identifier) @function)
 (impl_declaration name: (identifier) @function)
 (impl_declaration name: (qualified_name (identifier) @function .))
+(derive_declaration name: (identifier) @type)
+(derive_declaration name: (qualified_name (identifier) @type .))
+(generic_item_expression function: (identifier) @function)
+(generic_item_expression function: (qualified_name (identifier) @function .))
 (call_expression function: (expression (identifier) @function.call))
 (call_expression function: (expression (qualified_name (identifier) @function.call .)))
 (call_expression

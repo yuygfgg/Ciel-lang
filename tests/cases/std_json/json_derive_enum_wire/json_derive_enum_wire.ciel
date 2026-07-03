@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/json as json;
+import /std/lib;
+import /std/meta as meta;
+import /std/text as text;
+
+enum Event {
+    Ping,
+    Data(i64),
+}
+
+derive json::Wire<Event>;
+
+i64 main() {
+    Event event = Event::Data(11);
+    text::Text encoded = must(json::encode<Event>(&event));
+    if (!text::text_equal_slice(encoded, "{\"Data\":[11]}")) {
+        return 1;
+    }
+    Event decoded = must(json::decode(meta::type_tag<Event>(), "{\"Ping\":null}"));
+    switch (decoded) {
+        case Event::Ping:
+            return 0;
+        case Event::Data(_):
+            return 2;
+    }
+}

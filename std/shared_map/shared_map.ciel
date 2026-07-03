@@ -71,9 +71,7 @@ unsafe impl<K: Message, V: Message> clone_message(*const SharedMap<K, V> value) 
     return Ok({ state: state });
 }
 
-unsafe impl<K: Message, V: Message> share_handle_marker(*const SharedMap<K, V> value) {
-    return true;
-}
+unsafe derive<K: Message, V: Message> share_handle_marker<SharedMap<K, V>>;
 
 // Constraint alias for keys that can be hashed and sent across concurrency boundaries.
 export interface shared_map_key = map::map_key + Message;

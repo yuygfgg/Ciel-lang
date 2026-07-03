@@ -8,9 +8,9 @@ use crate::{
 };
 
 use super::{
-    EnumTemplate, FunctionSig, GenericFunctionTemplate, GenericImplTemplate, ImplSig,
-    InterfaceAliasTemplate, InterfaceSig, ReceiverSelectorSig, StructTemplate, TypeAliasTemplate,
-    VariantSig,
+    DerivableImplTemplate, EnumTemplate, FunctionSig, GenericFunctionTemplate, GenericImplTemplate,
+    ImplSig, InterfaceAliasTemplate, InterfaceSig, ReceiverSelectorSig, StructTemplate,
+    TypeAliasTemplate, VariantSig,
 };
 
 #[derive(Clone, Debug)]
@@ -34,6 +34,7 @@ pub struct TyCtx {
     pub(super) interface_aliases: HashMap<DefId, InterfaceAliasTemplate>,
     pub(super) impls: Vec<ImplSig>,
     pub(super) generic_impls: Vec<GenericImplTemplate>,
+    pub(super) derivable_impls: Vec<DerivableImplTemplate>,
     pub(super) generic_functions: HashMap<DefId, GenericFunctionTemplate>,
     pub(super) async_function_cancel_safety: HashMap<DefId, bool>,
     pub(super) async_function_abortability: HashMap<DefId, bool>,
@@ -70,6 +71,7 @@ impl TyCtx {
             interface_aliases: HashMap::new(),
             impls: Vec::new(),
             generic_impls: Vec::new(),
+            derivable_impls: Vec::new(),
             generic_functions: HashMap::new(),
             async_function_cancel_safety: HashMap::new(),
             async_function_abortability: HashMap::new(),

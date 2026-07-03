@@ -79,6 +79,8 @@ const CONTEXTUAL_KEYWORDS = new Set([
     'select',
     'fn',
     'resource',
+    'derive',
+    'derivable',
 ]);
 
 const OPERATORS = new Set([
@@ -361,6 +363,9 @@ function classifyIdentifier(node) {
     }
 
     if (isDirectChild(parent, node)) {
+        if (parent.type === 'generic_item_expression') {
+            return token('function');
+        }
         switch (parent.type) {
             case 'function_signature':
             case 'interface_signature':
@@ -375,6 +380,8 @@ function classifyIdentifier(node) {
                 return token('enum', ['declaration']);
             case 'interface_alias_declaration':
                 return token('interface', ['declaration']);
+            case 'derive_declaration':
+                return token('interface');
             case 'import_declaration':
                 return token('namespace', ['declaration']);
             default:
@@ -427,6 +434,9 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
     if (owner && owner.type === 'call_expression') {
         return token('function');
     }
+    if (owner && owner.type === 'generic_item_expression') {
+        return token('function');
+    }
     if (owner && owner.type === 'receiver_selector_expression') {
         return token('function');
     }
@@ -434,6 +444,9 @@ function classifyQualifiedNamePart(node, qualifiedNameNode) {
         return token('type');
     }
     if (owner && (owner.type === 'interface_term' || owner.type === 'constraint_term')) {
+        return token('interface');
+    }
+    if (owner && owner.type === 'derive_declaration') {
         return token('interface');
     }
     if (owner && owner.type === 'impl_declaration') {

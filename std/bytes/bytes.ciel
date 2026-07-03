@@ -207,6 +207,4 @@ unsafe impl clone_message(*const Bytes value) {
     return Ok(out);
 }
 
-unsafe impl share_handle_marker(*const Bytes value) {
-    return true;
-}
+unsafe derive share_handle_marker<Bytes>;

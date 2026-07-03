@@ -1,12 +1,14 @@
 # Ciel
 
-Ciel is a statically typed, ahead-of-time (AOT) compiled language featuring
-GC-backed value semantics, deterministic resource management,
+Ciel is an experimental AOT-compiled programming language built around
+compiler-verified memory safety, resource lifetime, and concurrency safety.
+
+It features GC-backed value semantics, deterministic resource management,
 compiler-verified concurrency safety, and expressive generics with structural
-metaprogramming / reflection. It compiles whole programs to a single generated
-C translation unit, then invokes the target system C compiler. The runtime
-uses BDWGC (libgc) for garbage collection and a libdispatch-backed actor and
-async I/O runtime on supported targets.
+metaprogramming / reflection. The compiler performs whole-program checking,
+translating the whole programs to a single C translation unit, then invokes 
+the target system C compiler. The runtime uses BDWGC (libgc) for garbage collection
+and a libdispatch-backed actor and async I/O runtime on supported targets.
 
 > [!Warning]
 > Ciel is still in early experimental phase. **No guarantees are provided.**

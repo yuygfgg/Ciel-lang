@@ -17,9 +17,10 @@ async I/O runtime on supported targets.
 ## Disclaimer
 
 > [!Warning]
-> $\color{Red}\Huge\textbf{LLMs}$ are used to assist the design and
+> **$\color{Red}\Huge\textbf{LLMs}$** are used to assist the design and
 > implementation of Ciel.
-> $\color{Red}\Huge\textbf{This is a Slopware!}$
+> 
+> **$\color{Red}\Huge\textbf{This is a Slopware!}$**
 
 ## Language Features
 

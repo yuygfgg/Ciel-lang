@@ -1828,8 +1828,12 @@ impl TypeChecker {
         if let Some(module) = reflection_module {
             self.meta_reflection_module_stack.push(module);
         }
-        let body =
-            self.check_function_body(&pending.function_sig, &body_params, &pending.decl.body);
+        let body = self.check_function_body_with_return_context(
+            &pending.function_sig,
+            &body_params,
+            &pending.decl.body,
+            impl_return_context(&pending.implementation),
+        );
         if reflection_module.is_some() {
             self.meta_reflection_module_stack.pop();
         }
@@ -2148,7 +2152,24 @@ impl TypeChecker {
         params: &[(LocalId, String, Ty, BindingMutability)],
         body: &Block,
     ) -> Option<CheckedFunctionBody> {
+        self.check_function_body_with_return_context(
+            sig,
+            params,
+            body,
+            format!("function `{}`", sig.name),
+        )
+    }
+
+    fn check_function_body_with_return_context(
+        &mut self,
+        sig: &FunctionSig,
+        params: &[(LocalId, String, Ty, BindingMutability)],
+        body: &Block,
+        return_context: String,
+    ) -> Option<CheckedFunctionBody> {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
+        let previous_return_context =
+            std::mem::replace(&mut self.current_return_context, Some(return_context));
         let previous_opaque_return = std::mem::replace(
             &mut self.current_opaque_return,
             matches!(sig.ret, Ty::OpaqueReturn { .. }).then(|| OpaqueReturnState {
@@ -2187,6 +2208,10 @@ impl TypeChecker {
             }
         }
         let checked = self.check_block_with_existing_scope(&mut scopes, body, &sig.ret);
+        let return_context = self
+            .current_return_context
+            .as_deref()
+            .unwrap_or("current function");
         if sig.ret.is_never()
             && checked
                 .as_ref()
@@ -2194,10 +2219,7 @@ impl TypeChecker {
         {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
-                format!(
-                    "function `{}` with return type `never` can fall through",
-                    sig.name
-                ),
+                format!("{return_context} with return type `never` can fall through"),
             ));
         } else if !sig.ret.is_erased_value()
             && !checked
@@ -2206,10 +2228,7 @@ impl TypeChecker {
         {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
-                format!(
-                    "function `{}` must return `{}` on every path",
-                    sig.name, sig.ret
-                ),
+                format!("{return_context} must return `{}` on every path", sig.ret),
             ));
         }
         if matches!(sig.ret, Ty::OpaqueReturn { .. })
@@ -2249,6 +2268,7 @@ impl TypeChecker {
                 .insert(sig.def_id, abortable);
         }
         self.current_return_ty = previous_return_ty;
+        self.current_return_context = previous_return_context;
         self.current_opaque_return = previous_opaque_return;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;

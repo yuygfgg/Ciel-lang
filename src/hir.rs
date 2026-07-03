@@ -1301,14 +1301,20 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         match resolved {
                             Some(def_id) if is_case_head || !subpatterns.is_empty() => {
                                 let def = self.lowerer.resolved.def(def_id);
-                                self.lowerer.diagnostics.push(Diagnostic::new(
-                                    span,
-                                    format!(
-                                        "`{}` resolves to {}, not enum variant",
-                                        display,
-                                        def_kind_name(&def.kind)
-                                    ),
-                                ));
+                                self.lowerer.diagnostics.push(
+                                    Diagnostic::new(
+                                        span,
+                                        format!(
+                                            "`{}` resolves to {}, not enum variant",
+                                            display,
+                                            def_kind_name(&def.kind)
+                                        ),
+                                    )
+                                    .note(format!(
+                                        "resolved candidate: {}",
+                                        self.lookup_candidate_display(def_id)
+                                    )),
+                                );
                                 PatternNameKind::Error
                             }
                             Some(_) | None if is_case_head => {
@@ -1802,27 +1808,36 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
         };
         let def = self.lowerer.resolved.def(def_id);
         if !allowed.iter().any(|kind| *kind == def.kind) {
-            self.lowerer.diagnostics.push(Diagnostic::new(
-                name.span,
-                format!(
-                    "`{}` resolves to {}, not {expected}",
-                    name.display,
-                    def_kind_name(&def.kind)
-                ),
-            ));
+            self.lowerer.diagnostics.push(
+                Diagnostic::new(
+                    name.span,
+                    format!(
+                        "`{}` resolves to {}, not {expected}",
+                        name.display,
+                        def_kind_name(&def.kind)
+                    ),
+                )
+                .note(format!(
+                    "resolved candidate: {}",
+                    self.lookup_candidate_display(def_id)
+                )),
+            );
         }
     }
 
     fn push_lookup_error(&mut self, error: LookupError, context: &str, span: Span) {
         match error {
             LookupError::Ambiguous { name, candidates } => {
-                self.lowerer.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "ambiguous {context} lookup `{name}` ({} candidates)",
-                        candidates.len()
-                    ),
-                ));
+                self.lowerer.diagnostics.push(
+                    Diagnostic::new(
+                        span,
+                        format!(
+                            "ambiguous {context} lookup `{name}` ({} candidates)",
+                            candidates.len()
+                        ),
+                    )
+                    .note(self.lookup_candidate_note(&candidates)),
+                );
             }
             LookupError::UnknownAlias { alias } => {
                 self.lowerer.diagnostics.push(Diagnostic::new(
@@ -1847,6 +1862,34 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 ));
             }
         }
+    }
+
+    fn lookup_candidate_note(&self, candidates: &[DefId]) -> String {
+        let mut parts = candidates
+            .iter()
+            .take(5)
+            .map(|def_id| self.lookup_candidate_display(*def_id))
+            .collect::<Vec<_>>();
+        if candidates.len() > parts.len() {
+            parts.push(format!("and {} more", candidates.len() - parts.len()));
+        }
+        format!("candidates: {}", parts.join(", "))
+    }
+
+    fn lookup_candidate_display(&self, def_id: DefId) -> String {
+        let def = self.lowerer.resolved.def(def_id);
+        let module = &self.lowerer.resolved.modules[def.module.0];
+        let name = if let Some(parent_id) = def.parent {
+            let parent = self.lowerer.resolved.def(parent_id);
+            format!("{}::{}", parent.name, def.name)
+        } else {
+            def.name.clone()
+        };
+        format!(
+            "`{name}` ({}) from `{}`",
+            def_kind_name(&def.kind),
+            module.path.display()
+        )
     }
 
     fn hidden_generics_for(&mut self, generics: &[ast::GenericParam]) -> Vec<HiddenGenericParam> {

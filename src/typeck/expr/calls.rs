@@ -53,48 +53,43 @@ impl TypeChecker {
                 output_ty
             } else if let Some(output_ty) = self.awaitable_output_ty(&future.ty, arm.future.span) {
                 if !self.is_cancel_safe_ty(&future.ty) {
-                    self.diagnostics.push(Diagnostic::new(
+                    self.diagnostics.push(self.named_capability_diagnostic(
                         arm.future.span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, STD_ASYNC_CANCEL_SAFE_INTERFACE
-                        ),
+                        &future.ty,
+                        STD_ASYNC_CANCEL_SAFE_INTERFACE,
+                        "`select` may drop losing arms, so each arm future must be cancel-safe",
                     ));
                 }
                 if !self.is_abortable_ty(&future.ty) {
-                    self.diagnostics.push(Diagnostic::new(
+                    self.diagnostics.push(self.named_capability_diagnostic(
                         arm.future.span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
-                        ),
+                        &future.ty,
+                        STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                        "`select` may abort losing arms during cleanup",
                     ));
                 }
                 output_ty
             } else {
-                self.diagnostics.push(Diagnostic::new(
+                self.diagnostics.push(self.named_capability_diagnostic(
                     arm.future.span,
-                    format!(
-                        "generic constraint not satisfied: `{}` does not implement `{}`",
-                        future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                    ),
+                    &future.ty,
+                    STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                    "`select` arm futures must be awaitable",
                 ));
                 if !self.is_cancel_safe_ty(&future.ty) {
-                    self.diagnostics.push(Diagnostic::new(
+                    self.diagnostics.push(self.named_capability_diagnostic(
                         arm.future.span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, STD_ASYNC_CANCEL_SAFE_INTERFACE
-                        ),
+                        &future.ty,
+                        STD_ASYNC_CANCEL_SAFE_INTERFACE,
+                        "`select` may drop losing arms, so each arm future must be cancel-safe",
                     ));
                 }
                 if !self.is_abortable_ty(&future.ty) {
-                    self.diagnostics.push(Diagnostic::new(
+                    self.diagnostics.push(self.named_capability_diagnostic(
                         arm.future.span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
-                        ),
+                        &future.ty,
+                        STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                        "`select` may abort losing arms during cleanup",
                     ));
                 }
                 Ty::Unknown
@@ -2075,12 +2070,11 @@ impl TypeChecker {
                 .map(|awaitable| awaitable.output_ty.clone())
         });
         let Some(output_ty) = output_ty else {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.named_capability_diagnostic(
                 future.span,
-                format!(
-                    "generic constraint not satisfied: `{}` does not implement `{}`",
-                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                ),
+                &future.ty,
+                STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                "`async::block_on` requires an awaitable future value",
             ));
             return Some(TExpr {
                 span,
@@ -2093,21 +2087,19 @@ impl TypeChecker {
         if let Some(awaitable) = awaitable {
             self.require_assignable(&output_ty, &awaitable.output_ty, future.span);
         } else {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.named_capability_diagnostic(
                 future.span,
-                format!(
-                    "generic constraint not satisfied: `{}` does not implement `{}`",
-                    future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                ),
+                &future.ty,
+                STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                "`async::block_on` requires an awaitable future value",
             ));
         }
         if !self.is_abortable_ty(&future.ty) {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.named_capability_diagnostic(
                 future.span,
-                format!(
-                    "generic constraint not satisfied: `{}` does not implement `{}`",
-                    future.ty, STD_ASYNC_ABORT_FUTURE_INTERFACE
-                ),
+                &future.ty,
+                STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                "`async::block_on` needs an abortable future for cleanup on failure",
             ));
         }
         let future = self.consume_affine_expr(scopes, future, false);
@@ -2281,11 +2273,10 @@ impl TypeChecker {
         if let Some(reason) =
             self.task_boundary_message_violation(payload_ty, "channel payload", &mut HashSet::new())
         {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.diagnostic_with_reason_note(
                 span,
-                format!(
-                    "async channel payload type `{payload_ty}` does not implement `Message`: {reason}"
-                ),
+                format!("async channel payload type `{payload_ty}` does not implement `Message`"),
+                reason,
             ));
         }
     }
@@ -2704,12 +2695,13 @@ impl TypeChecker {
                             &capture.name,
                             &mut HashSet::new(),
                         ) {
-                            self.diagnostics.push(Diagnostic::new(
+                            self.diagnostics.push(self.diagnostic_with_reason_note(
                                 body.span,
                                 format!(
-                                    "`async::spawn` capture `{}` of type `{}` does not implement `Message`: {reason}",
+                                    "`async::spawn` capture `{}` of type `{}` does not implement `Message`",
                                     capture.name, capture.ty
                                 ),
+                                reason,
                             ));
                         }
                     }
@@ -2769,11 +2761,11 @@ impl TypeChecker {
         if let Some(future_ty) = &body_future_ty
             && !self.is_abortable_ty(future_ty)
         {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.named_capability_diagnostic(
                 body.span,
-                format!(
-                    "generic constraint not satisfied: `{future_ty}` does not implement `{STD_ASYNC_ABORT_FUTURE_INTERFACE}`"
-                ),
+                future_ty,
+                STD_ASYNC_ABORT_FUTURE_INTERFACE,
+                "`async::spawn` needs an abortable future for task cancellation",
             ));
         }
         if let Some(expected_output) = &expected_output {
@@ -2784,11 +2776,12 @@ impl TypeChecker {
             "task result",
             &mut HashSet::new(),
         ) {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.diagnostic_with_reason_note(
                 body.span,
                 format!(
-                    "`async::spawn` task result type `{task_output_ty}` does not implement `Message`: {reason}"
+                    "`async::spawn` task result type `{task_output_ty}` does not implement `Message`"
                 ),
+                reason,
             ));
         }
 

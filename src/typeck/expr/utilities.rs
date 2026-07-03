@@ -253,13 +253,23 @@ impl TypeChecker {
             if !self.type_implements_capability_ref(capability, source_ty) {
                 ok = false;
                 if emit_diagnostics {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!(
-                            "closure conversion requires `{}` to implement `{}`",
-                            source_ty, capability.name
-                        ),
-                    ));
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            span,
+                            format!(
+                                "closure conversion requires `{}` to implement `{}`",
+                                source_ty, capability.name
+                            ),
+                        )
+                        .note(format!(
+                            "required capability: `{}`",
+                            display_constraint_ref(capability)
+                        ))
+                        .note(format!(
+                            "closure target constraints: `{}`",
+                            display_constraint_bounds(constraints)
+                        )),
+                    );
                 }
             }
         }
@@ -267,13 +277,23 @@ impl TypeChecker {
             if self.type_implements_capability_ref(capability, source_ty) {
                 ok = false;
                 if emit_diagnostics {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!(
-                            "closure conversion forbids `{}` from implementing `{}`",
-                            source_ty, capability.name
-                        ),
-                    ));
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            span,
+                            format!(
+                                "closure conversion forbids `{}` from implementing `{}`",
+                                source_ty, capability.name
+                            ),
+                        )
+                        .note(format!(
+                            "forbidden capability: `{}`",
+                            display_constraint_ref(capability)
+                        ))
+                        .note(format!(
+                            "closure target constraints: `{}`",
+                            display_constraint_bounds(constraints)
+                        )),
+                    );
                 }
             }
         }
@@ -2026,10 +2046,13 @@ impl TypeChecker {
         if !self.type_is_affine(concrete_ty) {
             return false;
         }
-        self.diagnostics.push(Diagnostic::new(
-            span,
-            format!("cannot erase resource-affine type `{concrete_ty}` into `{target_ty}`"),
-        ));
+        self.diagnostics.push(
+            Diagnostic::new(
+                span,
+                format!("cannot erase resource-affine type `{concrete_ty}` into `{target_ty}`"),
+            )
+            .note("erasing this value would hide ownership and cleanup requirements"),
+        );
         true
     }
 

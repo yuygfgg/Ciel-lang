@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: duplicate declaration `Item` in module
+// expect-error: this module already contains a declaration named `Item`
+
+struct Item {
+    i64 value;
+}
+
+enum Item {
+    Other,
+}

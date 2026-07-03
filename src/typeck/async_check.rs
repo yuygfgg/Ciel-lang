@@ -768,9 +768,10 @@ impl TypeChecker {
             "`defer` argument",
             &mut visiting,
         ) {
-            self.diagnostics.push(Diagnostic::new(
+            self.diagnostics.push(self.diagnostic_with_reason_note(
                 arg.span,
-                format!("`defer` argument is not async-frame-safe: {reason}"),
+                "`defer` argument is not async-frame-safe",
+                reason,
             ));
         }
     }
@@ -796,12 +797,10 @@ impl TypeChecker {
                 &format!("local `{}`", info.name),
                 &mut visiting,
             ) {
-                self.diagnostics.push(Diagnostic::new(
+                self.diagnostics.push(self.diagnostic_with_reason_note(
                     span,
-                    format!(
-                        "`{}` is not async-frame-safe across `await`: {reason}",
-                        info.name
-                    ),
+                    format!("`{}` is not async-frame-safe across `await`", info.name),
+                    reason,
                 ));
             }
         }

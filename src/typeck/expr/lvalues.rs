@@ -1069,24 +1069,44 @@ impl TypeChecker {
         };
         for capability in &bounds.positive {
             if !self.type_implements_capability_ref(capability, concrete_ty) {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "opaque return type requires `{concrete_ty}` to implement `{}`",
-                        capability.name
-                    ),
-                ));
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        span,
+                        format!(
+                            "opaque return type requires `{concrete_ty}` to implement `{}`",
+                            capability.name
+                        ),
+                    )
+                    .note(format!(
+                        "required capability: `{}`",
+                        display_constraint_ref(capability)
+                    ))
+                    .note(format!(
+                        "opaque return bounds: `{}`",
+                        display_constraint_bounds(bounds)
+                    )),
+                );
             }
         }
         for capability in &bounds.negative {
             if self.type_implements_capability_ref(capability, concrete_ty) {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "opaque return type forbids `{concrete_ty}` from implementing `{}`",
-                        capability.name
-                    ),
-                ));
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        span,
+                        format!(
+                            "opaque return type forbids `{concrete_ty}` from implementing `{}`",
+                            capability.name
+                        ),
+                    )
+                    .note(format!(
+                        "forbidden capability: `{}`",
+                        display_constraint_ref(capability)
+                    ))
+                    .note(format!(
+                        "opaque return bounds: `{}`",
+                        display_constraint_bounds(bounds)
+                    )),
+                );
             }
         }
     }

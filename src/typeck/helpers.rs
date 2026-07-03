@@ -221,6 +221,135 @@ pub(super) fn hir_type_contains_hole(ty: &Type) -> bool {
     }
 }
 
+impl TypeChecker {
+    pub(super) fn generic_resource_constraint_diagnostic(
+        &self,
+        span: impl Into<Option<crate::span::Span>>,
+        concrete: &Ty,
+        generic_name: &str,
+    ) -> Diagnostic {
+        Diagnostic::new(
+            span,
+            format!("generic constraint not satisfied: `{concrete}` is not a resource-affine type"),
+        )
+        .note(format!(
+            "while checking generic parameter `{generic_name}` declared as `resource`"
+        ))
+    }
+
+    pub(super) fn positive_capability_constraint_diagnostic(
+        &self,
+        span: impl Into<Option<crate::span::Span>>,
+        concrete: &Ty,
+        capability: &ConstraintRef,
+        generic_name: Option<&str>,
+        bounds: Option<&ConstraintBounds>,
+    ) -> Diagnostic {
+        let diagnostic = Diagnostic::new(
+            span,
+            format!(
+                "generic constraint not satisfied: `{concrete}` does not implement `{}`",
+                capability.name
+            ),
+        );
+        self.add_capability_constraint_notes(diagnostic, capability, generic_name, bounds)
+    }
+
+    pub(super) fn negative_capability_constraint_diagnostic(
+        &self,
+        span: impl Into<Option<crate::span::Span>>,
+        concrete: &Ty,
+        capability: &ConstraintRef,
+        generic_name: Option<&str>,
+        bounds: Option<&ConstraintBounds>,
+    ) -> Diagnostic {
+        let diagnostic = Diagnostic::new(
+            span,
+            format!(
+                "generic constraint not satisfied: `{concrete}` has forbidden capability `{}`",
+                capability.name
+            ),
+        );
+        self.add_capability_constraint_notes(diagnostic, capability, generic_name, bounds)
+    }
+
+    fn add_capability_constraint_notes(
+        &self,
+        mut diagnostic: Diagnostic,
+        capability: &ConstraintRef,
+        generic_name: Option<&str>,
+        bounds: Option<&ConstraintBounds>,
+    ) -> Diagnostic {
+        if let Some(name) = generic_name {
+            diagnostic = diagnostic.note(format!("while checking generic parameter `{name}`"));
+        }
+        let capability_display = display_constraint_ref(capability);
+        if capability_display != capability.name {
+            diagnostic =
+                diagnostic.note(format!("full required capability: `{capability_display}`"));
+        }
+        if let Some(bounds) = bounds
+            && !bounds.is_empty()
+        {
+            diagnostic = diagnostic.note(format!(
+                "required bounds: `{}`",
+                display_constraint_bounds(bounds)
+            ));
+        }
+        diagnostic
+    }
+
+    pub(super) fn diagnostic_with_reason_note(
+        &self,
+        span: impl Into<Option<crate::span::Span>>,
+        message: impl Into<String>,
+        reason: impl Into<String>,
+    ) -> Diagnostic {
+        Diagnostic::new(span, message).note(format!("reason: {}", reason.into()))
+    }
+
+    pub(super) fn named_capability_diagnostic(
+        &self,
+        span: impl Into<Option<crate::span::Span>>,
+        concrete: &Ty,
+        capability: &str,
+        context: impl Into<String>,
+    ) -> Diagnostic {
+        Diagnostic::new(
+            span,
+            format!(
+                "generic constraint not satisfied: `{concrete}` does not implement `{capability}`"
+            ),
+        )
+        .note(context.into())
+    }
+
+    pub(super) fn require_return_assignable(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        span: crate::span::Span,
+    ) {
+        let diagnostic_start = self.diagnostics.len();
+        self.require_assignable(expected, actual, span);
+        if self.diagnostics.len() == diagnostic_start {
+            return;
+        }
+        let context = self
+            .current_return_context
+            .as_deref()
+            .unwrap_or("current function");
+        for diagnostic in &mut self.diagnostics[diagnostic_start..] {
+            diagnostic
+                .notes
+                .push(format!("while checking return type of {context}"));
+            diagnostic
+                .notes
+                .push(format!("declared return type: `{expected}`"));
+        }
+    }
+}
+
 pub(super) fn hir_type_contains_generic(ty: &Type) -> bool {
     match &ty.kind {
         TypeKind::Named(name, args) => {
@@ -600,6 +729,29 @@ pub(super) fn impl_function_name(interface_name: &str, params: &[Ty]) -> String 
             .collect::<Vec<_>>()
             .join("_")
     )
+}
+
+pub(super) fn impl_return_context(implementation: &ImplSig) -> String {
+    let non_receiver_args = implementation
+        .interface_args
+        .iter()
+        .skip(1)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let interface = if non_receiver_args.is_empty() {
+        implementation.interface_name.clone()
+    } else {
+        format!(
+            "{}<{}>",
+            implementation.interface_name,
+            non_receiver_args.join(", ")
+        )
+    };
+    if let Some(receiver) = &implementation.receiver_ty {
+        format!("impl `{interface}` for `{receiver}`")
+    } else {
+        format!("impl `{interface}`")
+    }
 }
 
 pub(super) fn interface_receiver_is_input(interface: &InterfaceSig) -> bool {

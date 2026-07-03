@@ -605,13 +605,20 @@ pub fn resolve_modules_lossy(modules: Vec<ParsedModule>) -> WithDiagnostics<Reso
                     let mut variant_names = HashSet::<String>::new();
                     for variant in &decl.variants {
                         if !variant_names.insert(variant.name.name.clone()) {
-                            diagnostics.push(Diagnostic::new(
-                                variant.name.span,
-                                format!(
-                                    "duplicate variant `{}` in enum `{}`",
-                                    variant.name.name, decl.name.name
-                                ),
-                            ));
+                            // TODO(diagnostics): keep the first variant span so this note can point to it.
+                            diagnostics.push(
+                                Diagnostic::new(
+                                    variant.name.span,
+                                    format!(
+                                        "duplicate variant `{}` in enum `{}`",
+                                        variant.name.name, decl.name.name
+                                    ),
+                                )
+                                .note(format!(
+                                    "enum `{}` already has a variant named `{}`",
+                                    decl.name.name, variant.name.name
+                                )),
+                            );
                             continue;
                         }
                         add_variant_def(
@@ -770,10 +777,14 @@ fn resolve_import_targets(diagnostics: &mut Vec<Diagnostic>, modules: &mut [Reso
         for import in &mut modules[idx].imports {
             import.target = path_to_id.get(&import.resolved_path).copied();
             if import.target.is_none() {
-                diagnostics.push(Diagnostic::new(
-                    None,
-                    format!("unresolved import `{}`", import.path),
-                ));
+                diagnostics.push(
+                    Diagnostic::new(None, format!("unresolved import `{}`", import.path)).note(
+                        format!(
+                            "resolved filesystem path `{}` was not loaded",
+                            import.resolved_path.display()
+                        ),
+                    ),
+                );
             }
         }
     }
@@ -792,10 +803,12 @@ fn add_def(
     span: Span,
 ) -> Option<DefId> {
     if !local_names.insert(name.clone()) {
-        diagnostics.push(Diagnostic::new(
-            span,
-            format!("duplicate declaration `{name}` in module"),
-        ));
+        // TODO(diagnostics): keep the first declaration span so this note can point to it.
+        diagnostics.push(
+            Diagnostic::new(span, format!("duplicate declaration `{name}` in module")).note(
+                format!("this module already contains a declaration named `{name}`"),
+            ),
+        );
         return None;
     }
     Some(push_def(

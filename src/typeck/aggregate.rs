@@ -234,20 +234,26 @@ impl TypeChecker {
                 1 => Some(matching[0].clone()),
                 0 if candidates.len() == 1 => Some(candidates[0].clone()),
                 0 => {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!("no visible variant `{display}` belongs to `{name}`"),
-                    ));
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            span,
+                            format!("no visible variant `{display}` belongs to `{name}`"),
+                        )
+                        .note(self.variant_candidate_note(&candidates)),
+                    );
                     None
                 }
                 _ => {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!(
-                            "ambiguous enum variant `{display}` for expected `{name}` ({} candidates)",
-                            matching.len()
-                        ),
-                    ));
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            span,
+                            format!(
+                                "ambiguous enum variant `{display}` for expected `{name}` ({} candidates)",
+                                matching.len()
+                            ),
+                        )
+                        .note(self.variant_candidate_note(&matching)),
+                    );
                     None
                 }
             };
@@ -256,17 +262,38 @@ impl TypeChecker {
             0 => None,
             1 => Some(candidates[0].clone()),
             _ => {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "ambiguous enum variant `{display}` ({} candidates); use `Enum::{}` or an expected enum type",
-                        candidates.len(),
-                        display.rsplit("::").next().unwrap_or(display)
-                    ),
-                ));
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        span,
+                        format!(
+                            "ambiguous enum variant `{display}` ({} candidates); use `Enum::{}` or an expected enum type",
+                            candidates.len(),
+                            display.rsplit("::").next().unwrap_or(display)
+                        ),
+                    )
+                    .note(self.variant_candidate_note(&candidates)),
+                );
                 None
             }
         }
+    }
+
+    fn variant_candidate_note(&self, candidates: &[(DefId, VariantSig)]) -> String {
+        if candidates.is_empty() {
+            return "no visible variant candidates were found".to_string();
+        }
+        let mut parts = candidates
+            .iter()
+            .take(5)
+            .map(|(def_id, sig)| {
+                let def = self.ctx.resolved.def(*def_id);
+                format!("`{}::{}`", sig.enum_name, def.name)
+            })
+            .collect::<Vec<_>>();
+        if candidates.len() > parts.len() {
+            parts.push(format!("and {} more", candidates.len() - parts.len()));
+        }
+        format!("visible variant candidates: {}", parts.join(", "))
     }
 
     pub(super) fn lookup_interface_name(&self, name: &NameRef) -> Option<DefId> {

@@ -1,5 +1,6 @@
 // ciel-test: error
 // expect-error: ambiguous enum variant `Ok`
+// expect-error: visible variant candidates: `Left::Ok`, `Right::Ok`
 
 enum Left {
     Ok(i64),

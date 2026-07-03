@@ -2153,7 +2153,7 @@ fn closure_constraint_suffix(constraints: &ConstraintBounds) -> String {
     format!(": {}", display_constraint_bounds(constraints))
 }
 
-fn display_constraint_bounds(constraints: &ConstraintBounds) -> String {
+pub fn display_constraint_bounds(constraints: &ConstraintBounds) -> String {
     let mut parts = constraints
         .positive
         .iter()
@@ -2168,7 +2168,7 @@ fn display_constraint_bounds(constraints: &ConstraintBounds) -> String {
     parts.join(" + ")
 }
 
-fn display_constraint_ref(capability: &ConstraintRef) -> String {
+pub fn display_constraint_ref(capability: &ConstraintRef) -> String {
     if capability.args.is_empty() {
         capability.name.clone()
     } else {

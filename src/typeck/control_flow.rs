@@ -378,7 +378,7 @@ impl TypeChecker {
                                 "void function cannot return a non-void value",
                             ));
                         }
-                        self.require_assignable(ret_ty, &expr.ty, expr.span);
+                        self.require_return_assignable(ret_ty, &expr.ty, expr.span);
                         Some(expr)
                     }
                     None => {

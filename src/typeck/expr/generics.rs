@@ -433,38 +433,39 @@ impl TypeChecker {
                 continue;
             };
             if generic.is_resource && !self.type_is_affine(concrete) {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!(
-                        "generic constraint not satisfied: `{}` is not a resource-affine type",
-                        concrete
-                    ),
-                ));
+                self.diagnostics
+                    .push(self.generic_resource_constraint_diagnostic(
+                        span,
+                        concrete,
+                        &generic.name,
+                    ));
             }
             let Some(constraint) = &generic.constraint else {
                 continue;
             };
             let bounds = self.constraint_bounds(constraint, subst);
-            for capability in bounds.positive {
-                if !self.type_implements_capability_ref(&capability, concrete) {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            concrete, capability.name
-                        ),
-                    ));
+            for capability in &bounds.positive {
+                if !self.type_implements_capability_ref(capability, concrete) {
+                    self.diagnostics
+                        .push(self.positive_capability_constraint_diagnostic(
+                            span,
+                            concrete,
+                            capability,
+                            Some(&generic.name),
+                            Some(&bounds),
+                        ));
                 }
             }
-            for capability in bounds.negative {
-                if self.type_implements_capability_ref(&capability, concrete) {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!(
-                            "generic constraint not satisfied: `{}` has forbidden capability `{}`",
-                            concrete, capability.name
-                        ),
-                    ));
+            for capability in &bounds.negative {
+                if self.type_implements_capability_ref(capability, concrete) {
+                    self.diagnostics
+                        .push(self.negative_capability_constraint_diagnostic(
+                            span,
+                            concrete,
+                            capability,
+                            Some(&generic.name),
+                            Some(&bounds),
+                        ));
                 }
             }
         }

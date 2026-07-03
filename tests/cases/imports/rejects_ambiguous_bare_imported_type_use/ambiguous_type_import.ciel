@@ -1,5 +1,6 @@
 // ciel-test: error
 // expect-error: ambiguous type lookup `Item`
+// expect-error: candidates: `Item` (struct)
 
 import ./left_item;
 import ./right_item;

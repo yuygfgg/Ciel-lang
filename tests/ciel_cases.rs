@@ -8,6 +8,7 @@ use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
     build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output},
     compile_to_build_plan, compile_to_c,
+    diagnostic::Diagnostic,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -932,10 +933,19 @@ fn compile_case(case: &Case) -> Result<BuildPlan, String> {
     compile_to_build_plan(options).map_err(|diagnostics| {
         diagnostics
             .iter()
-            .map(|diagnostic| diagnostic.message.clone())
+            .map(format_diagnostic_for_expectation)
             .collect::<Vec<_>>()
             .join("\n")
     })
+}
+
+fn format_diagnostic_for_expectation(diagnostic: &Diagnostic) -> String {
+    let mut out = diagnostic.message.clone();
+    for note in &diagnostic.notes {
+        out.push_str("\nnote: ");
+        out.push_str(note);
+    }
+    out
 }
 
 fn metadata_path(case_path: &Path, value: &str) -> PathBuf {

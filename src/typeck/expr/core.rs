@@ -948,13 +948,19 @@ impl TypeChecker {
                 };
                 let Some((_, return_err_ty)) = self.result_ok_err_tys(&self.current_return_ty)
                 else {
-                    self.diagnostics.push(Diagnostic::new(
-                        expr.span,
-                        format!(
-                            "`?` requires enclosing function to return `/std/result` Result<_, {}>",
-                            err_ty
-                        ),
-                    ));
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            expr.span,
+                            format!(
+                                "`?` requires enclosing function to return `/std/result` Result<_, {}>",
+                                err_ty
+                            ),
+                        )
+                        .note(format!(
+                            "enclosing function return type: `{}`",
+                            self.current_return_ty
+                        )),
+                    );
                     return Some(TExpr {
                         span: expr.span,
                         ty: Ty::Unknown,
@@ -984,18 +990,27 @@ impl TypeChecker {
                         TryPropagation::ErrorBox
                     }
                 } else {
-                    self.diagnostics.push(Diagnostic::new(
-                        expr.span,
-                        if self.is_std_error_ty(&return_err_ty) {
+                    let mut diagnostic = if self.is_std_error_ty(&return_err_ty) {
+                        Diagnostic::new(
+                            expr.span,
                             format!(
                                 "`?` cannot convert error type `{err_ty}` to `{return_err_ty}` because `{err_ty}` does not implement `{STD_ERROR_FORMAT_INTERFACE}`"
-                            )
-                        } else {
+                            ),
+                        )
+                    } else {
+                        Diagnostic::new(
+                            expr.span,
                             format!(
                                 "`?` error type mismatch: expected `{return_err_ty}`, got `{err_ty}`"
-                            )
-                        },
-                    ));
+                            ),
+                        )
+                    };
+                    diagnostic = diagnostic
+                        .note(format!("`?` expression error type: `{err_ty}`"))
+                        .note(format!(
+                            "enclosing function result error type: `{return_err_ty}`"
+                        ));
+                    self.diagnostics.push(diagnostic);
                     TryPropagation::Exact
                 };
                 let inner = self.consume_affine_expr(scopes, inner, false);
@@ -1021,12 +1036,11 @@ impl TypeChecker {
                 }
                 let future = self.check_expr(scopes, inner, None)?;
                 let Some(awaitable) = self.awaitable_ty(&future.ty, expr.span) else {
-                    self.diagnostics.push(Diagnostic::new(
+                    self.diagnostics.push(self.named_capability_diagnostic(
                         expr.span,
-                        format!(
-                            "generic constraint not satisfied: `{}` does not implement `{}`",
-                            future.ty, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE
-                        ),
+                        &future.ty,
+                        STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+                        "`await` requires an awaitable future value",
                     ));
                     return Some(TExpr {
                         span: expr.span,

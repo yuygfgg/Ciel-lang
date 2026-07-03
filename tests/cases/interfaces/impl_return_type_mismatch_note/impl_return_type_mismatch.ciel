@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: expected `bool`, got `i64`
+// expect-error: while checking return type of impl `ok` for `Item`
+// expect-error: declared return type: `bool`
+
+interface<T> bool ok(*T value);
+
+struct Item {
+    i64 value;
+}
+
+impl ok(*Item item) {
+    return item->value;
+}

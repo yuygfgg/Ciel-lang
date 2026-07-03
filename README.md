@@ -10,14 +10,34 @@ async I/O runtime on supported targets.
 
 > [!Warning]
 > Ciel is still in early experimental phase. **No guarantees are provided.**
+
+> [!Warning]
 > **Only MacOS and Linux are supported.** Windows is not supported yet.
 
 ## Disclaimer
 
-Generative AI / large language models (LLMs) were used in the design and
-implementation of Ciel. Do not use this language unless you are comfortable
-with the risks of using software that may have been influenced by
-AI-generated content.
+> [!Warning]
+> $\color{Red}\Huge\textbf{LLMs}$ are used to assist the design and
+> implementation of Ciel.
+> $\color{Red}\Huge\textbf{This is a Slopware!}$
+
+## Language Features
+
+- **Value semantics with GC backing** — automatic memory management without
+  manual lifetimes
+- **Actor-based concurrency** — compiler-verified message passing without data races
+- **Async/await** — stackless coroutines with `async` / `await` and `select`, based
+  on the Actor model
+- **Deterministic resource management** — affine resource types, `defer`,
+  scoped owners, and auto-close for non-memory resources
+- **Structural metaprogramming** — compile-time reflection over types,
+  derivable trait implementations, and schema generation
+- **Interfaces and capabilities** — capability-based type system with
+  inferred capability types
+- **Pattern matching** — `switch` with exhaustive enum matching
+- **Error handling** — ADT-based `Result` and `Option` types with suffix `?` operator
+- **C interop** — `extern` declarations, raw pointers, and C callbacks
+- **Conditional compilation** — `#if` / `#elif` / `#else` at the source level
 
 ## Building the Compiler
 
@@ -112,40 +132,6 @@ npm install
 npm run build        # regenerate Tree-sitter parser and wasm
 npm test             # run parser smoke tests and highlighting tests
 ```
-
-## Language Features
-
-- **Value semantics with GC backing** — automatic memory management without
-  manual lifetimes
-- **Actor-based concurrency** — compiler-verified message passing without data races
-- **Async/await** — stackless coroutines with `async` / `await` and `select`, based
-  on the Actor model
-- **Deterministic resource management** — affine resource types, `defer`,
-  scoped owners, and auto-close for non-memory resources
-- **Structural metaprogramming** — compile-time reflection over types,
-  derivable trait implementations, and schema generation
-- **Interfaces and capabilities** — capability-based type system with
-  inferred capability types
-- **Pattern matching** — `switch` with exhaustive enum matching
-- **Error handling** — ADT-based `Result` and `Option` types with suffix `?` operator
-- **C interop** — `extern` declarations, raw pointers, and C callbacks
-- **Conditional compilation** — `#if` / `#elif` / `#else` at the source level
-
-## Standard Library
-
-The standard library (`std/`) contains 40+ packages organized by category:
-
-| Category             | Packages                                                                           |
-| -------------------- | ---------------------------------------------------------------------------------- |
-| **Concurrency**      | `actor`, `async`, `channel`, `message`, `sync`                                     |
-| **Data Structures**  | `buf`, `bytes`, `map`, `option`, `result`, `slice`, `vec`, `shared_map`, `storage` |
-| **I/O & Networking** | `io`, `io_posix`, `net`, `async_io`, `async_net`, `async_time`                     |
-| **Serialization**    | `wire`, `json`, `codec`                                                            |
-| **Text & Format**    | `ascii`, `text`, `format`, `base64`, `parse`                                       |
-| **Math & Crypto**    | `math`, `crypto`, `sort`                                                           |
-| **System**           | `os`, `env`, `time`, `panic`, `error`                                              |
-| **Meta/Reflection**  | `meta`                                                                             |
-| **Utilities**        | `iter`, `lib`, `resource`, `ord`, `c`                                              |
 
 ## Examples
 

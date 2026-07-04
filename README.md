@@ -21,10 +21,12 @@ and a libdispatch-backed actor and async I/O runtime on supported targets.
 > [!Warning]
 > 
 > This is a personal hobby project for exploring programming language design.
+> 
 > **Large Language Models (LLMs) were used extensively.**
 > 
 > If you feel uncomfortable with this, you are welcome to stop reading.
 > No offense is intended.
+> 
 > Recommended reading: <https://codeberg.org/ethical-foss/open-slopware>
 > for non-ai alternative softwares.
 

@@ -516,18 +516,12 @@ struct CielSelectSet {
     size_t len;
     size_t cap;
     int biased;
-    int started;
     ssize_t winner;
     int32_t winner_rc;
     CielTaskWaitNode *waiters;
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 };
-
-typedef struct CielSelectWaiter {
-    CielSelectSet *set;
-    size_t index;
-} CielSelectWaiter;
 
 static pthread_mutex_t ciel_select_fairness_mutex = PTHREAD_MUTEX_INITIALIZER;
 static size_t ciel_select_next_start = 0;
@@ -3625,9 +3619,9 @@ int32_t ciel_select_set_push(CielSelectSet *set, CielFuture *future,
     if (set == NULL || future == NULL || result_align == 0)
         return EINVAL;
     pthread_mutex_lock(&set->mutex);
-    if (set->len >= set->cap || set->started) {
+    if (set->len >= set->cap) {
         pthread_mutex_unlock(&set->mutex);
-        return set->started ? EALREADY : EOVERFLOW;
+        return EOVERFLOW;
     }
     CielSelectArm *arm = &set->arms[set->len++];
     arm->future = future;
@@ -3670,12 +3664,14 @@ static int ciel_select_claim(CielSelectSet *set, size_t index, int32_t rc) {
 static int ciel_select_register_future_pending_source(CielSelectSet *set,
                                                       size_t index,
                                                       CielFuture *future);
+static int32_t ciel_select_poll_immediate(CielSelectSet *set);
 
 static void ciel_select_wake_arm(CielSelectSet *set, size_t index) {
     if (set == NULL)
         return;
     pthread_mutex_lock(&set->mutex);
     int stopped = set->winner != -1;
+    int biased = !stopped && set->biased;
     CielFuture *arm_future =
         !stopped && index < set->len ? set->arms[index].future : NULL;
     void *result =
@@ -3683,6 +3679,21 @@ static void ciel_select_wake_arm(CielSelectSet *set, size_t index) {
     pthread_mutex_unlock(&set->mutex);
     if (stopped || arm_future == NULL)
         return;
+    if (biased) {
+        int32_t rc = ciel_select_poll_immediate(set);
+        if (rc != EAGAIN)
+            return;
+        pthread_mutex_lock(&set->mutex);
+        stopped = set->winner != -1;
+        arm_future =
+            !stopped && index < set->len ? set->arms[index].future : NULL;
+        pthread_mutex_unlock(&set->mutex);
+        if (!stopped && arm_future != NULL &&
+            ciel_future_has_pending_source(arm_future))
+            (void)ciel_select_register_future_pending_source(set, index,
+                                                             arm_future);
+        return;
+    }
     int32_t rc = ciel_future_poll_trampoline(arm_future, result);
     if (rc != EAGAIN) {
         pthread_mutex_lock(&set->mutex);
@@ -3697,52 +3708,6 @@ static void ciel_select_wake_arm(CielSelectSet *set, size_t index) {
     if (ciel_future_has_pending_source(arm_future))
         (void)ciel_select_register_future_pending_source(set, index,
                                                          arm_future);
-}
-
-static void ciel_select_waiter_run(void *ctx_raw) {
-    CielSelectWaiter *waiter = (CielSelectWaiter *)ctx_raw;
-    if (waiter == NULL || waiter->set == NULL) {
-        if (waiter != NULL)
-            GC_FREE(waiter);
-        return;
-    }
-    if (ciel_thread_attach_persistent() != 0) {
-        GC_FREE(waiter);
-        return;
-    }
-    CielSelectSet *set = waiter->set;
-    size_t index = waiter->index;
-    if (index >= set->len) {
-        GC_FREE(waiter);
-        goto done;
-    }
-    CielSelectArm *arm = &set->arms[index];
-    for (;;) {
-        pthread_mutex_lock(&set->mutex);
-        int stopped = set->winner != -1;
-        pthread_mutex_unlock(&set->mutex);
-        if (stopped) {
-            GC_FREE(waiter);
-            goto done;
-        }
-        int32_t rc = ciel_future_poll_trampoline(arm->future, arm->result);
-        if (rc != EAGAIN) {
-            pthread_mutex_lock(&set->mutex);
-            arm->rc = rc;
-            arm->completed = 1;
-            pthread_mutex_unlock(&set->mutex);
-            (void)ciel_select_claim(set, index, rc);
-            GC_FREE(waiter);
-            goto done;
-        }
-        if (ciel_future_has_pending_source(arm->future)) {
-            ciel_future_wait_until_ready(arm->future);
-        } else {
-            sched_yield();
-        }
-    }
-done:
-    (void)0;
 }
 
 static int ciel_select_register_task_waiter(CielSelectSet *set,
@@ -3939,28 +3904,6 @@ static int32_t ciel_select_finish_winner(CielSelectSet *set, size_t winner,
     if (rc != 0)
         return rc;
     ((CielSelectResult *)out_raw)->index = winner;
-    return 0;
-}
-
-static int32_t ciel_select_start_waiters(CielSelectSet *set) {
-    if (set == NULL)
-        return EINVAL;
-    pthread_mutex_lock(&set->mutex);
-    if (set->started) {
-        pthread_mutex_unlock(&set->mutex);
-        return 0;
-    }
-    set->started = 1;
-    size_t len = set->len;
-    pthread_mutex_unlock(&set->mutex);
-    for (size_t i = 0; i < len; i++) {
-        CielSelectWaiter *waiter = (CielSelectWaiter *)ciel_alloc_uncollectable(
-            sizeof(CielSelectWaiter));
-        waiter->set = set;
-        waiter->index = i;
-        dispatch_async_f(ciel_select_waiter_queue(), waiter,
-                         ciel_select_waiter_run);
-    }
     return 0;
 }
 

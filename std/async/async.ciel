@@ -30,13 +30,14 @@ Result<Out, AsyncError> timeout_elapsed<Out>(Result<void, AsyncError> sleep_resu
 }
 
 // Races a selectable future with a timer and returns timeout_error on expiry.
+// TODO: replace this with a strict deadline-aware timeout primitive.
 export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
     A future,
     u64 ms
 ) {
-    return await select {
-        case value = future: Ok(value);
+    return await biased select {
         case sleep_result = async_time::sleep_ms(ms): timeout_elapsed<Out>(sleep_result);
+        case value = future: Ok(value);
     };
 }
 

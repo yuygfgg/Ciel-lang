@@ -16,7 +16,7 @@ and a libdispatch-backed actor and async I/O runtime on supported targets.
 > [!Warning]
 > **Only MacOS and Linux are supported.** Windows is not supported yet.
 
-## $\Huge\color{Orange}{\textbf{⚠️ Disclaimer ⚠️}}$
+## ⚠️ $\Huge\color{Orange}{\textbf{Disclaimer}}$ ⚠️
 
 > [!Warning]
 > 

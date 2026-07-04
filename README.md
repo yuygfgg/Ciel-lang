@@ -55,7 +55,7 @@ and a libdispatch-backed actor and async I/O runtime on supported targets.
 - [Rust toolchain](https://rust-lang.org/)
 - [Clang](https://clang.llvm.org/)
 - [CMake](https://cmake.org/)
-- [BDWGC](https://github.com/ivmai/bdwgc)
+- [BDWGC](https://hboehm.info/gc/)
 - [libdispatch](https://github.com/swiftlang/swift-corelibs-libdispatch)
 - [blocksruntime](https://github.com/swiftlang/swift-corelibs-blocksruntime)
 - [Botan](https://botan.randombit.net/)

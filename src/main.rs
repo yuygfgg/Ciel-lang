@@ -12,6 +12,8 @@ use cielc::{
     driver::compile_to_build_plan_with_sources,
 };
 
+const DEFAULT_C_COMPILER: &str = "clang";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EmitMode {
     C,
@@ -110,7 +112,7 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         allow_native_build: false,
         emit: EmitMode::Executable,
         profile: BuildProfile::Debug,
-        c_compiler: env::var("CC").unwrap_or_else(|_| "cc".to_string()),
+        c_compiler: default_c_compiler(),
         c_flags: Vec::new(),
         link_flags: Vec::new(),
     };
@@ -160,6 +162,16 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         idx += 1;
     }
     Ok(cli)
+}
+
+fn default_c_compiler() -> String {
+    default_c_compiler_from(env::var("CC").ok())
+}
+
+fn default_c_compiler_from(cc_env: Option<String>) -> String {
+    cc_env
+        .filter(|compiler| !compiler.is_empty())
+        .unwrap_or_else(|| DEFAULT_C_COMPILER.to_string())
 }
 
 struct ProjectSelection {
@@ -458,4 +470,31 @@ fn print_usage() {
     eprintln!(
         "usage: cielc [--emit MODE|--emit-c] [--debug|--release] [--entry name] [--manifest-path path/to/ciel.toml] [--cc cc] [--cflag flag] [--ldflag flag] [--save-c path] [--std-path root] [--package-root root] [--allow-native-build] [--target-os os] [--target-arch arch] [--feature name] [input.ciel] [-o output]"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_c_compiler_is_clang_without_cc_env() {
+        assert_eq!(default_c_compiler_from(None), "clang");
+        assert_eq!(default_c_compiler_from(Some(String::new())), "clang");
+    }
+
+    #[test]
+    fn cc_env_and_cli_option_override_default_c_compiler() {
+        assert_eq!(
+            default_c_compiler_from(Some("custom-clang".to_string())),
+            "custom-clang"
+        );
+
+        let args = vec![
+            "--cc".to_string(),
+            "toolchain-clang".to_string(),
+            "main.ciel".to_string(),
+        ];
+        let cli = parse_args(&args).unwrap();
+        assert_eq!(cli.c_compiler, "toolchain-clang");
+    }
 }

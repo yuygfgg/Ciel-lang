@@ -2,7 +2,7 @@
 runtime/build/
 std/**/build/
 libs/**/build/
-.DS_Store
+**/.DS_Store
 editors/vscode-ciel/node_modules/
 editors/vscode-ciel/*.vsix
 editors/vscode-ciel/parsers/

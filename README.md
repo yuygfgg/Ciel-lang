@@ -1,5 +1,8 @@
 # Ciel
 
+[![macOS CI](https://github.com/yuygfgg/Ciel-lang/actions/workflows/macos-ci.yml/badge.svg)](https://github.com/yuygfgg/Ciel-lang/actions/workflows/macos-ci.yml)
+[![Linux CI](https://github.com/yuygfgg/Ciel-lang/actions/workflows/linux-ci.yml/badge.svg)](https://github.com/yuygfgg/Ciel-lang/actions/workflows/linux-ci.yml)
+
 Ciel is an experimental AOT-compiled programming language built around
 compiler-verified memory safety, resource lifetime, and concurrency safety.
 
@@ -62,6 +65,8 @@ and a libdispatch-backed actor and async I/O runtime on supported targets.
 
 > [!Note]
 > libdispatch and blocksruntime are only required for Linux. On MacOS, they are system-provided.
+> On Linux, provide libdispatch through `pkg-config`, or set `CIEL_LIBDISPATCH_INCLUDE_DIR`
+> and `CIEL_LIBDISPATCH_LIBRARY`. Explicit paths take precedence over `pkg-config`.
 
 > [!Note]
 > Only Clang is supported as the backend C compiler for its

@@ -1,0 +1,80 @@
+name: Linux CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-24.04
+    env:
+      BOTAN_VERSION: 3.0.0
+      LIBDISPATCH_REF: swift-6.2-RELEASE
+      CARGO_TERM_COLOR: always
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            ca-certificates \
+            clang \
+            cmake \
+            curl \
+            git \
+            libblocksruntime-dev \
+            libbsd-dev \
+            libgc-dev \
+            make \
+            ninja-build \
+            pkg-config \
+            python3 \
+            systemtap-sdt-dev \
+            xz-utils
+
+      - name: Build libdispatch
+        run: |
+          git clone --depth 1 --branch "$LIBDISPATCH_REF" https://github.com/swiftlang/swift-corelibs-libdispatch.git /tmp/swift-corelibs-libdispatch
+          cmake -S /tmp/swift-corelibs-libdispatch -B /tmp/swift-corelibs-libdispatch/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_INSTALL_PREFIX=/usr/local \
+            -DCMAKE_INSTALL_LIBDIR=lib \
+            -DBUILD_SHARED_LIBS=YES \
+            -DENABLE_SWIFT=NO
+          cmake --build /tmp/swift-corelibs-libdispatch/build
+          sudo cmake --install /tmp/swift-corelibs-libdispatch/build
+          sudo ldconfig
+          test -f /usr/local/include/dispatch/dispatch.h
+          test -f /usr/local/lib/libdispatch.so
+          echo "CIEL_LIBDISPATCH_INCLUDE_DIR=/usr/local/include" >> "$GITHUB_ENV"
+          echo "CIEL_LIBDISPATCH_LIBRARY=/usr/local/lib/libdispatch.so" >> "$GITHUB_ENV"
+          ldconfig -p | grep libdispatch
+
+      - name: Build Botan
+        run: |
+          curl -fsSLO "https://botan.randombit.net/releases/Botan-${BOTAN_VERSION}.tar.xz"
+          tar -xf "Botan-${BOTAN_VERSION}.tar.xz"
+          cd "Botan-${BOTAN_VERSION}"
+          python3 configure.py --prefix=/usr/local --without-documentation
+          make -j"$(nproc)"
+          sudo make install
+          sudo ldconfig
+          pkg-config --modversion botan-3
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --no-self-update
+          rustup default stable
+          rustup component add rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Run tests
+        run: cargo test

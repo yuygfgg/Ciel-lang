@@ -8,6 +8,7 @@ use cielc::{
     resolve::{ModuleId, ParsedModule, resolve_modules_lossy},
     span::FileId,
     typeck::type_check_lossy,
+    types::Ty,
 };
 use cielc::{
     DiagnosticPhase,
@@ -264,6 +265,41 @@ fn lossy_semantic_pipeline_keeps_later_function() {
             .iter()
             .any(|function| function.name == "good")
     );
+}
+
+#[test]
+fn type_hole_inference_records_source_holes() {
+    let source = r#"
+        i64 main() {
+            _ value = 42;
+            return value;
+        }
+    "#;
+    let ast = parse_file_lossy(lex_lossy(FileId(0), source).value).value;
+    let module = ParsedModule {
+        id: ModuleId(0),
+        path: PathBuf::from("memory.ciel"),
+        std_export: None,
+        import_paths: Vec::new(),
+        ast,
+    };
+    let resolved = resolve_modules_lossy(vec![module]);
+    let hir = lower_to_hir_lossy(resolved.value);
+    let checked = type_check_lossy(hir.value);
+
+    assert!(
+        checked.diagnostics.is_empty(),
+        "unexpected diagnostics: {:?}",
+        checked.diagnostics
+    );
+    let hole = checked
+        .value
+        .inferred_type_holes
+        .iter()
+        .find(|hole| hole.local_name == "value")
+        .expect("expected inferred type hole for local `value`");
+    assert_eq!(hole.ty, Ty::I64);
+    assert_eq!(&source[hole.span.start..hole.span.end], "_");
 }
 
 #[test]

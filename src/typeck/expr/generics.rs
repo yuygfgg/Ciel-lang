@@ -92,6 +92,7 @@ impl TypeChecker {
                 has_body: sig.has_body,
                 ret,
                 params,
+                param_names: sig.param_names.clone(),
                 generics: Vec::new(),
                 exported: sig.exported,
             },
@@ -266,6 +267,7 @@ impl TypeChecker {
                 has_body: sig.has_body,
                 ret,
                 params,
+                param_names: sig.param_names.clone(),
                 generics: Vec::new(),
                 exported: sig.exported,
             },
@@ -554,6 +556,7 @@ impl TypeChecker {
             has_body: true,
             ret: ret.clone(),
             params: params.iter().map(|(_, _, ty)| ty.clone()).collect(),
+            param_names: params.iter().map(|(_, name, _)| name.clone()).collect(),
             generics: Vec::new(),
             exported: false,
         };

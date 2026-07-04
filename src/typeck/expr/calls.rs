@@ -1118,6 +1118,7 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
+        callee_span: crate::span::Span,
         sig: FunctionSig,
         type_args: &[Type],
         args: &[Expr],
@@ -1271,7 +1272,7 @@ impl TypeChecker {
             call_sig.ret.clone()
         };
         let callee = TExpr {
-            span,
+            span: callee_span,
             ty: Ty::Function {
                 is_unsafe: call_sig.is_unsafe,
                 abi: call_sig.abi.clone(),
@@ -1294,6 +1295,7 @@ impl TypeChecker {
             callee,
             &call_ret,
             &call_sig.params,
+            Some(&call_sig.param_names),
             args,
             allow_resource_captures,
         )
@@ -1699,18 +1701,23 @@ impl TypeChecker {
         callee: TExpr,
         ret: &Ty,
         params: &[Ty],
+        param_names: Option<&[String]>,
         args: &[Expr],
         allow_resource_captures: bool,
     ) -> Option<TExpr> {
         if params.len() != args.len() {
-            self.diagnostics.push(Diagnostic::new(
+            let mut diagnostic = Diagnostic::new(
                 span,
                 format!(
                     "call expects {} arguments, got {}",
                     params.len(),
                     args.len()
                 ),
-            ));
+            );
+            if let Some(note) = parameter_names_note(param_names, params.len()) {
+                diagnostic = diagnostic.note(note);
+            }
+            self.diagnostics.push(diagnostic);
         }
         let mut checked_args = Vec::new();
         for (idx, arg) in args.iter().enumerate() {
@@ -1727,7 +1734,8 @@ impl TypeChecker {
                 self.check_consumed_expr(scopes, arg, expected, false)?
             };
             if let Some(expected) = expected {
-                self.require_assignable(expected, &checked.ty, arg.span);
+                let param_name = param_names.and_then(|names| names.get(idx).map(String::as_str));
+                self.require_assignable_argument(expected, &checked.ty, arg.span, param_name);
             }
             checked_args.push(checked);
         }
@@ -1789,7 +1797,8 @@ impl TypeChecker {
             let Some((ret, params)) = callable_ret_params_ty(&callee.ty) else {
                 unreachable!("callable field type was checked above");
             };
-            return self.check_call_with_sig(scopes, span, callee, &ret, &params, args, false);
+            return self
+                .check_call_with_sig(scopes, span, callee, &ret, &params, None, args, false);
         }
 
         let selector = vec![field.clone()];
@@ -1835,8 +1844,17 @@ impl TypeChecker {
             }
             1 => {
                 let (selector, adaptation) = matches.into_iter().next().unwrap();
+                let selector_span = selector_path_span(selector_path).unwrap_or(span);
                 self.check_receiver_selector_target_call(
-                    scopes, span, receiver, selector, adaptation, type_args, args, expected,
+                    scopes,
+                    span,
+                    selector_span,
+                    receiver,
+                    selector,
+                    adaptation,
+                    type_args,
+                    args,
+                    expected,
                 )
             }
             count => {
@@ -1857,6 +1875,7 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
+        callee_span: crate::span::Span,
         receiver: &Expr,
         selector: ReceiverSelectorSig,
         adaptation: ReceiverAdaptation,
@@ -1874,7 +1893,15 @@ impl TypeChecker {
                     selector.receiver_index,
                     adaptation,
                 );
-                self.check_direct_function_call(scopes, span, sig, type_args, &call_args, expected)
+                self.check_direct_function_call(
+                    scopes,
+                    span,
+                    callee_span,
+                    sig,
+                    type_args,
+                    &call_args,
+                    expected,
+                )
             }
             ReceiverSelectorCallable::Interface(def_id) => {
                 let interface = self.ctx.interfaces.get(&def_id).cloned()?;
@@ -2910,4 +2937,22 @@ impl TypeChecker {
             },
         })
     }
+}
+
+fn parameter_names_note(param_names: Option<&[String]>, expected_len: usize) -> Option<String> {
+    let names = param_names?;
+    if expected_len == 0 || names.is_empty() {
+        return None;
+    }
+    let display = names
+        .iter()
+        .take(expected_len)
+        .map(|name| format!("`{name}`"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (!display.is_empty()).then(|| format!("parameters: {display}"))
+}
+
+fn selector_path_span(path: &[crate::ast::Ident]) -> Option<crate::span::Span> {
+    Some(path.first()?.span.merge(path.last()?.span))
 }

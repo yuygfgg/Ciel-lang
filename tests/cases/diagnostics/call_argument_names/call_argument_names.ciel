@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: argument `count`: expected `i64`, got `bool`
+
+void take(i64 count, bool enabled) {
+    return;
+}
+
+void main() {
+    take(true, false);
+}

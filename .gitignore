@@ -6,7 +6,8 @@ libs/**/build/
 editors/vscode-ciel/node_modules/
 editors/vscode-ciel/*.vsix
 editors/vscode-ciel/parsers/
-editors/vscode-ciel/tree-sitter-ciel/src/grammar.json
-editors/vscode-ciel/tree-sitter-ciel/src/node-types.json
-editors/vscode-ciel/tree-sitter-ciel/src/parser.c
-editors/vscode-ciel/tree-sitter-ciel/src/tree_sitter/
+editors/vscode-ciel/src/tree_sitter/highlights.scm
+tree-sitter-ciel/src/grammar.json
+tree-sitter-ciel/src/node-types.json
+tree-sitter-ciel/src/parser.c
+tree-sitter-ciel/src/tree_sitter/

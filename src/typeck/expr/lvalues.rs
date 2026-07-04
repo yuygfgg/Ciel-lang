@@ -924,6 +924,27 @@ impl TypeChecker {
         actual: &Ty,
         span: crate::span::Span,
     ) {
+        self.require_assignable_with_context(expected, actual, span, None);
+    }
+
+    pub(in crate::typeck) fn require_assignable_argument(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        span: crate::span::Span,
+        param_name: Option<&str>,
+    ) {
+        let context = param_name.map(|name| format!("argument `{name}`"));
+        self.require_assignable_with_context(expected, actual, span, context.as_deref());
+    }
+
+    fn require_assignable_with_context(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+        span: crate::span::Span,
+        context: Option<&str>,
+    ) {
         if contains_type_hole(expected) || contains_type_hole(actual) {
             self.unify_type_holes(expected, actual);
         }
@@ -960,10 +981,14 @@ impl TypeChecker {
             return;
         }
         if !self.ty_can_assign_from(&expected, &actual) {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                self.type_mismatch_message(&expected, &actual),
-            ));
+            let message = match context {
+                Some(context) => format!(
+                    "{context}: {}",
+                    self.type_mismatch_message(&expected, &actual)
+                ),
+                None => self.type_mismatch_message(&expected, &actual),
+            };
+            self.diagnostics.push(Diagnostic::new(span, message));
         }
     }
 

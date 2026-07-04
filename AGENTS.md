@@ -29,9 +29,11 @@ package has a `ciel.toml` manifest and may include native C/CMake support.
 `libs/` contains bundled third-party package dependencies. `tests/cases/`
 contains `.ciel` fixture programs, and `tests/ciel_cases.rs` defines the
 fixture runner. `examples/` contains end-to-end programs, especially
-`examples/intranet_tunnel`. `editors/vscode-ciel/` contains the VS Code
-language extension and Tree-sitter grammar. `proposal/` contains design
-proposals; `design.md` is the normative language specification.
+`examples/intranet_tunnel`. `tree-sitter-ciel/` contains the shared
+Tree-sitter grammar and highlight query. `editors/vscode-ciel/` contains the
+VS Code Tree-sitter and LSP adapter.
+`proposal/` contains design proposals; `design.md` is the normative language
+specification.
 
 ## Build And Smoke Commands
 Use these commands from the repository root unless noted:
@@ -126,39 +128,33 @@ clang-format -i runtime/src/file.c runtime/include/file.h
 ```
 
 ## VS Code Extension And Highlighting
-The extension lives in `editors/vscode-ciel/`. Its parser source is
-`tree-sitter-ciel/grammar.js`; generated parser artifacts include
-`tree-sitter-ciel/src/grammar.json`, `tree-sitter-ciel/src/node-types.json`,
-`tree-sitter-ciel/src/parser.c`, and `parsers/tree-sitter-ciel.wasm`.
-Highlight query captures live in `tree-sitter-ciel/queries/highlights.scm`.
-Semantic token classification lives in `src/extension.js`.
+The extension lives in `editors/vscode-ciel/`. Shared Tree-sitter source lives
+in top-level `tree-sitter-ciel/`; Rust generates and compiles its native parser
+from that directory in `build.rs`, while the VS Code build generates its own
+ignored wasm parser under `editors/vscode-ciel/parsers/` and copies the shared
+highlight query to `editors/vscode-ciel/src/tree_sitter/` for packaging.
 
 Use these commands from `editors/vscode-ciel/`:
 
 ```sh
 npm install
 npm run build
-npm run test:cases
-npm run test:highlighting
 npm test
 ```
 
-`npm run build` regenerates the Tree-sitter parser and wasm. `npm run
-test:cases` parses positive Ciel fixtures plus checked-in `.ciel` files under
-`std/` and `examples/`; it skips negative parser inputs such as `error` and
-`known-fail-accepts` fixtures. `npm run test:highlighting` checks both the
-Tree-sitter highlight query and the VS Code semantic-token classifier. `npm
-test` runs build, parser smoke tests, and highlighting tests.
+`npm run build` and `npm test` generate the VS Code Tree-sitter wasm and check
+the extension entry point. Parser and highlighting regression coverage is run
+from Rust with `cargo test`.
 
-When language syntax changes, update the grammar, regenerate parser artifacts,
-update highlighting queries and semantic-token classification as needed, extend
-`scripts/test-highlighting.js` for new contextual keywords or token categories,
-and run `npm test`. For manual VS Code validation, open
-`editors/vscode-ciel/` in VS Code, press F5 to launch the extension host, open a
-`.ciel` file, and use `Ciel: Show Tree-sitter Syntax Tree` to inspect parsing.
+When language syntax changes, update `tree-sitter-ciel/grammar.js` and
+`tree-sitter-ciel/highlights.scm`, extend Rust Tree-sitter tests as needed, and
+run `cargo test` plus `npm test`. Do not commit generated parser files or wasm.
+For manual VS Code validation, open
+`editors/vscode-ciel/` in VS Code, press F5 to launch the extension host, and
+open a `.ciel` file or a markdown document with a fenced `ciel` code block.
 Only include screenshots for actual editor UI changes.
 
-Package the extension only after regenerating the parser:
+Package the extension after checking it:
 
 ```sh
 npm run build

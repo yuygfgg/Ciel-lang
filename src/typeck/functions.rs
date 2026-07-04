@@ -1209,6 +1209,11 @@ impl TypeChecker {
             has_body: true,
             ret: validation_ret,
             params: validation_params,
+            param_names: template_decl
+                .params
+                .iter()
+                .map(|param| param.name.name.clone())
+                .collect(),
             generics: validation_generics.clone(),
             exported: false,
         };
@@ -1764,6 +1769,11 @@ impl TypeChecker {
             has_body: true,
             ret: ret.clone(),
             params: params_ty.clone(),
+            param_names: decl
+                .params
+                .iter()
+                .map(|param| param.name.name.clone())
+                .collect(),
             generics: Vec::new(),
             exported: false,
         };
@@ -1973,6 +1983,11 @@ impl TypeChecker {
                     );
                     ty
                 })
+                .collect(),
+            param_names: signature
+                .params
+                .iter()
+                .map(|param| param.name.name.clone())
                 .collect(),
             generics: generics.clone(),
             exported,

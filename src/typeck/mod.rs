@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 
 use crate::{
     capture::collect_closure_capture_ids,
-    checked::CheckedProgram,
+    checked::{CheckedProgram, InferredTypeHole},
     diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     hir::*,
     layout::check_checked_aggregate_layouts,
@@ -60,6 +60,7 @@ struct FunctionSig {
     has_body: bool,
     ret: Ty,
     params: Vec<Ty>,
+    param_names: Vec<String>,
     generics: Vec<GenericInfo>,
     exported: bool,
 }
@@ -836,6 +837,8 @@ struct TypeChecker {
     next_closure_id: usize,
     next_type_hole_id: usize,
     type_hole_solutions: HashMap<usize, Ty>,
+    type_hole_spans: HashMap<usize, crate::span::Span>,
+    inferred_type_holes: Vec<InferredTypeHole>,
     current_loop_depth: usize,
     return_loop_move_depth: usize,
     unsafe_depth: usize,
@@ -888,6 +891,8 @@ impl TypeChecker {
             next_closure_id: 0,
             next_type_hole_id: 0,
             type_hole_solutions: HashMap::new(),
+            type_hole_spans: HashMap::new(),
+            inferred_type_holes: Vec::new(),
             current_loop_depth: 0,
             return_loop_move_depth: 0,
             unsafe_depth: 0,
@@ -1185,6 +1190,7 @@ impl TypeChecker {
                 resolved: self.ctx.resolved.clone(),
                 hir_modules: self.ctx.hir_modules.clone(),
                 hir_locals: self.ctx.hir_locals.clone(),
+                inferred_type_holes: self.inferred_type_holes,
                 share_handle_templates,
                 thread_local_templates,
                 opaque_structs: checked_opaque_structs,

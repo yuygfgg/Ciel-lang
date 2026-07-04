@@ -10,6 +10,7 @@ use crate::{
         package::{LoadedPackageManifest, PackageIndex, PackageLoadError},
         planner::build_plan_for_generated_c_with_packages,
     },
+    checked::CheckedProgram,
     codegen::generate_c,
     diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     escape::analyze_escapes,
@@ -31,6 +32,7 @@ pub struct CompileOptions {
     pub project_manifest: Option<PathBuf>,
     pub std_paths: Vec<PathBuf>,
     pub package_roots: Vec<PathBuf>,
+    pub source_overrides: HashMap<PathBuf, String>,
     pub target_os: String,
     pub target_arch: String,
     pub build_profile: BuildProfile,
@@ -47,6 +49,7 @@ impl CompileOptions {
             project_manifest: None,
             std_paths: vec![std_root],
             package_roots: Vec::new(),
+            source_overrides: HashMap::new(),
             target_os: env::consts::OS.to_string(),
             target_arch: env::consts::ARCH.to_string(),
             build_profile: BuildProfile::Debug,
@@ -67,6 +70,15 @@ impl CompileOptions {
 
     pub fn with_package_root(mut self, package_root: impl Into<PathBuf>) -> Self {
         self.package_roots.push(package_root.into());
+        self
+    }
+
+    pub fn with_source_override(
+        mut self,
+        path: impl Into<PathBuf>,
+        text: impl Into<String>,
+    ) -> Self {
+        self.source_overrides.insert(path.into(), text.into());
         self
     }
 
@@ -117,17 +129,58 @@ struct CompileOutput {
 fn compile_to_c_context(
     options: CompileOptions,
 ) -> Result<CompileOutput, (Vec<Diagnostic>, SourceMap)> {
+    let analysis = analyze_frontend_lossy(options)?;
+
+    // The default compile path keeps recovery alive through type checking so
+    // users see as many actionable diagnostics as possible before we reject.
+    if !analysis.diagnostics.is_empty() {
+        return Err((analysis.diagnostics, analysis.source_map));
+    }
+
+    let source_map = analysis.source_map;
+    let package_manifests = analysis.package_manifests;
+    let mono = match monomorphize(analysis.checked) {
+        Ok(mono) => mono,
+        Err(diags) => return Err((diags, source_map)),
+    };
+    let result = {
+        let escapes = analyze_escapes(&mono);
+        generate_c(&mono, &escapes, &source_map)
+    };
+    match result {
+        Ok(generated_c) => Ok(CompileOutput {
+            generated_c,
+            source_map,
+            package_manifests,
+        }),
+        Err(diags) => Err((diags, source_map)),
+    }
+}
+
+#[derive(Debug)]
+pub struct FrontendAnalysis {
+    pub checked: CheckedProgram,
+    pub diagnostics: Vec<Diagnostic>,
+    pub source_map: SourceMap,
+    pub(crate) package_manifests: Vec<LoadedPackageManifest>,
+}
+
+pub fn analyze_frontend_lossy(
+    options: CompileOptions,
+) -> Result<FrontendAnalysis, (Vec<Diagnostic>, SourceMap)> {
     let config = ConfigEnv::from_options(&options);
+    let entry = options.entry.clone();
     let mut loader = match ModuleLoader::new(
         options.project_manifest,
         options.std_paths,
         options.package_roots,
+        options.source_overrides,
         config,
     ) {
         Ok(loader) => loader,
         Err(diagnostics) => return Err((diagnostics, SourceMap::default())),
     };
-    let loaded = loader.load_entry_lossy(&options.entry);
+    let loaded = loader.load_entry_lossy(&entry);
     let mut diagnostics = loaded.diagnostics;
 
     let resolved = resolve_modules_lossy(loaded.value);
@@ -139,28 +192,12 @@ fn compile_to_c_context(
     let checked = type_check_lossy(hir.value);
     diagnostics.extend(checked.diagnostics);
 
-    // The default compile path keeps recovery alive through type checking so
-    // users see as many actionable diagnostics as possible before we reject.
-    if !diagnostics.is_empty() {
-        return Err((diagnostics, loader.source_map));
-    }
-
-    let mono = match monomorphize(checked.value) {
-        Ok(mono) => mono,
-        Err(diags) => return Err((diags, loader.source_map)),
-    };
-    let result = {
-        let escapes = analyze_escapes(&mono);
-        generate_c(&mono, &escapes, &loader.source_map)
-    };
-    match result {
-        Ok(generated_c) => Ok(CompileOutput {
-            generated_c,
-            source_map: loader.source_map,
-            package_manifests: loader.loaded_package_manifests,
-        }),
-        Err(diags) => Err((diags, loader.source_map)),
-    }
+    Ok(FrontendAnalysis {
+        checked: checked.value,
+        diagnostics,
+        source_map: loader.source_map,
+        package_manifests: loader.loaded_package_manifests,
+    })
 }
 
 pub fn compile_to_build_plan(options: CompileOptions) -> DiagResult<BuildPlan> {
@@ -203,6 +240,7 @@ struct ModuleLoader {
     config: ConfigEnv,
     std_package_index: PackageIndex,
     user_package_index: PackageIndex,
+    source_overrides: HashMap<PathBuf, String>,
     source_map: SourceMap,
     loaded: HashMap<PathBuf, ModuleId>,
     loading: HashSet<PathBuf>,
@@ -216,8 +254,10 @@ impl ModuleLoader {
         project_manifest: Option<PathBuf>,
         std_paths: Vec<PathBuf>,
         package_roots: Vec<PathBuf>,
+        source_overrides: HashMap<PathBuf, String>,
         config: ConfigEnv,
     ) -> Result<Self, Vec<Diagnostic>> {
+        let cwd = env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let std_package_index =
             PackageIndex::load_std(&std_paths).map_err(package_load_errors_to_diagnostics)?;
         let user_package_index = PackageIndex::load_project_manifest_and_package_roots(
@@ -225,12 +265,17 @@ impl ModuleLoader {
             &package_roots,
         )
         .map_err(package_load_errors_to_diagnostics)?;
+        let source_overrides = source_overrides
+            .into_iter()
+            .map(|(path, text)| (normalize_path_with_cwd(&cwd, &path), text))
+            .collect();
         Ok(Self {
-            cwd: env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            cwd,
             std_paths,
             config,
             std_package_index,
             user_package_index,
+            source_overrides,
             source_map: SourceMap::default(),
             loaded: HashMap::new(),
             loading: HashSet::new(),
@@ -272,19 +317,22 @@ impl ModuleLoader {
             return None;
         }
 
-        let text = match fs::read_to_string(&path) {
-            Ok(text) => text,
-            Err(error) => {
-                diagnostics.push(
-                    Diagnostic::new(
-                        None,
-                        format!("failed to read `{}`: {error}", path.display()),
-                    )
-                    .with_phase(DiagnosticPhase::Resolve),
-                );
-                self.loading.remove(&path);
-                return None;
-            }
+        let text = match self.source_overrides.get(&path) {
+            Some(text) => text.clone(),
+            None => match fs::read_to_string(&path) {
+                Ok(text) => text,
+                Err(error) => {
+                    diagnostics.push(
+                        Diagnostic::new(
+                            None,
+                            format!("failed to read `{}`: {error}", path.display()),
+                        )
+                        .with_phase(DiagnosticPhase::Resolve),
+                    );
+                    self.loading.remove(&path);
+                    return None;
+                }
+            },
         };
         let file_id = self.source_map.add(path.clone(), text.clone());
         let lexed = lex_lossy(file_id, &text);
@@ -373,13 +421,17 @@ impl ModuleLoader {
     }
 
     fn normalize_path(&self, path: &Path) -> PathBuf {
-        let path = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            self.cwd.join(path)
-        };
-        path.components().collect()
+        normalize_path_with_cwd(&self.cwd, path)
     }
+}
+
+fn normalize_path_with_cwd(cwd: &Path, path: &Path) -> PathBuf {
+    let path = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        cwd.join(path)
+    };
+    path.components().collect()
 }
 
 fn package_load_errors_to_diagnostics(errors: Vec<PackageLoadError>) -> Vec<Diagnostic> {
@@ -759,6 +811,7 @@ mod tests {
             None,
             vec![PathBuf::from(env!("CARGO_MANIFEST_DIR"))],
             Vec::new(),
+            HashMap::new(),
             config,
         )
         .unwrap();

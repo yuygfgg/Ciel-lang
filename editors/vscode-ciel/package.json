@@ -1,7 +1,7 @@
 {
   "name": "vscode-ciel",
   "displayName": "Ciel Language Support",
-  "description": "VSCode language support for Ciel using Tree-sitter semantic highlighting.",
+  "description": "VSCode language client for Ciel.",
   "version": "0.1.0",
   "publisher": "ciel-lang",
   "license": "MIT",
@@ -13,6 +13,7 @@
   ],
   "activationEvents": [
     "onLanguage:ciel",
+    "onCommand:ciel.restartLanguageServer",
     "onCommand:ciel.showSyntaxTree"
   ],
   "main": "./src/extension.js",
@@ -35,7 +36,26 @@
         "editor.semanticHighlighting.enabled": true
       }
     },
+    "configuration": {
+      "title": "Ciel",
+      "properties": {
+        "ciel.languageServer.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Ciel language server on non-Windows hosts."
+        },
+        "ciel.languageServer.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the ciel-lsp executable on non-Windows hosts. If empty, the extension searches the workspace build output and PATH."
+        }
+      }
+    },
     "commands": [
+      {
+        "command": "ciel.restartLanguageServer",
+        "title": "Ciel: Restart Language Server"
+      },
       {
         "command": "ciel.showSyntaxTree",
         "title": "Ciel: Show Tree-sitter Syntax Tree"
@@ -43,17 +63,15 @@
     ]
   },
   "scripts": {
-    "generate:parser": "cd tree-sitter-ciel && tree-sitter generate grammar.js",
-    "build:parser": "cd tree-sitter-ciel && tree-sitter generate grammar.js && tree-sitter build --wasm --output ../parsers/tree-sitter-ciel.wasm .",
-    "build": "npm run build:parser",
-    "test:cases": "node ./scripts/parse-ciel-cases.js",
-    "test:highlighting": "node ./scripts/test-highlighting.js",
-    "test": "npm run build && npm run test:cases && npm run test:highlighting"
+    "build:tree-sitter": "node ./scripts/build-tree-sitter.js",
+    "build": "npm run build:tree-sitter && node --check ./src/extension.js",
+    "test": "npm run build"
   },
   "dependencies": {
-    "web-tree-sitter": "^0.25.0"
+    "vscode-languageclient": "^9.0.1",
+    "web-tree-sitter": "^0.26.10"
   },
   "devDependencies": {
-    "tree-sitter-cli": "^0.25.0"
+    "tree-sitter-cli": "^0.26.10"
   }
 }

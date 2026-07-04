@@ -405,6 +405,7 @@ impl TypeChecker {
                 if allow_holes {
                     let id = self.next_type_hole_id;
                     self.next_type_hole_id += 1;
+                    self.type_hole_spans.insert(id, ty.span);
                     Ty::Hole(id)
                 } else {
                     self.diagnostics.push(Diagnostic::new(
@@ -1298,6 +1299,7 @@ impl TypeChecker {
             self.ensure_enum_instance(&solved_ty);
             self.ensure_struct_instance(&solved_ty);
             self.reject_invalid_plain_value_type(&solved_ty, span, "local variable");
+            self.record_inferred_type_holes(&declared_ty, local_name);
         }
 
         let init = checked_init.map(|init| {
@@ -1327,6 +1329,96 @@ impl TypeChecker {
             assigned: init.as_ref().is_some_and(|init| !init.is_never()),
             ty: solved_ty,
             init,
+        }
+    }
+
+    fn record_inferred_type_holes(&mut self, declared_ty: &Ty, local_name: &str) {
+        let mut ids = Vec::new();
+        collect_type_hole_ids(declared_ty, &mut ids);
+        ids.sort_unstable();
+        ids.dedup();
+        for id in ids {
+            let solution = self.resolve_type_holes(&Ty::Hole(id));
+            if contains_type_hole(&solution) || matches!(solution, Ty::Unknown) {
+                continue;
+            }
+            let Some(span) = self.type_hole_spans.get(&id).copied() else {
+                continue;
+            };
+            self.inferred_type_holes.push(InferredTypeHole {
+                span,
+                local_name: local_name.to_string(),
+                ty: solution,
+            });
+        }
+    }
+}
+
+fn collect_type_hole_ids(ty: &Ty, out: &mut Vec<usize>) {
+    match ty {
+        Ty::Hole(id) => out.push(*id),
+        Ty::Pointer { inner, .. } => collect_type_hole_ids(inner, out),
+        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => collect_type_hole_ids(elem, out),
+        Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
+            for arg in args {
+                collect_type_hole_ids(arg, out);
+            }
+        }
+        Ty::GeneratedFuture { output, .. } => collect_type_hole_ids(output, out),
+        Ty::OpaqueReturn { key, bounds } => {
+            for arg in &key.args {
+                collect_type_hole_ids(arg, out);
+            }
+            collect_constraint_bounds_type_hole_ids(bounds, out);
+        }
+        Ty::Function { ret, params, .. } | Ty::Closure { ret, params, .. } => {
+            collect_type_hole_ids(ret, out);
+            for param in params {
+                collect_type_hole_ids(param, out);
+            }
+            if let Ty::Closure { constraints, .. } = ty {
+                collect_constraint_bounds_type_hole_ids(constraints, out);
+            }
+        }
+        Ty::ClosureInstance {
+            ret,
+            params,
+            captures,
+            ..
+        } => {
+            collect_type_hole_ids(ret, out);
+            for param in params {
+                collect_type_hole_ids(param, out);
+            }
+            for capture in captures {
+                collect_type_hole_ids(capture, out);
+            }
+        }
+        Ty::Never
+        | Ty::Void
+        | Ty::Bool
+        | Ty::Char
+        | Ty::I8
+        | Ty::I16
+        | Ty::I32
+        | Ty::I64
+        | Ty::U8
+        | Ty::U16
+        | Ty::U32
+        | Ty::U64
+        | Ty::Usize
+        | Ty::F32
+        | Ty::F64
+        | Ty::CSpelling { .. }
+        | Ty::Generic(_)
+        | Ty::Unknown => {}
+    }
+}
+
+fn collect_constraint_bounds_type_hole_ids(bounds: &ConstraintBounds, out: &mut Vec<usize>) {
+    for constraint in bounds.positive.iter().chain(bounds.negative.iter()) {
+        for arg in &constraint.args {
+            collect_type_hole_ids(arg, out);
         }
     }
 }

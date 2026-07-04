@@ -108,32 +108,35 @@ cargo run -- --emit-c path/to/file.ciel -o /tmp/app.c
 > [!Note]
 > See `cargo run -- --help` for all compiler options.
 
-## VS Code Extension
+## VS Code Integration
 
-The VS Code extension provides syntax highlighting, Tree-sitter-based
-parsing, and a syntax tree inspection command for `.ciel` files.
+### Installation
 
-### Install from Source
-
+1. Install the VS Code extension:
+ 
 ```sh
-cd editors/vscode-ciel
-npm install
-npm run build
+cd editors/vscode-ciel/
 npx @vscode/vsce package
 code --install-extension vscode-ciel-0.1.0.vsix
 ```
 
-After installation, open any `.ciel` file to get syntax highlighting. Use
-the `Ciel: Show Tree-sitter Syntax Tree` command from the VS Code command
-palette to inspect the parser output.
+2. Build `ciel-lsp`:
+
+```sh
+cargo build --release --bin ciel-lsp
+```
+
+3. Either put `ciel-lsp` in your PATH, or configure the extension
+  by setting `ciel.languageServer.path` to the executable path.
 
 ### Development
 
 ```sh
+cargo build --bin ciel-lsp
 cd editors/vscode-ciel
 npm install
-npm run build        # regenerate Tree-sitter parser and wasm
-npm test             # run parser smoke tests and highlighting tests
+npm run build        # generate Tree-sitter wasm and check the extension entry point
+npm test             # run extension smoke tests
 ```
 
 ## Examples
@@ -146,59 +149,6 @@ npm test             # run parser smoke tests and highlighting tests
 - **[intranet_tunnel_go](examples/intranet_tunnel_go/)** — a Go reference
   implementation of the same tunnel protocol for comparison.
 - **[benchmark](examples/benchmark/)** — benchmarks.
-
-## Project Structure
-
-### Compiler
-
-```
-src/
-├── lexer.rs             # Tokenization (logos-based)
-├── parser.rs            # Parsing
-├── ast.rs               # Abstract syntax tree
-├── source.rs            # Source file handling
-├── resolve.rs           # Name resolution
-├── hir.rs / checked.rs  # High-level and checked IR
-├── types.rs             # Type representations
-├── typeck/              # Type checking (inference, capabilities, async, etc.)
-├── thir/                # Typed HIR lowering
-├── mono.rs              # Monomorphization
-├── escape.rs            # Escape analysis
-├── codegen/             # C code generation
-├── build/               # Build system (manifests, packages, native builds)
-├── driver.rs            # Compiler driver
-├── main.rs              # CLI entry point
-└── lib.rs               # Library entry point
-```
-
-### Runtime
-
-```
-runtime/
-├── include/             # Public C headers (ciel_runtime.h, ciel_actor.h, etc.)
-├── src/                 # C source files (actor.c, async.c, gc.c, io.c, etc.)
-└── CMakeLists.txt       # CMake build for the runtime
-```
-
-### Standard Library
-
-```
-std/                     # Standard library packages, each with a ciel.toml
-├── actor/ async/ channel/ ...
-├── buf/ bytes/ map/ vec/ ...
-├── io/ net/ wire/ json/ ...
-└── ...
-```
-
-### Tests
-
-```
-tests/
-├── cases/               # .ciel fixture files
-├── ciel_cases.rs        # Fixture test runner
-├── KNOWN_FAILURES.md    # Tracked regressions
-└── ...
-```
 
 ## Documentation
 

@@ -3,8 +3,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use tree_sitter_generate::{ABI_VERSION_MAX, OptLevel, generate_parser_in_directory};
+
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    compile_tree_sitter_ciel(&manifest_dir);
+
     let cases_root = manifest_dir.join("tests/cases");
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let out_file = out_dir.join("ciel_case_tests.rs");
@@ -48,6 +52,47 @@ fn main() {
             out_file.display()
         )
     });
+}
+
+fn compile_tree_sitter_ciel(manifest_dir: &Path) {
+    let parser_dir = manifest_dir.join("tree-sitter-ciel");
+    println!(
+        "cargo:rerun-if-changed={}",
+        parser_dir.join("grammar.js").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        parser_dir.join("tree-sitter.json").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        parser_dir.join("highlights.scm").display()
+    );
+    let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
+    let generated_dir = out_dir.join("tree_sitter_ciel");
+    generate_parser_in_directory(
+        &parser_dir,
+        Some(&generated_dir),
+        None::<&Path>,
+        ABI_VERSION_MAX,
+        None,
+        Some("native"),
+        true,
+        OptLevel::default(),
+    )
+    .unwrap_or_else(|error| {
+        panic!(
+            "failed to generate Ciel Tree-sitter parser from `{}`: {error}",
+            parser_dir.join("grammar.js").display()
+        )
+    });
+
+    let parser_c = generated_dir.join("parser.c");
+    cc::Build::new()
+        .include(&generated_dir)
+        .file(parser_c)
+        .warnings(false)
+        .compile("tree-sitter-ciel");
 }
 
 fn collect_ciel_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {

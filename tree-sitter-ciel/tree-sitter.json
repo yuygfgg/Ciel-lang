@@ -8,7 +8,7 @@
             "file-types": [
                 "ciel"
             ],
-            "highlights": "queries/highlights.scm"
+            "highlights": "highlights.scm"
         }
     ],
     "metadata": {

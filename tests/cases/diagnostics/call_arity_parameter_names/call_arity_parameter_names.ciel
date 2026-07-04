@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: call expects 2 arguments, got 1
+// expect-error: parameters: `count`, `enabled`
+
+void take(i64 count, bool enabled) {
+    return;
+}
+
+void main() {
+    take(1);
+}

@@ -700,7 +700,13 @@ impl TypeChecker {
                     && let Some(sig) = self.resolve_function_name(name_ref)
                 {
                     return self.check_direct_function_call(
-                        scopes, expr.span, sig, type_args, args, expected,
+                        scopes,
+                        expr.span,
+                        callee.span,
+                        sig,
+                        type_args,
+                        args,
+                        expected,
                     );
                 }
                 if !type_args.is_empty() {

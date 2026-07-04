@@ -307,6 +307,7 @@ pub enum TypeKind {
 pub struct TypeName {
     pub display: String,
     pub span: Span,
+    pub name_span: Span,
     pub kind: TypeNameKind,
 }
 
@@ -411,6 +412,7 @@ pub struct PatternName {
     pub path: Vec<ast::Ident>,
     pub display: String,
     pub span: Span,
+    pub name_span: Span,
     pub kind: PatternNameKind,
 }
 
@@ -528,8 +530,10 @@ pub struct FieldInit {
 
 #[derive(Clone, Debug)]
 pub struct NameRef {
+    pub path: Vec<ast::Ident>,
     pub display: String,
     pub span: Span,
+    pub name_span: Span,
     pub kind: NameRefKind,
 }
 
@@ -1046,6 +1050,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 TypeName {
                     display: "<error>".to_string(),
                     span: ty.span,
+                    name_span: ty.span,
                     kind: TypeNameKind::Error,
                 },
                 Vec::new(),
@@ -1268,6 +1273,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     path: Vec::new(),
                     display: "<error>".to_string(),
                     span: *span,
+                    name_span: *span,
                     kind: PatternNameKind::Error,
                 },
                 Vec::new(),
@@ -1281,6 +1287,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         path: vec![name.clone()],
                         display: name.name.clone(),
                         span: name.span,
+                        name_span: name.span,
                         kind: PatternNameKind::Binding {
                             local_id,
                             mutability: *mutability,
@@ -1291,7 +1298,8 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             }
             ast::Pattern::Variant(path, subpatterns) => {
                 let display = path_display(path);
-                let span = path.first().unwrap().span.merge(path.last().unwrap().span);
+                let span = path_span(path).unwrap_or_else(|| Span::new(FileId(0), 0, 0));
+                let name_span = path_name_span(path).unwrap_or(span);
                 let last = path.last().unwrap();
                 let variant_candidates = self.resolve_visible_variant_candidates(path);
                 let kind = match variant_candidates {
@@ -1351,6 +1359,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         path: path.clone(),
                         display,
                         span,
+                        name_span,
                         kind,
                     },
                     subpatterns
@@ -1365,8 +1374,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
     fn lower_expr(&mut self, expr: &ast::Expr) -> Expr {
         let kind = match &expr.kind {
             ast::ExprKind::Error => ExprKind::Name(NameRef {
+                path: Vec::new(),
                 display: "<error>".to_string(),
                 span: expr.span,
+                name_span: expr.span,
                 kind: NameRefKind::Error,
             }),
             ast::ExprKind::Name(path) => ExprKind::Name(self.resolve_name(path, "name")),
@@ -1522,16 +1533,19 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn resolve_type_name(&mut self, path: &[ast::Ident], span: Span) -> TypeName {
         let display = path_display(path);
+        let path_span = path_span(path).unwrap_or(span);
+        let name_span = path_name_span(path).unwrap_or(path_span);
         if path.len() == 1 {
             let name = &path[0].name;
             if self.lookup_local(name).is_some() {
                 self.lowerer.diagnostics.push(Diagnostic::new(
-                    span,
+                    path_span,
                     format!("local `{name}` shadows type lookup `{name}`"),
                 ));
                 return TypeName {
                     display,
                     span,
+                    name_span,
                     kind: TypeNameKind::Error,
                 };
             }
@@ -1539,15 +1553,17 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 return TypeName {
                     display,
                     span,
+                    name_span,
                     kind: TypeNameKind::Generic(name.clone()),
                 };
             }
         }
-        let name = self.resolve_global_name(path, span, "type");
+        let name = self.resolve_global_name(path, path_span, name_span, "type");
         self.require_type_name_kind(&name);
         TypeName {
             display,
             span,
+            name_span,
             kind: match name.kind {
                 NameRefKind::Def(def_id) => TypeNameKind::Def(def_id),
                 NameRefKind::Local(_) | NameRefKind::VariantCandidates(_) | NameRefKind::Error => {
@@ -1569,29 +1585,37 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
 
     fn resolve_name(&mut self, path: &[ast::Ident], context: &str) -> NameRef {
         let display = path_display(path);
-        let span = path
-            .first()
-            .map(|first| first.span)
-            .unwrap_or_else(|| Span::new(FileId(0), 0, 0));
+        let span = path_span(path).unwrap_or_else(|| Span::new(FileId(0), 0, 0));
+        let name_span = path_name_span(path).unwrap_or(span);
         if path.len() == 1
             && let Some(local_id) = self.lookup_local(&path[0].name)
         {
             return NameRef {
+                path: path.to_vec(),
                 display,
                 span,
+                name_span,
                 kind: NameRefKind::Local(local_id),
             };
         }
-        self.resolve_global_name(path, span, context)
+        self.resolve_global_name(path, span, name_span, context)
     }
 
-    fn resolve_global_name(&mut self, path: &[ast::Ident], span: Span, context: &str) -> NameRef {
+    fn resolve_global_name(
+        &mut self,
+        path: &[ast::Ident],
+        span: Span,
+        name_span: Span,
+        context: &str,
+    ) -> NameRef {
         let display = path_display(path);
         let non_variant_result = self.resolve_visible_non_variant_path(path);
         match non_variant_result.clone() {
             Ok(Some(def_id)) => NameRef {
+                path: path.to_vec(),
                 display,
                 span,
+                name_span,
                 kind: NameRefKind::Def(def_id),
             },
             Ok(None) => {
@@ -1599,8 +1623,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     match self.resolve_visible_variant_candidates(path) {
                         Ok(candidates) if !candidates.is_empty() => {
                             return NameRef {
+                                path: path.to_vec(),
                                 display,
                                 span,
+                                name_span,
                                 kind: name_variant_kind(candidates),
                             };
                         }
@@ -1608,8 +1634,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         Err(error) => {
                             self.push_lookup_error(error, context, span);
                             return NameRef {
+                                path: path.to_vec(),
                                 display,
                                 span,
+                                name_span,
                                 kind: NameRefKind::Error,
                             };
                         }
@@ -1624,8 +1652,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     .diagnostics
                     .push(Diagnostic::new(span, message));
                 NameRef {
+                    path: path.to_vec(),
                     display,
                     span,
+                    name_span,
                     kind: NameRefKind::Error,
                 }
             }
@@ -1634,8 +1664,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                     match self.resolve_visible_variant_candidates(path) {
                         Ok(candidates) if !candidates.is_empty() => {
                             return NameRef {
+                                path: path.to_vec(),
                                 display,
                                 span,
+                                name_span,
                                 kind: name_variant_kind(candidates),
                             };
                         }
@@ -1643,8 +1675,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                         Err(variant_error) => {
                             self.push_lookup_error(variant_error, context, span);
                             return NameRef {
+                                path: path.to_vec(),
                                 display,
                                 span,
+                                name_span,
                                 kind: NameRefKind::Error,
                             };
                         }
@@ -1652,8 +1686,10 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 }
                 self.push_lookup_error(error, context, span);
                 NameRef {
+                    path: path.to_vec(),
                     display,
                     span,
+                    name_span,
                     kind: NameRefKind::Error,
                 }
             }
@@ -2102,4 +2138,12 @@ fn path_display(path: &[ast::Ident]) -> String {
         .map(|ident| ident.name.as_str())
         .collect::<Vec<_>>()
         .join("::")
+}
+
+fn path_span(path: &[ast::Ident]) -> Option<Span> {
+    Some(path.first()?.span.merge(path.last()?.span))
+}
+
+fn path_name_span(path: &[ast::Ident]) -> Option<Span> {
+    path.last().map(|ident| ident.span)
 }

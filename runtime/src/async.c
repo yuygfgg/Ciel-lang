@@ -641,6 +641,7 @@ enum {
 static dispatch_queue_t ciel_async_io_queue;
 static dispatch_queue_t ciel_async_net_global_queue;
 static dispatch_queue_t ciel_task_global_queue;
+static pthread_once_t ciel_async_queue_once = PTHREAD_ONCE_INIT;
 
 static void ciel_async_queue_init(void) {
     ciel_async_io_queue =
@@ -652,20 +653,17 @@ static void ciel_async_queue_init(void) {
 }
 
 static dispatch_queue_t ciel_async_queue(void) {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, ciel_async_queue_init);
+    pthread_once(&ciel_async_queue_once, ciel_async_queue_init);
     return ciel_async_io_queue;
 }
 
 static dispatch_queue_t ciel_async_net_queue(void) {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, ciel_async_queue_init);
+    pthread_once(&ciel_async_queue_once, ciel_async_queue_init);
     return ciel_async_net_global_queue;
 }
 
 static dispatch_queue_t ciel_task_queue(void) {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, ciel_async_queue_init);
+    pthread_once(&ciel_async_queue_once, ciel_async_queue_init);
     return ciel_task_global_queue;
 }
 

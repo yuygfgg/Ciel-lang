@@ -36,10 +36,19 @@ jobs:
             systemtap-sdt-dev \
             xz-utils
 
+      - name: Restore libdispatch cache
+        id: cache-libdispatch
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/libdispatch
+          key: linux-libdispatch-ubuntu-24.04-${{ runner.arch }}-${{ env.LIBDISPATCH_REF }}-clang-shared-v1
+
       - name: Build libdispatch
+        if: steps.cache-libdispatch.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --branch "$LIBDISPATCH_REF" https://github.com/swiftlang/swift-corelibs-libdispatch.git /tmp/swift-corelibs-libdispatch
-          cmake -S /tmp/swift-corelibs-libdispatch -B /tmp/swift-corelibs-libdispatch/build -G Ninja \
+          mkdir -p .ci-cache/libdispatch
+          git clone --depth 1 --branch "$LIBDISPATCH_REF" https://github.com/swiftlang/swift-corelibs-libdispatch.git .ci-cache/libdispatch/src
+          cmake -S .ci-cache/libdispatch/src -B .ci-cache/libdispatch/build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_C_COMPILER=clang \
             -DCMAKE_CXX_COMPILER=clang++ \
@@ -47,8 +56,11 @@ jobs:
             -DCMAKE_INSTALL_LIBDIR=lib \
             -DBUILD_SHARED_LIBS=YES \
             -DENABLE_SWIFT=NO
-          cmake --build /tmp/swift-corelibs-libdispatch/build
-          sudo cmake --install /tmp/swift-corelibs-libdispatch/build
+          cmake --build .ci-cache/libdispatch/build
+
+      - name: Install libdispatch
+        run: |
+          sudo cmake --install .ci-cache/libdispatch/build
           sudo ldconfig
           test -f /usr/local/include/dispatch/dispatch.h
           test -f /usr/local/lib/libdispatch.so
@@ -56,13 +68,26 @@ jobs:
           echo "CIEL_LIBDISPATCH_LIBRARY=/usr/local/lib/libdispatch.so" >> "$GITHUB_ENV"
           ldconfig -p | grep libdispatch
 
+      - name: Restore Botan cache
+        id: cache-botan
+        uses: actions/cache@v4
+        with:
+          path: .ci-cache/botan
+          key: linux-botan-ubuntu-24.04-${{ runner.arch }}-${{ env.BOTAN_VERSION }}-default-v1
+
       - name: Build Botan
+        if: steps.cache-botan.outputs.cache-hit != 'true'
         run: |
-          curl -fsSLO "https://botan.randombit.net/releases/Botan-${BOTAN_VERSION}.tar.xz"
-          tar -xf "Botan-${BOTAN_VERSION}.tar.xz"
-          cd "Botan-${BOTAN_VERSION}"
+          mkdir -p .ci-cache/botan
+          curl -fsSLo "$RUNNER_TEMP/Botan-${BOTAN_VERSION}.tar.xz" "https://botan.randombit.net/releases/Botan-${BOTAN_VERSION}.tar.xz"
+          tar -xf "$RUNNER_TEMP/Botan-${BOTAN_VERSION}.tar.xz" -C .ci-cache/botan --strip-components=1
+          cd .ci-cache/botan
           python3 configure.py --prefix=/usr/local --without-documentation
           make -j"$(nproc)"
+
+      - name: Install Botan
+        run: |
+          cd .ci-cache/botan
           sudo make install
           sudo ldconfig
           pkg-config --modversion botan-3

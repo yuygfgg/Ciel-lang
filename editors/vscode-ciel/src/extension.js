@@ -1,11 +1,14 @@
 const fs = require('fs');
 const path = require('path');
 const vscode = require('vscode');
+const MarkdownIt = require('markdown-it');
 
 let languageClient;
+let languageClientStartPromise;
 let semanticTokensProvider;
 let warnedMissingLanguageClient = false;
 let warnedMissingLanguageServer = false;
+const markdownParser = new MarkdownIt();
 
 const TOKEN_TYPES = [
     'namespace',
@@ -68,7 +71,10 @@ function activate(context) {
     semanticTokensProvider = treeSitterProvider;
     context.subscriptions.push(
         vscode.languages.registerDocumentSemanticTokensProvider(
-            { language: 'ciel' },
+            [
+                { language: 'ciel' },
+                { language: 'markdown' },
+            ],
             treeSitterProvider,
             treeSitterLegend,
         ),
@@ -104,7 +110,22 @@ function activate(context) {
         }),
     );
 
-    startLanguageServer(context, { showMissingWarning: false });
+    context.subscriptions.push(
+        vscode.workspace.onDidOpenTextDocument(document => {
+            if (document.languageId === 'ciel') {
+                startLanguageServer(context, { showMissingWarning: false });
+            }
+        }),
+        vscode.window.onDidChangeActiveTextEditor(editor => {
+            if (editor && editor.document.languageId === 'ciel') {
+                startLanguageServer(context, { showMissingWarning: false });
+            }
+        }),
+    );
+
+    if (vscode.workspace.textDocuments.some(document => document.languageId === 'ciel')) {
+        startLanguageServer(context, { showMissingWarning: false });
+    }
 }
 
 async function deactivate() {
@@ -112,6 +133,17 @@ async function deactivate() {
 }
 
 async function startLanguageServer(context, options = {}) {
+    if (languageClient || languageClientStartPromise) {
+        return languageClientStartPromise;
+    }
+
+    languageClientStartPromise = doStartLanguageServer(context, options).finally(() => {
+        languageClientStartPromise = undefined;
+    });
+    return languageClientStartPromise;
+}
+
+async function doStartLanguageServer(context, options = {}) {
     if (process.platform === 'win32') {
         if (options.showMissingWarning) {
             vscode.window.showInformationMessage(
@@ -188,6 +220,9 @@ async function startLanguageServer(context, options = {}) {
 }
 
 async function stopLanguageServer() {
+    if (languageClientStartPromise) {
+        await languageClientStartPromise;
+    }
     if (!languageClient) {
         return;
     }
@@ -350,6 +385,13 @@ class CielTreeSitterSemanticTokensProvider {
     }
 
     async provideDocumentSemanticTokens(document, cancellationToken) {
+        if (document.languageId === 'markdown') {
+            return this.provideMarkdownSemanticTokens(document, cancellationToken);
+        }
+        return this.provideCielSemanticTokens(document, cancellationToken);
+    }
+
+    async provideCielSemanticTokens(document, cancellationToken) {
         const bundle = this.parserBundle;
         if (!bundle || cancellationToken.isCancellationRequested) {
             this.prewarm();
@@ -359,35 +401,56 @@ class CielTreeSitterSemanticTokensProvider {
         }
 
         const tokens = [];
-        const tree = bundle.parser.parse(document.getText());
-        const captures = bundle.query.captures(tree.rootNode).sort(compareCaptures);
-        const pushed = new Set();
-        for (const capture of captures) {
-            if (cancellationToken.isCancellationRequested) {
-                break;
-            }
-
-            const semanticToken = CAPTURE_TOKENS.get(capture.name);
-            if (!semanticToken) {
-                continue;
-            }
-
-            const node = capture.node;
-            const key = `${node.startIndex}:${node.endIndex}:${semanticToken.type}:${semanticToken.modifiers}`;
-            if (pushed.has(key)) {
-                continue;
-            }
-            pushed.add(key);
-            pushNodeToken(tokens, document, node, semanticToken.type, semanticToken.modifiers);
-        }
-
-        if (tree && typeof tree.delete === 'function') {
-            tree.delete();
-        }
+        pushTreeSitterSemanticTokens(
+            tokens,
+            bundle,
+            document.getText(),
+            cancellationToken,
+            (node, semanticToken) => {
+                pushDocumentNodeToken(
+                    tokens,
+                    document,
+                    node,
+                    semanticToken.type,
+                    semanticToken.modifiers,
+                );
+            },
+        );
 
         const cachedLspTokens = this.cachedLspTokens(document);
         this.requestLspTokens(document);
         return semanticTokensFromAbsolute(mergeTokens(tokens, cachedLspTokens));
+    }
+
+    async provideMarkdownSemanticTokens(document, cancellationToken) {
+        const bundle = this.parserBundle;
+        if (!bundle || cancellationToken.isCancellationRequested) {
+            this.prewarm();
+            return semanticTokensFromAbsolute([]);
+        }
+
+        const tokens = [];
+        for (const codeBlock of cielMarkdownCodeBlocks(document)) {
+            if (cancellationToken.isCancellationRequested) {
+                break;
+            }
+            pushTreeSitterSemanticTokens(
+                tokens,
+                bundle,
+                codeBlock.content,
+                cancellationToken,
+                (node, semanticToken) => {
+                    pushMarkdownNodeToken(
+                        tokens,
+                        codeBlock,
+                        node,
+                        semanticToken.type,
+                        semanticToken.modifiers,
+                    );
+                },
+            );
+        }
+        return semanticTokensFromAbsolute(tokens);
     }
 
     async getParser() {
@@ -556,7 +619,38 @@ function compareCaptures(left, right) {
         left.name.localeCompare(right.name);
 }
 
-function pushNodeToken(tokens, document, node, tokenType, tokenModifiers) {
+function pushTreeSitterSemanticTokens(tokens, bundle, sourceText, cancellationToken, pushNodeToken) {
+    let tree;
+    try {
+        tree = bundle.parser.parse(sourceText);
+        const captures = bundle.query.captures(tree.rootNode).sort(compareCaptures);
+        const pushed = new Set();
+        for (const capture of captures) {
+            if (cancellationToken.isCancellationRequested) {
+                break;
+            }
+
+            const semanticToken = CAPTURE_TOKENS.get(capture.name);
+            if (!semanticToken) {
+                continue;
+            }
+
+            const node = capture.node;
+            const key = `${node.startIndex}:${node.endIndex}:${semanticToken.type}:${semanticToken.modifiers}`;
+            if (pushed.has(key)) {
+                continue;
+            }
+            pushed.add(key);
+            pushNodeToken(node, semanticToken);
+        }
+    } finally {
+        if (tree && typeof tree.delete === 'function') {
+            tree.delete();
+        }
+    }
+}
+
+function pushDocumentNodeToken(tokens, document, node, tokenType, tokenModifiers) {
     const start = node.startPosition;
     const end = node.endPosition;
     for (let line = start.row; line <= end.row && line < document.lineCount; line += 1) {
@@ -576,6 +670,83 @@ function pushNodeToken(tokens, document, node, tokenType, tokenModifiers) {
             });
         }
     }
+}
+
+function pushMarkdownNodeToken(tokens, codeBlock, node, tokenType, tokenModifiers) {
+    const start = node.startPosition;
+    const end = node.endPosition;
+    for (let line = start.row; line <= end.row && line < codeBlock.lines.length; line += 1) {
+        const lineText = codeBlock.lines[line];
+        const startByteColumn = line === start.row ? start.column : 0;
+        const endByteColumn = line === end.row ? end.column : Buffer.byteLength(lineText, 'utf8');
+        const startCharacter = utf8ByteColumnToUtf16(lineText, startByteColumn);
+        const endCharacter = utf8ByteColumnToUtf16(lineText, endByteColumn);
+        const length = endCharacter - startCharacter;
+        if (length > 0) {
+            tokens.push({
+                line: codeBlock.startLine + line,
+                character: codeBlock.lineCharacterOffsets[line] + startCharacter,
+                length,
+                tokenType,
+                tokenModifiers,
+            });
+        }
+    }
+}
+
+function cielMarkdownCodeBlocks(document) {
+    const blocks = [];
+    const markdownTokens = markdownParser.parse(document.getText(), {});
+    for (const token of markdownTokens) {
+        if (token.type !== 'fence' || !Array.isArray(token.map) || !isCielFenceInfo(token.info)) {
+            continue;
+        }
+
+        const startLine = token.map[0] + 1;
+        const lines = splitCodeBlockLines(token.content);
+        blocks.push({
+            content: token.content,
+            lines,
+            startLine,
+            lineCharacterOffsets: markdownCodeLineOffsets(document, token, startLine, lines),
+        });
+    }
+    return blocks;
+}
+
+function splitCodeBlockLines(content) {
+    return content.split(/\r?\n/);
+}
+
+function isCielFenceInfo(info) {
+    if (typeof info !== 'string') {
+        return false;
+    }
+    const language = info.trim().split(/\s+/, 1)[0].toLowerCase();
+    return language === 'ciel';
+}
+
+function markdownCodeLineOffsets(document, token, startLine, codeLines) {
+    const openingLineText = safeDocumentLineText(document, token.map[0]);
+    const markupIndex = token.markup ? openingLineText.indexOf(token.markup) : -1;
+    const containerPrefix = markupIndex >= 0 ? openingLineText.slice(0, markupIndex) : '';
+    return codeLines.map((codeLine, index) => {
+        const documentLine = startLine + index;
+        const documentLineText = safeDocumentLineText(document, documentLine);
+        if (containerPrefix && documentLineText.startsWith(containerPrefix)) {
+            return containerPrefix.length;
+        }
+
+        const contentIndex = codeLine ? documentLineText.indexOf(codeLine) : -1;
+        return contentIndex >= 0 ? contentIndex : 0;
+    });
+}
+
+function safeDocumentLineText(document, line) {
+    if (line < 0 || line >= document.lineCount) {
+        return '';
+    }
+    return document.lineAt(line).text;
 }
 
 function semanticTokensFromAbsolute(tokens) {
@@ -781,6 +952,8 @@ module.exports = {
         resolveLanguageServerCommand,
         findExecutableOnPath,
         CielTreeSitterSemanticTokensProvider,
+        cielMarkdownCodeBlocks,
+        isCielFenceInfo,
         TOKEN_TYPES,
         TOKEN_MODIFIERS,
         CAPTURE_TOKENS,

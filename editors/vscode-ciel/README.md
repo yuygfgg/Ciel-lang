@@ -8,8 +8,7 @@ VSCode language support for Ciel source files.
 - Uses the shared Tree-sitter grammar for baseline semantic highlighting.
 - Registers one semantic-token provider that returns Tree-sitter tokens first,
   then merges compiler-backed LSP semantic tokens as refinements.
-- Uses Tree-sitter highlighting for Ciel code blocks in markdown and hover
-  content.
+- Uses Tree-sitter highlighting for Ciel code blocks in markdown editors.
 - Starts `ciel-lsp` on macOS and Linux when available.
 - Uses the Ciel language server for compiler-backed diagnostics, semantic
   token refinements, hover, go-to-definition, signature help, and inlay hints.

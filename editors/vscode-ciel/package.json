@@ -13,6 +13,7 @@
   ],
   "activationEvents": [
     "onLanguage:ciel",
+    "onLanguage:markdown",
     "onCommand:ciel.restartLanguageServer",
     "onCommand:ciel.showSyntaxTree"
   ],
@@ -33,6 +34,9 @@
     ],
     "configurationDefaults": {
       "[ciel]": {
+        "editor.semanticHighlighting.enabled": true
+      },
+      "[markdown]": {
         "editor.semanticHighlighting.enabled": true
       }
     },
@@ -68,6 +72,7 @@
     "test": "npm run build"
   },
   "dependencies": {
+    "markdown-it": "^14.3.0",
     "vscode-languageclient": "^9.0.1",
     "web-tree-sitter": "^0.26.10"
   },

@@ -26,6 +26,12 @@ module.exports = grammar({
         $.comment,
     ],
 
+    externals: $ => [
+        $._pointer_declaration_constructor,
+        $._deref_assignment_star,
+        $._expression_start_star,
+    ],
+
     conflicts: $ => [
         [$.type],
         [$.named_type],
@@ -36,6 +42,7 @@ module.exports = grammar({
         [$.binding_name, $.named_type],
         [$.call_expression, $.binary_expression],
         [$.binary_expression, $.unary_expression, $.call_expression],
+        [$.binary_expression, $.deref_expression, $.call_expression],
         [$.binary_expression, $.call_expression, $.await_expression],
         [$.function_declaration, $.contextual_identifier],
         [$.select_expression, $.contextual_identifier],
@@ -413,10 +420,24 @@ module.exports = grammar({
             repeat($.callable_suffix),
         )),
 
+        non_pointer_type: $ => prec.right(seq(
+            optional('unsafe'),
+            optional($.abi_spec),
+            $.primary_type,
+            repeat($.callable_suffix),
+        )),
+
         prefix_type: $ => seq(
             repeat($.pointer_constructor),
             $.primary_type,
         ),
+
+        pointer_declaration_type: $ => prec.right(seq(
+            alias($._pointer_declaration_constructor, $.pointer_constructor),
+            repeat($.pointer_constructor),
+            $.primary_type,
+            repeat($.callable_suffix),
+        )),
 
         pointer_constructor: $ => choice(
             token('?*const'),
@@ -533,23 +554,22 @@ module.exports = grammar({
             ';',
         )),
 
-        pointer_var_declaration_statement: $ => prec(3, prec.dynamic(3, seq(
-            $.pointer_declaration_head,
-            optional(seq('=', field('value', $.expression))),
+        pointer_var_declaration_statement: $ => seq(
+            $.pointer_var_declaration_clause,
             ';',
-        ))),
+        ),
 
-        var_declaration_clause: $ => prec.dynamic(2, seq(
-            field('type', $.type),
+        pointer_var_declaration_clause: $ => prec.dynamic(10, seq(
+            field('type', $.pointer_declaration_type),
             field('name', $.binding_name),
             optional(seq('=', field('value', $.expression))),
         )),
 
-        // TODO: Replace this tokenized pointer declaration head with structured
-        // type/name nodes once the `*Type name` vs `*target = value` ambiguity is
-        // handled without relying on error recovery. This currently keeps parsing
-        // broad source inputs, but it hides the pointer type and binding internals.
-        pointer_declaration_head: _ => token(/(\?\*const|\*const|\?\*|\*)+[ \t]*(?:[A-Za-z_][A-Za-z0-9_]*(::[A-Za-z_][A-Za-z0-9_]*)*(<[^>\n]*>)?|_)[ \t]+@?[A-Za-z_][A-Za-z0-9_]*/),
+        var_declaration_clause: $ => prec.dynamic(2, seq(
+            field('type', $.non_pointer_type),
+            field('name', $.binding_name),
+            optional(seq('=', field('value', $.expression))),
+        )),
 
         assignment_statement: $ => choice(
             $.deref_assignment_statement,
@@ -561,14 +581,15 @@ module.exports = grammar({
             )),
         ),
 
-        deref_assignment_statement: $ => seq(
+        deref_assignment_statement: $ => prec.dynamic(-10, seq(
             field('left', $.deref_assignment_target),
+            '=',
             field('right', $.expression),
             ';',
-        ),
+        )),
 
         expression_statement: $ => seq(
-            $.expression,
+            $.statement_expression,
             ';',
         ),
 
@@ -596,6 +617,7 @@ module.exports = grammar({
             'for',
             '(',
             optional(field('initializer', choice(
+                $.pointer_var_declaration_clause,
                 $.var_declaration_clause,
                 $.assignment_clause,
                 $.expression,
@@ -614,6 +636,7 @@ module.exports = grammar({
         assignment_clause: $ => choice(
             seq(
                 field('left', $.deref_assignment_target),
+                '=',
                 field('right', $.expression),
             ),
             seq(
@@ -670,13 +693,48 @@ module.exports = grammar({
             $.index_expression,
         ),
 
-        // TODO: Model dereference assignment as structured syntax instead of
-        // consuming the assignment operator in the target token. This deliberately
-        // avoids parsing `*Type name` as `*target =`, but it does not yet cover
-        // every assignable dereference shape such as `*ptr->field` or `*(ptr)`.
-        deref_assignment_target: _ => token(/\*[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*[ \t]*=/),
+        deref_assignment_target: $ => prec(PREC.unary, seq(
+            field('operator', alias($._deref_assignment_star, $._star)),
+            field('operand', $.deref_assignment_operand),
+        )),
+
+        deref_assignment_operand: $ => choice(
+            $.field_expression,
+            $.arrow_expression,
+            $.index_expression,
+            $.slice_expression,
+            $.try_expression,
+            $.call_expression,
+            $.parenthesized_expression,
+            $.qualified_name,
+            $.identifier,
+        ),
 
         expression: $ => choice(
+            $.literal,
+            $.identifier,
+            $.qualified_name,
+            $.parenthesized_expression,
+            $.struct_literal,
+            $.array_literal,
+            $.closure_expression,
+            $.await_expression,
+            $.select_expression,
+            $.unsafe_block_expression,
+            $.deref_expression,
+            $.unary_expression,
+            $.binary_expression,
+            $.cast_expression,
+            $.call_expression,
+            $.receiver_selector_expression,
+            $.field_expression,
+            $.arrow_expression,
+            $.index_expression,
+            $.slice_expression,
+            $.try_expression,
+        ),
+
+        statement_expression: $ => choice(
             $.literal,
             $.identifier,
             $.qualified_name,
@@ -752,7 +810,12 @@ module.exports = grammar({
         )),
 
         unary_expression: $ => prec(PREC.unary, seq(
-            field('operator', choice('!', '~', '-', '&', $._star)),
+            field('operator', choice('!', '~', '-', '&')),
+            field('operand', $.expression),
+        )),
+
+        deref_expression: $ => prec(PREC.unary, seq(
+            field('operator', choice($._star, $._expression_start_star)),
             field('operand', $.expression),
         )),
 

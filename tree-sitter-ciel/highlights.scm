@@ -103,6 +103,7 @@
 (parameter name: (binding_name (identifier) @variable.parameter))
 (closure_parameter (binding_name (identifier) @variable.parameter))
 (var_declaration_clause name: (binding_name (identifier) @variable))
+(pointer_var_declaration_clause name: (binding_name (identifier) @variable))
 (select_arm binding: (identifier) @variable)
 (module_path (identifier) @namespace)
 

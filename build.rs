@@ -68,6 +68,8 @@ fn compile_tree_sitter_ciel(manifest_dir: &Path) {
         "cargo:rerun-if-changed={}",
         parser_dir.join("highlights.scm").display()
     );
+    let scanner_c = parser_dir.join("src/scanner.c");
+    println!("cargo:rerun-if-changed={}", scanner_c.display());
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
     let generated_dir = out_dir.join("tree_sitter_ciel");
     generate_parser_in_directory(
@@ -88,11 +90,12 @@ fn compile_tree_sitter_ciel(manifest_dir: &Path) {
     });
 
     let parser_c = generated_dir.join("parser.c");
-    cc::Build::new()
-        .include(&generated_dir)
-        .file(parser_c)
-        .warnings(false)
-        .compile("tree-sitter-ciel");
+    let mut build = cc::Build::new();
+    build.include(&generated_dir).file(parser_c);
+    if scanner_c.exists() {
+        build.file(scanner_c);
+    }
+    build.warnings(false).compile("tree-sitter-ciel");
 }
 
 fn collect_ciel_files(dir: &Path, out: &mut Vec<PathBuf>) -> io::Result<()> {

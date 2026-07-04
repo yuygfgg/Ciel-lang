@@ -208,6 +208,63 @@ fn highlight_query_captures_contextual_tokens() {
     }
 }
 
+#[test]
+fn pointer_declarations_and_deref_assignments_are_structured() {
+    let source = [
+        "struct Box { i64 slot; }",
+        "struct Refs { *i64 item0; *i64 item1; }",
+        "void probe(*Box box, Refs refs, *i64 ptr, *[4]i64 out) {",
+        "    *i64 local = ptr;",
+        "    *Box named = box;",
+        "    *const Box view = box;",
+        "    ?*_ maybe = null;",
+        "    *refs.item1 = 11;",
+        "    *box->slot = 12;",
+        "    *(ptr) = 13;",
+        "    (*out)[0] = 14;",
+        "}",
+        "",
+    ]
+    .join("\n");
+
+    let mut parser = parser();
+    let tree = parser
+        .parse(source.as_bytes(), None)
+        .expect("Tree-sitter parser should return a tree");
+    let mut problems = Vec::new();
+    collect_parse_problems(tree.root_node(), &source, &mut problems);
+    if !problems.is_empty() {
+        panic!(
+            "pointer structure test source did not parse cleanly:\n{}\n\n{}",
+            problems.join("\n"),
+            tree.root_node().to_sexp()
+        );
+    }
+
+    let sexp = tree.root_node().to_sexp();
+    assert!(
+        sexp.contains("(pointer_var_declaration_clause type: (pointer_declaration_type"),
+        "pointer local declarations should expose structured type nodes:\n{sexp}"
+    );
+    assert!(
+        !sexp.contains("pointer_declaration_head"),
+        "pointer declarations should not use the legacy tokenized head:\n{sexp}"
+    );
+
+    let mut targets = Vec::new();
+    collect_node_texts(
+        tree.root_node(),
+        &source,
+        "deref_assignment_target",
+        &mut targets,
+    );
+    assert_eq!(targets, ["*refs.item1", "*box->slot", "*(ptr)"]);
+    assert!(
+        targets.iter().all(|target| !target.contains('=')),
+        "deref assignment targets should not consume the assignment operator"
+    );
+}
+
 #[derive(Debug)]
 struct TestCase {
     relative_path: String,
@@ -322,6 +379,22 @@ fn collect_parse_problems(node: Node<'_>, source: &str, problems: &mut Vec<Strin
     for index in 0..node.child_count() {
         if let Some(child) = node.child(index as u32) {
             collect_parse_problems(child, source, problems);
+        }
+    }
+}
+
+fn collect_node_texts(node: Node<'_>, source: &str, kind: &str, out: &mut Vec<String>) {
+    if node.kind() == kind {
+        out.push(
+            node.utf8_text(source.as_bytes())
+                .expect("node text should be UTF-8")
+                .to_string(),
+        );
+    }
+
+    for index in 0..node.child_count() {
+        if let Some(child) = node.child(index as u32) {
+            collect_node_texts(child, source, kind, out);
         }
     }
 }

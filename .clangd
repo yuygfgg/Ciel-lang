@@ -1,10 +1,2 @@
 CompileFlags:
   CompilationDatabase: Ancestors
----
-If:
-  PathMatch: tree-sitter-ciel/src/scanner\.c
-CompileFlags:
-  Add:
-    - -std=c11
-    - -I.
-    - -Itree-sitter-ciel/src

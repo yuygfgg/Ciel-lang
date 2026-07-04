@@ -4,7 +4,6 @@
 
 import /std/async as async;
 import /std/async_net as anet;
-import /std/async_time as async_time;
 import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
@@ -80,12 +79,17 @@ bool same_bytes([]u8 got, []const u8 want) {
     return true;
 }
 
-async Result<void, Error> write_delayed_chunks(anet::AsyncTcpListener listener) {
+async Result<void, Error> write_delayed_chunks(
+    anet::AsyncTcpListener listener,
+    async::Sender<usize> first_chunk_written,
+    async::Receiver<usize> write_rest
+) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     [2]u8 first = [1 as u8, 2 as u8];
     [4]u8 second = [3 as u8, 4 as u8, 5 as u8, 6 as u8];
     server = await anet::write_all(server, bytes::bytes_copy(first[..])?)?;
-    await async_time::sleep_ms(80)?;
+    await async::send<usize>(first_chunk_written, 1)?;
+    _ signal = await async::recv<usize>(write_rest)?;
     server = await anet::write_all(server, bytes::bytes_copy(second[..])?)?;
     anet::shutdown_write(&server)?;
     anet::close_stream(server)?;
@@ -96,11 +100,26 @@ async Result<usize, ProbeError> drive() {
     net::SocketAddr addr = net_addr_step("parse listen addr", net::parse_addr("127.0.0.1:0"))?;
     anet::AsyncTcpListener listener = net_step("listen_async", anet::listen_async(addr))?;
     net::SocketAddr bound = net_step("listener_addr", anet::listener_addr(&listener))?;
-    async::Task<void> server = async_step("spawn server", async::spawn<void>(write_delayed_chunks(listener)))?;
+    async::ChannelPair<usize> first_chunk_written =
+        async_step("first chunk channel", async::channel<usize>(1))?;
+    async::ChannelPair<usize> write_rest =
+        async_step("write rest channel", async::channel<usize>(1))?;
+    async::Task<void> server = async_step(
+        "spawn server",
+        async::spawn<void>(
+            write_delayed_chunks(listener, first_chunk_written.sender, write_rest.receiver)
+        )
+    )?;
 
     anet::AsyncTcpStream client = net_step("connect client", await anet::connect(bound))?;
-    anet::BufferedStreamReader reader = net_step("buffered_reader_from_stream", anet::buffered_reader_from_stream(client, 2))?;
-    async_step("pre-timeout sleep", await async_time::sleep_ms(20))?;
+    anet::BufferedStreamReader reader = net_step(
+        "buffered_reader_from_stream",
+        anet::buffered_reader_from_stream(client, 2)
+    )?;
+    _ ready = async_step(
+        "first chunk written",
+        await async::recv<usize>(first_chunk_written.receiver)
+    )?;
 
     Result<Result<bytes::Bytes, anet::AsyncNetError>, async::AsyncError> timed =
         await async::timeout(anet::read_exact_buffered(&reader, 6), 20);
@@ -127,7 +146,14 @@ async Result<usize, ProbeError> drive() {
             }
     }
 
-    bytes::Bytes exact = net_step("read_exact_buffered after timeout", await anet::read_exact_buffered(&reader, 6))?;
+    async_step(
+        "allow server second chunk",
+        await async::send<usize>(write_rest.sender, 1)
+    )?;
+    bytes::Bytes exact = net_step(
+        "read_exact_buffered after timeout",
+        await anet::read_exact_buffered(&reader, 6)
+    )?;
     [6]u8 @got = [0;];
     usize copied = bytes_step("bytes_copy_to", bytes::bytes_copy_to(exact, got[..]))?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];

@@ -2073,8 +2073,9 @@ searched.
 `must` and `expect` are standard-library generic functions. They are not
 special syntax. On error, they call a runtime panic function.
 
-Panic is immediate process termination with exit status `0` and an optional
-diagnostic. It does not unwind and does not run `defer` handlers. `defer` is
+Panic is immediate process termination with a nonzero exit status and an
+optional diagnostic. The current runtime uses exit code `101` for panic
+termination. It does not unwind and does not run `defer` handlers. `defer` is
 guaranteed only for normal control-flow exits.
 
 ## 14. Defer

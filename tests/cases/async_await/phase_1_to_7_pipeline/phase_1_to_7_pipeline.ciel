@@ -58,6 +58,12 @@ async Result<usize, Error> drive() {
     usize first_group = await async::group_next<usize>(&group)?;
     usize second_group = await async::group_next<usize>(&group)?;
     async::group_close<usize>(&group)?;
+    usize @group_low = first_group;
+    usize @group_high = second_group;
+    if (group_low > group_high) {
+        group_low = second_group;
+        group_high = first_group;
+    }
 
     Result<Result<void, async::AsyncError>, async::AsyncError> timed =
         await async::timeout(async_time::sleep_ms(0), 100);
@@ -69,8 +75,8 @@ async Result<usize, Error> drive() {
         producer_value +
         selected +
         second.value +
-        first_group * 10 +
-        second_group
+        group_low * 10 +
+        group_high
     );
 }
 

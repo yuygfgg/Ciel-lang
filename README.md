@@ -18,7 +18,7 @@ and a libdispatch-backed actor and async I/O runtime on supported targets.
 
 ## $\Huge\color{Orange}{\textbf{⚠️ Disclaimer ⚠️}}$
 
-> [!Error]
+> [!Warning]
 > 
 > This is a personal hobby project for exploring programming language design.
 > **Large Language Models (LLMs) were used extensively.**

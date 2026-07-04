@@ -30,17 +30,6 @@ initialization, for example a compiler-recognized
 Generating impls beyond 16 is an acceptable temporary unblocker, but it should
 not become the language model.
 
-## Derived Thin Wrappers
-
-Visible structs and enums can already opt into JSON by writing ordinary
-`wire::encode_value` and `wire::decode_value` wrappers that call
-`meta::schema<T>()`, `meta::as_ref_repr`, and the JSON structural helpers.
-
-The postponed part is declaration-level convenience. A future derive-like
-feature should emit those wrappers from explicit wire metadata while preserving
-the current opt-in model. There should still be no blanket impl for all visible
-structs and enums.
-
 ## Field And Variant Metadata
 
 The following policies are possible to model with explicit policy objects, but

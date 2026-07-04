@@ -420,6 +420,7 @@ struct CielAsyncOp {
     uint64_t route_task_id;
     uint64_t route_operation_id;
     uint64_t route_generation;
+    uint64_t sleep_deadline_ms;
 };
 
 static void ciel_async_complete_stream(CielAsyncOp *op, int error,
@@ -932,6 +933,10 @@ static void ciel_async_complete(CielAsyncOp *op, int error, uint8_t *bytes,
                                 size_t bytes_len, size_t bytes_cap,
                                 size_t written) {
     pthread_mutex_lock(&op->mutex);
+    if (op->complete || op->finished) {
+        pthread_mutex_unlock(&op->mutex);
+        return;
+    }
     if (!op->canceled) {
         op->error = error;
         op->bytes = bytes;
@@ -2149,9 +2154,24 @@ CielAsyncOp *ciel_async_sleep_ms(uint64_t ms) {
         errno = EOVERFLOW;
         return NULL;
     }
+    uint64_t deadline_ms = 0;
+    if (ms != 0) {
+        uint64_t now_ms = 0;
+        int32_t rc = ciel_time_monotonic_ms(&now_ms);
+        if (rc != 0) {
+            errno = rc;
+            return NULL;
+        }
+        if (ms > UINT64_MAX - now_ms) {
+            errno = EOVERFLOW;
+            return NULL;
+        }
+        deadline_ms = now_ms + ms;
+    }
     CielAsyncOp *op = ciel_async_op_new(CIEL_ASYNC_SLEEP, NULL);
     if (op == NULL)
         return NULL;
+    op->sleep_deadline_ms = deadline_ms;
     if (ms == 0) {
         ciel_async_complete(op, 0, NULL, 0, 0, 0);
         return op;
@@ -2426,9 +2446,38 @@ int32_t ciel_async_finish_write(CielAsyncOp *op, size_t *written) {
     return 0;
 }
 
+static int32_t ciel_async_complete_sleep_if_deadline_elapsed(CielAsyncOp *op) {
+    uint64_t deadline_ms = 0;
+    pthread_mutex_lock(&op->mutex);
+    if (op->kind != CIEL_ASYNC_SLEEP) {
+        pthread_mutex_unlock(&op->mutex);
+        return EINVAL;
+    }
+    if (op->complete || op->canceled || op->finished) {
+        pthread_mutex_unlock(&op->mutex);
+        return 0;
+    }
+    deadline_ms = op->sleep_deadline_ms;
+    pthread_mutex_unlock(&op->mutex);
+
+    if (deadline_ms == 0)
+        return EAGAIN;
+    uint64_t now_ms = 0;
+    int32_t rc = ciel_time_monotonic_ms(&now_ms);
+    if (rc != 0)
+        return rc;
+    if (now_ms < deadline_ms)
+        return EAGAIN;
+
+    ciel_async_cancel_source(op);
+    ciel_async_complete(op, 0, NULL, 0, 0, 0);
+    return 0;
+}
+
 int32_t ciel_async_finish_sleep(CielAsyncOp *op) {
     if (op == NULL)
         return EINVAL;
+retry:
     pthread_mutex_lock(&op->mutex);
     if (op->kind != CIEL_ASYNC_SLEEP) {
         pthread_mutex_unlock(&op->mutex);
@@ -2446,7 +2495,10 @@ int32_t ciel_async_finish_sleep(CielAsyncOp *op) {
     }
     if (!op->complete) {
         pthread_mutex_unlock(&op->mutex);
-        return EAGAIN;
+        int32_t rc = ciel_async_complete_sleep_if_deadline_elapsed(op);
+        if (rc == 0)
+            goto retry;
+        return rc;
     }
     if (op->error != 0) {
         int err = op->error;

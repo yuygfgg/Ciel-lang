@@ -6,7 +6,10 @@ use std::{
 
 use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
-    build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output},
+    build::{
+        default_c_compiler,
+        native::{CmakeOutput, CmakeOutputKind, build_cmake_output},
+    },
     compile_to_build_plan, compile_to_c,
     diagnostic::Diagnostic,
 };
@@ -1096,13 +1099,14 @@ fn run_cc(
         .iter()
         .map(|flag| (*flag).to_string())
         .collect::<Vec<_>>();
+    let c_compiler = default_c_compiler();
     build_cmake_output(
         plan,
         &CmakeOutput {
             source_path: c_path,
             output_path: output,
             kind: CmakeOutputKind::Executable,
-            c_compiler: "cc",
+            c_compiler: &c_compiler,
             compile_flags: flags.clone(),
             link_flags: flags,
             target_os: std::env::consts::OS,

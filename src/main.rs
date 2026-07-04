@@ -6,13 +6,14 @@ use std::{
 
 use cielc::{
     BuildPlan, BuildProfile, CompileOptions,
-    build::manifest::{PackageKind, PackageManifest},
-    build::native::{CmakeOutput, CmakeOutputKind, build_cmake_output, cmake_include_flags},
+    build::{
+        default_c_compiler,
+        manifest::{PackageKind, PackageManifest},
+        native::{CmakeOutput, CmakeOutputKind, build_cmake_output, cmake_include_flags},
+    },
     diagnostic::render_diagnostics,
     driver::compile_to_build_plan_with_sources,
 };
-
-const DEFAULT_C_COMPILER: &str = "clang";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum EmitMode {
@@ -162,16 +163,6 @@ fn parse_args(args: &[String]) -> Result<CliOptions, String> {
         idx += 1;
     }
     Ok(cli)
-}
-
-fn default_c_compiler() -> String {
-    default_c_compiler_from(env::var("CC").ok())
-}
-
-fn default_c_compiler_from(cc_env: Option<String>) -> String {
-    cc_env
-        .filter(|compiler| !compiler.is_empty())
-        .unwrap_or_else(|| DEFAULT_C_COMPILER.to_string())
 }
 
 struct ProjectSelection {
@@ -477,18 +468,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_c_compiler_is_clang_without_cc_env() {
-        assert_eq!(default_c_compiler_from(None), "clang");
-        assert_eq!(default_c_compiler_from(Some(String::new())), "clang");
-    }
-
-    #[test]
-    fn cc_env_and_cli_option_override_default_c_compiler() {
-        assert_eq!(
-            default_c_compiler_from(Some("custom-clang".to_string())),
-            "custom-clang"
-        );
-
+    fn cli_option_overrides_default_c_compiler() {
         let args = vec![
             "--cc".to_string(),
             "toolchain-clang".to_string(),

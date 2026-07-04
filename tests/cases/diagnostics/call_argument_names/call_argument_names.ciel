@@ -1,7 +1,7 @@
 // ciel-test: error
-// expect-error: argument `count`: expected `i64`, got `bool`
+// expect-error: argument `i64 @count`: expected `i64`, got `bool`
 
-void take(i64 count, bool enabled) {
+void take(i64 @count, bool enabled) {
     return;
 }
 

@@ -13,10 +13,10 @@ impl<'a> CGenerator<'a> {
             self.line("    uint32_t cleanup_state;");
             self.line("    CielFuture *active_future;");
             let mut emitted = false;
-            for (idx, (_, _, ty)) in function
+            for (idx, (_, _, ty, _)) in function
                 .params
                 .iter()
-                .filter(|(_, _, ty)| !ty.is_erased_value())
+                .filter(|(_, _, ty, _)| !ty.is_erased_value())
                 .enumerate()
             {
                 self.line(&format!("    {};", self.c_decl(ty, &format!("arg{idx}"))));

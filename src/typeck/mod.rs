@@ -61,6 +61,7 @@ struct FunctionSig {
     ret: Ty,
     params: Vec<Ty>,
     param_names: Vec<String>,
+    param_mutabilities: Vec<BindingMutability>,
     generics: Vec<GenericInfo>,
     exported: bool,
 }
@@ -976,6 +977,7 @@ impl TypeChecker {
                                                 None,
                                                 param.name.name.clone(),
                                                 self.lower_type(&param.ty),
+                                                param.mutability,
                                             )
                                         })
                                         .collect::<Vec<_>>();

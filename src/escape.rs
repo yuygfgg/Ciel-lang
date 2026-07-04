@@ -69,7 +69,7 @@ fn extern_escape_summary(function: &CheckedFunction) -> FunctionEscape {
     if function.noescape {
         return escape;
     }
-    for (idx, (_, _, ty)) in function.params.iter().enumerate() {
+    for (idx, (_, _, ty, _)) in function.params.iter().enumerate() {
         if ty_can_carry_pointer(ty) {
             escape.escaping_params.insert(idx);
         }
@@ -90,7 +90,7 @@ fn analyze_function(
             .params
             .iter()
             .enumerate()
-            .filter_map(|(idx, (local_id, _, _))| local_id.map(|id| (id, idx)))
+            .filter_map(|(idx, (local_id, _, _, _))| local_id.map(|id| (id, idx)))
             .collect(),
         aliases: HashMap::new(),
     };

@@ -2,6 +2,7 @@ pub mod ast;
 pub mod build;
 pub mod capture;
 pub mod checked;
+pub mod ciel_display;
 pub mod codegen;
 pub mod common;
 pub mod diagnostic;

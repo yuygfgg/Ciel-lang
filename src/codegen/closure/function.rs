@@ -10,8 +10,8 @@ impl<'a> CGenerator<'a> {
         let params = function
             .params
             .iter()
-            .filter(|(_, _, ty)| !ty.is_erased_value())
-            .map(|(_, name, ty)| self.c_decl(ty, name))
+            .filter(|(_, _, ty, _)| !ty.is_erased_value())
+            .map(|(_, name, ty, _)| self.c_decl(ty, name))
             .collect::<Vec<_>>();
         let params = if params.is_empty() {
             "void".to_string()
@@ -36,7 +36,7 @@ impl<'a> CGenerator<'a> {
             let affine_state = function
                 .params
                 .iter()
-                .any(|(_, _, ty)| self.type_is_affine(ty));
+                .any(|(_, _, ty, _)| self.type_is_affine(ty));
             generated_future_ty_with_affine_state(
                 format!("fn_{}", function.def_id.0),
                 function.ret.clone(),

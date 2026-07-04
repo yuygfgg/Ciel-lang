@@ -25,12 +25,12 @@ impl<'a> CGenerator<'a> {
         self.current_param_locals = function
             .params
             .iter()
-            .filter_map(|(local_id, name, _)| local_id.map(|id| (id, name.clone())))
+            .filter_map(|(local_id, name, _, _)| local_id.map(|id| (id, name.clone())))
             .collect();
         self.current_owned_resource_roots = function
             .params
             .iter()
-            .filter_map(|(local_id, name, ty)| {
+            .filter_map(|(local_id, name, ty, _)| {
                 if self.type_is_affine(ty) {
                     local_id.map(|id| (ty.clone(), self.local_value_expr(id, name)))
                 } else {
@@ -80,10 +80,10 @@ impl<'a> CGenerator<'a> {
         self.line_indent(1, &format!("{ctx}->cleanup_state = 0;"));
         self.line_indent(1, &format!("{ctx}->future = NULL;"));
         self.line_indent(1, &format!("{ctx}->active_future = NULL;"));
-        for (idx, (_, name, ty)) in function
+        for (idx, (_, name, ty, _)) in function
             .params
             .iter()
-            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .filter(|(_, _, ty, _)| !ty.is_erased_value())
             .enumerate()
         {
             self.emit_value_copy(&format!("{ctx}->arg{idx}"), name, ty, 1);
@@ -160,16 +160,18 @@ impl<'a> CGenerator<'a> {
         self.current_param_locals = function
             .params
             .iter()
-            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .filter(|(_, _, ty, _)| !ty.is_erased_value())
             .enumerate()
-            .filter_map(|(idx, (local_id, _, _))| local_id.map(|id| (id, format!("ctx->arg{idx}"))))
+            .filter_map(|(idx, (local_id, _, _, _))| {
+                local_id.map(|id| (id, format!("ctx->arg{idx}")))
+            })
             .collect();
         self.current_owned_resource_roots = function
             .params
             .iter()
-            .filter(|(_, _, ty)| !ty.is_erased_value())
+            .filter(|(_, _, ty, _)| !ty.is_erased_value())
             .enumerate()
-            .filter_map(|(idx, (local_id, _, ty))| {
+            .filter_map(|(idx, (local_id, _, ty, _))| {
                 if self.type_is_affine(ty) {
                     local_id.map(|_| (ty.clone(), format!("ctx->arg{idx}")))
                 } else {

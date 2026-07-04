@@ -279,7 +279,14 @@ impl MonoContext {
         function.params = function
             .params
             .into_iter()
-            .map(|(local, name, ty)| (local, name, self.lower_opaque_returns_in_ty(&ty)))
+            .map(|(local, name, ty, mutability)| {
+                (
+                    local,
+                    name,
+                    self.lower_opaque_returns_in_ty(&ty),
+                    mutability,
+                )
+            })
             .collect();
         let previous_stack = std::mem::replace(
             &mut self.current_stack,
@@ -1470,7 +1477,7 @@ impl<'a> AggregateCollector<'a> {
             if function.is_async {
                 self.collect_ty(&std_future_ty(function.ret.clone()));
             }
-            for (_, _, ty) in &function.params {
+            for (_, _, ty, _) in &function.params {
                 self.collect_ty(ty);
             }
             if let Some(body) = &function.body {

@@ -32,7 +32,7 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
         let functions = self.generator.program.checked.functions.clone();
         for function in &functions {
             self.collect_resource_cleanup_ty(&function.ret);
-            for (_, _, ty) in &function.params {
+            for (_, _, ty, _) in &function.params {
                 self.collect_resource_cleanup_ty(ty);
             }
             if let Some(body) = &function.body {
@@ -424,7 +424,7 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
         let functions = self.generator.program.checked.functions.clone();
         for function in &functions {
             collect_ty(self, &function.ret);
-            for (_, _, ty) in &function.params {
+            for (_, _, ty, _) in &function.params {
                 collect_ty(self, ty);
             }
             if let Some(body) = &function.body {
@@ -464,7 +464,7 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
             if function.is_async {
                 self.collect_return_ty_array_return(&function.ret);
             }
-            for (_, _, ty) in &function.params {
+            for (_, _, ty, _) in &function.params {
                 self.collect_ty_array_returns(ty);
             }
             if let Some(body) = &function.body {

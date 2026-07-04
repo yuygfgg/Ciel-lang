@@ -1,4 +1,5 @@
 use super::*;
+use crate::ciel_display::format_typed_binding;
 
 impl TypeChecker {
     pub(super) fn check_async_select_expr(
@@ -1296,6 +1297,7 @@ impl TypeChecker {
             &call_ret,
             &call_sig.params,
             Some(&call_sig.param_names),
+            Some(&call_sig.param_mutabilities),
             args,
             allow_resource_captures,
         )
@@ -1702,6 +1704,7 @@ impl TypeChecker {
         ret: &Ty,
         params: &[Ty],
         param_names: Option<&[String]>,
+        param_mutabilities: Option<&[BindingMutability]>,
         args: &[Expr],
         allow_resource_captures: bool,
     ) -> Option<TExpr> {
@@ -1714,7 +1717,9 @@ impl TypeChecker {
                     args.len()
                 ),
             );
-            if let Some(note) = parameter_names_note(param_names, params.len()) {
+            if let Some(note) =
+                parameter_names_note(params, param_names, param_mutabilities, params.len())
+            {
                 diagnostic = diagnostic.note(note);
             }
             self.diagnostics.push(diagnostic);
@@ -1734,8 +1739,16 @@ impl TypeChecker {
                 self.check_consumed_expr(scopes, arg, expected, false)?
             };
             if let Some(expected) = expected {
-                let param_name = param_names.and_then(|names| names.get(idx).map(String::as_str));
-                self.require_assignable_argument(expected, &checked.ty, arg.span, param_name);
+                let param_display = param_names
+                    .and_then(|names| names.get(idx))
+                    .zip(param_mutabilities.and_then(|mutabilities| mutabilities.get(idx)))
+                    .map(|(name, mutability)| format_typed_binding(expected, name, *mutability));
+                self.require_assignable_argument(
+                    expected,
+                    &checked.ty,
+                    arg.span,
+                    param_display.as_deref(),
+                );
             }
             checked_args.push(checked);
         }
@@ -1798,7 +1811,7 @@ impl TypeChecker {
                 unreachable!("callable field type was checked above");
             };
             return self
-                .check_call_with_sig(scopes, span, callee, &ret, &params, None, args, false);
+                .check_call_with_sig(scopes, span, callee, &ret, &params, None, None, args, false);
         }
 
         let selector = vec![field.clone()];
@@ -2939,15 +2952,25 @@ impl TypeChecker {
     }
 }
 
-fn parameter_names_note(param_names: Option<&[String]>, expected_len: usize) -> Option<String> {
+fn parameter_names_note(
+    params: &[Ty],
+    param_names: Option<&[String]>,
+    param_mutabilities: Option<&[BindingMutability]>,
+    expected_len: usize,
+) -> Option<String> {
     let names = param_names?;
-    if expected_len == 0 || names.is_empty() {
+    let mutabilities = param_mutabilities?;
+    if expected_len == 0 || names.is_empty() || mutabilities.is_empty() {
         return None;
     }
     let display = names
         .iter()
+        .zip(mutabilities.iter())
+        .zip(params.iter())
         .take(expected_len)
-        .map(|name| format!("`{name}`"))
+        .map(|((name, mutability), ty)| {
+            format!("`{}`", format_typed_binding(ty, name, *mutability))
+        })
         .collect::<Vec<_>>()
         .join(", ");
     (!display.is_empty()).then(|| format!("parameters: {display}"))

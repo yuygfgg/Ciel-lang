@@ -80,7 +80,7 @@ pub struct CheckedFunction {
     pub noescape: bool,
     pub exported: bool,
     pub ret: Ty,
-    pub params: Vec<(Option<LocalId>, String, Ty)>,
+    pub params: Vec<(Option<LocalId>, String, Ty, BindingMutability)>,
     pub body: Option<TBlock>,
 }
 

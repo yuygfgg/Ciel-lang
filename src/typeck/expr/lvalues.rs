@@ -932,9 +932,9 @@ impl TypeChecker {
         expected: &Ty,
         actual: &Ty,
         span: crate::span::Span,
-        param_name: Option<&str>,
+        param_display: Option<&str>,
     ) {
-        let context = param_name.map(|name| format!("argument `{name}`"));
+        let context = param_display.map(|display| format!("argument `{display}`"));
         self.require_assignable_with_context(expected, actual, span, context.as_deref());
     }
 

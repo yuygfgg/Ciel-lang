@@ -1214,6 +1214,11 @@ impl TypeChecker {
                 .iter()
                 .map(|param| param.name.name.clone())
                 .collect(),
+            param_mutabilities: template_decl
+                .params
+                .iter()
+                .map(|param| param.mutability)
+                .collect(),
             generics: validation_generics.clone(),
             exported: false,
         };
@@ -1774,6 +1779,7 @@ impl TypeChecker {
                 .iter()
                 .map(|param| param.name.name.clone())
                 .collect(),
+            param_mutabilities: decl.params.iter().map(|param| param.mutability).collect(),
             generics: Vec::new(),
             exported: false,
         };
@@ -1814,7 +1820,14 @@ impl TypeChecker {
             .params
             .iter()
             .zip(pending.function_sig.params.iter())
-            .map(|(param, ty)| (param.local_id, param.name.name.clone(), ty.clone()))
+            .map(|(param, ty)| {
+                (
+                    param.local_id,
+                    param.name.name.clone(),
+                    ty.clone(),
+                    param.mutability,
+                )
+            })
             .collect::<Vec<_>>();
         let body_params = pending
             .decl
@@ -1989,6 +2002,11 @@ impl TypeChecker {
                 .iter()
                 .map(|param| param.name.name.clone())
                 .collect(),
+            param_mutabilities: signature
+                .params
+                .iter()
+                .map(|param| param.mutability)
+                .collect(),
             generics: generics.clone(),
             exported,
         });
@@ -2120,14 +2138,19 @@ impl TypeChecker {
             .zip(sig.params.iter())
             .map(|param| {
                 let (param, ty) = param;
-                (param.local_id, param.name.name.clone(), ty.clone())
+                (
+                    param.local_id,
+                    param.name.name.clone(),
+                    ty.clone(),
+                    param.mutability,
+                )
             })
             .collect::<Vec<_>>();
         let body_params = signature
             .params
             .iter()
             .zip(params.iter())
-            .filter_map(|(param, (_, _, ty))| {
+            .filter_map(|(param, (_, _, ty, _))| {
                 param.local_id.map(|local_id| {
                     (
                         local_id,

@@ -29,6 +29,7 @@ use serde::Serialize;
 use crate::{
     ast::{self, BindingMutability},
     checked::CheckedProgram,
+    ciel_display::{format_function_signature, format_typed_binding},
     diagnostic::Diagnostic as CielDiagnostic,
     driver::{CompileOptions, FrontendAnalysis, analyze_frontend_lossy},
     hir::{
@@ -772,6 +773,7 @@ struct FactsBuilder<'a> {
     checked: &'a CheckedProgram,
     local_defs: HashMap<hir::LocalId, Span>,
     local_tys: HashMap<hir::LocalId, Ty>,
+    local_mutabilities: HashMap<hir::LocalId, BindingMutability>,
     parameter_locals: HashSet<hir::LocalId>,
     function_infos: HashMap<DefId, FunctionInfo>,
     symbols: Vec<SymbolFact>,
@@ -792,6 +794,7 @@ impl<'a> FactsBuilder<'a> {
             checked,
             local_defs,
             local_tys: HashMap::new(),
+            local_mutabilities: HashMap::new(),
             parameter_locals: HashSet::new(),
             function_infos: function_infos(checked),
             symbols: Vec::new(),
@@ -830,9 +833,10 @@ impl<'a> FactsBuilder<'a> {
 
     fn collect_checked(&mut self) {
         for function in &self.checked.functions {
-            for (local_id, _, ty) in &function.params {
+            for (local_id, _, ty, mutability) in &function.params {
                 if let Some(local_id) = local_id {
                     self.local_tys.insert(*local_id, ty.clone());
+                    self.local_mutabilities.insert(*local_id, *mutability);
                     self.parameter_locals.insert(*local_id);
                 }
             }
@@ -899,11 +903,7 @@ impl<'a> FactsBuilder<'a> {
                     self.symbols.push(SymbolFact {
                         span: field.name.span,
                         definition: Some(field.name.span),
-                        hover: format!(
-                            "field `{}`: `{}`",
-                            field.name.name,
-                            Ty::from_ast_name_lossy(&field.ty)
-                        ),
+                        hover: field_hover(&field.name.name, &Ty::from_ast_name_lossy(&field.ty)),
                     });
                 }
             }
@@ -1418,10 +1418,15 @@ impl<'a> FactsBuilder<'a> {
                     .get(local_id)
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "unknown".to_string());
+                let mutability = self
+                    .local_mutabilities
+                    .get(local_id)
+                    .copied()
+                    .unwrap_or(BindingMutability::Immutable);
                 self.symbols.push(SymbolFact {
                     span: name.name_span,
                     definition: self.local_defs.get(local_id).copied(),
-                    hover: format!("`{}`: `{ty}`", name.display),
+                    hover: binding_hover(&name.display, &ty, mutability),
                 });
             }
             NameRefKind::Def(def_id) => {
@@ -1520,6 +1525,7 @@ impl<'a> FactsBuilder<'a> {
             token_type,
             modifiers,
         });
+        self.local_mutabilities.insert(local_id, mutability);
         let ty = self
             .local_tys
             .get(&local_id)
@@ -1528,7 +1534,7 @@ impl<'a> FactsBuilder<'a> {
         self.symbols.push(SymbolFact {
             span,
             definition: Some(span),
-            hover: format!("`{name}`: `{ty}`"),
+            hover: binding_hover(name, &ty, mutability),
         });
     }
 
@@ -1583,6 +1589,7 @@ struct FunctionInfo {
 struct FunctionParameterInfo {
     name: String,
     ty: Ty,
+    mutability: BindingMutability,
 }
 
 fn function_infos(checked: &CheckedProgram) -> HashMap<DefId, FunctionInfo> {
@@ -1591,16 +1598,22 @@ fn function_infos(checked: &CheckedProgram) -> HashMap<DefId, FunctionInfo> {
         let parameters = function
             .params
             .iter()
-            .map(|(_, name, ty)| FunctionParameterInfo {
+            .map(|(_, name, ty, mutability)| FunctionParameterInfo {
                 name: name.clone(),
                 ty: ty.clone(),
+                mutability: *mutability,
             })
             .collect::<Vec<_>>();
         infos.insert(
             function.def_id,
             FunctionInfo {
                 name: function.name.clone(),
-                label: function_label(&function.ret, &function.name, &parameters),
+                label: function_label(
+                    function.is_async,
+                    &function.ret,
+                    &function.name,
+                    &parameters,
+                ),
                 parameters,
                 is_async: function.is_async,
             },
@@ -1616,13 +1629,19 @@ fn function_infos(checked: &CheckedProgram) -> HashMap<DefId, FunctionInfo> {
             .map(|(param, ty)| FunctionParameterInfo {
                 name: param.name.name.clone(),
                 ty: ty.clone(),
+                mutability: param.mutability,
             })
             .collect::<Vec<_>>();
         infos.insert(
             function.def_id,
             FunctionInfo {
                 name: function.name.clone(),
-                label: function_label(&function.ret, &function.name, &parameters),
+                label: function_label(
+                    function.is_async,
+                    &function.ret,
+                    &function.name,
+                    &parameters,
+                ),
                 parameters,
                 is_async: function.is_async,
             },
@@ -1631,21 +1650,33 @@ fn function_infos(checked: &CheckedProgram) -> HashMap<DefId, FunctionInfo> {
     infos
 }
 
-fn function_label(ret: &Ty, name: &str, parameters: &[FunctionParameterInfo]) -> String {
-    format!(
-        "{} {}({})",
+fn function_label(
+    is_async: bool,
+    ret: &Ty,
+    name: &str,
+    parameters: &[FunctionParameterInfo],
+) -> String {
+    format_function_signature(
+        is_async,
         ret,
         name,
-        parameters
-            .iter()
-            .map(parameter_label)
-            .collect::<Vec<_>>()
-            .join(", ")
+        parameters.iter().map(parameter_label).collect::<Vec<_>>(),
     )
 }
 
 fn parameter_label(param: &FunctionParameterInfo) -> String {
-    format!("{} {}", param.ty, param.name)
+    format_typed_binding(&param.ty, &param.name, param.mutability)
+}
+
+fn binding_hover(name: &str, ty: &str, mutability: BindingMutability) -> String {
+    format!(
+        "```ciel\n{}\n```",
+        format_typed_binding(&ty, name, mutability)
+    )
+}
+
+fn field_hover(name: &str, ty: &str) -> String {
+    format!("field\n\n```ciel\n{} {};\n```", ty, name)
 }
 
 struct ThirFactsCollector<'a, 'b> {
@@ -1739,7 +1770,7 @@ impl ThirFactsCollector<'_, '_> {
                 .iter()
                 .map(|param| SignatureParameterFact {
                     label: param.name.clone(),
-                    ty: param.ty.to_string(),
+                    ty: parameter_label(param),
                 })
                 .collect::<Vec<_>>();
             if let Some(receiver) = selector_receiver
@@ -2125,7 +2156,7 @@ mod tests {
             .position_for_offset(file_id, lhs_use)
             .expect("lhs position");
         let hover = facts.hover(&uri, lhs_position).expect("lhs hover");
-        assert!(format!("{:?}", hover.contents).contains("lhs"));
+        assert!(format!("{:?}", hover.contents).contains("i64 lhs"));
         let definition = facts
             .definition(&uri, lhs_position)
             .expect("lhs definition");
@@ -2142,6 +2173,117 @@ mod tests {
             .signature_help(&uri, call_position)
             .expect("signature help");
         assert_eq!(signature.signatures[0].label, "i64 add(i64 lhs, i64 rhs)");
+    }
+
+    #[test]
+    fn local_binding_hover_shows_mutability() {
+        let path = PathBuf::from("/tmp/ciel_lsp_binding_mutability.ciel");
+        let source = r#"
+            i64 bump(i64 value, i64 @state) {
+                i64 total = value;
+                i64 @count = state;
+                count = count + total;
+                return count;
+            }
+
+            i64 main() {
+                return bump(1, 2);
+            }
+        "#;
+        let options = CompileOptions::new(&path).with_source_override(&path, source);
+        let analysis = analyze_frontend_lossy(options).expect("frontend analysis should run");
+        let facts = DocumentFacts::from_analysis(analysis);
+        let uri = Url::from_file_path(&path).expect("file uri");
+        let file_id = facts.file_id_for_uri(&uri).expect("file id");
+
+        let value_use = source.find("value;").expect("value use");
+        let value_position = facts
+            .position_for_offset(file_id, value_use)
+            .expect("value position");
+        let value_hover = facts.hover(&uri, value_position).expect("value hover");
+        assert!(format!("{:?}", value_hover.contents).contains("i64 value"));
+
+        let state_use = source.find("state;").expect("state use");
+        let state_position = facts
+            .position_for_offset(file_id, state_use)
+            .expect("state position");
+        let state_hover = facts.hover(&uri, state_position).expect("state hover");
+        assert!(format!("{:?}", state_hover.contents).contains("i64 @state"));
+
+        let count_use = source.rfind("count;").expect("count use");
+        let count_position = facts
+            .position_for_offset(file_id, count_use)
+            .expect("count position");
+        let count_hover = facts.hover(&uri, count_position).expect("count hover");
+        assert!(format!("{:?}", count_hover.contents).contains("i64 @count"));
+
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|symbol| symbol.hover.contains("i64 bump(i64 value, i64 @state)"))
+        );
+
+        let call_arg = source.find("1, 2").expect("call arg");
+        let call_position = facts
+            .position_for_offset(file_id, call_arg)
+            .expect("call position");
+        let signature = facts
+            .signature_help(&uri, call_position)
+            .expect("signature help");
+        assert_eq!(
+            signature.signatures[0].label,
+            "i64 bump(i64 value, i64 @state)"
+        );
+        let parameters = signature.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("signature parameters");
+        assert!(
+            format!("{:?}", parameters[1].documentation).contains("i64 @state"),
+            "mutable parameter documentation should use Ciel binding syntax"
+        );
+    }
+
+    #[test]
+    fn async_function_hover_and_signature_show_async() {
+        let path = PathBuf::from("/tmp/ciel_lsp_async_signature.ciel");
+        let source = r#"
+            async i64 work(i64 @state) {
+                return state;
+            }
+
+            async i64 main() {
+                return await work(1);
+            }
+        "#;
+        let options = CompileOptions::new(&path).with_source_override(&path, source);
+        let analysis = analyze_frontend_lossy(options).expect("frontend analysis should run");
+        let facts = DocumentFacts::from_analysis(analysis);
+        let uri = Url::from_file_path(&path).expect("file uri");
+        let file_id = facts.file_id_for_uri(&uri).expect("file id");
+
+        assert!(
+            facts
+                .symbols
+                .iter()
+                .any(|symbol| symbol.hover.contains("async i64 work(i64 @state)"))
+        );
+
+        let work_use = source.rfind("work(1)").expect("work call");
+        let work_position = facts
+            .position_for_offset(file_id, work_use)
+            .expect("work position");
+        let work_hover = facts.hover(&uri, work_position).expect("work hover");
+        assert!(format!("{:?}", work_hover.contents).contains("async i64 work(i64 @state)"));
+
+        let arg_position = facts
+            .position_for_offset(file_id, source.find("1);").expect("call arg"))
+            .expect("arg position");
+        let signature = facts
+            .signature_help(&uri, arg_position)
+            .expect("signature help");
+        assert_eq!(signature.signatures[0].label, "async i64 work(i64 @state)");
     }
 
     #[test]

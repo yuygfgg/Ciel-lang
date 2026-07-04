@@ -93,6 +93,7 @@ impl TypeChecker {
                 ret,
                 params,
                 param_names: sig.param_names.clone(),
+                param_mutabilities: sig.param_mutabilities.clone(),
                 generics: Vec::new(),
                 exported: sig.exported,
             },
@@ -268,6 +269,7 @@ impl TypeChecker {
                 ret,
                 params,
                 param_names: sig.param_names.clone(),
+                param_mutabilities: sig.param_mutabilities.clone(),
                 generics: Vec::new(),
                 exported: sig.exported,
             },
@@ -519,6 +521,7 @@ impl TypeChecker {
                     param.local_id,
                     param.name.name.clone(),
                     self.lower_type_with_subst(&param.ty, &subst),
+                    param.mutability,
                 )
             })
             .collect::<Vec<_>>();
@@ -528,7 +531,7 @@ impl TypeChecker {
             .params
             .iter()
             .zip(params.iter())
-            .filter_map(|(param, (_, _, ty))| {
+            .filter_map(|(param, (_, _, ty, _))| {
                 param.local_id.map(|local_id| {
                     (
                         local_id,
@@ -555,8 +558,12 @@ impl TypeChecker {
             noescape: template.noescape,
             has_body: true,
             ret: ret.clone(),
-            params: params.iter().map(|(_, _, ty)| ty.clone()).collect(),
-            param_names: params.iter().map(|(_, name, _)| name.clone()).collect(),
+            params: params.iter().map(|(_, _, ty, _)| ty.clone()).collect(),
+            param_names: params.iter().map(|(_, name, _, _)| name.clone()).collect(),
+            param_mutabilities: params
+                .iter()
+                .map(|(_, _, _, mutability)| *mutability)
+                .collect(),
             generics: Vec::new(),
             exported: false,
         };

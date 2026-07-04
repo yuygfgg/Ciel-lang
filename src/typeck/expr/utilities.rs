@@ -1750,7 +1750,7 @@ impl TypeChecker {
         self.interface_view_inner(def_id, &args, expanding)
     }
 
-    pub(super) fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
+    pub(in crate::typeck) fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
         let Ty::Named { name, args } = ty else {
             return None;
         };

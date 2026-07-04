@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: cannot represent async runtime failures
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+enum ProbeError {
+    Logic,
+}
+
+async Result<usize, ProbeError> bad() {
+    Result<void, async::AsyncError> slept = await async_time::sleep_ms(0);
+    switch (slept) {
+        case Ok:
+            return Ok(1);
+        case Err(_):
+            return Err(Logic);
+    }
+}
+
+i32 main() {
+    return 0;
+}

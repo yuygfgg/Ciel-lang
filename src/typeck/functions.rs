@@ -2295,6 +2295,7 @@ impl TypeChecker {
         if sig.is_async
             && let Some(checked) = checked.as_ref()
         {
+            self.check_async_result_error_type(sig, body.span);
             self.check_async_frame_safety(&checked.block, params);
             async_facts = Some(self.async_facts_for_block(&checked.block));
             let (cancel_safe, abortable) = self.async_block_capabilities(&checked.block);
@@ -2315,6 +2316,66 @@ impl TypeChecker {
         checked.map(|checked| CheckedFunctionBody {
             block: checked.block,
             async_facts,
+        })
+    }
+
+    fn check_async_result_error_type(&mut self, sig: &FunctionSig, span: crate::span::Span) {
+        let Some((_, err_ty)) = self.result_ok_err_tys(&sig.ret) else {
+            return;
+        };
+        let err_ty = self.resolve_type_holes(&err_ty);
+        if contains_generic(&err_ty) || contains_type_hole(&err_ty) {
+            return;
+        }
+        if self.async_result_error_can_represent_runtime_failure(&err_ty) {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                span,
+                format!(
+                    "async function `{}` returns `Result<_, {}>`, but `{}` cannot represent async runtime failures",
+                    sig.name, err_ty, err_ty
+                ),
+            )
+            .note(
+                "custom async Result error types need a carrier such as `Runtime(i64)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
+            )
+            .note("alternatively return `Result<_, Error>` or `Result<_, async::AsyncError>`"),
+        );
+    }
+
+    fn async_result_error_can_represent_runtime_failure(&mut self, err_ty: &Ty) -> bool {
+        if err_ty == &std_error_ty() || err_ty == &std_async_error_ty() {
+            return true;
+        }
+        let Ty::Named { name, args } = err_ty else {
+            return false;
+        };
+        let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
+            return false;
+        };
+        if args.len() != template.generics.len() {
+            return true;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        template.variants.iter().any(|variant| {
+            let payload = variant
+                .payload
+                .iter()
+                .map(|ty| self.lower_type_with_subst(ty, &subst))
+                .collect::<Vec<_>>();
+            match variant.name.as_str() {
+                "Runtime" => payload == [Ty::I64],
+                "Async" | "TaskGroupAsync" => payload == [std_async_error_ty()],
+                "Resource" => payload == [std_resource_error_ty()],
+                _ => false,
+            }
         })
     }
 }

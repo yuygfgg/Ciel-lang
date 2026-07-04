@@ -2,20 +2,26 @@
 
 typedef struct CielTask CielTask;
 typedef struct CielSelectSet CielSelectSet;
+typedef struct CielTaskGroupTaskNode CielTaskGroupTaskNode;
 typedef struct CielTaskWaitNode CielTaskWaitNode;
 typedef enum {
     CIEL_WAIT_TASK = 1,
     CIEL_WAIT_SELECT_ARM = 2,
+    CIEL_WAIT_TASK_GROUP = 3,
 } CielWaitKind;
 struct CielTaskWaitNode {
     CielWaitKind kind;
     CielTask *task;
     CielSelectSet *select;
     size_t select_index;
+    CielTaskGroup *group;
+    CielTaskGroupTaskNode *group_task;
     struct CielTaskWaitNode *next;
 };
 
 static void ciel_task_schedule_waiters(CielTaskWaitNode *waiters);
+static void ciel_task_group_complete_task(CielTaskGroup *group,
+                                          CielTaskGroupTaskNode *task_node);
 static void ciel_select_wake_arm(CielSelectSet *set, size_t index);
 
 static uint8_t *ciel_async_alloc_bytes(size_t capacity) {
@@ -479,11 +485,11 @@ typedef struct CielTaskGroupDoneNode {
     struct CielTaskGroupDoneNode *next;
 } CielTaskGroupDoneNode;
 
-typedef struct CielTaskGroupTaskNode {
+struct CielTaskGroupTaskNode {
     CielTask *task;
     uint8_t completed;
     struct CielTaskGroupTaskNode *next;
-} CielTaskGroupTaskNode;
+};
 
 struct CielTaskGroup {
     pthread_mutex_t mutex;
@@ -494,13 +500,7 @@ struct CielTaskGroup {
     CielTaskWaitNode *waiters;
     size_t live_tasks;
     uint8_t closed;
-    uint8_t cancel_all;
 };
-
-typedef struct CielTaskGroupWatch {
-    CielTaskGroup *group;
-    CielTaskGroupTaskNode *node;
-} CielTaskGroupWatch;
 
 typedef struct CielSelectArm {
     CielFuture *future;
@@ -541,6 +541,8 @@ static CielTaskWaitNode *ciel_task_wait_node_new(CielTask *task) {
     node->task = task;
     node->select = NULL;
     node->select_index = 0;
+    node->group = NULL;
+    node->group_task = NULL;
     node->next = NULL;
     return node;
 }
@@ -555,6 +557,25 @@ static CielTaskWaitNode *ciel_select_wait_node_new(CielSelectSet *set,
     node->task = NULL;
     node->select = set;
     node->select_index = index;
+    node->group = NULL;
+    node->group_task = NULL;
+    node->next = NULL;
+    return node;
+}
+
+static CielTaskWaitNode *
+ciel_task_group_wait_node_new(CielTaskGroup *group,
+                              CielTaskGroupTaskNode *group_task) {
+    CielTaskWaitNode *node =
+        (CielTaskWaitNode *)ciel_alloc_uncollectable(sizeof(CielTaskWaitNode));
+    if (node == NULL)
+        return NULL;
+    node->kind = CIEL_WAIT_TASK_GROUP;
+    node->task = NULL;
+    node->select = NULL;
+    node->select_index = 0;
+    node->group = group;
+    node->group_task = group_task;
     node->next = NULL;
     return node;
 }
@@ -601,6 +622,8 @@ static void ciel_task_schedule_waiters(CielTaskWaitNode *waiters) {
         CielTaskWaitNode *next = waiters->next;
         if (waiters->kind == CIEL_WAIT_SELECT_ARM)
             ciel_select_wake_arm(waiters->select, waiters->select_index);
+        else if (waiters->kind == CIEL_WAIT_TASK_GROUP)
+            ciel_task_group_complete_task(waiters->group, waiters->group_task);
         else
             ciel_task_schedule(waiters->task);
         GC_FREE(waiters);
@@ -617,7 +640,6 @@ enum {
 
 static dispatch_queue_t ciel_async_io_queue;
 static dispatch_queue_t ciel_async_net_global_queue;
-static dispatch_queue_t ciel_select_waiter_global_queue;
 static dispatch_queue_t ciel_task_global_queue;
 
 static void ciel_async_queue_init(void) {
@@ -625,8 +647,6 @@ static void ciel_async_queue_init(void) {
         dispatch_queue_create("ciel.async-io", DISPATCH_QUEUE_SERIAL);
     ciel_async_net_global_queue =
         dispatch_queue_create("ciel.async-net", DISPATCH_QUEUE_CONCURRENT);
-    ciel_select_waiter_global_queue =
-        dispatch_queue_create("ciel.select-waiter", DISPATCH_QUEUE_CONCURRENT);
     ciel_task_global_queue =
         dispatch_queue_create("ciel.task", DISPATCH_QUEUE_CONCURRENT);
 }
@@ -641,12 +661,6 @@ static dispatch_queue_t ciel_async_net_queue(void) {
     static pthread_once_t once = PTHREAD_ONCE_INIT;
     pthread_once(&once, ciel_async_queue_init);
     return ciel_async_net_global_queue;
-}
-
-static dispatch_queue_t ciel_select_waiter_queue(void) {
-    static pthread_once_t once = PTHREAD_ONCE_INIT;
-    pthread_once(&once, ciel_async_queue_init);
-    return ciel_select_waiter_global_queue;
 }
 
 static dispatch_queue_t ciel_task_queue(void) {
@@ -3493,43 +3507,39 @@ CielTaskGroup *ciel_task_group_new(void) {
     return group;
 }
 
-static void ciel_task_group_watch_run(void *ctx_raw) {
-    CielTaskGroupWatch *watch = (CielTaskGroupWatch *)ctx_raw;
-    if (watch == NULL || watch->group == NULL || watch->node == NULL) {
-        if (watch != NULL)
-            GC_FREE(watch);
-        return;
+static CielTaskWaitNode *
+ciel_task_group_complete_task_locked(CielTaskGroup *group,
+                                     CielTaskGroupTaskNode *task_node) {
+    if (group == NULL || task_node == NULL || task_node->completed)
+        return NULL;
+    task_node->completed = 1;
+    if (group->live_tasks > 0)
+        group->live_tasks--;
+    if (!group->closed) {
+        CielTaskGroupDoneNode *done =
+            (CielTaskGroupDoneNode *)ciel_alloc(sizeof(CielTaskGroupDoneNode));
+        done->task = task_node->task;
+        done->next = NULL;
+        if (group->done_tail != NULL)
+            group->done_tail->next = done;
+        else
+            group->done_head = done;
+        group->done_tail = done;
     }
-    if (ciel_thread_attach_persistent() != 0) {
-        GC_FREE(watch);
-        return;
-    }
-    CielTaskGroup *group = watch->group;
-    CielTaskGroupTaskNode *task_node = watch->node;
-    ciel_task_wait_until_finished(task_node->task);
-    CielTaskWaitNode *waiters = NULL;
-    pthread_mutex_lock(&group->mutex);
-    if (!task_node->completed) {
-        task_node->completed = 1;
-        if (group->live_tasks > 0)
-            group->live_tasks--;
-        if (!group->closed) {
-            CielTaskGroupDoneNode *done = (CielTaskGroupDoneNode *)ciel_alloc(
-                sizeof(CielTaskGroupDoneNode));
-            done->task = task_node->task;
-            done->next = NULL;
-            if (group->done_tail != NULL)
-                group->done_tail->next = done;
-            else
-                group->done_head = done;
-            group->done_tail = done;
-        }
-    }
-    waiters = group->waiters;
+    CielTaskWaitNode *waiters = group->waiters;
     group->waiters = NULL;
     pthread_cond_broadcast(&group->cond);
+    return waiters;
+}
+
+static void ciel_task_group_complete_task(CielTaskGroup *group,
+                                          CielTaskGroupTaskNode *task_node) {
+    if (group == NULL || task_node == NULL)
+        return;
+    CielTaskWaitNode *waiters = NULL;
+    pthread_mutex_lock(&group->mutex);
+    waiters = ciel_task_group_complete_task_locked(group, task_node);
     pthread_mutex_unlock(&group->mutex);
-    GC_FREE(watch);
     ciel_task_schedule_waiters(waiters);
 }
 
@@ -3541,62 +3551,73 @@ int32_t ciel_task_group_add(CielTaskGroup *group, void *task_handle) {
         (CielTaskGroupTaskNode *)ciel_alloc(sizeof(CielTaskGroupTaskNode));
     node->task = task;
     node->completed = 0;
+    node->next = NULL;
+    CielTaskWaitNode *waiter = ciel_task_group_wait_node_new(group, node);
+    if (waiter == NULL)
+        return ENOMEM;
     pthread_mutex_lock(&group->mutex);
     if (group->closed) {
         pthread_mutex_unlock(&group->mutex);
+        GC_FREE(waiter);
         return EPIPE;
     }
     node->next = group->tasks;
     group->tasks = node;
     group->live_tasks++;
     pthread_mutex_unlock(&group->mutex);
-    CielTaskGroupWatch *watch = (CielTaskGroupWatch *)ciel_alloc_uncollectable(
-        sizeof(CielTaskGroupWatch));
-    watch->group = group;
-    watch->node = node;
-    dispatch_async_f(ciel_select_waiter_queue(), watch,
-                     ciel_task_group_watch_run);
+
+    pthread_mutex_lock(&task->mutex);
+    int finished = task->finished != 0;
+    if (!finished) {
+        waiter->next = task->waiters;
+        task->waiters = waiter;
+        waiter = NULL;
+    }
+    pthread_mutex_unlock(&task->mutex);
+    if (waiter != NULL)
+        GC_FREE(waiter);
+    if (finished)
+        ciel_task_group_complete_task(group, node);
     return 0;
 }
 
-void *ciel_task_group_next_task(CielTaskGroup *group) {
-    if (group == NULL) {
-        errno = EINVAL;
-        return NULL;
-    }
+int32_t ciel_task_group_next_task_poll(CielFuture *future, CielTaskGroup *group,
+                                       void **out_task) {
+    if (future == NULL || group == NULL || out_task == NULL)
+        return EINVAL;
     pthread_mutex_lock(&group->mutex);
-    for (;;) {
-        if (group->done_head != NULL) {
-            CielTaskGroupDoneNode *node = group->done_head;
-            group->done_head = node->next;
-            if (group->done_head == NULL)
-                group->done_tail = NULL;
-            CielTaskWaitNode *waiters = group->waiters;
-            group->waiters = NULL;
-            CielTask *task = node->task;
-            pthread_mutex_unlock(&group->mutex);
-            ciel_task_schedule_waiters(waiters);
-            return task;
-        }
-        if (group->closed || group->live_tasks == 0) {
-            pthread_mutex_unlock(&group->mutex);
-            errno = EPIPE;
-            return NULL;
-        }
-        pthread_cond_wait(&group->cond, &group->mutex);
+    if (group->done_head != NULL) {
+        CielTaskGroupDoneNode *node = group->done_head;
+        group->done_head = node->next;
+        if (group->done_head == NULL)
+            group->done_tail = NULL;
+        CielTaskWaitNode *waiters = group->waiters;
+        group->waiters = NULL;
+        CielTask *task = node->task;
+        pthread_mutex_unlock(&group->mutex);
+        ciel_task_schedule_waiters(waiters);
+        ciel_future_clear_task_group(future, group);
+        *out_task = task;
+        return 0;
     }
+    if (group->closed || group->live_tasks == 0) {
+        pthread_mutex_unlock(&group->mutex);
+        ciel_future_clear_task_group(future, group);
+        return EPIPE;
+    }
+    ciel_future_bind_task_group(future, group);
+    pthread_mutex_unlock(&group->mutex);
+    return EAGAIN;
 }
 
 int32_t ciel_task_group_cancel_all(CielTaskGroup *group) {
     if (group == NULL)
         return EINVAL;
     pthread_mutex_lock(&group->mutex);
-    group->cancel_all = 1;
     CielTaskGroupTaskNode *tasks = group->tasks;
     pthread_mutex_unlock(&group->mutex);
     for (CielTaskGroupTaskNode *node = tasks; node != NULL; node = node->next) {
-        if (!node->completed)
-            (void)ciel_task_cancel(node->task);
+        (void)ciel_task_cancel(node->task);
     }
     ciel_task_group_broadcast(group);
     return 0;

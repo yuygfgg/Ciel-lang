@@ -177,6 +177,27 @@ impl<'a> CGenerator<'a> {
         )
     }
 
+    pub(in crate::codegen) fn async_task_group_next_context_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTaskGroupNextFutureCtx_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    pub(in crate::codegen) fn async_task_group_next_run_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTaskGroupNextFutureRun_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
+    pub(in crate::codegen) fn async_task_group_next_cleanup_name(&self, payload_ty: &Ty) -> String {
+        format!(
+            "CielAsyncTaskGroupNextFutureCleanup_{}",
+            mangle_ty_fragment(payload_ty)
+        )
+    }
+
     pub(in crate::codegen) fn async_op_impl_name(
         &self,
         interface_def: DefId,

@@ -740,6 +740,15 @@ impl<'a> CGenerator<'a> {
                 };
                 self.emit_async_channel_recv_expr(expr, receiver, payload_ty, indent)?
             }
+            TExprKind::AsyncTaskGroupNext { group, payload_ty } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "`group_next_task` needs statement lowering in this context",
+                    )]);
+                };
+                self.emit_async_task_group_next_expr(expr, group, payload_ty, indent)?
+            }
             TExprKind::AsyncChannelTrySend {
                 sender,
                 value,

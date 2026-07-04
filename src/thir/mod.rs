@@ -456,6 +456,10 @@ pub enum TExprKind {
         receiver: Box<TExpr>,
         payload_ty: Ty,
     },
+    AsyncTaskGroupNext {
+        group: Box<TExpr>,
+        payload_ty: Ty,
+    },
     MetaAsRefRepr {
         value: Box<TExpr>,
         source_ty: Ty,

@@ -3,23 +3,43 @@
 // expect-stdout: 39
 
 import /std/async as async;
-import /std/async_time as async_time;
 import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> after(u64 ms, usize value) {
-    await async_time::sleep_ms(ms)?;
+async Result<usize, Error> controlled(
+    async::Sender<usize> ready,
+    async::Receiver<usize> release,
+    usize value
+) {
+    await async::send<usize>(ready, value)?;
+    _ signal = await async::recv<usize>(release)?;
     return Ok(value);
 }
 
 async Result<usize, Error> drive() {
     async::TaskGroup<usize> group = async::task_group<usize>()?;
-    async::Task<usize> slow = async::spawn<usize>(after(20, 9))?;
-    async::Task<usize> fast = async::spawn<usize>(after(1, 3))?;
+    async::ChannelPair<usize> slow_ready = async::channel<usize>(1)?;
+    async::ChannelPair<usize> fast_ready = async::channel<usize>(1)?;
+    async::ChannelPair<usize> slow_release = async::channel<usize>(1)?;
+    async::ChannelPair<usize> fast_release = async::channel<usize>(1)?;
+    async::Task<usize> slow = async::spawn<usize>(
+        controlled(slow_ready.sender, slow_release.receiver, 9)
+    )?;
+    async::Task<usize> fast = async::spawn<usize>(
+        controlled(fast_ready.sender, fast_release.receiver, 3)
+    )?;
     group.async::add(slow)?;
     group.async::add(fast)?;
+    _ slow_started = await async::recv<usize>(slow_ready.receiver)?;
+    _ fast_started = await async::recv<usize>(fast_ready.receiver)?;
+    await async::send<usize>(fast_release.sender, 1)?;
+    usize fast_value = await fast?;
+    if (fast_value != 3) {
+        return Err(code_error(70));
+    }
     usize first = await group.async::next()?;
+    await async::send<usize>(slow_release.sender, 1)?;
     usize second = await group.async::next()?;
     group.async::close()?;
     return Ok(first * 10 + second);

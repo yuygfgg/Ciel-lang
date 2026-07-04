@@ -37,7 +37,6 @@ unsafe extern "C" {
     c::c_int ciel_task_group_cancel_all(*CielTaskGroup group);
     c::c_int ciel_task_group_close(*CielTaskGroup group);
     ?*CielTaskGroup ciel_task_group_new();
-    ?*void ciel_task_group_next_task(*CielTaskGroup group);
 }
 
 // Runtime-backed future handle that can be awaited or driven by block_on.
@@ -293,17 +292,12 @@ export Result<void, AsyncError> group_add<T>(*const TaskGroup<T> group, Task<T> 
     return Ok;
 }
 
-Result<Task<T>, AsyncError> group_next_task<T>(*const TaskGroup<T> group) {
-    ?*void raw = unsafe { ciel_task_group_next_task(group->handle as *CielTaskGroup) };
-    if (raw == null) {
-        return Err(async_runtime_error());
-    }
-    return Ok({ handle: raw as *void });
-}
+async Result<Task<T>, AsyncError> group_next_task<T>(*const TaskGroup<T> group) = .next_task;
 
 // Awaits and returns the next completed task result in completion order.
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next {
-    Task<T> task = group_next_task<T>(group)?;
+    Future<Result<Task<T>, AsyncError>> next_task = group_next_task<T>(group);
+    Task<T> task = await next_task?;
     return await task;
 }
 

@@ -281,6 +281,7 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::AsyncChannelReserve { sender, .. } => self.scan_expr(sender),
             TExprKind::AsyncChannelRecv { receiver, .. } => self.scan_expr(receiver),
+            TExprKind::AsyncTaskGroupNext { group, .. } => self.scan_expr(group),
             TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
                 self.scan_expr(permit);
                 self.scan_expr(value);
@@ -587,6 +588,9 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::AsyncChannelRecv { receiver, .. } => {
                 self.collect_storage_sources(receiver, out);
+            }
+            TExprKind::AsyncTaskGroupNext { group, .. } => {
+                self.collect_storage_sources(group, out);
             }
             TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
                 self.collect_storage_sources(permit, out);

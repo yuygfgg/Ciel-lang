@@ -395,4 +395,62 @@ impl<'a> CGenerator<'a> {
         }
         Ok(())
     }
+
+    pub(in crate::codegen) fn emit_async_task_group_future_runs(&mut self) -> DiagResult<()> {
+        let span = crate::span::Span::new(crate::span::FileId(0), 0, 0);
+        for payload_ty in self
+            .plan
+            .async_task_group_next_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let task_ty = std_task_ty(payload_ty.clone());
+            let result_ty = std_result_ty(task_ty.clone(), std_async_error_ty());
+            let layout = self.result_layout(&result_ty, span)?;
+            let ctx_name = self.async_task_group_next_context_name(&payload_ty);
+            let run_name = self.async_task_group_next_run_name(&payload_ty);
+            let cleanup_name = self.async_task_group_next_cleanup_name(&payload_ty);
+            self.line(&format!(
+                "static int32_t {run_name}(void *ctx_raw, void *out_raw) {{"
+            ));
+            self.line_indent(1, &format!("{ctx_name} *ctx = ({ctx_name} *)ctx_raw;"));
+            self.line_indent(
+                1,
+                &format!(
+                    "{} *out = ({})out_raw;",
+                    layout.c_type,
+                    self.c_pointer_type(&result_ty)
+                ),
+            );
+            self.line_indent(1, "void *task = NULL;");
+            self.line_indent(
+                1,
+                "int32_t rc = ciel_task_group_next_task_poll(ctx->future, (CielTaskGroup *)ctx->group, &task);",
+            );
+            self.line_indent(1, "if (rc == EAGAIN) return EAGAIN;");
+            self.line_indent(1, "if (rc == 0) {");
+            let task_value = format!("({}){{ .handle = task }}", self.c_type(&task_ty));
+            self.line_indent(
+                2,
+                &format!(
+                    "*out = {};",
+                    self.result_ok_literal(&layout, Some(&task_value))
+                ),
+            );
+            self.line_indent(1, "} else {");
+            let error_literal = self.result_err_from_runtime_literal(&layout, "rc", span)?;
+            self.line_indent(2, &format!("*out = {error_literal};"));
+            self.line_indent(1, "}");
+            self.line_indent(1, "return 0;");
+            self.line("}");
+            self.line(&format!(
+                "static void {cleanup_name}(void *ctx_raw, int32_t reason) {{"
+            ));
+            self.line_indent(1, "(void)ctx_raw;");
+            self.line_indent(1, "(void)reason;");
+            self.line("}");
+        }
+        Ok(())
+    }
 }

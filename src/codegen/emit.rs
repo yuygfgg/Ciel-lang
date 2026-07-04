@@ -180,6 +180,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_sleep_future_contexts();
         self.emit_async_op_future_contexts();
         self.emit_async_channel_future_contexts();
+        self.emit_async_task_group_future_contexts();
 
         self.emit_closure_environment_layouts();
         self.emit_dynamic_vtable_layouts();
@@ -202,6 +203,7 @@ impl<'a> CGenerator<'a> {
         self.emit_async_sleep_future_prototypes();
         self.emit_async_op_future_prototypes();
         self.emit_async_channel_future_prototypes();
+        self.emit_async_task_group_future_prototypes();
         self.emit_dynamic_shim_prototypes();
         self.line("");
     }
@@ -245,6 +247,11 @@ impl<'a> CGenerator<'a> {
             || !self.plan.async_channel_reserve_payload_tys.is_empty()
             || !self.plan.async_channel_recv_payload_tys.is_empty()
         {
+            self.line("");
+        }
+
+        self.emit_async_task_group_future_runs()?;
+        if !self.plan.async_task_group_next_payload_tys.is_empty() {
             self.line("");
         }
 

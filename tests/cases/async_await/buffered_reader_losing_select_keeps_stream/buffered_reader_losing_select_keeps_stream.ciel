@@ -4,7 +4,6 @@
 
 import /std/async as async;
 import /std/async_net as anet;
-import /std/async_time as async_time;
 import /std/bytes as bytes;
 import /std/io as io;
 import /std/net as net;
@@ -14,10 +13,13 @@ async Result<usize, Error> ready_value() {
     return Ok(1);
 }
 
-async Result<usize, Error> delayed_write(anet::AsyncTcpListener listener) {
+async Result<usize, Error> delayed_write(
+    anet::AsyncTcpListener listener,
+    async::Receiver<usize> release
+) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
-    await async_time::sleep_ms(20)?;
+    _ signal = await async::recv<usize>(release)?;
     [2]u8 payload = [120 as u8, 121 as u8];
     bytes::Bytes out = bytes::bytes_copy(payload[..])?;
     server = await anet::write_all(server, out)?;
@@ -35,7 +37,9 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize> server = async::spawn<usize>(delayed_write(listener))?;
+    async::ChannelPair<usize> write_release = async::channel<usize>(1)?;
+    async::Task<usize> server =
+        async::spawn<usize>(delayed_write(listener, write_release.receiver))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::AsyncTcpSplit halves = anet::split(client)?;
@@ -49,6 +53,7 @@ async Result<usize, Error> drive() {
         return Err(code_error(100));
     }
 
+    await async::send<usize>(write_release.sender, 1)?;
     bytes::Bytes bytes = await anet::read_buffered(&reader, 2)?;
     usize written = await server?;
     if (written != 2) {

@@ -121,4 +121,23 @@ impl<'a> CGenerator<'a> {
             ));
         }
     }
+
+    pub(in crate::codegen) fn emit_async_task_group_future_prototypes(&mut self) {
+        for payload_ty in self
+            .plan
+            .async_task_group_next_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            self.line(&format!(
+                "static int32_t {}(void *ctx_raw, void *out_raw);",
+                self.async_task_group_next_run_name(&payload_ty)
+            ));
+            self.line(&format!(
+                "static void {}(void *ctx_raw, int32_t reason);",
+                self.async_task_group_next_cleanup_name(&payload_ty)
+            ));
+        }
+    }
 }

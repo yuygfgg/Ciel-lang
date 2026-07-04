@@ -201,6 +201,7 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         }
         TExprKind::AsyncChannelReserve { sender, .. } => visitor.visit_expr(sender),
         TExprKind::AsyncChannelRecv { receiver, .. } => visitor.visit_expr(receiver),
+        TExprKind::AsyncTaskGroupNext { group, .. } => visitor.visit_expr(group),
         TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
             visitor.visit_expr(permit);
             visitor.visit_expr(value);

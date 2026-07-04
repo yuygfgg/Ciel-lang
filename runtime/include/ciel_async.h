@@ -131,7 +131,8 @@ int32_t ciel_task_cancel(void* handle);
 int32_t ciel_task_is_finished(void* handle, bool* out);
 CielTaskGroup* ciel_task_group_new(void);
 int32_t ciel_task_group_add(CielTaskGroup* group, void* task_handle);
-void* ciel_task_group_next_task(CielTaskGroup* group);
+int32_t ciel_task_group_next_task_poll(CielFuture* future, CielTaskGroup* group,
+                                       void** out_task);
 int32_t ciel_task_group_cancel_all(CielTaskGroup* group);
 int32_t ciel_task_group_close(CielTaskGroup* group);
 CielSelectSet* ciel_select_set_new(size_t capacity, int biased);

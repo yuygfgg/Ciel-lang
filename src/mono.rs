@@ -34,7 +34,7 @@ use crate::{
         std_async_error_ty, std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty,
         std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
         std_meta_schema_marker_ty, std_meta_schema_source_name, std_result_ty, std_send_permit_ty,
-        std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
+        std_task_group_ty, std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -961,6 +961,13 @@ impl MonoContext {
                     payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
+            TExprKind::AsyncTaskGroupNext { group, payload_ty } => {
+                self.mark_standard_error_code_impl();
+                TExprKind::AsyncTaskGroupNext {
+                    group: Box::new(self.rewrite_expr(*group)?),
+                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
+                }
+            }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
                 value: Box::new(self.rewrite_expr(*value)?),
                 source_ty: self.lower_opaque_returns_in_ty(&source_ty),
@@ -1772,6 +1779,19 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(receiver);
                 self.collect_ty(payload_ty);
                 let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
+                self.collect_ty(&std_future_ty(result_ty.clone()));
+                self.collect_ty(&result_ty);
+                self.collect_ty(&std_error_code_ty());
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
+            }
+            TExprKind::AsyncTaskGroupNext { group, payload_ty } => {
+                self.collect_expr(group);
+                self.collect_ty(payload_ty);
+                self.collect_ty(&std_task_group_ty(payload_ty.clone()));
+                let task_ty = std_task_ty(payload_ty.clone());
+                let result_ty = std_result_ty(task_ty.clone(), std_async_error_ty());
+                self.collect_ty(&task_ty);
                 self.collect_ty(&std_future_ty(result_ty.clone()));
                 self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());

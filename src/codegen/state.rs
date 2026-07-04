@@ -53,6 +53,7 @@ pub(super) struct CodegenPlanData {
     pub(super) async_channel_send_payload_tys: BTreeMap<String, Ty>,
     pub(super) async_channel_reserve_payload_tys: BTreeMap<String, Ty>,
     pub(super) async_channel_recv_payload_tys: BTreeMap<String, Ty>,
+    pub(super) async_task_group_next_payload_tys: BTreeMap<String, Ty>,
     pub(super) resource_cleanup_tys: BTreeMap<String, Ty>,
     pub(super) string_literals: BTreeMap<(usize, usize, usize), String>,
     pub(super) string_literal_names: HashMap<(usize, usize, usize), String>,

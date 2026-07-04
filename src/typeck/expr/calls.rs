@@ -1223,6 +1223,14 @@ impl TypeChecker {
         if std_id::is_std_async_function(&self.ctx.resolved, sig.module, &sig.name, "recv") {
             return self.check_async_channel_recv_call(scopes, span, type_args, args);
         }
+        if std_id::is_std_async_function(
+            &self.ctx.resolved,
+            sig.module,
+            &sig.name,
+            "group_next_task",
+        ) {
+            return self.check_async_task_group_next_task_call(scopes, span, type_args, args);
+        }
         if std_id::is_std_async_time_function(&self.ctx.resolved, sig.module, &sig.name, "sleep_ms")
         {
             return self.check_async_sleep_ms_call(scopes, span, type_args, args);
@@ -2516,6 +2524,72 @@ impl TypeChecker {
             ),
             kind: TExprKind::AsyncChannelRecv {
                 receiver: Box::new(receiver),
+                payload_ty,
+            },
+        })
+    }
+
+    pub(super) fn check_async_task_group_next_task_call(
+        &mut self,
+        scopes: &mut LocalScopes,
+        span: crate::span::Span,
+        type_args: &[Type],
+        args: &[Expr],
+    ) -> Option<TExpr> {
+        let explicit_payload = self.explicit_async_payload_ty("group_next_task", span, type_args);
+        if args.len() != 1 {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                format!(
+                    "`async::group_next_task` expects 1 argument, got {}",
+                    args.len()
+                ),
+            ));
+        }
+        let expected = explicit_payload
+            .as_ref()
+            .map(|ty| Ty::const_pointer_to(std_task_group_ty(ty.clone())));
+        let Some(group_arg) = args.first() else {
+            return None;
+        };
+        let group = self.check_expr(scopes, group_arg, expected.as_ref())?;
+        if let Some(expected) = expected.as_ref() {
+            self.require_assignable(expected, &group.ty, group.span);
+        }
+        let payload_ty = explicit_payload
+            .or_else(|| {
+                let Ty::Pointer {
+                    nullable: false,
+                    inner,
+                    ..
+                } = &group.ty
+                else {
+                    return None;
+                };
+                std_id::std_async_task_group_payload_arg(&self.ctx.resolved, inner).cloned()
+            })
+            .unwrap_or_else(|| {
+                self.diagnostics.push(Diagnostic::new(
+                    group.span,
+                    format!(
+                        "`async::group_next_task` requires `*TaskGroup<T>`, got `{}`",
+                        group.ty
+                    ),
+                ));
+                Ty::Unknown
+            });
+        let task_ty = std_task_ty(payload_ty.clone());
+        let result_ty = std_result_ty(task_ty, std_async_error_ty());
+        Some(TExpr {
+            span,
+            ty: generated_future_ty(
+                format!("task_group_next_{}", mangle_ty_fragment(&payload_ty)),
+                result_ty,
+                true,
+                true,
+            ),
+            kind: TExprKind::AsyncTaskGroupNext {
+                group: Box::new(group),
                 payload_ty,
             },
         })

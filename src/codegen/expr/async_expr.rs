@@ -851,6 +851,42 @@ impl<'a> CGenerator<'a> {
         ))
     }
 
+    pub(super) fn emit_async_task_group_next_expr(
+        &mut self,
+        expr: &TExpr,
+        group: &TExpr,
+        payload_ty: &Ty,
+        indent: usize,
+    ) -> DiagResult<String> {
+        let ctx_name = self.async_task_group_next_context_name(payload_ty);
+        let ctx = self.next_temp("task_group_next_ctx");
+        self.line_indent(
+            indent,
+            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
+        );
+        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
+        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
+        let group_value = self.emit_temp_value("task_group_next_group", group, indent)?;
+        self.line_indent(indent, &format!("{ctx}->group = {group_value}->handle;"));
+        let raw = self.next_temp("task_group_next_future");
+        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
+        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
+        self.line_indent(
+            indent,
+            &format!(
+                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
+                self.async_task_group_next_run_name(payload_ty),
+                self.async_task_group_next_cleanup_name(payload_ty)
+            ),
+        );
+        self.emit_future_alloc_panic(&raw, expr.span, indent);
+        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
+        Ok(format!(
+            "({}){{ .handle = (void *){raw} }}",
+            self.c_type(&expr.ty)
+        ))
+    }
+
     pub(super) fn emit_async_channel_try_send_expr(
         &mut self,
         expr: &TExpr,

@@ -3,12 +3,15 @@
 // expect-stdout: 3
 
 import /std/async as async;
-import /std/async_time as async_time;
 import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> wait_closed(async::Receiver<usize> receiver) {
+async Result<usize, Error> wait_closed(
+    async::Receiver<usize> receiver,
+    async::Sender<usize> ready
+) {
+    await async::send<usize>(ready, 1)?;
     switch (await async::recv<usize>(receiver)) {
         case Err(_):
             return Ok(3);
@@ -19,8 +22,10 @@ async Result<usize, Error> wait_closed(async::Receiver<usize> receiver) {
 
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    async::Task<usize> waiter = async::spawn<usize>(wait_closed(pair.receiver))?;
-    await async_time::sleep_ms(1)?;
+    async::ChannelPair<usize> ready = async::channel<usize>(1)?;
+    async::Task<usize> waiter =
+        async::spawn<usize>(wait_closed(pair.receiver, ready.sender))?;
+    _ waiter_ready = await async::recv<usize>(ready.receiver)?;
     async::close<usize>(pair.sender)?;
     return await waiter;
 }

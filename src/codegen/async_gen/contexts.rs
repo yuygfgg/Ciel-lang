@@ -229,4 +229,23 @@ impl<'a> CGenerator<'a> {
             self.line("");
         }
     }
+
+    pub(in crate::codegen) fn emit_async_task_group_future_contexts(&mut self) {
+        for payload_ty in self
+            .plan
+            .async_task_group_next_payload_tys
+            .values()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let name = self.async_task_group_next_context_name(&payload_ty);
+            self.line(&format!("typedef struct {name} {{"));
+            self.line("    CielFuture *future;");
+            self.line("    void *group;");
+            self.line(&format!("}} {name};"));
+        }
+        if !self.plan.async_task_group_next_payload_tys.is_empty() {
+            self.line("");
+        }
+    }
 }

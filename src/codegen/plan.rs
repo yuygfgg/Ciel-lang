@@ -936,6 +936,16 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
                 self.builder.collect_ty_array_returns(&result_ty);
                 walk_expr(self, expr);
             }
+            TExprKind::AsyncTaskGroupNext { payload_ty, .. } => {
+                let task_ty = std_task_ty(payload_ty.clone());
+                let result_ty = std_result_ty(task_ty.clone(), std_async_error_ty());
+                self.builder.collect_ty_array_returns(payload_ty);
+                self.builder.collect_ty_array_returns(&task_ty);
+                self.builder
+                    .collect_ty_array_returns(&std_future_ty(result_ty.clone()));
+                self.builder.collect_ty_array_returns(&result_ty);
+                walk_expr(self, expr);
+            }
             TExprKind::AsyncChannelTrySend { payload_ty, .. }
             | TExprKind::AsyncChannelPermitSend { payload_ty, .. } => {
                 self.builder.collect_ty_array_returns(payload_ty);
@@ -1133,6 +1143,18 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                 self.builder
                     .plan
                     .async_channel_recv_payload_tys
+                    .insert(mangle_ty_fragment(payload_ty), payload_ty.clone());
+                walk_expr(self, expr);
+            }
+            TExprKind::AsyncTaskGroupNext { payload_ty, .. } => {
+                self.builder.collect_ty_closure(payload_ty);
+                self.builder
+                    .collect_ty_closure(&std_task_group_ty(payload_ty.clone()));
+                self.builder
+                    .collect_ty_closure(&std_task_ty(payload_ty.clone()));
+                self.builder
+                    .plan
+                    .async_task_group_next_payload_tys
                     .insert(mangle_ty_fragment(payload_ty), payload_ty.clone());
                 walk_expr(self, expr);
             }
@@ -1345,6 +1367,15 @@ impl ThirVisitor for DynamicVisitor<'_, '_, '_> {
                     .collect_ty_dynamic(&std_result_ty(payload_ty.clone(), std_async_error_ty()));
                 walk_expr(self, expr);
             }
+            TExprKind::AsyncTaskGroupNext { payload_ty, .. } => {
+                self.builder.collect_standard_error_code_dynamic();
+                self.builder.collect_ty_dynamic(payload_ty);
+                let task_ty = std_task_ty(payload_ty.clone());
+                self.builder.collect_ty_dynamic(&task_ty);
+                self.builder
+                    .collect_ty_dynamic(&std_result_ty(task_ty, std_async_error_ty()));
+                walk_expr(self, expr);
+            }
             TExprKind::AsyncChannelPermitSend { payload_ty, .. } => {
                 self.builder.collect_standard_error_code_dynamic();
                 self.builder.collect_ty_dynamic(payload_ty);
@@ -1483,6 +1514,19 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
             TExprKind::AsyncChannelRecv { payload_ty, .. } => {
                 let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
                 self.builder.collect_ty_slice(payload_ty);
+                self.builder
+                    .collect_ty_slice(&std_future_ty(result_ty.clone()));
+                self.builder.collect_ty_slice(&result_ty);
+                self.builder.collect_ty_slice(&std_error_code_ty());
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
+                walk_expr(self, expr);
+            }
+            TExprKind::AsyncTaskGroupNext { payload_ty, .. } => {
+                let task_ty = std_task_ty(payload_ty.clone());
+                let result_ty = std_result_ty(task_ty.clone(), std_async_error_ty());
+                self.builder.collect_ty_slice(payload_ty);
+                self.builder.collect_ty_slice(&task_ty);
                 self.builder
                     .collect_ty_slice(&std_future_ty(result_ty.clone()));
                 self.builder.collect_ty_slice(&result_ty);

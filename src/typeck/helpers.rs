@@ -371,7 +371,18 @@ pub(super) fn type_contains_plain_never_value(ty: &Ty) -> bool {
     match ty {
         Ty::Never => true,
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_plain_never_value(elem),
-        Ty::GeneratedFuture { output, .. } => type_contains_plain_never_value(output),
+        Ty::GeneratedFuture { output, state, .. } => {
+            type_contains_plain_never_value(output)
+                || state
+                    .iter()
+                    .any(|(_, ty)| type_contains_plain_never_value(ty))
+        }
+        Ty::OpaqueState { base, state } => {
+            type_contains_plain_never_value(base)
+                || state
+                    .iter()
+                    .any(|(_, ty)| type_contains_plain_never_value(ty))
+        }
         Ty::Function { params, .. }
         | Ty::Closure { params, .. }
         | Ty::ClosureInstance { params, .. } => params.iter().any(type_contains_plain_never_value),
@@ -405,7 +416,12 @@ pub(super) fn type_contains_closure(ty: &Ty) -> bool {
         Ty::Closure { .. } | Ty::ClosureInstance { .. } => true,
         Ty::Pointer { inner, .. } => type_contains_closure(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => type_contains_closure(elem),
-        Ty::GeneratedFuture { output, .. } => type_contains_closure(output),
+        Ty::GeneratedFuture { output, state, .. } => {
+            type_contains_closure(output) || state.iter().any(|(_, ty)| type_contains_closure(ty))
+        }
+        Ty::OpaqueState { base, state } => {
+            type_contains_closure(base) || state.iter().any(|(_, ty)| type_contains_closure(ty))
+        }
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => {
             args.iter().any(type_contains_closure)
         }
@@ -535,7 +551,18 @@ pub(super) fn collect_ty_generic_names(ty: &Ty, names: &mut HashSet<String>) {
                 collect_ty_generic_names(capture, names);
             }
         }
-        Ty::GeneratedFuture { output, .. } => collect_ty_generic_names(output, names),
+        Ty::GeneratedFuture { output, state, .. } => {
+            collect_ty_generic_names(output, names);
+            for (_, ty) in state {
+                collect_ty_generic_names(ty, names);
+            }
+        }
+        Ty::OpaqueState { base, state } => {
+            collect_ty_generic_names(base, names);
+            for (_, ty) in state {
+                collect_ty_generic_names(ty, names);
+            }
+        }
         _ => {}
     }
 }
@@ -657,8 +684,17 @@ pub(super) fn opaque_return_ty_reaches_via_lowering(
         Ty::Named { args, .. } | Ty::DynamicInterface { args, .. } => args
             .iter()
             .any(|arg| opaque_return_ty_reaches_via_lowering(target, arg, opaque_returns, seen)),
-        Ty::GeneratedFuture { output, .. } => {
+        Ty::GeneratedFuture { output, state, .. } => {
             opaque_return_ty_reaches_via_lowering(target, output, opaque_returns, seen)
+                || state.iter().any(|(_, ty)| {
+                    opaque_return_ty_reaches_via_lowering(target, ty, opaque_returns, seen)
+                })
+        }
+        Ty::OpaqueState { base, state } => {
+            opaque_return_ty_reaches_via_lowering(target, base, opaque_returns, seen)
+                || state.iter().any(|(_, ty)| {
+                    opaque_return_ty_reaches_via_lowering(target, ty, opaque_returns, seen)
+                })
         }
         Ty::OpaqueReturn { key, .. } => {
             if key == target {

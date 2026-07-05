@@ -138,6 +138,12 @@ fn collect_layout_edges_from_ty(
         Ty::Array { elem, .. } => {
             collect_layout_edges_from_ty(elem, aggregate_names, graph, edges);
         }
+        Ty::OpaqueState { base, state } => {
+            collect_layout_edges_from_ty(base, aggregate_names, graph, edges);
+            for (_, ty) in state {
+                collect_layout_edges_from_ty(ty, aggregate_names, graph, edges);
+            }
+        }
         Ty::GeneratedFuture { .. }
         | Ty::Pointer { .. }
         | Ty::Slice { .. }

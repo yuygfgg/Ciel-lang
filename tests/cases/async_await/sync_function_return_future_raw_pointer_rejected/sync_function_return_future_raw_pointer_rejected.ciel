@@ -1,0 +1,20 @@
+// ciel-test: error
+// expect-error: returned future state cannot safely escape this function
+// expect-error: returned future state `ptr` has raw pointer type `*const usize`
+
+import /std/async as async;
+import /std/result;
+
+async Result<usize, Error> read_later(*const usize ptr) {
+    return Ok(unsafe { *ptr });
+}
+
+async::Future<Result<usize, Error>> make(*const usize ptr) {
+    return read_later(ptr);
+}
+
+i32 main() {
+    usize local = 12345;
+    async::Future<Result<usize, Error>> future = make(&local);
+    return 0;
+}

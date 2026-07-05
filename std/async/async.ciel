@@ -66,7 +66,7 @@ Result<void, AsyncError> cleanup_task_group<T>(*const TaskGroup<T> group) {
 
 // Creates a task group for body and closes it after body returns or is cancelled.
 export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
-    Future<Result<R, E>> |(*const TaskGroup<T>)| body
+    Future<Result<R, E>> |(TaskGroup<T>)| body
 ) = .with_task_group {
     TaskGroup<T> @group;
     switch (task_group<T>()) {
@@ -75,7 +75,7 @@ export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: Erro
         case Err(error):
             return Err(TaskGroupAsync(error));
     }
-    Future<Result<R, E>> @future = body(&group);
+    Future<Result<R, E>> @future = body(group);
     defer close_task_group_on_exit<T>(group);
     defer cancel_task_group_on_exit<T>(group);
     Result<R, E> result = await future;

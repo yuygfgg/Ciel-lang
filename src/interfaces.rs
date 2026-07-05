@@ -189,8 +189,96 @@ pub fn impl_matches_interface_receiver(
         && implementation
             .receiver_ty
             .as_ref()
-            .is_some_and(|receiver| receiver == receiver_ty)
-        && implementation.interface_args.get(1..) == Some(non_receiver_args)
+            .is_some_and(|receiver| ty_matches_ignoring_opaque_state(receiver, receiver_ty))
+        && implementation.interface_args.get(1..).is_some_and(|args| {
+            args.len() == non_receiver_args.len()
+                && args
+                    .iter()
+                    .zip(non_receiver_args.iter())
+                    .all(|(left, right)| ty_matches_ignoring_opaque_state(left, right))
+        })
+}
+
+fn ty_matches_ignoring_opaque_state(left: &Ty, right: &Ty) -> bool {
+    let left = match left {
+        Ty::OpaqueState { base, .. } => base.as_ref(),
+        _ => left,
+    };
+    let right = match right {
+        Ty::OpaqueState { base, .. } => base.as_ref(),
+        _ => right,
+    };
+    match (left, right) {
+        (
+            Ty::Pointer {
+                nullable: left_nullable,
+                mutability: left_mutability,
+                inner: left_inner,
+            },
+            Ty::Pointer {
+                nullable: right_nullable,
+                mutability: right_mutability,
+                inner: right_inner,
+            },
+        ) => {
+            left_nullable == right_nullable
+                && left_mutability == right_mutability
+                && ty_matches_ignoring_opaque_state(left_inner, right_inner)
+        }
+        (
+            Ty::Named {
+                name: left_name,
+                args: left_args,
+            },
+            Ty::Named {
+                name: right_name,
+                args: right_args,
+            },
+        )
+        | (
+            Ty::DynamicInterface {
+                name: left_name,
+                args: left_args,
+                ..
+            },
+            Ty::DynamicInterface {
+                name: right_name,
+                args: right_args,
+                ..
+            },
+        ) => {
+            left_name == right_name
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| ty_matches_ignoring_opaque_state(left, right))
+        }
+        (
+            Ty::Array {
+                len: left_len,
+                elem: left_elem,
+            },
+            Ty::Array {
+                len: right_len,
+                elem: right_elem,
+            },
+        ) => left_len == right_len && ty_matches_ignoring_opaque_state(left_elem, right_elem),
+        (
+            Ty::Slice {
+                mutability: left_mutability,
+                elem: left_elem,
+            },
+            Ty::Slice {
+                mutability: right_mutability,
+                elem: right_elem,
+            },
+        ) => {
+            left_mutability == right_mutability
+                && ty_matches_ignoring_opaque_state(left_elem, right_elem)
+        }
+        _ => left == right,
+    }
 }
 
 pub fn impl_matches_dynamic_interface(

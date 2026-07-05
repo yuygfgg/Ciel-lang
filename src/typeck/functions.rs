@@ -2257,11 +2257,13 @@ impl TypeChecker {
         let mut scopes = LocalScopes::default();
         scopes.push();
         for (local_id, name, ty, mutability) in params {
+            let (binding_ty, flow_ty) = self.external_storage_and_flow_ty(ty, "parameter");
             if let Err(name) = scopes.insert(
                 *local_id,
                 Binding {
                     name: name.clone(),
-                    ty: ty.clone(),
+                    ty: binding_ty,
+                    flow_ty,
                     narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: *mutability,

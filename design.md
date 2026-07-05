@@ -2257,22 +2257,67 @@ termination through the task's abort path.
 
 Spawning is a task-ownership boundary. Values captured by a directly spawned
 async closure and the task result `T` must satisfy hidden `Message`
-obligations, because they cross from one task owner to another. The source API
-does not require users to write these bounds on ordinary calls to `spawn`; the
-compiler attaches the obligations at the boundary, resolves structural
-messageability when possible, and reports the failing captured value or result
-field when proof fails.
+obligations, because they cross from one task owner to another through the
+high-level task handle. The source API does not require users to write these
+bounds on ordinary calls to `spawn`; the compiler attaches the obligations at
+the boundary, resolves structural messageability when possible, and reports the
+failing captured value or result field when proof fails.
 When a hidden async boundary uses a structural `meta::Repr<T>` crossing path,
 that fact is local to the boundary. It does not make the original nominal type
 implement `Message` for explicit low-level actor APIs or for any API spelling a
 public `T: Message` bound.
 
+`spawn(existing_future)` is valid. `async::Future<Out>` is an opaque future
+handle, not a type erasure boundary for safety facts. Storing a
+compiler-generated future in a local, returning it from a synchronous function,
+passing it through a `Future<Out>` parameter, awaiting a future whose output
+contains another future, or placing a future in an aggregate preserves its
+hidden frame-state summary. A `Future<Out>` parameter or other binding whose
+future state comes from the caller is treated as carrying opaque unknown future
+state inside the function body. That state may be returned or passed through to
+the caller, where the actual argument state is reattached, but it cannot be
+spawned or otherwise moved across a task boundary without a proven boundary
+policy. Generic argument inference, type-hole inference, and coercions to the
+public `Future<Out>` spelling match against the public storage type but do not
+erase this hidden state; the resolved storage type and the hidden state flow
+together. Assignments update the current hidden state of the whole local being
+assigned; if control-flow paths merge different hidden states, the merged value
+conservatively carries the union of states from all reachable paths.
+When a value later crosses a task boundary, the compiler still checks the
+async-function arguments, async-closure captures and parameters, nested
+select-arm futures, awaited future outputs, and aggregate fields stored in the
+opaque state. Raw pointers, borrowed slices, thread-local handles, opaque
+caller-owned future state, and generic state without a proven boundary are
+rejected with a diagnostic pointing at the saved future state.
+Struct fields, array elements, and enum payloads that contain opaque futures
+do not erase those facts. The aggregate value carries the relevant hidden state
+while it is moved as a whole; safe partial moves of resource-affine fields or
+array elements remain rejected. When an aggregate is consumed in a way that
+legally projects a payload, such as a `switch` that binds an enum payload, the
+projected future keeps the payload's hidden state. Synchronous function calls
+whose return type contains a future reattach the call argument state to every
+future occurrence in the returned structure; `await`, `block_on`, and `select`
+do the same for future occurrences in the awaited output.
+If a generated future is passed to a parameter typed as `async::Future<Out>`,
+the caller's generated future state remains part of the returned or stored
+opaque future state; the erased parameter type is not a way to hide
+non-boundary-safe state from a later `spawn`, `await`, `block_on`, `select`, or
+other ownership boundary.
+
+Compiler-generated futures are affine, single-consumer values. If such a
+future already owns resource-affine state, `spawn` consumes the future and moves
+that state into the new task frame. This is an ownership transfer, not a
+`Message` proof: the resource wrapper does not become sendable through actor
+mailboxes, async channels, task results, direct async-closure captures, or
+public `T: Message` APIs. Code that needs to share, clone, or reconstruct a
+resource across those boundaries must use an explicit synchronized handle,
+owned message representation, or resource-transfer wrapper.
+
 Values created inside the spawned async body are task-local. They do not need
 to implement `Message` merely because they live across `await`; they only need
-to satisfy async-frame safety. Moving an already existing non-`Message` value
-from one task into a new task is not supported by the high-level safe spawn API.
-Such a transfer requires an explicit synchronized handle, an owned message
-representation, or a future unsafe ownership-transfer facility.
+to satisfy async-frame safety. Borrowed views passed as saved-future state are
+not made safe by the future wrapper; pass an owned value such as `Text` or
+`Bytes`, reopen the resource inside the task, or use an explicit transfer API.
 
 ### Async Channels and Task Groups
 
@@ -5487,7 +5532,7 @@ export enum TaskGroupError<E> {
 }
 
 export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
-    Future<Result<R, E>> |(*const TaskGroup<T>)| body
+    Future<Result<R, E>> |(TaskGroup<T>)| body
 ) = .with_task_group;
 
 export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
@@ -5502,6 +5547,13 @@ regardless of `T`, because the suspended frame or runtime context may own
 resources even when the eventual output is copyable. Compiler-generated async
 functions and closures also implement `Awaitable<T>` without exposing their
 generated frame type.
+Every `Future<T>` value may also carry compiler-hidden opaque state describing
+the frame or context that produced it. This state is preserved across local
+bindings, generic argument inference, type-hole inference, coercions to
+`Future<T>`, synchronous function returns, function and closure calls, and
+aggregate construction. It is transparent for ABI, layout, and interface
+lookup, but visible to safety checks for async-frame validity, task ownership
+boundaries, and `Message` boundaries.
 Standard-library adapter types such as `OperationFutureAdapter<T, Out>`,
 `ChannelSendFuture<T>`, `ChannelReserveFuture<T>`, and
 `ChannelRecvFuture<T>` wrap `Future<T>` and implement `Awaitable`, `Abortable`,

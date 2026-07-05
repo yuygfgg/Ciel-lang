@@ -18,14 +18,16 @@ use crate::{
         aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
         contains_any_generic_name, contains_generic, contains_type_hole, display_constraint_bounds,
         display_constraint_ref, generated_future_output_ty, generated_future_ty,
-        generated_future_ty_with_affine_state, mangle_ty_fragment, map_ty_children, meta_named,
-        meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_repr_marker_source, meta_schema_marker_name,
-        meta_schema_marker_source, meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty,
+        generated_future_ty_with_state, is_opaque_future_state_marker_ty, mangle_ty_fragment,
+        map_ty_children, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_repr_marker_source,
+        meta_schema_marker_name, meta_schema_marker_source, meta_schema_product_ty,
+        meta_schema_sum_ty, meta_sum_ty, opaque_future_state_marker_ty, opaque_state_ty,
         pointer_view_can_weaken, receiver_ty_from_value_ty, retained_closure_proves_capability,
         std_actor_ty, std_async_error_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
         std_meta_schema_marker_ty, std_resource_error_ty, std_result_ty, std_task_ty,
-        substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
+        substitute_constraint_bounds, substitute_ty, ty_from_primitive, ty_has_hidden_state,
+        unify_ty,
     },
 };
 
@@ -297,6 +299,7 @@ struct GenericFunctionTemplate {
 struct Binding {
     name: String,
     ty: Ty,
+    flow_ty: Option<Ty>,
     narrowed_ty: Option<Ty>,
     init_state: InitState,
     mutability: BindingMutability,
@@ -532,6 +535,7 @@ impl LocalScopes {
             binding
                 .narrowed_ty
                 .clone()
+                .or_else(|| binding.flow_ty.clone())
                 .unwrap_or_else(|| binding.ty.clone())
         })
     }
@@ -574,6 +578,15 @@ impl LocalScopes {
                     .map(|binding| binding.init_state)
                     .unwrap_or(binding.init_state);
                 binding.init_state = left_state.merge(right_state);
+                binding.flow_ty = merge_flow_tys(
+                    &binding.ty,
+                    left_scope
+                        .get(id)
+                        .and_then(|binding| binding.flow_ty.as_ref()),
+                    right_scope
+                        .get(id)
+                        .and_then(|binding| binding.flow_ty.as_ref()),
+                );
                 let left_narrowed = left_scope
                     .get(id)
                     .and_then(|binding| binding.narrowed_ty.clone());
@@ -595,6 +608,7 @@ impl LocalScopes {
             for (id, binding) in scope {
                 if let Some(source_binding) = source_scope.get(id) {
                     binding.init_state = source_binding.init_state;
+                    binding.flow_ty = source_binding.flow_ty.clone();
                     binding.narrowed_ty = source_binding.narrowed_ty.clone();
                 }
             }
@@ -610,6 +624,30 @@ impl LocalScopes {
             let current = self.clone();
             self.merge_assigned_intersection(&current, flow);
         }
+    }
+}
+
+fn merge_flow_tys(base_ty: &Ty, left: Option<&Ty>, right: Option<&Ty>) -> Option<Ty> {
+    match (left, right) {
+        (None, None) => None,
+        (Some(left), Some(right)) if left == right => Some(left.clone()),
+        _ => {
+            let mut state = Vec::new();
+            collect_flow_hidden_state(base_ty, left.unwrap_or(base_ty), &mut state);
+            collect_flow_hidden_state(base_ty, right.unwrap_or(base_ty), &mut state);
+            (!state.is_empty()).then(|| opaque_state_ty(base_ty.clone(), state))
+        }
+    }
+}
+
+fn collect_flow_hidden_state(base_ty: &Ty, ty: &Ty, out: &mut Vec<(String, Ty)>) {
+    match ty {
+        Ty::GeneratedFuture { state, .. } => out.extend(state.iter().cloned()),
+        Ty::OpaqueState { base, state } if base_ty.can_assign_from(base) => {
+            out.extend(state.iter().cloned());
+        }
+        Ty::OpaqueState { state, .. } => out.extend(state.iter().cloned()),
+        _ => {}
     }
 }
 

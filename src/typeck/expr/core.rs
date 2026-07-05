@@ -174,7 +174,9 @@ impl TypeChecker {
                 {
                     let name = binding.name.clone();
                     let init_state = binding.init_state;
-                    let binding_ty = binding.ty.clone();
+                    let binding_ty = scopes
+                        .effective_ty(local_id)
+                        .unwrap_or_else(|| binding.ty.clone());
                     if !binding.init_state.is_assigned() {
                         if init_state.is_moved() && self.type_is_affine(&binding_ty) {
                             self.diagnostics.push(Diagnostic::new(
@@ -190,9 +192,7 @@ impl TypeChecker {
                     }
                     TExpr {
                         span: expr.span,
-                        ty: scopes
-                            .effective_ty(local_id)
-                            .unwrap_or_else(|| binding.ty.clone()),
+                        ty: binding_ty,
                         kind: TExprKind::Local(local_id, name),
                     }
                 } else if let Some(sig) = self.resolve_function_name(name_ref) {
@@ -356,6 +356,12 @@ impl TypeChecker {
                     unreachable!("struct literal expected type is named");
                 };
                 let instance_name = enum_instance_name(concrete_name, concrete_args);
+                let hidden_state = checked_fields
+                    .iter()
+                    .filter(|(_, value)| ty_has_hidden_state(&value.ty))
+                    .map(|(name, value)| (name.clone(), value.ty.clone()))
+                    .collect::<Vec<_>>();
+                let ty = opaque_state_ty(ty, hidden_state);
                 TExpr {
                     span: expr.span,
                     ty,
@@ -403,6 +409,13 @@ impl TypeChecker {
                 for element in &checked_elements {
                     self.require_assignable(&elem_ty, &element.ty, element.span);
                 }
+                let hidden_state = checked_elements
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, value)| ty_has_hidden_state(&value.ty))
+                    .map(|(idx, value)| (format!("element {idx}"), value.ty.clone()))
+                    .collect::<Vec<_>>();
+                let result_ty = opaque_state_ty(result_ty, hidden_state);
                 TExpr {
                     span: expr.span,
                     ty: result_ty,
@@ -457,6 +470,10 @@ impl TypeChecker {
                 let checked_element =
                     self.check_consumed_expr(scopes, element, Some(&elem_ty), false)?;
                 self.require_assignable(&elem_ty, &checked_element.ty, checked_element.span);
+                let hidden_state = ty_has_hidden_state(&checked_element.ty)
+                    .then(|| vec![("element *".to_string(), checked_element.ty.clone())])
+                    .unwrap_or_default();
+                let result_ty = opaque_state_ty(result_ty, hidden_state);
                 TExpr {
                     span: expr.span,
                     ty: result_ty,
@@ -726,7 +743,7 @@ impl TypeChecker {
                     ));
                     return None;
                 }
-                let callee = self.check_expr(scopes, callee, None)?;
+                let mut callee = self.check_expr(scopes, callee, None)?;
                 if matches!(
                     &callee.ty,
                     Ty::Function {
@@ -770,6 +787,8 @@ impl TypeChecker {
                     }
                     checked_args.push(checked);
                 }
+                let ret = self.specialize_generated_future_call_ret(&ret, &checked_args);
+                self.replace_callable_return_ty(&mut callee.ty, ret.clone());
                 TExpr {
                     span: expr.span,
                     ty: ret,
@@ -871,6 +890,21 @@ impl TypeChecker {
                         .push(Diagnostic::new(index.span, "index must be integer"));
                 }
                 let ty = match &base.ty {
+                    Ty::OpaqueState {
+                        base: opaque_base,
+                        state,
+                    } => match opaque_base.as_ref() {
+                        Ty::Array { elem, .. } | Ty::Slice { elem, .. } => {
+                            self.project_opaque_index_ty((**elem).clone(), state)
+                        }
+                        _ => {
+                            self.diagnostics.push(Diagnostic::new(
+                                base.span,
+                                format!("cannot index `{}`", base.ty),
+                            ));
+                            Ty::Unknown
+                        }
+                    },
                     Ty::Array { elem, .. } | Ty::Slice { elem, .. } => (**elem).clone(),
                     _ => {
                         self.diagnostics.push(Diagnostic::new(
@@ -1066,10 +1100,12 @@ impl TypeChecker {
                         },
                     });
                 };
+                let output_ty =
+                    self.awaited_output_future_state_ty(&future.ty, awaitable.output_ty);
                 let future = self.consume_affine_expr(scopes, future, false);
                 TExpr {
                     span: expr.span,
-                    ty: awaitable.output_ty,
+                    ty: output_ty,
                     kind: TExprKind::Await {
                         future: Box::new(future),
                     },
@@ -1202,13 +1238,14 @@ impl TypeChecker {
             || contains_generic(&expected)
             || matches!(expr_ty, Ty::Unknown)
         {
+            let ty = if contains_type_hole(&expr.ty) {
+                self.ty_preserving_hidden_state_for_expected(&expected, &expr_ty)
+            } else {
+                expr.ty
+            };
             return TExpr {
                 span: expr.span,
-                ty: if contains_type_hole(&expr.ty) {
-                    expected
-                } else {
-                    expr.ty
-                },
+                ty,
                 kind: expr.kind,
             };
         }

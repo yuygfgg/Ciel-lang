@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: returned future state cannot safely escape this function
+// expect-error: returned future state `view` has borrowed read-only slice type `[]const i64`
+
+import /std/async as async;
+import /std/result;
+
+async Result<usize, Error> len_later([]const i64 view) {
+    return Ok(view.len);
+}
+
+async::Future<Result<usize, Error>> make([]const i64 view) {
+    return len_later(view);
+}
+
+i32 main() {
+    [3]i64 values = [1, 2, 3];
+    async::Future<Result<usize, Error>> future = make(values[..]);
+    _ = future;
+    return 0;
+}

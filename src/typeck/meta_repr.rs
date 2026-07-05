@@ -929,6 +929,7 @@ impl TypeChecker {
                 cancel_safe,
                 abortable,
                 affine_state,
+                state,
             } => {
                 let output = self.substitute_ty_normalized_inner(
                     output,
@@ -937,6 +938,21 @@ impl TypeChecker {
                     emit_diagnostics,
                     in_meta_sop,
                 );
+                let mut any_replacement = output.from_replacement;
+                let state = state
+                    .iter()
+                    .map(|(name, ty)| {
+                        let ty = self.substitute_ty_normalized_inner(
+                            ty,
+                            subst,
+                            span,
+                            emit_diagnostics,
+                            in_meta_sop,
+                        );
+                        any_replacement |= ty.from_replacement;
+                        (name.clone(), ty.ty)
+                    })
+                    .collect();
                 SubstitutedTy {
                     ty: Ty::GeneratedFuture {
                         name: name.clone(),
@@ -944,8 +960,9 @@ impl TypeChecker {
                         cancel_safe: *cancel_safe,
                         abortable: *abortable,
                         affine_state: *affine_state,
+                        state,
                     },
-                    from_replacement: output.from_replacement,
+                    from_replacement: any_replacement,
                 }
             }
             Ty::DynamicInterface { def_id, name, args } => {

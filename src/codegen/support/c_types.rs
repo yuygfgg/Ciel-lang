@@ -98,6 +98,7 @@ impl<'a> CGenerator<'a> {
             Ty::GeneratedFuture { output, .. } => {
                 self.c_decl_qualified(&std_future_ty((**output).clone()), name, top_const)
             }
+            Ty::OpaqueState { base, .. } => self.c_decl_qualified(base, name, top_const),
             Ty::OpaqueReturn { .. } => c_base_decl(&c_qualified_base("void", top_const), name),
             Ty::DynamicInterface { .. } => c_base_decl(
                 &c_qualified_base(&self.dynamic_type_name(ty), top_const),
@@ -193,6 +194,7 @@ impl<'a> CGenerator<'a> {
             | Ty::Closure { .. }
             | Ty::ClosureInstance { .. }
             | Ty::GeneratedFuture { .. } => true,
+            Ty::OpaqueState { base, .. } => self.ty_can_carry_gc_pointer_inner(base, visiting),
             Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer_inner(elem, visiting),
             Ty::Named { name, args } => {
                 if self.is_std_meta_type_witness(name, args) {
@@ -379,6 +381,7 @@ impl<'a> CGenerator<'a> {
             | Ty::Slice { .. }
             | Ty::Named { .. }
             | Ty::GeneratedFuture { .. }
+            | Ty::OpaqueState { .. }
             | Ty::DynamicInterface { .. }
             | Ty::OpaqueReturn { .. }
             | Ty::Closure { .. }

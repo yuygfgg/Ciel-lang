@@ -8,6 +8,7 @@ import /std/io as io;
 import /std/message;
 import /std/result;
 import /std/resource as resource;
+import /std/text as text;
 
 struct HandleParts {
     u64 owner_id;
@@ -38,8 +39,8 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-async Result<HandleParts, Error> open_in_task([]const char path) {
-    io::File file = io::open_read(path)?;
+async Result<HandleParts, Error> open_in_task(text::Text path) {
+    io::File file = io::open_read(text::text_to_slice(path)?)?;
     return Ok(parts_from_handle(unsafe { file.handle }));
 }
 
@@ -50,7 +51,8 @@ i32 main() {
         return Ok;
     }));
 
-    async::Task<HandleParts> task = must(async::spawn<HandleParts>(open_in_task(path)));
+    text::Text owned_path = must(text::text_copy(path));
+    async::Task<HandleParts> task = must(async::spawn<HandleParts>(open_in_task(owned_path)));
     HandleParts parts = must(async::block_on(task));
     io::File stale = file_from_parts(parts);
 

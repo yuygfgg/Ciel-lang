@@ -60,6 +60,12 @@ impl TypeChecker {
             }
             Ty::Pointer { inner, .. } => self.ensure_enum_instance(inner),
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.ensure_enum_instance(elem),
+            Ty::OpaqueState { base, state } => {
+                self.ensure_enum_instance(base);
+                for (_, ty) in state {
+                    self.ensure_enum_instance(ty);
+                }
+            }
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.ensure_enum_instance(arg);
@@ -150,6 +156,12 @@ impl TypeChecker {
             }
             Ty::Pointer { inner, .. } => self.ensure_struct_instance(inner),
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.ensure_struct_instance(elem),
+            Ty::OpaqueState { base, state } => {
+                self.ensure_struct_instance(base);
+                for (_, ty) in state {
+                    self.ensure_struct_instance(ty);
+                }
+            }
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.ensure_struct_instance(arg);

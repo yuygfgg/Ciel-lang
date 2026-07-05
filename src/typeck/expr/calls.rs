@@ -42,6 +42,7 @@ impl TypeChecker {
         let mut checked_arms = Vec::new();
         let mut output_ty = expected.cloned();
         let mut affine_state = false;
+        let mut future_state = Vec::new();
         for arm in arms {
             let future = self.check_expr(scopes, &arm.future, None)?;
             if self.expr_contains_async_suspension(&future) {
@@ -96,16 +97,25 @@ impl TypeChecker {
                 }
                 Ty::Unknown
             };
+            let future_output_ty =
+                self.awaited_output_future_state_ty(&future.ty, future_output_ty);
             let future = self.consume_affine_expr(scopes, future, false);
             affine_state |= self.type_is_affine(&future.ty);
+            future_state.push((
+                format!("select arm {}", checked_arms.len()),
+                future.ty.clone(),
+            ));
 
             let mut arm_scopes = scopes.clone();
             arm_scopes.push();
+            let (binding_ty, flow_ty) =
+                self.external_storage_and_flow_ty(&future_output_ty, "binding");
             if let Err(name) = arm_scopes.insert(
                 arm.binding_local,
                 Binding {
                     name: arm.binding.name.clone(),
-                    ty: future_output_ty.clone(),
+                    ty: binding_ty,
+                    flow_ty,
                     narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: BindingMutability::Immutable,
@@ -146,12 +156,13 @@ impl TypeChecker {
         let output_ty = output_ty.unwrap_or(Ty::Unknown);
         Some(TExpr {
             span,
-            ty: generated_future_ty_with_affine_state(
+            ty: generated_future_ty_with_state(
                 format!("select_{}", mangle_ty_fragment(&output_ty)),
                 output_ty,
                 false,
                 true,
                 affine_state,
+                future_state,
             ),
             kind: TExprKind::AsyncSelect {
                 biased,
@@ -1266,7 +1277,12 @@ impl TypeChecker {
             );
         }
         let call_ret = if call_sig.is_async {
-            self.async_function_future_ty(call_sig.def_id, call_sig.ret.clone(), &call_sig.params)
+            self.async_function_future_ty(
+                call_sig.def_id,
+                call_sig.ret.clone(),
+                &call_sig.params,
+                &call_sig.param_names,
+            )
         } else {
             call_sig.ret.clone()
         };
@@ -1452,11 +1468,13 @@ impl TypeChecker {
                 Ty::Unknown
             };
             self.reject_invalid_plain_value_type(&param_ty, param.name.span, "closure parameter");
+            let (binding_ty, flow_ty) = self.external_storage_and_flow_ty(&param_ty, "parameter");
             if let Err(name) = closure_scopes.insert(
                 param.local_id,
                 Binding {
                     name: param.name.name.clone(),
-                    ty: param_ty.clone(),
+                    ty: binding_ty,
+                    flow_ty,
                     narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: param.mutability,
@@ -1603,6 +1621,15 @@ impl TypeChecker {
             .iter()
             .map(|capture| capture.ty.clone())
             .collect::<Vec<_>>();
+        let closure_future_state = captures
+            .iter()
+            .map(|capture| (capture.name.clone(), capture.ty.clone()))
+            .chain(
+                checked_params
+                    .iter()
+                    .map(|(_, name, ty)| (name.clone(), ty.clone())),
+            )
+            .collect::<Vec<_>>();
         let closure_affine_state = captures
             .iter()
             .any(|capture| self.type_is_affine(&capture.ty))
@@ -1636,6 +1663,7 @@ impl TypeChecker {
                     closure_cancel_safe,
                     closure_abortable,
                     closure_affine_state,
+                    closure_future_state.clone(),
                 )
             } else {
                 expected_ret.clone()
@@ -1669,6 +1697,7 @@ impl TypeChecker {
                     closure_cancel_safe,
                     closure_abortable,
                     closure_affine_state,
+                    closure_future_state,
                 )
             } else {
                 ret_ty.clone()
@@ -1698,7 +1727,7 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
-        callee: TExpr,
+        mut callee: TExpr,
         ret: &Ty,
         params: &[Ty],
         param_names: Option<&[String]>,
@@ -1750,14 +1779,68 @@ impl TypeChecker {
             }
             checked_args.push(checked);
         }
+        let ret = self.specialize_generated_future_call_ret(ret, &checked_args);
+        self.replace_callable_return_ty(&mut callee.ty, ret.clone());
         Some(TExpr {
             span,
-            ty: ret.clone(),
+            ty: ret,
             kind: TExprKind::Call {
                 callee: Box::new(callee),
                 args: checked_args,
             },
         })
+    }
+
+    pub(super) fn specialize_generated_future_call_ret(
+        &mut self,
+        ret: &Ty,
+        checked_args: &[TExpr],
+    ) -> Ty {
+        let Ty::GeneratedFuture {
+            name,
+            output,
+            cancel_safe,
+            abortable,
+            state,
+            ..
+        } = ret
+        else {
+            return self.call_return_future_state_ty(ret, checked_args);
+        };
+        if checked_args.is_empty() || state.len() < checked_args.len() {
+            return ret.clone();
+        }
+        let mut state = state.clone();
+        let first_arg_state = state.len() - checked_args.len();
+        for ((_, state_ty), arg) in state[first_arg_state..].iter_mut().zip(checked_args) {
+            *state_ty = arg.ty.clone();
+        }
+        let affine_state = state.iter().any(|(_, ty)| self.type_is_affine(ty));
+        generated_future_ty_with_state(
+            name.clone(),
+            (**output).clone(),
+            *cancel_safe,
+            *abortable,
+            affine_state,
+            state,
+        )
+    }
+
+    pub(super) fn replace_callable_return_ty(&self, ty: &mut Ty, ret: Ty) {
+        match ty {
+            Ty::Function {
+                ret: callable_ret, ..
+            }
+            | Ty::Closure {
+                ret: callable_ret, ..
+            }
+            | Ty::ClosureInstance {
+                ret: callable_ret, ..
+            } => {
+                *callable_ret = Box::new(ret);
+            }
+            _ => {}
+        }
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2140,6 +2223,7 @@ impl TypeChecker {
                 "`async::block_on` needs an abortable future for cleanup on failure",
             ));
         }
+        let output_ty = self.awaited_output_future_state_ty(&future.ty, output_ty);
         let future = self.consume_affine_expr(scopes, future, false);
         Some(TExpr {
             span,
@@ -2426,6 +2510,17 @@ impl TypeChecker {
                 format!(
                     "`async::spawn` task result type `{task_output_ty}` does not implement `Message`"
                 ),
+                reason,
+            ));
+        }
+        if !matches!(body.kind, TExprKind::Closure { .. })
+            && (matches!(body.ty, Ty::GeneratedFuture { .. }) || ty_has_hidden_state(&body.ty))
+            && let Some(reason) =
+                self.task_boundary_future_state_violation(&body.ty, "future", &mut HashSet::new())
+        {
+            self.diagnostics.push(self.diagnostic_with_reason_note(
+                body.span,
+                "`async::spawn` future state does not implement `Message`",
                 reason,
             ));
         }

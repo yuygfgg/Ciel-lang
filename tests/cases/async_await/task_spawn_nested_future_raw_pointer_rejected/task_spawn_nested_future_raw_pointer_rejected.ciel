@@ -1,0 +1,25 @@
+// ciel-test: error
+// expect-error: `async::spawn` future state does not implement `Message`
+// expect-error: future state `inner` state `ptr` has raw pointer type `*const usize`
+
+import /std/async as async;
+import /std/result;
+
+async Result<usize, Error> read_later(*const usize ptr) {
+    return Ok(unsafe { *ptr });
+}
+
+async Result<usize, Error> outer(async::Future<Result<usize, Error>> inner) {
+    return await inner;
+}
+
+async::Task<usize> spawn_dangling() {
+    usize local = 12345;
+    async::Future<Result<usize, Error>> future = read_later(&local);
+    return must(async::spawn<usize>(outer(future)));
+}
+
+i32 main() {
+    _ task = spawn_dangling();
+    return 0;
+}

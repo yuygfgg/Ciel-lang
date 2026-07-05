@@ -6,6 +6,9 @@ impl<'a> CGenerator<'a> {
         ty: &Ty,
         span: crate::span::Span,
     ) -> DiagResult<ResultLayout> {
+        if let Ty::OpaqueState { base, .. } = ty {
+            return self.result_layout(base, span);
+        }
         let Ty::Named { name, args } = ty else {
             return Err(vec![Diagnostic::new(
                 span,

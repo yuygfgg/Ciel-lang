@@ -425,6 +425,9 @@ pub fn is_std_async_runtime_handle_ty(resolved: &ResolvedProgram, ty: &Ty) -> bo
 }
 
 pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    if let Ty::OpaqueState { base, .. } = ty {
+        return std_async_future_output_arg(resolved, base);
+    }
     let Ty::Named { name, args } = ty else {
         return None;
     };
@@ -436,6 +439,9 @@ pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -
 }
 
 pub fn std_async_task_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    if let Ty::OpaqueState { base, .. } = ty {
+        return std_async_task_output_arg(resolved, base);
+    }
     let Ty::Named { name, args } = ty else {
         return None;
     };
@@ -512,6 +518,11 @@ pub fn std_async_future_accepts_generated(
     let Some(expected_output) = std_async_future_output_arg(resolved, expected) else {
         return false;
     };
+    let actual = if let Ty::OpaqueState { base, .. } = actual {
+        base.as_ref()
+    } else {
+        actual
+    };
     let Ty::GeneratedFuture { output, .. } = actual else {
         return false;
     };
@@ -526,6 +537,11 @@ pub fn unify_std_async_future_with_generated(
 ) -> bool {
     let Some(pattern_output) = std_async_future_output_arg(resolved, pattern) else {
         return false;
+    };
+    let actual = if let Ty::OpaqueState { base, .. } = actual {
+        base.as_ref()
+    } else {
+        actual
     };
     let Ty::GeneratedFuture { output, .. } = actual else {
         return false;

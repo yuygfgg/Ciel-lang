@@ -1877,6 +1877,12 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(output);
                 self.collect_ty(&std_future_ty((**output).clone()));
             }
+            Ty::OpaqueState { base, state } => {
+                self.collect_ty(base);
+                for (_, ty) in state {
+                    self.collect_ty(ty);
+                }
+            }
             Ty::DynamicInterface { args, .. } => {
                 for arg in args {
                     self.collect_ty(arg);
@@ -2785,6 +2791,12 @@ impl<'a> AggregateCollector<'a> {
             Ty::Generic(_) => false,
             Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
             Ty::GeneratedFuture { .. } => true,
+            Ty::OpaqueState { base, state } => {
+                self.type_is_affine_inner(base, visiting)
+                    || state
+                        .iter()
+                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
+            }
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),

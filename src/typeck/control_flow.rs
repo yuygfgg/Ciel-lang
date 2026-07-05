@@ -139,11 +139,13 @@ impl TypeChecker {
             } => {
                 let checked =
                     self.check_local_decl_init(scopes, stmt.span, ty, &name.name, init.as_ref());
+                let (binding_ty, flow_ty) = self.storage_and_flow_ty(&checked.ty);
                 if let Err(name) = scopes.insert(
                     *local_id,
                     Binding {
                         name: name.name.clone(),
-                        ty: checked.ty.clone(),
+                        ty: binding_ty,
+                        flow_ty,
                         narrowed_ty: None,
                         init_state: InitState::from_assigned(checked.assigned),
                         mutability: *mutability,
@@ -174,19 +176,20 @@ impl TypeChecker {
                     checked_target.expr.span,
                 );
                 let target = checked_target.expr;
+                let expected_ty = assignment_expected_ty(scopes, &target);
                 let diagnostics_before_value = self.diagnostics.len();
-                let value = self.check_consumed_expr(scopes, value, Some(&target.ty), false)?;
-                if target.ty.is_erased_value() {
+                let value = self.check_consumed_expr(scopes, value, Some(&expected_ty), false)?;
+                if expected_ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
                         stmt.span,
                         "void values are implicit and cannot be explicitly assigned",
                     ));
                 }
                 if self.diagnostics.len() == diagnostics_before_value {
-                    self.require_assignable(&target.ty, &value.ty, stmt.span);
+                    self.require_assignable(&expected_ty, &value.ty, stmt.span);
                 }
                 if assignment_allowed {
-                    self.mark_assignment_complete(scopes, &target);
+                    self.mark_assignment_complete(scopes, &target, &value.ty);
                 }
                 (TStmtKind::Assign { target, value }, Flow::fallthrough())
             }
@@ -379,6 +382,20 @@ impl TypeChecker {
                             ));
                         }
                         self.require_return_assignable(ret_ty, &expr.ty, expr.span);
+                        if (matches!(expr.ty, Ty::GeneratedFuture { .. })
+                            || ty_has_hidden_state(&expr.ty))
+                            && let Some(reason) = self.future_state_escape_violation(
+                                &expr.ty,
+                                "returned future",
+                                &mut HashSet::new(),
+                            )
+                        {
+                            self.diagnostics.push(self.diagnostic_with_reason_note(
+                                expr.span,
+                                "returned future state cannot safely escape this function",
+                                reason,
+                            ));
+                        }
                         Some(expr)
                     }
                     None => {
@@ -449,11 +466,13 @@ impl TypeChecker {
                 );
                 let local_name = name.name.clone();
                 let local_span = name.span;
+                let (binding_ty, flow_ty) = self.storage_and_flow_ty(&checked.ty);
                 if let Err(duplicate) = scopes.insert(
                     *local_id,
                     Binding {
                         name: local_name.clone(),
-                        ty: checked.ty.clone(),
+                        ty: binding_ty,
+                        flow_ty,
                         narrowed_ty: None,
                         init_state: InitState::from_assigned(checked.assigned),
                         mutability: *mutability,
@@ -481,16 +500,17 @@ impl TypeChecker {
                     checked_target.expr.span,
                 );
                 let target = checked_target.expr;
-                let value = self.check_consumed_expr(scopes, value, Some(&target.ty), false)?;
-                if target.ty.is_erased_value() {
+                let expected_ty = assignment_expected_ty(scopes, &target);
+                let value = self.check_consumed_expr(scopes, value, Some(&expected_ty), false)?;
+                if expected_ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
                         target.span,
                         "void values are implicit and cannot be explicitly assigned",
                     ));
                 }
-                self.require_assignable(&target.ty, &value.ty, value.span);
+                self.require_assignable(&expected_ty, &value.ty, value.span);
                 if assignment_allowed {
-                    self.mark_assignment_complete(scopes, &target);
+                    self.mark_assignment_complete(scopes, &target, &value.ty);
                 }
                 Some(TForInit::Assign { target, value })
             }
@@ -514,16 +534,17 @@ impl TypeChecker {
                     checked_target.expr.span,
                 );
                 let target = checked_target.expr;
-                let value = self.check_consumed_expr(scopes, value, Some(&target.ty), false)?;
-                if target.ty.is_erased_value() {
+                let expected_ty = assignment_expected_ty(scopes, &target);
+                let value = self.check_consumed_expr(scopes, value, Some(&expected_ty), false)?;
+                if expected_ty.is_erased_value() {
                     self.diagnostics.push(Diagnostic::new(
                         target.span,
                         "void values are implicit and cannot be explicitly assigned",
                     ));
                 }
-                self.require_assignable(&target.ty, &value.ty, value.span);
+                self.require_assignable(&expected_ty, &value.ty, value.span);
                 if assignment_allowed {
-                    self.mark_assignment_complete(scopes, &target);
+                    self.mark_assignment_complete(scopes, &target, &value.ty);
                 }
                 Some(TForInit::Assign { target, value })
             }
@@ -551,7 +572,12 @@ impl TypeChecker {
         ret_ty: &Ty,
     ) -> Option<(TStmtKind, Flow)> {
         let expr = self.check_expr(scopes, expr, None)?;
-        let Ty::Named { name, args } = &expr.ty else {
+        let switch_ty = if let Ty::OpaqueState { base, .. } = &expr.ty {
+            (**base).clone()
+        } else {
+            expr.ty.clone()
+        };
+        let Ty::Named { name, args } = &switch_ty else {
             self.diagnostics.push(Diagnostic::new(
                 expr.span,
                 format!("switch requires enum value, got `{}`", expr.ty),
@@ -559,7 +585,7 @@ impl TypeChecker {
             return Some((TStmtKind::Unsupported, Flow::fallthrough()));
         };
         let enum_type_name = enum_instance_name(name, args);
-        self.ensure_enum_instance(&expr.ty);
+        self.ensure_enum_instance(&switch_ty);
         let Some(checked_enum) = self.ctx.checked_enums.get(&enum_type_name).cloned() else {
             self.diagnostics.push(Diagnostic::new(
                 expr.span,
@@ -587,11 +613,13 @@ impl TypeChecker {
             let mut bindings = Vec::new();
             pattern.collect_bindings(&mut bindings);
             for (local_id, binding_name, mutability, binding_ty) in bindings {
+                let (storage_ty, flow_ty) = self.storage_and_flow_ty(&binding_ty);
                 if let Err(duplicate) = case_scopes.insert(
                     *local_id,
                     Binding {
                         name: binding_name.clone(),
-                        ty: binding_ty.clone(),
+                        ty: storage_ty,
+                        flow_ty,
                         narrowed_ty: None,
                         init_state: InitState::Assigned,
                         mutability,
@@ -619,7 +647,7 @@ impl TypeChecker {
             });
         }
 
-        let exhaustive = self.patterns_exhaustive_for_type(&expr.ty, &top_patterns);
+        let exhaustive = self.patterns_exhaustive_for_type(&switch_ty, &top_patterns);
         if !has_default && !exhaustive {
             self.diagnostics
                 .push(Diagnostic::new(span, "switch is not exhaustive"));
@@ -762,7 +790,13 @@ impl TypeChecker {
         subpatterns: &[Pattern],
         expected_ty: &Ty,
     ) -> Option<TPattern> {
-        let Some((_def_id, sig)) = self.lookup_pattern_variant_name(name, expected_ty) else {
+        let (expected_base_ty, opaque_state) = if let Ty::OpaqueState { base, state } = expected_ty
+        {
+            (base.as_ref(), Some(state.as_slice()))
+        } else {
+            (expected_ty, None)
+        };
+        let Some((_def_id, sig)) = self.lookup_pattern_variant_name(name, expected_base_ty) else {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
                 format!("unknown enum variant `{}`", name.display),
@@ -772,7 +806,7 @@ impl TypeChecker {
         let Ty::Named {
             name: enum_name,
             args: enum_args,
-        } = expected_ty
+        } = expected_base_ty
         else {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
@@ -783,6 +817,11 @@ impl TypeChecker {
             ));
             return None;
         };
+        let variant_name = name
+            .path
+            .last()
+            .map(|ident| ident.name.clone())
+            .unwrap_or_else(|| name.display.clone());
         if enum_name != &sig.enum_name {
             self.diagnostics.push(Diagnostic::new(
                 name.span,
@@ -838,23 +877,50 @@ impl TypeChecker {
 
         let mut payload = Vec::new();
         if use_logical_payload {
+            let mut physical_index = 0usize;
             for (subpattern, payload_ty) in subpatterns.iter().zip(logical_payload_tys.iter()) {
-                payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+                let payload_ty = if payload_ty.is_erased_value() {
+                    payload_ty.clone()
+                } else {
+                    let projected = opaque_state
+                        .map(|state| {
+                            self.project_opaque_variant_payload_ty(
+                                payload_ty.clone(),
+                                state,
+                                &variant_name,
+                                physical_index,
+                            )
+                        })
+                        .unwrap_or_else(|| payload_ty.clone());
+                    physical_index += 1;
+                    projected
+                };
+                payload.push(self.check_pattern(subpattern, &payload_ty, false)?);
             }
         } else {
-            for (subpattern, payload_ty) in subpatterns.iter().zip(physical_payload_tys.iter()) {
-                payload.push(self.check_pattern(subpattern, payload_ty, false)?);
+            for (physical_index, (subpattern, payload_ty)) in subpatterns
+                .iter()
+                .zip(physical_payload_tys.iter())
+                .enumerate()
+            {
+                let payload_ty = opaque_state
+                    .map(|state| {
+                        self.project_opaque_variant_payload_ty(
+                            payload_ty.clone(),
+                            state,
+                            &variant_name,
+                            physical_index,
+                        )
+                    })
+                    .unwrap_or_else(|| payload_ty.clone());
+                payload.push(self.check_pattern(subpattern, &payload_ty, false)?);
             }
         }
-        self.ensure_enum_instance(expected_ty);
+        self.ensure_enum_instance(expected_base_ty);
         Some(TPattern::Variant {
-            ty: expected_ty.clone(),
+            ty: expected_base_ty.clone(),
             enum_type_name: enum_instance_name(enum_name, enum_args),
-            variant_name: name
-                .path
-                .last()
-                .map(|ident| ident.name.clone())
-                .unwrap_or_else(|| name.display.clone()),
+            variant_name,
             variant_index: sig.variant_index,
             payload,
         })
@@ -980,4 +1046,13 @@ impl TypeChecker {
         self.return_loop_move_depth = previous;
         result
     }
+}
+
+fn assignment_expected_ty(scopes: &LocalScopes, target: &TExpr) -> Ty {
+    if let TExprKind::Local(local_id, _) = &target.kind
+        && let Some(binding) = scopes.get(*local_id)
+    {
+        return binding.ty.clone();
+    }
+    target.ty.clone()
 }

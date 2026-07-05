@@ -794,13 +794,27 @@ fn coherence_unify(left: &Ty, right: &Ty, subst: &mut HashMap<String, Ty>) -> bo
                     .all(|(left, right)| coherence_unify(left, right, subst))
         }
         (
-            Ty::GeneratedFuture { name, output, .. },
+            Ty::GeneratedFuture {
+                name,
+                output,
+                state,
+                ..
+            },
             Ty::GeneratedFuture {
                 name: right_name,
                 output: right_output,
+                state: right_state,
                 ..
             },
-        ) => name == right_name && coherence_unify(output, right_output, subst),
+        ) => {
+            name == right_name
+                && state.len() == right_state.len()
+                && coherence_unify(output, right_output, subst)
+                && state
+                    .iter()
+                    .zip(right_state.iter())
+                    .all(|((_, left), (_, right))| coherence_unify(left, right, subst))
+        }
         (
             Ty::OpaqueReturn { key, bounds },
             Ty::OpaqueReturn {

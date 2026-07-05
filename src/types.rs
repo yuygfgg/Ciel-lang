@@ -108,6 +108,11 @@ pub enum Ty {
         cancel_safe: bool,
         abortable: bool,
         affine_state: bool,
+        state: Vec<(String, Ty)>,
+    },
+    OpaqueState {
+        base: Box<Ty>,
+        state: Vec<(String, Ty)>,
     },
     Generic(String),
     DynamicInterface {
@@ -238,6 +243,7 @@ impl Ty {
         match self {
             Ty::Void => true,
             Ty::Array { elem, .. } => elem.is_erased_value(),
+            Ty::OpaqueState { base, .. } => base.is_erased_value(),
             _ => false,
         }
     }
@@ -279,10 +285,16 @@ impl Ty {
     }
 
     pub fn can_assign_from(&self, source: &Ty) -> bool {
+        if let Ty::OpaqueState { base, .. } = self {
+            return base.can_assign_from(source);
+        }
+        if let Ty::OpaqueState { base, .. } = source {
+            return self.can_assign_from(base);
+        }
         if matches!(self, Ty::Hole(_)) || matches!(source, Ty::Hole(_)) {
             return true;
         }
-        if self == source {
+        if Self::same_ignoring_opaque_state(self, source) {
             return true;
         }
         matches!(
@@ -299,7 +311,7 @@ impl Ty {
                     inner: actual,
                 },
             ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability)
-                && expected == actual
+                && Self::same_ignoring_opaque_state(expected, actual)
         ) || matches!(
             (self, source),
             (
@@ -315,7 +327,7 @@ impl Ty {
                 },
         ) if expected_nullable == actual_nullable
                 && pointer_view_can_weaken(*expected_mutability, *actual_mutability)
-                && expected == actual
+                && Self::same_ignoring_opaque_state(expected, actual)
         ) || matches!(
             (self, source),
             (
@@ -328,7 +340,7 @@ impl Ty {
                     elem: actual,
                 },
             ) if pointer_view_can_weaken(*expected_mutability, *actual_mutability)
-                && expected == actual
+                && Self::same_ignoring_opaque_state(expected, actual)
         ) || matches!(
             (self, source),
             (
@@ -345,7 +357,11 @@ impl Ty {
                     params: actual_params,
                 },
             ) if expected_abi == actual_abi
-                && expected_params == actual_params
+                && expected_params.len() == actual_params.len()
+                && expected_params
+                    .iter()
+                    .zip(actual_params.iter())
+                    .all(|(expected, actual)| Self::same_ignoring_opaque_state(expected, actual))
                 && expected_ret.can_assign_from(actual_ret)
                 && (!actual_unsafe || *expected_unsafe)
         ) || matches!(
@@ -361,7 +377,11 @@ impl Ty {
                     params: actual_params,
                     constraints: actual_constraints,
                 },
-            ) if expected_params == actual_params
+            ) if expected_params.len() == actual_params.len()
+                && expected_params
+                    .iter()
+                    .zip(actual_params.iter())
+                    .all(|(expected, actual)| Self::same_ignoring_opaque_state(expected, actual))
                 && expected_ret.can_assign_from(actual_ret)
                 && actual_constraints.proves_all(expected_constraints)
         ) || matches!(
@@ -378,9 +398,200 @@ impl Ty {
                     ..
                 },
             ) if expected_constraints.is_empty()
-                && expected_params == actual_params
+                && expected_params.len() == actual_params.len()
+                && expected_params
+                    .iter()
+                    .zip(actual_params.iter())
+                    .all(|(expected, actual)| Self::same_ignoring_opaque_state(expected, actual))
                 && expected_ret.can_assign_from(actual_ret)
         )
+    }
+
+    fn same_ignoring_opaque_state(left: &Ty, right: &Ty) -> bool {
+        if left == right {
+            return true;
+        }
+        match (left, right) {
+            (Ty::OpaqueState { base, .. }, _) => Self::same_ignoring_opaque_state(base, right),
+            (_, Ty::OpaqueState { base, .. }) => Self::same_ignoring_opaque_state(left, base),
+            (
+                Ty::Pointer {
+                    nullable: left_nullable,
+                    mutability: left_mutability,
+                    inner: left_inner,
+                },
+                Ty::Pointer {
+                    nullable: right_nullable,
+                    mutability: right_mutability,
+                    inner: right_inner,
+                },
+            ) => {
+                left_nullable == right_nullable
+                    && left_mutability == right_mutability
+                    && Self::same_ignoring_opaque_state(left_inner, right_inner)
+            }
+            (
+                Ty::Array {
+                    len: left_len,
+                    elem: left_elem,
+                },
+                Ty::Array {
+                    len: right_len,
+                    elem: right_elem,
+                },
+            ) => left_len == right_len && Self::same_ignoring_opaque_state(left_elem, right_elem),
+            (
+                Ty::Slice {
+                    mutability: left_mutability,
+                    elem: left_elem,
+                },
+                Ty::Slice {
+                    mutability: right_mutability,
+                    elem: right_elem,
+                },
+            ) => {
+                left_mutability == right_mutability
+                    && Self::same_ignoring_opaque_state(left_elem, right_elem)
+            }
+            (
+                Ty::Named {
+                    name: left_name,
+                    args: left_args,
+                },
+                Ty::Named {
+                    name: right_name,
+                    args: right_args,
+                },
+            ) => {
+                left_name == right_name
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+            }
+            (
+                Ty::GeneratedFuture {
+                    name: left_name,
+                    output: left_output,
+                    cancel_safe: left_cancel_safe,
+                    abortable: left_abortable,
+                    affine_state: left_affine_state,
+                    state: left_state,
+                },
+                Ty::GeneratedFuture {
+                    name: right_name,
+                    output: right_output,
+                    cancel_safe: right_cancel_safe,
+                    abortable: right_abortable,
+                    affine_state: right_affine_state,
+                    state: right_state,
+                },
+            ) => {
+                left_name == right_name
+                    && left_cancel_safe == right_cancel_safe
+                    && left_abortable == right_abortable
+                    && left_affine_state == right_affine_state
+                    && left_state.len() == right_state.len()
+                    && Self::same_ignoring_opaque_state(left_output, right_output)
+                    && left_state.iter().zip(right_state.iter()).all(
+                        |((left_name, left_ty), (right_name, right_ty))| {
+                            left_name == right_name
+                                && Self::same_ignoring_opaque_state(left_ty, right_ty)
+                        },
+                    )
+            }
+            (
+                Ty::DynamicInterface {
+                    def_id: left_def_id,
+                    args: left_args,
+                    ..
+                },
+                Ty::DynamicInterface {
+                    def_id: right_def_id,
+                    args: right_args,
+                    ..
+                },
+            ) => {
+                left_def_id == right_def_id
+                    && left_args.len() == right_args.len()
+                    && left_args
+                        .iter()
+                        .zip(right_args.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+            }
+            (
+                Ty::Function {
+                    is_unsafe: left_is_unsafe,
+                    abi: left_abi,
+                    ret: left_ret,
+                    params: left_params,
+                },
+                Ty::Function {
+                    is_unsafe: right_is_unsafe,
+                    abi: right_abi,
+                    ret: right_ret,
+                    params: right_params,
+                },
+            ) => {
+                left_is_unsafe == right_is_unsafe
+                    && left_abi == right_abi
+                    && left_params.len() == right_params.len()
+                    && Self::same_ignoring_opaque_state(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+            }
+            (
+                Ty::Closure {
+                    ret: left_ret,
+                    params: left_params,
+                    constraints: left_constraints,
+                },
+                Ty::Closure {
+                    ret: right_ret,
+                    params: right_params,
+                    constraints: right_constraints,
+                },
+            ) => {
+                left_constraints == right_constraints
+                    && left_params.len() == right_params.len()
+                    && Self::same_ignoring_opaque_state(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+            }
+            (
+                Ty::ClosureInstance {
+                    id: left_id,
+                    ret: left_ret,
+                    params: left_params,
+                    captures: left_captures,
+                },
+                Ty::ClosureInstance {
+                    id: right_id,
+                    ret: right_ret,
+                    params: right_params,
+                    captures: right_captures,
+                },
+            ) => {
+                left_id == right_id
+                    && left_params.len() == right_params.len()
+                    && left_captures.len() == right_captures.len()
+                    && Self::same_ignoring_opaque_state(left_ret, right_ret)
+                    && left_params
+                        .iter()
+                        .zip(right_params.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+                    && left_captures
+                        .iter()
+                        .zip(right_captures.iter())
+                        .all(|(left, right)| Self::same_ignoring_opaque_state(left, right))
+            }
+            _ => false,
+        }
     }
 }
 
@@ -441,13 +652,25 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             cancel_safe,
             abortable,
             affine_state,
+            state,
         } => Ty::GeneratedFuture {
             name: name.clone(),
             output: Box::new(substitute_ty(output, subst)),
             cancel_safe: *cancel_safe,
             abortable: *abortable,
             affine_state: *affine_state,
+            state: state
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_ty(ty, subst)))
+                .collect(),
         },
+        Ty::OpaqueState { base, state } => opaque_state_ty(
+            substitute_ty(base, subst),
+            state
+                .iter()
+                .map(|(name, ty)| (name.clone(), substitute_ty(ty, subst)))
+                .collect(),
+        ),
         Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
             def_id: *def_id,
             name: name.clone(),
@@ -545,6 +768,12 @@ pub fn substitute_constraint_ref(
 }
 
 pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> bool {
+    if let Ty::OpaqueState { base, .. } = pattern {
+        return unify_ty(base, actual, subst);
+    }
+    if let Ty::OpaqueState { base, .. } = actual {
+        return unify_ty(pattern, base, subst);
+    }
     match pattern {
         Ty::Hole(_) => true,
         Ty::Generic(name) => match subst.get(name) {
@@ -602,12 +831,24 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
                 .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
             _ => false,
         },
-        Ty::GeneratedFuture { name, output, .. } => match actual {
+        Ty::GeneratedFuture {
+            name,
+            output,
+            state,
+            ..
+        } => match actual {
             Ty::GeneratedFuture {
                 name: actual_name,
                 output: actual_output,
+                state: actual_state,
                 ..
-            } if name == actual_name => unify_ty(output, actual_output, subst),
+            } if name == actual_name && state.len() == actual_state.len() => {
+                unify_ty(output, actual_output, subst)
+                    && state
+                        .iter()
+                        .zip(actual_state.iter())
+                        .all(|((_, pattern), (_, actual))| unify_ty(pattern, actual, subst))
+            }
             _ => false,
         },
         Ty::DynamicInterface { def_id, args, .. } => match actual {
@@ -823,7 +1064,14 @@ pub fn contains_generic(ty: &Ty) -> bool {
                     stack.extend(entry.args.iter());
                 }
             }
-            Ty::GeneratedFuture { output, .. } => stack.push(output),
+            Ty::GeneratedFuture { output, state, .. } => {
+                stack.push(output);
+                stack.extend(state.iter().map(|(_, ty)| ty));
+            }
+            Ty::OpaqueState { base, state } => {
+                stack.push(base);
+                stack.extend(state.iter().map(|(_, ty)| ty));
+            }
             Ty::Function { ret, params, .. } => {
                 stack.push(ret);
                 stack.extend(params.iter());
@@ -883,7 +1131,14 @@ pub fn contains_type_hole(ty: &Ty) -> bool {
                     stack.extend(entry.args.iter());
                 }
             }
-            Ty::GeneratedFuture { output, .. } => stack.push(output),
+            Ty::GeneratedFuture { output, state, .. } => {
+                stack.push(output);
+                stack.extend(state.iter().map(|(_, ty)| ty));
+            }
+            Ty::OpaqueState { base, state } => {
+                stack.push(base);
+                stack.extend(state.iter().map(|(_, ty)| ty));
+            }
             Ty::Function { ret, params, .. } => {
                 stack.push(ret);
                 stack.extend(params.iter());
@@ -941,7 +1196,18 @@ pub fn contains_any_generic_name(ty: &Ty, names: &HashSet<String>) -> bool {
                 .any(|arg| contains_any_generic_name(arg, names))
                 || constraint_bounds_contains_any_generic_name(bounds, names)
         }
-        Ty::GeneratedFuture { output, .. } => contains_any_generic_name(output, names),
+        Ty::GeneratedFuture { output, state, .. } => {
+            contains_any_generic_name(output, names)
+                || state
+                    .iter()
+                    .any(|(_, ty)| contains_any_generic_name(ty, names))
+        }
+        Ty::OpaqueState { base, state } => {
+            contains_any_generic_name(base, names)
+                || state
+                    .iter()
+                    .any(|(_, ty)| contains_any_generic_name(ty, names))
+        }
         Ty::Function { ret, params, .. } => {
             contains_any_generic_name(ret, names)
                 || params
@@ -1004,7 +1270,20 @@ pub fn type_complexity(ty: &Ty) -> usize {
             1 + key.args.iter().map(type_complexity).sum::<usize>()
                 + constraint_bounds_complexity(bounds)
         }
-        Ty::GeneratedFuture { output, .. } => 1 + type_complexity(output),
+        Ty::GeneratedFuture { output, state, .. } => {
+            1 + type_complexity(output)
+                + state
+                    .iter()
+                    .map(|(_, ty)| type_complexity(ty))
+                    .sum::<usize>()
+        }
+        Ty::OpaqueState { base, state } => {
+            1 + type_complexity(base)
+                + state
+                    .iter()
+                    .map(|(_, ty)| type_complexity(ty))
+                    .sum::<usize>()
+        }
         Ty::Function { ret, params, .. } => {
             1 + type_complexity(ret) + params.iter().map(type_complexity).sum::<usize>()
         }
@@ -1072,7 +1351,12 @@ pub fn ty_contains(container: &Ty, needle: &Ty) -> bool {
             key.args.iter().any(|arg| ty_contains(arg, needle))
                 || constraint_bounds_contains_ty(bounds, needle)
         }
-        Ty::GeneratedFuture { output, .. } => ty_contains(output, needle),
+        Ty::GeneratedFuture { output, state, .. } => {
+            ty_contains(output, needle) || state.iter().any(|(_, ty)| ty_contains(ty, needle))
+        }
+        Ty::OpaqueState { base, state } => {
+            ty_contains(base, needle) || state.iter().any(|(_, ty)| ty_contains(ty, needle))
+        }
         Ty::Function { ret, params, .. } => {
             ty_contains(ret, needle) || params.iter().any(|param| ty_contains(param, needle))
         }
@@ -1233,16 +1517,84 @@ pub fn generated_future_ty_with_affine_state(
     abortable: bool,
     affine_state: bool,
 ) -> Ty {
+    generated_future_ty_with_state(
+        name,
+        output_ty,
+        cancel_safe,
+        abortable,
+        affine_state,
+        Vec::new(),
+    )
+}
+
+pub fn generated_future_ty_with_state(
+    name: impl Into<String>,
+    output_ty: Ty,
+    cancel_safe: bool,
+    abortable: bool,
+    affine_state: bool,
+    state: Vec<(String, Ty)>,
+) -> Ty {
     Ty::GeneratedFuture {
         name: name.into(),
         output: Box::new(output_ty),
         cancel_safe,
         abortable,
         affine_state,
+        state,
+    }
+}
+
+pub fn opaque_state_ty(base: Ty, state: Vec<(String, Ty)>) -> Ty {
+    if state.is_empty() {
+        return base;
+    }
+    match base {
+        Ty::OpaqueState {
+            base,
+            state: mut existing,
+        } => {
+            existing.extend(state);
+            Ty::OpaqueState {
+                base,
+                state: existing,
+            }
+        }
+        other => Ty::OpaqueState {
+            base: Box::new(other),
+            state,
+        },
+    }
+}
+
+pub const OPAQUE_FUTURE_STATE_MARKER_NAME: &str = "<opaque future state>";
+
+pub fn opaque_future_state_marker_ty() -> Ty {
+    Ty::Named {
+        name: OPAQUE_FUTURE_STATE_MARKER_NAME.to_string(),
+        args: Vec::new(),
+    }
+}
+
+pub fn is_opaque_future_state_marker_ty(ty: &Ty) -> bool {
+    matches!(
+        ty,
+        Ty::Named { name, args }
+            if name == OPAQUE_FUTURE_STATE_MARKER_NAME && args.is_empty()
+    )
+}
+
+pub fn ty_has_hidden_state(ty: &Ty) -> bool {
+    match ty {
+        Ty::GeneratedFuture { state, .. } | Ty::OpaqueState { state, .. } => !state.is_empty(),
+        _ => false,
     }
 }
 
 pub fn generated_future_output_ty(ty: &Ty) -> Option<Ty> {
+    if let Ty::OpaqueState { base, .. } = ty {
+        return generated_future_output_ty(base);
+    }
     let Ty::GeneratedFuture { output, .. } = ty else {
         return None;
     };
@@ -1545,7 +1897,12 @@ pub fn contains_meta_marker(ty: &Ty) -> bool {
                 || meta_schema_marker_name(name)
                 || args.iter().any(contains_meta_marker)
         }
-        Ty::GeneratedFuture { output, .. } => contains_meta_marker(output),
+        Ty::GeneratedFuture { output, state, .. } => {
+            contains_meta_marker(output) || state.iter().any(|(_, ty)| contains_meta_marker(ty))
+        }
+        Ty::OpaqueState { base, state } => {
+            contains_meta_marker(base) || state.iter().any(|(_, ty)| contains_meta_marker(ty))
+        }
         Ty::Pointer { inner, .. } => contains_meta_marker(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_marker(elem),
         Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_marker),
@@ -1579,7 +1936,14 @@ pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
         Ty::Named { name, args } => {
             meta_repr_marker_name(name).is_some() || args.iter().any(contains_meta_repr_marker)
         }
-        Ty::GeneratedFuture { output, .. } => contains_meta_repr_marker(output),
+        Ty::GeneratedFuture { output, state, .. } => {
+            contains_meta_repr_marker(output)
+                || state.iter().any(|(_, ty)| contains_meta_repr_marker(ty))
+        }
+        Ty::OpaqueState { base, state } => {
+            contains_meta_repr_marker(base)
+                || state.iter().any(|(_, ty)| contains_meta_repr_marker(ty))
+        }
         Ty::Pointer { inner, .. } => contains_meta_repr_marker(inner),
         Ty::Array { elem, .. } | Ty::Slice { elem, .. } => contains_meta_repr_marker(elem),
         Ty::DynamicInterface { args, .. } => args.iter().any(contains_meta_repr_marker),
@@ -1640,13 +2004,25 @@ where
             cancel_safe,
             abortable,
             affine_state,
+            state,
         } => Ty::GeneratedFuture {
             name: name.clone(),
             output: Box::new(map_child(output)),
             cancel_safe: *cancel_safe,
             abortable: *abortable,
             affine_state: *affine_state,
+            state: state
+                .iter()
+                .map(|(name, ty)| (name.clone(), map_child(ty)))
+                .collect(),
         },
+        Ty::OpaqueState { base, state } => opaque_state_ty(
+            map_child(base),
+            state
+                .iter()
+                .map(|(name, ty)| (name.clone(), map_child(ty)))
+                .collect(),
+        ),
         Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
             def_id: *def_id,
             name: name.clone(),
@@ -1816,6 +2192,7 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
             };
             format!("{prefix}_{name}_{}", mangle_ty_fragment(output))
         }
+        Ty::OpaqueState { base, .. } => mangle_ty_fragment(base),
         Ty::Generic(name) => format!("gen_{name}"),
         Ty::DynamicInterface { def_id, name, args } => {
             if args.is_empty() {
@@ -2067,6 +2444,7 @@ impl fmt::Display for Ty {
                 }
             }
             Ty::GeneratedFuture { output, .. } => write!(f, "Future<{output}>"),
+            Ty::OpaqueState { base, .. } => write!(f, "{base}"),
             Ty::Generic(name) => write!(f, "{name}"),
             Ty::DynamicInterface { name, args, .. } => {
                 if args.is_empty() {

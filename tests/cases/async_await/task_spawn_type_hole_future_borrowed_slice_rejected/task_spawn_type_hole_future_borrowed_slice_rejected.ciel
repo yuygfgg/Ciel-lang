@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: `async::spawn` future state does not implement `Message`
+// expect-error: future state `view` has borrowed read-only slice type `[]const i64`
+
+import /std/async as async;
+import /std/result;
+
+async Result<usize, Error> len_later([]const i64 view) {
+    return Ok(view.len);
+}
+
+i32 main() {
+    [3]i64 values = [1, 2, 3];
+    async::Future<Result<_, Error>> future = len_later(values[..]);
+    _ task = must(async::spawn<usize>(future));
+    return 0;
+}

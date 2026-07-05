@@ -7,13 +7,14 @@ import /std/env as env;
 import /std/io as io;
 import /std/resource as resource;
 import /std/result;
+import /std/text as text;
 
-async Result<io::File, Error> open_later([]const char path) {
-    io::File file = io::open_read(path)?;
+async Result<io::File, Error> open_later(text::Text path) {
+    io::File file = io::open_read(text::text_to_slice(path)?)?;
     return Ok(file);
 }
 
-Result<async::Future<Result<io::File, Error>>, Error> future_from_child_owner([]const char path) {
+Result<async::Future<Result<io::File, Error>>, resource::ScopedError<Error>> future_from_child_owner(text::Text path) {
     async::Future<Result<io::File, Error>> future = resource::scoped<async::Future<Result<io::File, Error>>, Error>(|| {
         return Ok(open_later(path));
     })?;
@@ -27,7 +28,8 @@ i32 main() {
         return Ok;
     }));
 
-    switch (future_from_child_owner(path)) {
+    text::Text owned_path = must(text::text_copy(path));
+    switch (future_from_child_owner(owned_path)) {
         case Ok(future):
             switch (async::block_on(future)) {
                 case Ok(file):

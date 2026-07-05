@@ -811,6 +811,15 @@ impl TypeChecker {
         if self.meta_repr_storage_equivalent(&expected, &actual) {
             return true;
         }
+        if self.unify_std_async_future_generated_type_holes(&expected, &actual) {
+            return true;
+        }
+        if let Ty::OpaqueState { base, .. } = &expected {
+            return self.unify_type_holes(base, &actual);
+        }
+        if let Ty::OpaqueState { base, .. } = &actual {
+            return self.unify_type_holes(&expected, base);
+        }
         match (&expected, &actual) {
             (Ty::Hole(id), _) => self.bind_type_hole(*id, &actual),
             (_, Ty::Hole(id)) => self.bind_type_hole(*id, &expected),
@@ -956,6 +965,23 @@ impl TypeChecker {
         }
     }
 
+    fn unify_std_async_future_generated_type_holes(&mut self, expected: &Ty, actual: &Ty) -> bool {
+        let Some(expected_output) =
+            std_id::std_async_future_output_arg(&self.ctx.resolved, expected)
+        else {
+            return false;
+        };
+        let actual = if let Ty::OpaqueState { base, .. } = actual {
+            base.as_ref()
+        } else {
+            actual
+        };
+        let Ty::GeneratedFuture { output, .. } = actual else {
+            return false;
+        };
+        self.unify_type_holes(expected_output, output)
+    }
+
     pub(super) fn unify_ty_for_inference(
         &mut self,
         pattern: &Ty,
@@ -967,6 +993,12 @@ impl TypeChecker {
         let actual = self.resolve_type_holes(actual);
         if self.meta_repr_storage_equivalent(&pattern, &actual) {
             return true;
+        }
+        if let Ty::OpaqueState { base, .. } = &pattern {
+            return self.unify_ty_for_inference(base, &actual, subst);
+        }
+        if let Ty::OpaqueState { base, .. } = &actual {
+            return self.unify_ty_for_inference(&pattern, base, subst);
         }
         if let Ty::Generic(name) = &pattern
             && let Some(existing) = subst.get(name).cloned()
@@ -1044,12 +1076,9 @@ impl TypeChecker {
                     .iter()
                     .zip(actual_args.iter())
                     .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
-                Ty::GeneratedFuture { .. } => std_id::unify_std_async_future_with_generated(
-                    &self.ctx.resolved,
-                    &pattern,
-                    &actual,
-                    subst,
-                ),
+                Ty::GeneratedFuture { .. } | Ty::OpaqueState { .. } => {
+                    self.unify_std_async_future_generated_for_inference(&pattern, &actual, subst)
+                }
                 _ => false,
             },
             Ty::DynamicInterface { def_id, args, .. } => match &actual {
@@ -1161,6 +1190,27 @@ impl TypeChecker {
         }
     }
 
+    fn unify_std_async_future_generated_for_inference(
+        &mut self,
+        pattern: &Ty,
+        actual: &Ty,
+        subst: &mut HashMap<String, Ty>,
+    ) -> bool {
+        let Some(pattern_output) = std_id::std_async_future_output_arg(&self.ctx.resolved, pattern)
+        else {
+            return false;
+        };
+        let actual = if let Ty::OpaqueState { base, .. } = actual {
+            base.as_ref()
+        } else {
+            actual
+        };
+        let Ty::GeneratedFuture { output, .. } = actual else {
+            return false;
+        };
+        self.unify_ty_for_inference(pattern_output, output, subst)
+    }
+
     pub(super) fn unify_constraint_bounds_for_inference(
         &mut self,
         pattern: &ConstraintBounds,
@@ -1250,12 +1300,24 @@ impl TypeChecker {
             let preserve_generated_future = init.as_ref().is_some_and(|init| {
                 std_id::std_async_future_accepts_generated(&self.ctx.resolved, &ty, &init.ty)
             });
+            let preserve_opaque_state = init.as_ref().and_then(|init| {
+                if let Ty::OpaqueState { base, state } = &init.ty
+                    && ty.can_assign_from(base)
+                {
+                    Some(opaque_state_ty(ty.clone(), state.clone()))
+                } else {
+                    None
+                }
+            });
             if let Some(init) = &init
                 && !preserve_generated_future
+                && preserve_opaque_state.is_none()
             {
                 self.require_assignable(&ty, &init.ty, span);
             }
-            let ty = if preserve_generated_future {
+            let ty = if let Some(ty) = preserve_opaque_state {
+                ty
+            } else if preserve_generated_future {
                 let init = init.as_ref().expect("preserved generated future has init");
                 init.ty.clone()
             } else {
@@ -1324,10 +1386,14 @@ impl TypeChecker {
                 assigned: true,
             };
         }
+        let checked_ty = init
+            .as_ref()
+            .map(|init| self.ty_preserving_hidden_state_for_expected(&solved_ty, &init.ty))
+            .unwrap_or_else(|| solved_ty.clone());
 
         CheckedLocalInit {
             assigned: init.as_ref().is_some_and(|init| !init.is_never()),
-            ty: solved_ty,
+            ty: checked_ty,
             init,
         }
     }
@@ -1364,7 +1430,18 @@ fn collect_type_hole_ids(ty: &Ty, out: &mut Vec<usize>) {
                 collect_type_hole_ids(arg, out);
             }
         }
-        Ty::GeneratedFuture { output, .. } => collect_type_hole_ids(output, out),
+        Ty::GeneratedFuture { output, state, .. } => {
+            collect_type_hole_ids(output, out);
+            for (_, ty) in state {
+                collect_type_hole_ids(ty, out);
+            }
+        }
+        Ty::OpaqueState { base, state } => {
+            collect_type_hole_ids(base, out);
+            for (_, ty) in state {
+                collect_type_hole_ids(ty, out);
+            }
+        }
         Ty::OpaqueReturn { key, bounds } => {
             for arg in &key.args {
                 collect_type_hole_ids(arg, out);

@@ -676,9 +676,13 @@ export struct TaskGroup<T> {
     *void handle;
 }
 
+unsafe derive<T> async_frame_opt_in_marker<TaskGroup<T>>;
+
 struct TaskGroupNextCtx<T> {
     *void group;
 }
+
+unsafe derive<T> async_frame_opt_in_marker<TaskGroupNextCtx<T>>;
 
 export resource unsafe struct TaskGroupNextFuture<T> {
     Future<Result<Task<T>, AsyncError>> inner;
@@ -758,8 +762,8 @@ export Result<void, AsyncError> group_add<T>(*const TaskGroup<T> group, Task<T> 
     return Ok;
 }
 
-TaskGroupNextFuture<T> group_next_task<T>(*const TaskGroup<T> group) {
-    TaskGroupNextCtx<T> ctx = { group: group->handle };
+TaskGroupNextFuture<T> group_next_task<T>(TaskGroup<T> group) {
+    TaskGroupNextCtx<T> ctx = { group: group.handle };
     Future<Result<Task<T>, AsyncError>> inner = unsafe {
         runtime_future::new<Result<Task<T>, AsyncError>, TaskGroupNextCtx<T>>(
             ctx,
@@ -772,7 +776,7 @@ TaskGroupNextFuture<T> group_next_task<T>(*const TaskGroup<T> group) {
 
 // Awaits and returns the next completed task result in completion order.
 export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next {
-    TaskGroupNextFuture<T> next_task = group_next_task<T>(group);
+    TaskGroupNextFuture<T> next_task = group_next_task<T>(unsafe { *group });
     Task<T> task = await next_task?;
     return await task;
 }

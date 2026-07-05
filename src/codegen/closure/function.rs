@@ -37,12 +37,18 @@ impl<'a> CGenerator<'a> {
                 .params
                 .iter()
                 .any(|(_, _, ty, _)| self.type_is_affine(ty));
-            generated_future_ty_with_affine_state(
+            let state = function
+                .params
+                .iter()
+                .map(|(_, name, ty, _)| (name.clone(), ty.clone()))
+                .collect();
+            generated_future_ty_with_state(
                 format!("fn_{}", function.def_id.0),
                 function.ret.clone(),
                 false,
                 true,
                 affine_state,
+                state,
             )
         } else {
             function.ret.clone()
@@ -90,6 +96,11 @@ impl<'a> CGenerator<'a> {
         output_ty: &Ty,
         receiver_ty: &Ty,
     ) -> DiagResult<String> {
+        let receiver_ty = if let Ty::OpaqueState { base, .. } = receiver_ty {
+            base.as_ref()
+        } else {
+            receiver_ty
+        };
         self.program
             .checked
             .impls

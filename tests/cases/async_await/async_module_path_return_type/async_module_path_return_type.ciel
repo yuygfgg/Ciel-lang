@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 5
+
+import /std/async as async;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Error> ready() {
+    return Ok(5);
+}
+
+async::Task<usize> make_task() {
+    return must(async::spawn<usize>(ready()));
+}
+
+i32 main() {
+    async::Task<usize> task = make_task();
+    must(print_value(must(async::block_on(task))));
+    return 0;
+}

@@ -25,6 +25,12 @@ impl<'a> CGenerator<'a> {
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
             Ty::GeneratedFuture { .. } => true,
+            Ty::OpaqueState { base, state } => {
+                self.type_is_affine_inner(base, visiting)
+                    || state
+                        .iter()
+                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
+            }
             Ty::Named { name, args } => {
                 let named_ty = Ty::Named {
                     name: name.clone(),
@@ -225,6 +231,9 @@ impl<'a> CGenerator<'a> {
             return;
         }
         match ty {
+            Ty::OpaqueState { base, .. } => {
+                self.emit_resource_cleanup_body(base, value, indent);
+            }
             Ty::GeneratedFuture { .. } => {
                 self.line_indent(
                     indent,
@@ -352,6 +361,9 @@ impl<'a> CGenerator<'a> {
             return;
         }
         match ty {
+            Ty::OpaqueState { base, .. } => {
+                self.emit_resource_transfer_to_parent_body(base, value, indent);
+            }
             Ty::GeneratedFuture { .. } => {
                 self.line_indent(indent, &format!("if ({value} == NULL) return EINVAL;"));
                 self.line_indent(indent, "return ENOTSUP;");
@@ -467,6 +479,12 @@ impl<'a> CGenerator<'a> {
             return;
         }
         match ty {
+            Ty::OpaqueState { base, .. } => {
+                self.emit_resource_zero_expr(base, value, indent);
+            }
+            Ty::GeneratedFuture { .. } => {
+                self.line_indent(indent, &format!("({value}).handle = NULL;"));
+            }
             Ty::Array { len, elem } if self.type_is_affine(elem) => {
                 let index = self.next_temp("resource_zero_i");
                 self.line_indent(

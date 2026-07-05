@@ -1389,6 +1389,9 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<(String, Ty)>> {
+        if let Ty::OpaqueState { base, .. } = ty {
+            return self.struct_fields_for_ty(span, base);
+        }
         let Ty::Named { name, args } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
@@ -1417,6 +1420,9 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<CheckedVariant>> {
+        if let Ty::OpaqueState { base, .. } = ty {
+            return self.enum_variants_for_ty(span, base);
+        }
         let Ty::Named { name, args } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
@@ -1445,6 +1451,9 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Vec<MetaCaptureField>> {
+        if let Ty::OpaqueState { base, .. } = ty {
+            return self.meta_capture_fields_for_ty(span, base);
+        }
         let Ty::ClosureInstance { captures, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,

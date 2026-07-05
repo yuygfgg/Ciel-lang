@@ -25,7 +25,11 @@ impl TypeChecker {
                 };
                 let name = binding.name.clone();
                 let init_state = binding.init_state;
-                let binding_ty = binding.ty.clone();
+                let binding_ty = binding
+                    .narrowed_ty
+                    .clone()
+                    .or_else(|| binding.flow_ty.clone())
+                    .unwrap_or_else(|| binding.ty.clone());
                 if require_assigned && !binding.init_state.is_assigned() {
                     if init_state.is_moved() && self.type_is_affine(&binding_ty) {
                         self.diagnostics.push(Diagnostic::new(
@@ -41,7 +45,7 @@ impl TypeChecker {
                 }
                 let expr = TExpr {
                     span: expr.span,
-                    ty: binding.ty.clone(),
+                    ty: binding_ty,
                     kind: TExprKind::Local(local_id, name),
                 };
                 if binding.captured {
@@ -114,6 +118,51 @@ impl TypeChecker {
                         .push(Diagnostic::new(index.span, "index must be integer"));
                 }
                 match base_expr.ty.clone() {
+                    Ty::OpaqueState {
+                        base: opaque_base,
+                        state,
+                    } => match *opaque_base {
+                        Ty::Slice { mutability, elem } => {
+                            let elem_ty = self.project_opaque_index_ty((*elem).clone(), &state);
+                            let expr = TExpr {
+                                span: expr.span,
+                                ty: elem_ty,
+                                kind: TExprKind::Index {
+                                    base: Box::new(base_expr),
+                                    index: Box::new(index),
+                                },
+                            };
+                            Some(CheckedLvalue::from_view(
+                                expr,
+                                mutability,
+                                ReadOnlyReason::ReadOnlySlice,
+                            ))
+                        }
+                        Ty::Array { elem, .. } => {
+                            let base = self.check_lvalue(scopes, base, true)?;
+                            let elem_ty = self.project_opaque_index_ty((*elem).clone(), &state);
+                            let expr = TExpr {
+                                span: expr.span,
+                                ty: elem_ty,
+                                kind: TExprKind::Index {
+                                    base: Box::new(base.expr),
+                                    index: Box::new(index),
+                                },
+                            };
+                            Some(CheckedLvalue {
+                                expr,
+                                access: base.access,
+                                read_only_reason: base.read_only_reason,
+                            })
+                        }
+                        other => {
+                            self.diagnostics.push(Diagnostic::new(
+                                base_expr.span,
+                                format!("cannot index `{}`", other),
+                            ));
+                            None
+                        }
+                    },
                     Ty::Slice { mutability, elem } => {
                         let expr = TExpr {
                             span: expr.span,
@@ -329,12 +378,49 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         target: &TExpr,
+        value_ty: &Ty,
     ) {
         if let TExprKind::Local(local_id, _) = &target.kind
             && let Some(binding) = scopes.get_mut(*local_id)
         {
+            let flow_ty = self.assignment_flow_ty(&binding.ty, value_ty);
             binding.init_state = InitState::Assigned;
+            binding.flow_ty = flow_ty;
             binding.narrowed_ty = None;
+        }
+    }
+
+    fn assignment_flow_ty(&self, storage_ty: &Ty, value_ty: &Ty) -> Option<Ty> {
+        let storage_base = match storage_ty {
+            Ty::OpaqueState { base, .. } => base.as_ref(),
+            _ => storage_ty,
+        };
+        match value_ty {
+            Ty::OpaqueState { base, state } => {
+                if storage_base.can_assign_from(base)
+                    || std_id::std_async_future_accepts_generated(
+                        &self.ctx.resolved,
+                        storage_base,
+                        base,
+                    )
+                {
+                    Some(opaque_state_ty(storage_base.clone(), state.clone()))
+                } else if storage_ty.can_assign_from(base) {
+                    Some(opaque_state_ty(storage_ty.clone(), state.clone()))
+                } else {
+                    None
+                }
+            }
+            Ty::GeneratedFuture { .. }
+                if std_id::std_async_future_accepts_generated(
+                    &self.ctx.resolved,
+                    storage_base,
+                    value_ty,
+                ) =>
+            {
+                Some(value_ty.clone())
+            }
+            _ => None,
         }
     }
 
@@ -359,6 +445,13 @@ impl TypeChecker {
             TExprKind::Index { base, .. } => match &base.ty {
                 Ty::Slice { mutability, .. } => Some(LvalueAccess::from_view(*mutability)),
                 Ty::Array { .. } => self.texpr_lvalue_access(scopes, base),
+                Ty::OpaqueState {
+                    base: opaque_base, ..
+                } => match opaque_base.as_ref() {
+                    Ty::Slice { mutability, .. } => Some(LvalueAccess::from_view(*mutability)),
+                    Ty::Array { .. } => self.texpr_lvalue_access(scopes, base),
+                    _ => None,
+                },
                 _ => None,
             },
             TExprKind::Unary {
@@ -492,6 +585,13 @@ impl TypeChecker {
             unreachable!("variant enum type is always named");
         };
         let type_name = enum_instance_name(enum_name, enum_args);
+        let hidden_state = payload
+            .iter()
+            .enumerate()
+            .filter(|(_, value)| ty_has_hidden_state(&value.ty))
+            .map(|(idx, value)| (format!("{variant_name}#{idx}"), value.ty.clone()))
+            .collect::<Vec<_>>();
+        let enum_ty = opaque_state_ty(enum_ty, hidden_state);
         Some(TExpr {
             span,
             ty: enum_ty,
@@ -785,6 +885,10 @@ impl TypeChecker {
     ) -> Option<Ty> {
         let view = self.meta_repr_field_view_ty(base, span);
         match &view {
+            Ty::OpaqueState { base, state } => {
+                let field_ty = self.field_ty(base, field, span)?;
+                Some(self.project_opaque_field_ty(field_ty, state, field))
+            }
             Ty::Slice { mutability, elem } if field == "ptr" => Some(Ty::Pointer {
                 nullable: false,
                 mutability: *mutability,

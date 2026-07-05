@@ -536,7 +536,7 @@ impl Parser {
         } else {
             inherited_abi
         };
-        let is_async = if self.at_ident_named("async") {
+        let is_async = if self.at_async_function_modifier() {
             self.advance();
             true
         } else {
@@ -2963,6 +2963,10 @@ impl Parser {
 
     fn at_ident_named(&self, name: &str) -> bool {
         self.peek().kind == TokenKind::Ident && self.peek().lexeme == name
+    }
+
+    fn at_async_function_modifier(&self) -> bool {
+        self.at_ident_named("async") && self.peek_next().kind != TokenKind::ColonColon
     }
 
     fn eat(&mut self, kind: TokenKind) -> Option<Token> {

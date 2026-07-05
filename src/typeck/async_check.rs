@@ -891,6 +891,25 @@ impl TypeChecker {
                 self.async_frame_safety_violation(elem, false, &format!("{path} element"), visiting)
             }
             Ty::GeneratedFuture { .. } => None,
+            Ty::OpaqueState { base, state } => {
+                if let Some(reason) = self.async_frame_safety_violation(base, false, path, visiting)
+                {
+                    return Some(reason);
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) =
+                        self.async_frame_safety_violation(state_ty, false, &state_path, visiting)
+                    {
+                        return Some(reason);
+                    }
+                }
+                None
+            }
             Ty::Named { name, args } => {
                 if std_id::is_std_async_runtime_handle_ty(&self.ctx.resolved, ty) {
                     return None;

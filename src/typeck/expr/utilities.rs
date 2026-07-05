@@ -130,6 +130,18 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        if let Ty::OpaqueState { base, .. } = receiver_ty
+            && !self.is_std_message_capability_interface_def(interface_def)
+            && !self.is_std_message_clone_interface_def(interface_def)
+            && !self.is_std_message_share_handle_marker_def(interface_def)
+        {
+            return self.type_implements_capability_inner(
+                interface_def,
+                interface_name,
+                args,
+                base,
+            );
+        }
         if (self.is_std_message_clone_interface_def(interface_def)
             || self.is_std_message_share_handle_marker_def(interface_def))
             && args.is_empty()
@@ -382,6 +394,12 @@ impl TypeChecker {
             Ty::Generic(name) => self.generic_is_resource_only(name),
             Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
             Ty::GeneratedFuture { .. } => true,
+            Ty::OpaqueState { base, state } => {
+                self.type_is_affine_inner(base, visiting)
+                    || state
+                        .iter()
+                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
+            }
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
@@ -472,7 +490,106 @@ impl TypeChecker {
         path: &str,
         visiting: &mut HashSet<Ty>,
     ) -> Option<String> {
+        self.task_boundary_message_violation_inner(ty, path, visiting, false)
+    }
+
+    pub(in crate::typeck) fn task_boundary_future_state_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        self.task_boundary_message_violation_inner(ty, path, visiting, true)
+    }
+
+    pub(in crate::typeck) fn future_state_escape_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        self.future_state_escape_violation_inner(ty, path, visiting)
+    }
+
+    fn future_state_escape_violation_inner(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        if ty.is_erased_value() || is_opaque_future_state_marker_ty(ty) {
+            return None;
+        }
+        if self.type_implements_async_frame_opt_in(ty) {
+            return None;
+        }
+        match ty {
+            Ty::OpaqueState { state, .. } | Ty::GeneratedFuture { state, .. } => {
+                if !visiting.insert(ty.clone()) {
+                    return Some(format!("{path} is recursive through `{ty}`"));
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) =
+                        self.future_state_escape_violation_inner(state_ty, &state_path, visiting)
+                    {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            _ => self.task_boundary_message_violation_inner(ty, path, visiting, true),
+        }
+    }
+
+    fn task_boundary_message_violation_inner(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+        allow_affine_move: bool,
+    ) -> Option<String> {
         if ty.is_erased_value() {
+            return None;
+        }
+        if is_opaque_future_state_marker_ty(ty) {
+            return Some(format!(
+                "{path} has opaque future state without a proven `Message` boundary"
+            ));
+        }
+        if let Ty::OpaqueState { base, state } = ty {
+            if !allow_affine_move
+                && let Some(reason) =
+                    self.task_boundary_message_violation_inner(base, path, visiting, false)
+            {
+                return Some(reason);
+            }
+            if !visiting.insert(ty.clone()) {
+                return Some(format!("{path} is recursive through `{ty}`"));
+            }
+            for (name, state_ty) in state {
+                let state_path = if name.is_empty() {
+                    format!("{path} state")
+                } else {
+                    format!("{path} state `{name}`")
+                };
+                if let Some(reason) = self.task_boundary_message_violation_inner(
+                    state_ty,
+                    &state_path,
+                    visiting,
+                    allow_affine_move,
+                ) {
+                    visiting.remove(ty);
+                    return Some(reason);
+                }
+            }
+            visiting.remove(ty);
             return None;
         }
         if self.type_implements_message(ty) {
@@ -481,16 +598,41 @@ impl TypeChecker {
         if matches!(ty, Ty::OpaqueReturn { .. }) {
             let concrete = self.lower_opaque_returns_in_ty(ty);
             if &concrete != ty {
-                return self.task_boundary_message_violation(&concrete, path, visiting);
+                return self.task_boundary_message_violation_inner(
+                    &concrete,
+                    path,
+                    visiting,
+                    allow_affine_move,
+                );
             }
-        }
-        if contains_generic(ty) || contains_type_hole(ty) {
-            return Some(format!(
-                "{path} has generic type `{ty}` without a proven `Message` boundary"
-            ));
         }
         if self.type_implements_thread_local(ty) {
             return Some(format!("{path} has ThreadLocal type `{ty}`"));
+        }
+        if self.type_is_affine(ty) {
+            if allow_affine_move {
+                if matches!(ty, Ty::GeneratedFuture { .. }) {
+                    // The future object itself is affine and consumed by spawn; only its
+                    // stored frame state needs to cross the task boundary.
+                } else if self.task_boundary_affine_move_allowed(ty, &mut HashSet::new()) {
+                    return None;
+                } else {
+                    return Some(format!(
+                        "{path} has resource-affine type `{ty}` without an ownership-transfer policy"
+                    ));
+                }
+            } else {
+                return Some(format!(
+                    "{path} has resource-affine type `{ty}` without a `Message` policy"
+                ));
+            }
+        }
+        if !(allow_affine_move && matches!(ty, Ty::GeneratedFuture { .. }))
+            && (contains_generic(ty) || contains_type_hole(ty))
+        {
+            return Some(format!(
+                "{path} has generic type `{ty}` without a proven `Message` boundary"
+            ));
         }
         if let Some(repr_ty) = self.try_meta_repr_ty(ty, false)
             && self.type_implements_message(&repr_ty)
@@ -515,6 +657,7 @@ impl TypeChecker {
             | Ty::Usize
             | Ty::F32
             | Ty::F64 => None,
+            Ty::OpaqueState { .. } => unreachable!("opaque state handled before message checks"),
             Ty::CSpelling { .. } => Some(format!(
                 "{path} has opaque C spelling type `{ty}` without a `Message` policy"
             )),
@@ -533,10 +676,35 @@ impl TypeChecker {
                     "read-only "
                 }
             )),
-            Ty::Array { elem, .. } => {
-                self.task_boundary_message_violation(elem, &format!("{path} element"), visiting)
+            Ty::Array { elem, .. } => self.task_boundary_message_violation_inner(
+                elem,
+                &format!("{path} element"),
+                visiting,
+                allow_affine_move,
+            ),
+            Ty::GeneratedFuture { state, .. } => {
+                if !visiting.insert(ty.clone()) {
+                    return Some(format!("{path} is recursive through `{ty}`"));
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) = self.task_boundary_message_violation_inner(
+                        state_ty,
+                        &state_path,
+                        visiting,
+                        allow_affine_move,
+                    ) {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
             }
-            Ty::GeneratedFuture { .. } => None,
             Ty::Named { name, args } => {
                 if !visiting.insert(ty.clone()) {
                     return Some(format!("{path} is recursive through `{ty}`"));
@@ -545,10 +713,11 @@ impl TypeChecker {
                 let instance_name = enum_instance_name(name, args);
                 if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     for (field, field_ty) in fields {
-                        if let Some(reason) = self.task_boundary_message_violation(
+                        if let Some(reason) = self.task_boundary_message_violation_inner(
                             &field_ty,
                             &format!("{path}.{field}"),
                             visiting,
+                            allow_affine_move,
                         ) {
                             visiting.remove(ty);
                             return Some(reason);
@@ -563,10 +732,11 @@ impl TypeChecker {
                 if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
                     for variant in enm.variants {
                         for (idx, payload_ty) in variant.payload.iter().enumerate() {
-                            if let Some(reason) = self.task_boundary_message_violation(
+                            if let Some(reason) = self.task_boundary_message_violation_inner(
                                 payload_ty,
                                 &format!("{path}.{}#{idx}", variant.name),
                                 visiting,
+                                allow_affine_move,
                             ) {
                                 visiting.remove(ty);
                                 return Some(reason);
@@ -601,6 +771,300 @@ impl TypeChecker {
         }
     }
 
+    pub(super) fn task_boundary_affine_move_allowed(
+        &mut self,
+        ty: &Ty,
+        visiting: &mut HashSet<Ty>,
+    ) -> bool {
+        if ty.is_erased_value() || self.type_is_resource_handle_leaf(ty) {
+            return true;
+        }
+        match ty {
+            Ty::Array { elem, .. } => self.task_boundary_affine_move_allowed(elem, visiting),
+            Ty::OpaqueState { base, state } => {
+                self.task_boundary_affine_move_allowed(base, visiting)
+                    && state.iter().all(|(_, ty)| {
+                        !self.type_is_affine(ty)
+                            || self.task_boundary_affine_move_allowed(ty, visiting)
+                    })
+            }
+            Ty::OpaqueReturn { .. } => {
+                let concrete = self.lower_opaque_returns_in_ty(ty);
+                &concrete != ty && self.task_boundary_affine_move_allowed(&concrete, visiting)
+            }
+            Ty::Generic(name) => self.generic_is_resource_only(name),
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
+                    return false;
+                }
+                self.ensure_struct_instance(&named_ty);
+                let instance_name = enum_instance_name(name, args);
+                if self.ctx.resource_structs.contains(&instance_name) {
+                    return true;
+                }
+                if args.iter().any(contains_generic)
+                    && self
+                        .ctx
+                        .struct_templates
+                        .get(name)
+                        .is_some_and(|template| template.is_resource)
+                {
+                    return true;
+                }
+                if !visiting.insert(ty.clone()) {
+                    return false;
+                }
+                let allowed = self
+                    .ctx
+                    .structs
+                    .get(&instance_name)
+                    .cloned()
+                    .is_some_and(|fields| {
+                        fields.iter().all(|(_, field_ty)| {
+                            !self.type_is_affine(field_ty)
+                                || self.task_boundary_affine_move_allowed(field_ty, visiting)
+                        })
+                    });
+                visiting.remove(ty);
+                allowed
+            }
+            _ => false,
+        }
+    }
+
+    pub(in crate::typeck) fn external_future_flow_ty(
+        &mut self,
+        ty: &Ty,
+        label: &str,
+    ) -> Option<Ty> {
+        let state = vec![(label.to_string(), opaque_future_state_marker_ty())];
+        let mut visiting = HashSet::new();
+        let wrapped = self.ty_with_future_state_entries(ty, &state, &mut visiting);
+        (&wrapped != ty).then_some(wrapped)
+    }
+
+    pub(in crate::typeck) fn storage_and_flow_ty(&self, ty: &Ty) -> (Ty, Option<Ty>) {
+        match ty {
+            Ty::GeneratedFuture { output, .. } => {
+                (std_future_ty((**output).clone()), Some(ty.clone()))
+            }
+            Ty::OpaqueState { base, .. } => ((**base).clone(), Some(ty.clone())),
+            _ => (ty.clone(), None),
+        }
+    }
+
+    pub(in crate::typeck) fn ty_preserving_hidden_state_for_expected(
+        &mut self,
+        expected: &Ty,
+        actual: &Ty,
+    ) -> Ty {
+        if let Ty::OpaqueState { base, state } = actual
+            && (self.ty_can_assign_from(expected, base)
+                || std_id::std_async_future_accepts_generated(&self.ctx.resolved, expected, base)
+                || self.meta_repr_storage_equivalent(expected, base))
+        {
+            return opaque_state_ty(expected.clone(), state.clone());
+        }
+        if std_id::std_async_future_accepts_generated(&self.ctx.resolved, expected, actual) {
+            return actual.clone();
+        }
+        expected.clone()
+    }
+
+    pub(in crate::typeck) fn external_storage_and_flow_ty(
+        &mut self,
+        ty: &Ty,
+        label: &str,
+    ) -> (Ty, Option<Ty>) {
+        let (storage_ty, known_flow_ty) = self.storage_and_flow_ty(ty);
+        let flow_ty = known_flow_ty.or_else(|| self.external_future_flow_ty(&storage_ty, label));
+        (storage_ty, flow_ty)
+    }
+
+    pub(in crate::typeck) fn call_return_future_state_ty(
+        &mut self,
+        ret: &Ty,
+        checked_args: &[TExpr],
+    ) -> Ty {
+        if checked_args.is_empty() {
+            return ret.clone();
+        }
+        let state = checked_args
+            .iter()
+            .enumerate()
+            .filter(|(_, arg)| !matches!(arg.ty, Ty::Function { .. }))
+            .map(|(idx, arg)| (format!("argument {idx}"), arg.ty.clone()))
+            .collect::<Vec<_>>();
+        let mut visiting = HashSet::new();
+        self.ty_with_future_state_entries(ret, &state, &mut visiting)
+    }
+
+    pub(in crate::typeck) fn awaited_output_future_state_ty(
+        &mut self,
+        future_ty: &Ty,
+        output_ty: Ty,
+    ) -> Ty {
+        let state = match future_ty {
+            Ty::GeneratedFuture { state, .. } | Ty::OpaqueState { state, .. } => state.clone(),
+            _ => Vec::new(),
+        };
+        if state.is_empty() {
+            return output_ty;
+        }
+        let mut visiting = HashSet::new();
+        self.ty_with_future_state_entries(&output_ty, &state, &mut visiting)
+    }
+
+    fn ty_with_future_state_entries(
+        &mut self,
+        ty: &Ty,
+        state: &[(String, Ty)],
+        visiting: &mut HashSet<Ty>,
+    ) -> Ty {
+        if state.is_empty() {
+            return ty.clone();
+        }
+        if let Ty::OpaqueState {
+            base,
+            state: existing,
+        } = ty
+        {
+            let wrapped_base = self.ty_with_future_state_entries(base, state, visiting);
+            return opaque_state_ty(wrapped_base, existing.clone());
+        }
+        if std_id::std_async_future_output_arg(&self.ctx.resolved, ty).is_some() {
+            return opaque_state_ty(ty.clone(), state.to_vec());
+        }
+        match ty {
+            Ty::Array { elem, .. } => {
+                let elem_ty = self.ty_with_future_state_entries(elem, state, visiting);
+                if &elem_ty == elem.as_ref() {
+                    ty.clone()
+                } else {
+                    opaque_state_ty(ty.clone(), vec![("element *".to_string(), elem_ty)])
+                }
+            }
+            Ty::Slice { elem, .. } => {
+                let elem_ty = self.ty_with_future_state_entries(elem, state, visiting);
+                if &elem_ty == elem.as_ref() {
+                    ty.clone()
+                } else {
+                    opaque_state_ty(ty.clone(), vec![("element *".to_string(), elem_ty)])
+                }
+            }
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if !visiting.insert(named_ty.clone()) {
+                    return ty.clone();
+                }
+                self.ensure_struct_instance(&named_ty);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
+                    let mut hidden = Vec::new();
+                    for (field, field_ty) in fields {
+                        let wrapped = self.ty_with_future_state_entries(&field_ty, state, visiting);
+                        if wrapped != field_ty {
+                            hidden.push((field, wrapped));
+                        }
+                    }
+                    visiting.remove(&named_ty);
+                    return opaque_state_ty(ty.clone(), hidden);
+                }
+                self.ensure_enum_instance(&named_ty);
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
+                    let mut hidden = Vec::new();
+                    for variant in enm.variants {
+                        for (idx, payload_ty) in variant.payload.into_iter().enumerate() {
+                            let wrapped =
+                                self.ty_with_future_state_entries(&payload_ty, state, visiting);
+                            if wrapped != payload_ty {
+                                hidden.push((format!("{}#{idx}", variant.name), wrapped));
+                            }
+                        }
+                    }
+                    visiting.remove(&named_ty);
+                    return opaque_state_ty(ty.clone(), hidden);
+                }
+                visiting.remove(&named_ty);
+                ty.clone()
+            }
+            _ => ty.clone(),
+        }
+    }
+
+    pub(in crate::typeck) fn project_opaque_field_ty(
+        &self,
+        field_ty: Ty,
+        state: &[(String, Ty)],
+        field: &str,
+    ) -> Ty {
+        let selected = state
+            .iter()
+            .filter(|(name, _)| name == field)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.project_opaque_state_ty(field_ty, selected)
+    }
+
+    pub(in crate::typeck) fn project_opaque_index_ty(
+        &self,
+        elem_ty: Ty,
+        state: &[(String, Ty)],
+    ) -> Ty {
+        let selected = state
+            .iter()
+            .filter(|(name, _)| name.starts_with("element "))
+            .cloned()
+            .collect::<Vec<_>>();
+        self.project_opaque_state_ty(elem_ty, selected)
+    }
+
+    pub(in crate::typeck) fn project_opaque_variant_payload_ty(
+        &self,
+        payload_ty: Ty,
+        state: &[(String, Ty)],
+        variant_name: &str,
+        physical_index: usize,
+    ) -> Ty {
+        let key = format!("{variant_name}#{physical_index}");
+        let selected = state
+            .iter()
+            .filter(|(name, _)| name == &key)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.project_opaque_state_ty(payload_ty, selected)
+    }
+
+    fn project_opaque_state_ty(&self, projected_ty: Ty, selected: Vec<(String, Ty)>) -> Ty {
+        if selected.is_empty() {
+            return projected_ty;
+        }
+        if selected.len() == 1 {
+            let source_ty = &selected[0].1;
+            if let Ty::OpaqueState { base, state } = source_ty
+                && projected_ty.can_assign_from(base)
+            {
+                return opaque_state_ty(projected_ty, state.clone());
+            }
+            if std_id::std_async_future_accepts_generated(
+                &self.ctx.resolved,
+                &projected_ty,
+                source_ty,
+            ) || projected_ty.can_assign_from(source_ty)
+            {
+                return source_ty.clone();
+            }
+        }
+        opaque_state_ty(projected_ty, selected)
+    }
+
     pub(super) fn meta_repr_marker_matches_concrete(&mut self, marker: &Ty, concrete: &Ty) -> bool {
         self.meta_repr_marker_sop_ty(marker)
             .or_else(|| self.meta_schema_marker_sop_ty(marker))
@@ -620,6 +1084,12 @@ impl TypeChecker {
     pub(super) fn meta_repr_storage_equivalent_inner(&mut self, left: &Ty, right: &Ty) -> bool {
         if left == right {
             return true;
+        }
+        if let Ty::OpaqueState { base, .. } = left {
+            return self.meta_repr_storage_equivalent_inner(base, right);
+        }
+        if let Ty::OpaqueState { base, .. } = right {
+            return self.meta_repr_storage_equivalent_inner(left, base);
         }
         if self.meta_repr_marker_matches_concrete(left, right)
             || self.meta_repr_marker_matches_concrete(right, left)
@@ -712,6 +1182,7 @@ impl TypeChecker {
                     cancel_safe: left_cancel_safe,
                     abortable: left_abortable,
                     affine_state: left_affine_state,
+                    state: left_state,
                 },
                 Ty::GeneratedFuture {
                     name: right_name,
@@ -719,13 +1190,21 @@ impl TypeChecker {
                     cancel_safe: right_cancel_safe,
                     abortable: right_abortable,
                     affine_state: right_affine_state,
+                    state: right_state,
                 },
             ) => {
                 left_name == right_name
                     && left_cancel_safe == right_cancel_safe
                     && left_abortable == right_abortable
                     && left_affine_state == right_affine_state
+                    && left_state.len() == right_state.len()
                     && self.meta_repr_storage_equivalent_inner(left_output, right_output)
+                    && left_state.iter().zip(right_state.iter()).all(
+                        |((left_name, left_ty), (right_name, right_ty))| {
+                            left_name == right_name
+                                && self.meta_repr_storage_equivalent_inner(left_ty, right_ty)
+                        },
+                    )
             }
             (
                 Ty::Function {
@@ -931,6 +1410,22 @@ impl TypeChecker {
         receiver_ty: Option<&Ty>,
         span: crate::span::Span,
     ) -> Option<ImplSig> {
+        let stripped_interface_args = interface_args
+            .iter()
+            .map(strip_opaque_state_for_lookup)
+            .collect::<Vec<_>>();
+        let stripped_receiver_ty = receiver_ty.map(strip_opaque_state_for_lookup);
+        if stripped_interface_args.as_slice() != interface_args
+            || stripped_receiver_ty.as_ref() != receiver_ty
+        {
+            return self.find_or_instantiate_impl_by_full_args(
+                interface_def,
+                interface_name,
+                &stripped_interface_args,
+                stripped_receiver_ty.as_ref(),
+                span,
+            );
+        }
         if let Some(receiver_ty) = receiver_ty
             && matches!(receiver_ty, Ty::OpaqueReturn { .. })
         {
@@ -1748,6 +2243,13 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn result_ok_err_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
+        if let Ty::OpaqueState { base, state } = ty {
+            let (ok_ty, err_ty) = self.result_ok_err_tys(base)?;
+            return Some((
+                self.project_opaque_variant_payload_ty(ok_ty, state, "Ok", 0),
+                self.project_opaque_variant_payload_ty(err_ty, state, "Err", 0),
+            ));
+        }
         let Ty::Named { name, args } = ty else {
             return None;
         };
@@ -1788,13 +2290,20 @@ impl TypeChecker {
         else {
             return None;
         };
-        self.capability_determined_arg(
+        let output_ty = self.capability_determined_arg(
             interface_def,
             STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
             "Awaitable::Out",
             ty,
             span,
-        )
+        )?;
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
+            std::slice::from_ref(&output_ty),
+            ty,
+        );
+        Some(output_ty)
     }
 
     pub(in crate::typeck) fn is_abortable_ty(&mut self, ty: &Ty) -> bool {
@@ -1837,9 +2346,15 @@ impl TypeChecker {
         def_id: DefId,
         output_ty: Ty,
         params: &[Ty],
+        param_names: &[String],
     ) -> Ty {
         let affine_state = params.iter().any(|param| self.type_is_affine(param));
-        generated_future_ty_with_affine_state(
+        let state = param_names
+            .iter()
+            .cloned()
+            .zip(params.iter().cloned())
+            .collect();
+        generated_future_ty_with_state(
             format!("fn_{}", def_id.0),
             output_ty,
             self.ctx
@@ -1853,6 +2368,7 @@ impl TypeChecker {
                 .copied()
                 .unwrap_or(true),
             affine_state,
+            state,
         )
     }
 
@@ -1863,13 +2379,15 @@ impl TypeChecker {
         cancel_safe: bool,
         abortable: bool,
         affine_state: bool,
+        state: Vec<(String, Ty)>,
     ) -> Ty {
-        generated_future_ty_with_affine_state(
+        generated_future_ty_with_state(
             format!("closure_{id}"),
             output_ty,
             cancel_safe,
             abortable,
             affine_state,
+            state,
         )
     }
 
@@ -2054,5 +2572,12 @@ impl TypeChecker {
         for (local_id, ty) in nullable_narrowings_from_condition(cond, truth) {
             scopes.narrow_to(local_id, ty);
         }
+    }
+}
+
+fn strip_opaque_state_for_lookup(ty: &Ty) -> Ty {
+    match ty {
+        Ty::OpaqueState { base, .. } => strip_opaque_state_for_lookup(base),
+        _ => ty.clone(),
     }
 }

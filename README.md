@@ -164,6 +164,5 @@ npm test             # run extension smoke tests
 ## Documentation
 
 - **[design.md](design.md)** — the normative language specification
-- **[async-await-detailed.md](async-await-detailed.md)** — detailed async/await notes
 - **[proposal/](proposal/)** — active and completed design proposals
 - **[AGENTS.md](AGENTS.md)** — repository guidelines for llm agents

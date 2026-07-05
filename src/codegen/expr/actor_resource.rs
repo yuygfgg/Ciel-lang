@@ -562,51 +562,6 @@ impl<'a> CGenerator<'a> {
         Ok(())
     }
 
-    pub(super) fn emit_async_channel_result_from_rc(
-        &mut self,
-        result_temp: &str,
-        result_layout: &ResultLayout,
-        rc: &str,
-        done_label: &str,
-        indent: usize,
-        span: crate::span::Span,
-    ) -> DiagResult<()> {
-        self.line_indent(indent, &format!("if ({rc} != 0) {{"));
-        let Some(err_ty) = result_layout.err_payload_ty.as_ref() else {
-            return Err(vec![Diagnostic::new(
-                span,
-                "internal error: async channel Result must have an Err payload",
-            )]);
-        };
-        let payload = if err_ty == &std_async_error_ty() {
-            self.async_error_channel_or_runtime_literal(rc, span)?
-        } else if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
-            let inner = self.async_error_channel_or_runtime_literal(rc, span)?;
-            self.enum_variant_literal(err_ty, "Async", &[inner], span)?
-        } else if self.enum_has_variant_with_payload(
-            err_ty,
-            "TaskGroupAsync",
-            &[std_async_error_ty()],
-        ) {
-            let inner = self.async_error_channel_or_runtime_literal(rc, span)?;
-            self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span)?
-        } else {
-            self.runtime_error_payload_for_result(result_layout, rc, span)?
-        };
-        let err_value = self.result_err_from_error_literal(result_layout, &payload);
-        self.line_indent(indent + 1, &format!("{result_temp} = {err_value};"));
-        self.line_indent(indent + 1, &format!("goto {done_label};"));
-        self.line_indent(indent, "}");
-        self.line_indent(
-            indent,
-            &format!(
-                "{result_temp} = {};",
-                self.result_ok_literal(result_layout, None)
-            ),
-        );
-        Ok(())
-    }
-
     pub(super) fn emit_actor_handle(&mut self, actor: &TExpr, indent: usize) -> DiagResult<String> {
         let actor_temp = self.emit_temp_value("actor_ref", actor, indent)?;
         Ok(format!("(CielActor *)({actor_temp}->handle)"))

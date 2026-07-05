@@ -138,6 +138,7 @@ impl TypeChecker {
                 self.validate_resource_struct_fields(
                     &instance_ty,
                     template.is_resource,
+                    template.is_unsafe,
                     &fields,
                     None,
                 );

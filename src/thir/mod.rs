@@ -17,6 +17,7 @@ pub struct CheckedOpaqueStruct {
 pub struct CheckedStruct {
     pub name: String,
     pub is_resource: bool,
+    pub is_unsafe: bool,
     pub fields: Vec<(String, Ty)>,
 }
 
@@ -415,12 +416,6 @@ pub enum TExprKind {
         ms: Box<TExpr>,
         output_ty: Ty,
     },
-    AsyncOpFuture {
-        op: Box<TExpr>,
-        output_ty: Ty,
-        raw_operation_def: DefId,
-        poll_done_def: DefId,
-    },
     AsyncSpawn {
         body: Box<TExpr>,
         task_output_ty: Ty,
@@ -432,33 +427,6 @@ pub enum TExprKind {
     AsyncTaskIsFinished {
         task: Box<TExpr>,
         task_output_ty: Ty,
-    },
-    AsyncChannelSend {
-        sender: Box<TExpr>,
-        value: Box<TExpr>,
-        payload_ty: Ty,
-    },
-    AsyncChannelTrySend {
-        sender: Box<TExpr>,
-        value: Box<TExpr>,
-        payload_ty: Ty,
-    },
-    AsyncChannelReserve {
-        sender: Box<TExpr>,
-        payload_ty: Ty,
-    },
-    AsyncChannelPermitSend {
-        permit: Box<TExpr>,
-        value: Box<TExpr>,
-        payload_ty: Ty,
-    },
-    AsyncChannelRecv {
-        receiver: Box<TExpr>,
-        payload_ty: Ty,
-    },
-    AsyncTaskGroupNext {
-        group: Box<TExpr>,
-        payload_ty: Ty,
     },
     MetaAsRefRepr {
         value: Box<TExpr>,

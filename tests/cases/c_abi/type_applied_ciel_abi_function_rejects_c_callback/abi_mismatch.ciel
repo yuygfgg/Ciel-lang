@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: expected `extern "C" i32 fn(i32)`, got `i32 fn(i32)`
+
+i32 identity<T>(i32 value) {
+    return value;
+}
+
+i32 main() {
+    extern "C" i32 fn(i32) callback = identity<i32>;
+    return callback(1);
+}

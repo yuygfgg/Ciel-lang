@@ -875,25 +875,6 @@ impl TypeChecker {
             || std_id::std_async_future_accepts_generated(&self.ctx.resolved, expected, actual)
     }
 
-    pub(super) fn std_future_erasure_hides_affine_state(
-        &mut self,
-        expected: &Ty,
-        actual: &Ty,
-    ) -> bool {
-        if std_id::std_async_future_output_arg(&self.ctx.resolved, expected).is_none() {
-            return false;
-        }
-        let Ty::GeneratedFuture {
-            output,
-            affine_state,
-            ..
-        } = actual
-        else {
-            return false;
-        };
-        *affine_state && !self.type_is_affine(output)
-    }
-
     pub(super) fn closure_shape_satisfies(
         &self,
         expected_ret: &Ty,
@@ -959,15 +940,6 @@ impl TypeChecker {
             return;
         }
         if self.meta_repr_storage_equivalent(&expected, &actual) {
-            return;
-        }
-        if self.std_future_erasure_hides_affine_state(&expected, &actual) {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!(
-                    "cannot erase resource-affine future state from `{actual}` into `{expected}`"
-                ),
-            ));
             return;
         }
         if let Ty::Closure {
@@ -1224,6 +1196,7 @@ impl TypeChecker {
         &mut self,
         ty: &Ty,
         is_resource_decl: bool,
+        is_unsafe_decl: bool,
         fields: &[(String, Ty)],
         span: impl Into<Option<crate::span::Span>>,
     ) {
@@ -1232,7 +1205,7 @@ impl TypeChecker {
             .iter()
             .any(|(_, field_ty)| self.type_is_affine(field_ty));
         if is_resource_decl {
-            if !has_affine_field && !self.type_is_resource_handle_leaf(ty) {
+            if !has_affine_field && !is_unsafe_decl && !self.type_is_resource_handle_leaf(ty) {
                 self.diagnostics.push(Diagnostic::new(
                     span,
                     format!("resource struct `{ty}` must contain an owning resource field"),

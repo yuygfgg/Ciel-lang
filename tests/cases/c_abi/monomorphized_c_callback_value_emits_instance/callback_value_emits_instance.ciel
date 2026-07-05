@@ -1,0 +1,20 @@
+// ciel-test: compile
+// expect-c-contains: add_context__i32
+
+import /std/c as c;
+import /std/meta as meta;
+
+unsafe extern "C" {
+    type Callback = c::c_int fn(*void);
+}
+
+extern "C" c::c_int add_context<T>(*void ctx_raw) {
+    *i32 ctx = unsafe { ctx_raw as *i32 };
+    return (*ctx + (meta::type_size<T>() as i32)) as c::c_int;
+}
+
+i32 main() {
+    Callback callback = add_context<i32>;
+    i32 @value = 7;
+    return unsafe { callback(&value as *void) } as i32;
+}

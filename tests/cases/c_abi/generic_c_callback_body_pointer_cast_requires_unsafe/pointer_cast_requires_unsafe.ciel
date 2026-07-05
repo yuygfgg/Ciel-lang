@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: raw pointer casts from `*void` require unsafe block
+
+import /std/c as c;
+
+unsafe extern "C" {
+    type Callback = c::c_int fn(*const void);
+}
+
+extern "C" c::c_int callback_cast<T>(*const void raw) {
+    *const T typed = raw as *const T;
+    if (typed == null) {
+        return 1 as c::c_int;
+    }
+    return 0 as c::c_int;
+}
+
+i32 main() {
+    Callback callback = callback_cast<i32>;
+    return 0;
+}

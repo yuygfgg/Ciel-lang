@@ -30,6 +30,7 @@ module.exports = grammar({
         $._pointer_declaration_constructor,
         $._deref_assignment_star,
         $._expression_start_star,
+        $._bare_generic_item,
     ],
 
     conflicts: $ => [
@@ -562,13 +563,13 @@ module.exports = grammar({
         pointer_var_declaration_clause: $ => prec.dynamic(10, seq(
             field('type', $.pointer_declaration_type),
             field('name', $.binding_name),
-            optional(seq('=', field('value', $.expression))),
+            optional(seq('=', field('value', choice($.expression, $.generic_item_expression)))),
         )),
 
         var_declaration_clause: $ => prec.dynamic(2, seq(
             field('type', $.non_pointer_type),
             field('name', $.binding_name),
-            optional(seq('=', field('value', $.expression))),
+            optional(seq('=', field('value', choice($.expression, $.generic_item_expression)))),
         )),
 
         assignment_statement: $ => choice(
@@ -576,7 +577,7 @@ module.exports = grammar({
             prec.dynamic(-1, seq(
                 field('left', $.lvalue),
                 '=',
-                field('right', $.expression),
+                field('right', choice($.expression, $.generic_item_expression)),
                 ';',
             )),
         ),
@@ -584,7 +585,7 @@ module.exports = grammar({
         deref_assignment_statement: $ => prec.dynamic(-10, seq(
             field('left', $.deref_assignment_target),
             '=',
-            field('right', $.expression),
+            field('right', choice($.expression, $.generic_item_expression)),
             ';',
         )),
 
@@ -637,12 +638,12 @@ module.exports = grammar({
             seq(
                 field('left', $.deref_assignment_target),
                 '=',
-                field('right', $.expression),
+                field('right', choice($.expression, $.generic_item_expression)),
             ),
             seq(
                 field('left', $.lvalue),
                 '=',
-                field('right', $.expression),
+                field('right', choice($.expression, $.generic_item_expression)),
             ),
         ),
 
@@ -678,7 +679,7 @@ module.exports = grammar({
 
         return_statement: $ => seq(
             'return',
-            optional($.expression),
+            optional(choice($.expression, $.generic_item_expression)),
             ';',
         ),
 
@@ -757,12 +758,7 @@ module.exports = grammar({
             $.try_expression,
         ),
 
-        generic_item_expression: $ => prec.dynamic(-1, seq(
-            field('function', choice($.identifier, $.qualified_name)),
-            $.generic_item_type_argument_list,
-            optional($.argument_list),
-            optional('?'),
-        )),
+        generic_item_expression: $ => $._bare_generic_item,
 
         generic_item_type_argument_list: $ => seq(
             token.immediate('<'),

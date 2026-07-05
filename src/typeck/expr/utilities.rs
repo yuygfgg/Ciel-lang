@@ -381,11 +381,7 @@ impl TypeChecker {
             }
             Ty::Generic(name) => self.generic_is_resource_only(name),
             Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
-            Ty::GeneratedFuture {
-                output,
-                affine_state,
-                ..
-            } => *affine_state || self.type_is_affine_inner(output, visiting),
+            Ty::GeneratedFuture { .. } => true,
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
@@ -394,10 +390,8 @@ impl TypeChecker {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if let Some(output_ty) =
-                    std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).cloned()
-                {
-                    return self.type_is_affine_inner(&output_ty, visiting);
+                if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
+                    return true;
                 }
                 let instance_name = enum_instance_name(name, args);
                 if self.ctx.resource_structs.contains(&instance_name) {
@@ -1882,29 +1876,6 @@ impl TypeChecker {
             output_ty,
             true,
             true,
-        )
-    }
-
-    pub(super) fn async_op_future_ty(
-        &mut self,
-        op_ty: &Ty,
-        result_ty: Ty,
-        span: crate::span::Span,
-    ) -> Ty {
-        let storage_op_ty = self.meta_repr_storage_ty(op_ty, span);
-        let cancel_safe = self.is_cancel_safe_ty(&storage_op_ty);
-        let abortable = self.is_abortable_ty(&storage_op_ty);
-        let affine_state = self.type_is_affine(&storage_op_ty);
-        generated_future_ty_with_affine_state(
-            format!(
-                "op_{}_{}",
-                mangle_ty_fragment(&storage_op_ty),
-                mangle_ty_fragment(&result_ty)
-            ),
-            result_ty,
-            cancel_safe,
-            abortable,
-            affine_state,
         )
     }
 

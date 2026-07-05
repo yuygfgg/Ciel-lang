@@ -128,6 +128,8 @@ int ciel_async_timeout_errno(void) { return ETIMEDOUT; }
 
 int ciel_async_channel_closed_errno(void) { return EPIPE; }
 
+int ciel_async_again_errno(void) { return EAGAIN; }
+
 CIEL_MALLOC_LIKE CIEL_RETURNS_NONNULL char *
 ciel_cstr_from_slice(const char *ptr, size_t len) {
     char *out = (char *)ciel_alloc_atomic_array(sizeof(char), len + 1);

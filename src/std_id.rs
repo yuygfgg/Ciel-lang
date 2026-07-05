@@ -18,6 +18,7 @@ const STD_STORAGE_EXPORT: &str = "/std/storage";
 const STD_ASYNC_EXPORT: &str = "/std/async";
 const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
 const STD_ASYNC_INTERNAL_ADAPTER_EXPORT: &str = "/std/async/internal/adapter";
+const STD_ASYNC_INTERNAL_RUNTIME_FUTURE_EXPORT: &str = "/std/async/internal/runtime_future";
 const STD_ASYNC_IO_EXPORT: &str = "/std/async_io";
 const STD_ASYNC_NET_EXPORT: &str = "/std/async_net";
 const STD_ASYNC_TIME_EXPORT: &str = "/std/async_time";
@@ -49,6 +50,7 @@ fn module_export_matches_std_async(resolved: &ResolvedProgram, module: ModuleId)
             STD_ASYNC_EXPORT,
             STD_ASYNC_CORE_EXPORT,
             STD_ASYNC_INTERNAL_ADAPTER_EXPORT,
+            STD_ASYNC_INTERNAL_RUNTIME_FUTURE_EXPORT,
         ],
     )
 }
@@ -240,6 +242,12 @@ pub fn is_std_async_interface(
         DefKind::Interface,
         expected_name,
         STD_ASYNC_INTERNAL_ADAPTER_EXPORT,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Interface,
+        expected_name,
+        STD_ASYNC_INTERNAL_RUNTIME_FUTURE_EXPORT,
     )
 }
 

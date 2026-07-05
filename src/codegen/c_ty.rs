@@ -103,16 +103,9 @@ pub(super) fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::AsyncSelect { .. }
         | TExprKind::AsyncBlockOn { .. }
         | TExprKind::AsyncSleep { .. }
-        | TExprKind::AsyncOpFuture { .. }
         | TExprKind::AsyncSpawn { .. }
         | TExprKind::AsyncTaskCancel { .. }
         | TExprKind::AsyncTaskIsFinished { .. }
-        | TExprKind::AsyncChannelSend { .. }
-        | TExprKind::AsyncChannelTrySend { .. }
-        | TExprKind::AsyncChannelReserve { .. }
-        | TExprKind::AsyncChannelPermitSend { .. }
-        | TExprKind::AsyncChannelRecv { .. }
-        | TExprKind::AsyncTaskGroupNext { .. }
         | TExprKind::CloneMessage { .. }
         | TExprKind::UnsafeBlock { .. } => true,
         TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => {

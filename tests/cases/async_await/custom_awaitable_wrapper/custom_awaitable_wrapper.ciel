@@ -8,17 +8,17 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-struct Wrapped<T> {
+resource unsafe struct Wrapped<T> {
     Future<T> inner;
 }
 
 unsafe impl<T> awaitable_future<T>(*const Wrapped<T> awaitable) {
-    return awaitable->inner.handle;
+    return awaitable_future<T>(unsafe { &awaitable->inner });
 }
 
 unsafe impl<T> abort_future(*Wrapped<T> awaitable) {
-    Future<T> inner = awaitable->inner;
-    return abort_future(&inner);
+    abort_future(unsafe { &awaitable->inner })?;
+    return Ok;
 }
 
 async Result<usize, Error> compute(usize value) {
@@ -27,12 +27,12 @@ async Result<usize, Error> compute(usize value) {
 }
 
 async Result<usize, Error> await_wrapped(usize value) {
-    Wrapped<Result<usize, Error>> wrapped = { inner: compute(value) };
+    Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(value) } };
     return await wrapped;
 }
 
 i32 main() {
-    Wrapped<Result<usize, Error>> wrapped = { inner: compute(5) };
+    Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(5) } };
     Task<usize> task = must(spawn<usize>(wrapped));
     usize from_spawn = must(block_on(task));
     usize from_await = must(block_on(await_wrapped(8)));

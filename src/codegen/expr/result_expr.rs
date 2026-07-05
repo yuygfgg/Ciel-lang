@@ -234,19 +234,6 @@ impl<'a> CGenerator<'a> {
         )
     }
 
-    pub(in crate::codegen) fn async_error_channel_or_runtime_literal(
-        &self,
-        code: &str,
-        span: crate::span::Span,
-    ) -> DiagResult<String> {
-        let closed =
-            self.enum_variant_literal(&std_async_error_ty(), "ChannelClosed", &[], span)?;
-        let runtime = self.async_error_runtime_literal(code, span)?;
-        Ok(format!(
-            "(({code}) == ciel_async_channel_closed_errno() ? {closed} : {runtime})"
-        ))
-    }
-
     pub(super) fn resource_error_runtime_literal(
         &self,
         code: &str,

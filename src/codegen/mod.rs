@@ -37,7 +37,7 @@ use crate::{
         meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty, retained_closure_capabilities,
         std_async_error_ty, std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty,
         std_meta_repr_marker_ty, std_meta_schema_marker_ty, std_resource_error_ty, std_result_ty,
-        std_send_permit_ty, std_task_group_ty, std_task_ty, unify_ty,
+        std_task_ty, unify_ty,
     },
 };
 

@@ -8,23 +8,16 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-struct LocalState {
-    async::Future<Result<void, async::AsyncError>> pending;
-    usize value;
-}
-
 async Result<usize, Error> join_task(async::Task<usize> task) {
     return await task;
 }
 
 i32 main() {
     async::Task<usize> task = must(async::spawn<usize>(async || {
-        LocalState state = {
-            pending: async_time::sleep_ms(1),
-            value: 6,
-        };
-        await state.pending?;
-        return Ok(state.value);
+        async::Future<Result<void, async::AsyncError>> pending = async_time::sleep_ms(1);
+        usize value = 6;
+        await pending?;
+        return Ok(value);
     }));
     must(print_value(must(async::block_on(join_task(task)))));
     return 0;

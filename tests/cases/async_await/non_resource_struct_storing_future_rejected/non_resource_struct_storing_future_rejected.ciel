@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: non-resource struct `BadWrapped<Result<usize, Error>>` cannot store a resource field
+
+import /std/async;
+import /std/result;
+
+struct BadWrapped<T> {
+    Future<T> inner;
+}
+
+async Result<usize, Error> compute() {
+    return Ok(1);
+}
+
+Result<void, Error> bad() {
+    BadWrapped<Result<usize, Error>> _wrapped = { inner: compute() };
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

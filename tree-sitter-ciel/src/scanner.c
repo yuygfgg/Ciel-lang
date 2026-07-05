@@ -8,6 +8,7 @@ enum TokenType {
     POINTER_DECLARATION_CONSTRUCTOR,
     DEREF_ASSIGNMENT_STAR,
     EXPRESSION_START_STAR,
+    BARE_GENERIC_ITEM,
 };
 
 static bool is_identifier_start(int32_t c) {
@@ -260,6 +261,104 @@ static bool scan_pointer_or_deref_start(TSLexer *lexer, bool *is_declaration,
     return true;
 }
 
+static bool scan_qualified_name(TSLexer *lexer) {
+    if (!scan_identifier(lexer)) {
+        return false;
+    }
+    for (;;) {
+        if (lexer->lookahead != ':') {
+            return true;
+        }
+        advance(lexer);
+        if (lexer->lookahead != ':') {
+            return false;
+        }
+        advance(lexer);
+        if (!scan_identifier(lexer)) {
+            return false;
+        }
+    }
+}
+
+static bool scan_balanced_type_arguments(TSLexer *lexer) {
+    if (lexer->lookahead != '<') {
+        return false;
+    }
+    uint32_t angle_depth = 0;
+    uint32_t paren_depth = 0;
+    uint32_t bracket_depth = 0;
+    bool saw_type_token = false;
+
+    for (;;) {
+        int32_t c = lexer->lookahead;
+        if (c == 0 || c == ';') {
+            return false;
+        }
+        if (c == '"') {
+            scan_string(lexer);
+            saw_type_token = true;
+            continue;
+        }
+        if (c == '<') {
+            angle_depth++;
+            saw_type_token = true;
+        } else if (c == '>') {
+            if (angle_depth == 0) {
+                return false;
+            }
+            angle_depth--;
+            advance(lexer);
+            if (angle_depth == 0) {
+                return saw_type_token;
+            }
+            continue;
+        } else if (c == '(') {
+            paren_depth++;
+            saw_type_token = true;
+        } else if (c == ')') {
+            if (paren_depth == 0 && angle_depth > 0) {
+                return false;
+            }
+            if (paren_depth > 0) {
+                paren_depth--;
+            }
+            saw_type_token = true;
+        } else if (c == '[') {
+            bracket_depth++;
+            saw_type_token = true;
+        } else if (c == ']') {
+            if (bracket_depth == 0 && angle_depth > 0) {
+                return false;
+            }
+            if (bracket_depth > 0) {
+                bracket_depth--;
+            }
+            saw_type_token = true;
+        } else if (!is_space(c) && c != ',') {
+            saw_type_token = true;
+        }
+        advance(lexer);
+    }
+}
+
+static bool is_bare_generic_item_terminator(int32_t c) {
+    return c == ';' || c == ',' || c == ')' || c == ']' || c == '}';
+}
+
+static bool scan_bare_generic_item(TSLexer *lexer) {
+    if (!scan_qualified_name(lexer)) {
+        return false;
+    }
+    if (!scan_balanced_type_arguments(lexer)) {
+        return false;
+    }
+    lexer->mark_end(lexer);
+    while (is_space(lexer->lookahead)) {
+        skip(lexer);
+    }
+    return is_bare_generic_item_terminator(lexer->lookahead);
+}
+
 void *tree_sitter_ciel_external_scanner_create(void) { return NULL; }
 
 void tree_sitter_ciel_external_scanner_destroy(void *payload) { (void)payload; }
@@ -289,21 +388,29 @@ bool tree_sitter_ciel_external_scanner_scan(void *payload, TSLexer *lexer,
         bool is_declaration = false;
         bool is_deref_assignment = false;
         bool is_expression_start_star = false;
-        if (!scan_pointer_or_deref_start(lexer, &is_declaration,
-                                         &is_deref_assignment,
-                                         &is_expression_start_star)) {
+        if (scan_pointer_or_deref_start(lexer, &is_declaration,
+                                        &is_deref_assignment,
+                                        &is_expression_start_star)) {
+            if (is_declaration &&
+                valid_symbols[POINTER_DECLARATION_CONSTRUCTOR]) {
+                lexer->result_symbol = POINTER_DECLARATION_CONSTRUCTOR;
+                return true;
+            }
+            if (is_deref_assignment && valid_symbols[DEREF_ASSIGNMENT_STAR]) {
+                lexer->result_symbol = DEREF_ASSIGNMENT_STAR;
+                return true;
+            }
+            if (is_expression_start_star &&
+                valid_symbols[EXPRESSION_START_STAR]) {
+                lexer->result_symbol = EXPRESSION_START_STAR;
+                return true;
+            }
             return false;
         }
-        if (is_declaration && valid_symbols[POINTER_DECLARATION_CONSTRUCTOR]) {
-            lexer->result_symbol = POINTER_DECLARATION_CONSTRUCTOR;
-            return true;
-        }
-        if (is_deref_assignment && valid_symbols[DEREF_ASSIGNMENT_STAR]) {
-            lexer->result_symbol = DEREF_ASSIGNMENT_STAR;
-            return true;
-        }
-        if (is_expression_start_star && valid_symbols[EXPRESSION_START_STAR]) {
-            lexer->result_symbol = EXPRESSION_START_STAR;
+    }
+    if (valid_symbols[BARE_GENERIC_ITEM]) {
+        if (scan_bare_generic_item(lexer)) {
+            lexer->result_symbol = BARE_GENERIC_ITEM;
             return true;
         }
     }

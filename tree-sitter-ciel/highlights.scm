@@ -60,8 +60,7 @@
 (impl_declaration name: (qualified_name (identifier) @function .))
 (derive_declaration name: (identifier) @type)
 (derive_declaration name: (qualified_name (identifier) @type .))
-(generic_item_expression function: (identifier) @function)
-(generic_item_expression function: (qualified_name (identifier) @function .))
+(generic_item_expression) @function
 (call_expression function: (expression (identifier) @function.call))
 (call_expression function: (expression (qualified_name (identifier) @function.call .)))
 (call_expression

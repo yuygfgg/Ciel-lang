@@ -189,22 +189,9 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
             }
         }
         TExprKind::AsyncSleep { ms, output_ty: _ } => visitor.visit_expr(ms),
-        TExprKind::AsyncOpFuture { op, .. } => visitor.visit_expr(op),
         TExprKind::AsyncSpawn { body, .. } => visitor.visit_expr(body),
         TExprKind::AsyncTaskCancel { task, .. } | TExprKind::AsyncTaskIsFinished { task, .. } => {
             visitor.visit_expr(task)
-        }
-        TExprKind::AsyncChannelSend { sender, value, .. }
-        | TExprKind::AsyncChannelTrySend { sender, value, .. } => {
-            visitor.visit_expr(sender);
-            visitor.visit_expr(value);
-        }
-        TExprKind::AsyncChannelReserve { sender, .. } => visitor.visit_expr(sender),
-        TExprKind::AsyncChannelRecv { receiver, .. } => visitor.visit_expr(receiver),
-        TExprKind::AsyncTaskGroupNext { group, .. } => visitor.visit_expr(group),
-        TExprKind::AsyncChannelPermitSend { permit, value, .. } => {
-            visitor.visit_expr(permit);
-            visitor.visit_expr(value);
         }
         TExprKind::UnsafeBlock { statements, value } => {
             for stmt in statements {

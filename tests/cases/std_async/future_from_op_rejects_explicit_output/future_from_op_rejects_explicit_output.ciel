@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: expects at most 1 type argument
+// expect-error: too many type arguments for `future_from_op`
 
 import /std/async as async;
 

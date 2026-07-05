@@ -1,0 +1,81 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/async as async;
+import /std/async;
+import /std/async/internal/adapter as adapter;
+import /std/async_io as aio;
+import /std/bytes as bytes;
+import /std/c as c;
+import /std/io as io;
+import /std/os/fd as fd;
+import /std/panic;
+import /std/result;
+
+#c_include "unistd.h"
+
+unsafe extern "C" {
+    c::c_int pipe(*c::c_int fds);
+    c::c_int close(c::c_int fd);
+    c::c_int ciel_async_channel_closed_errno();
+}
+
+resource struct NonChannelEpipeOp {
+    aio::AsyncRead inner;
+}
+
+unsafe impl adapter::raw_operation(*const NonChannelEpipeOp op) {
+    return adapter::raw_operation(unsafe { &op->inner });
+}
+
+unsafe impl adapter::poll_done<bytes::Bytes>(*NonChannelEpipeOp op, *bytes::Bytes out) {
+    op;
+    out;
+    return unsafe { ciel_async_channel_closed_errno() };
+}
+
+unsafe impl async::abort_future(*NonChannelEpipeOp op) {
+    aio::cancel_read(unsafe { op->inner })?;
+    return Ok;
+}
+
+Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
+    [2]c::c_int @fds = [0 as c::c_int;];
+    c::c_int rc = unsafe { pipe(&fds[0]) };
+    if ((rc as i64) != 0) {
+        return Err(code_error(5));
+    }
+    *write_fd_out = fds[1];
+    fd::RawFd raw = unsafe { fd::from_raw_fd(fds[0]) };
+    return Ok(unsafe { aio::async_from_raw_fd(raw)? });
+}
+
+async Result<usize, Error> drive_async() {
+    c::c_int @write_fd = -1 as c::c_int;
+    aio::AsyncFd read_fd = pipe_read_end(&write_fd)?;
+    aio::AsyncRead read = aio::read_bytes_async(&read_fd, 8)?;
+    NonChannelEpipeOp wrapped = { inner: read };
+    Result<bytes::Bytes, async::AsyncError> result =
+        await async::future_from_op(wrapped);
+    aio::close_async(read_fd)?;
+    _ close_writer = unsafe { close(write_fd) };
+    switch (result) {
+        case Err(async::Runtime(code)):
+            if (code == (unsafe { ciel_async_channel_closed_errno() } as i64)) {
+                return Ok(7);
+            }
+            return Err(code_error(70));
+        case Err(async::ChannelClosed):
+            return Err(code_error(71));
+        case Err(_):
+            return Err(code_error(72));
+        case Ok(_):
+            return Err(code_error(73));
+    }
+}
+
+i32 main() {
+    must(io::print_value(must(async::block_on(drive_async()))));
+    return 0;
+}

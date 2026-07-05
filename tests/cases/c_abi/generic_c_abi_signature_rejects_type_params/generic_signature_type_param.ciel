@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: cannot mention type parameters
+
+extern "C" T bad_callback<T>(*const void raw) {
+    *const T typed = unsafe { raw as *const T };
+    return *typed;
+}
+
+i32 main() {
+    return 0;
+}

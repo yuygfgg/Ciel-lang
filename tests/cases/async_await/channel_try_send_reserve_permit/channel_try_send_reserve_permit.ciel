@@ -1,6 +1,6 @@
 // ciel-test: run
 // expect-exit: 0
-// expect-stdout: 12
+// expect-stdout: 23
 
 import /std/async as async;
 import /std/io;
@@ -9,18 +9,21 @@ import /std/result;
 
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    async::try_send<usize>(pair.sender, 5)?;
+    pair.sender.async::try_send<usize>(5)?;
     switch (async::try_send<usize>(pair.sender, 6)) {
         case Err(_):
             {}
         case Ok(_):
             return Err(async::channel_closed_error());
     }
-    usize first = await async::recv<usize>(pair.receiver)?;
-    async::SendPermit<usize> permit = await async::reserve<usize>(pair.sender)?;
+    usize first = await pair.receiver.async::recv<usize>()?;
+    async::SendPermit<usize> permit = await pair.sender.async::reserve<usize>()?;
     async::permit_send<usize>(permit, 7)?;
     usize second = await async::recv<usize>(pair.receiver)?;
-    return Ok(first + second);
+    async::SendPermit<usize> selector_permit = await async::reserve<usize>(pair.sender)?;
+    selector_permit.async::send<usize>(11)?;
+    usize third = await pair.receiver.async::recv<usize>()?;
+    return Ok(first + second + third);
 }
 
 i32 main() {

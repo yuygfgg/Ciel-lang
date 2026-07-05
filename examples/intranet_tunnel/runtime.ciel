@@ -17,6 +17,8 @@ export struct AsyncFrame {
     bytes::Bytes payload;
 }
 
+derive message::Message<AsyncFrame>;
+
 export enum StreamEvent {
     StreamFrame(AsyncFrame),
     StreamLocalClosed,

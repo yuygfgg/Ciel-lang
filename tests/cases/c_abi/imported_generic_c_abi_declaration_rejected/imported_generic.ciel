@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: imported C function declaration `generic_import` cannot be generic
+
+unsafe extern "C" {
+    i32 generic_import<T>(i32 value);
+}
+
+i32 main() {
+    return 0;
+}

@@ -49,24 +49,11 @@ pub(super) struct CodegenPlanData {
     pub(super) retained_closure_witnesses: BTreeMap<String, RetainedClosureWitness>,
     pub(super) actor_dispatches: BTreeMap<String, ActorDispatch>,
     pub(super) async_sleep_output_tys: BTreeMap<String, Ty>,
-    pub(super) async_op_contexts: BTreeMap<String, AsyncOpContext>,
-    pub(super) async_channel_send_payload_tys: BTreeMap<String, Ty>,
-    pub(super) async_channel_reserve_payload_tys: BTreeMap<String, Ty>,
-    pub(super) async_channel_recv_payload_tys: BTreeMap<String, Ty>,
-    pub(super) async_task_group_next_payload_tys: BTreeMap<String, Ty>,
     pub(super) resource_cleanup_tys: BTreeMap<String, Ty>,
     pub(super) string_literals: BTreeMap<(usize, usize, usize), String>,
     pub(super) string_literal_names: HashMap<(usize, usize, usize), String>,
     pub(super) source_locations: BTreeMap<(usize, usize), SourceLocation>,
     pub(super) name_map: HashMap<DefId, String>,
-}
-
-#[derive(Clone, Debug)]
-pub(super) struct AsyncOpContext {
-    pub(super) op_ty: Ty,
-    pub(super) output_ty: Ty,
-    pub(super) raw_operation_def: DefId,
-    pub(super) poll_done_def: DefId,
 }
 
 #[derive(Clone, Debug)]

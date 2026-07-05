@@ -22,8 +22,8 @@ void mark(i32 ch) {
     unsafe { putchar(ch) };
 }
 
-*CielFuture raw_future(async::Future<Result<usize, Error>> future) {
-    return unsafe { future.handle as *CielFuture };
+*CielFuture raw_future<A: async::Awaitable<Result<usize, Error>>>(*const A future) {
+    return unsafe { async::awaitable_future<Result<usize, Error>>(future) as *CielFuture };
 }
 
 async Result<usize, Error> early_return() {
@@ -75,7 +75,10 @@ async Result<usize, Error> ready_chain(usize limit) {
     return Ok(count);
 }
 
-bool poll_ready_step(async::Future<Result<usize, Error>> future, *Result<usize, Error> out) {
+bool poll_ready_step<A: async::Awaitable<Result<usize, Error>>>(
+    *const A future,
+    *Result<usize, Error> out
+) {
     c::c_int rc = unsafe { ciel_future_poll_trampoline(raw_future(future), out as *void) };
     return rc == 0;
 }
@@ -92,23 +95,23 @@ i32 main() {
     async::Future<Result<usize, Error>> cancel_future = cancel_target();
     Result<usize, Error> @cancel_out = Ok(0);
     c::c_int cancel_start = unsafe {
-        ciel_future_poll_trampoline(raw_future(cancel_future), &cancel_out as *void)
+        ciel_future_poll_trampoline(raw_future(&cancel_future), &cancel_out as *void)
     };
     if (cancel_start == 0) {
         return 3;
     }
-    if (unsafe { ciel_future_cancel(raw_future(cancel_future)) } != 0) {
+    if (unsafe { ciel_future_cancel(raw_future(&cancel_future)) } != 0) {
         return 4;
     }
     async::Future<Result<usize, Error>> abort_future = abort_target();
     Result<usize, Error> @abort_out = Ok(0);
     c::c_int abort_start = unsafe {
-        ciel_future_poll_trampoline(raw_future(abort_future), &abort_out as *void)
+        ciel_future_poll_trampoline(raw_future(&abort_future), &abort_out as *void)
     };
     if (abort_start == 0) {
         return 5;
     }
-    if (unsafe { ciel_future_abort(raw_future(abort_future)) } != 0) {
+    if (unsafe { ciel_future_abort(raw_future(&abort_future)) } != 0) {
         return 6;
     }
     usize first = must(async::block_on(ready_loop(70)));
@@ -120,12 +123,12 @@ i32 main() {
     async::Future<Result<usize, Error>> ready_b = ready_chain(127);
     Result<usize, Error> @out_a = Ok(0);
     Result<usize, Error> @out_b = Ok(0);
-    bool @done_a = poll_ready_step(ready_a, &out_a);
-    bool @done_b = poll_ready_step(ready_b, &out_b);
-    done_a = poll_ready_step(ready_a, &out_a);
-    done_b = poll_ready_step(ready_b, &out_b);
-    done_a = poll_ready_step(ready_a, &out_a);
-    done_b = poll_ready_step(ready_b, &out_b);
+    bool @done_a = poll_ready_step(&ready_a, &out_a);
+    bool @done_b = poll_ready_step(&ready_b, &out_b);
+    done_a = poll_ready_step(&ready_a, &out_a);
+    done_b = poll_ready_step(&ready_b, &out_b);
+    done_a = poll_ready_step(&ready_a, &out_a);
+    done_b = poll_ready_step(&ready_b, &out_b);
     if (!done_a || !done_b) {
         return 8;
     }

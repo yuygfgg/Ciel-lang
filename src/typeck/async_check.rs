@@ -102,17 +102,6 @@ impl TypeChecker {
         if prefix.len() != 1 {
             return false;
         }
-        let TExprKind::AsyncOpFuture { op, .. } = &future.kind else {
-            return false;
-        };
-        let op_id = match &op.kind {
-            TExprKind::Local(op_id, _) => *op_id,
-            TExprKind::Move(inner) => match &inner.kind {
-                TExprKind::Local(op_id, _) => *op_id,
-                _ => return false,
-            },
-            _ => return false,
-        };
         let TStmtKind::VarDecl {
             local_id,
             init: Some(_),
@@ -121,7 +110,24 @@ impl TypeChecker {
         else {
             return false;
         };
-        *local_id == op_id
+        self.transparent_cancel_safe_future_consumes_local(future, *local_id)
+    }
+
+    fn transparent_cancel_safe_future_consumes_local(
+        &self,
+        future: &TExpr,
+        local_id: LocalId,
+    ) -> bool {
+        match &future.kind {
+            TExprKind::Local(id, _) => *id == local_id,
+            TExprKind::Move(inner) => {
+                self.transparent_cancel_safe_future_consumes_local(inner, local_id)
+            }
+            TExprKind::Call { args, .. } => args
+                .iter()
+                .any(|arg| self.transparent_cancel_safe_future_consumes_local(arg, local_id)),
+            _ => false,
+        }
     }
 
     pub(super) fn check_async_frame_safety(

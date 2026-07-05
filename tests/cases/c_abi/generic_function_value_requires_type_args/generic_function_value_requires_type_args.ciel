@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: needs explicit type arguments when used as a value
+
+import /std/c as c;
+
+unsafe extern "C" {
+    type Callback = c::c_int fn(*void);
+}
+
+extern "C" c::c_int callback_template<T>(*void raw) {
+    return 0 as c::c_int;
+}
+
+i32 main() {
+    Callback callback = callback_template;
+    i32 @value = 0;
+    return unsafe { callback(&value as *void) } as i32;
+}

@@ -719,11 +719,11 @@ Returning a struct, enum, or array value uses the same value semantics at the
 Ciel level; backend lowering may avoid physical copies.
 
 A concrete type is resource-affine when it is declared `resource struct`, when
-it is the canonical `/std/resource::Handle`, or when it structurally contains a
-resource-affine field, enum payload, array element, closure capture, or
-generated future state or output. Resource-affine values are move-only and are
-cleaned up by generated structural cleanup code when their live owner slot goes
-out of scope. The full non-memory resource model is specified in
+it is the canonical `/std/resource::Handle`, when it is a compiler-generated
+future, or when it structurally contains a resource-affine field, enum payload,
+array element, or closure capture. Resource-affine values are move-only and
+are cleaned up by generated structural cleanup code when their live owner slot
+goes out of scope. The full non-memory resource model is specified in
 [Non-Memory Resource Management](#18-non-memory-resource-management).
 
 A local declaration without an initializer creates an uninitialized binding,
@@ -1019,6 +1019,7 @@ ArgList         ::= Expr { "," Expr } [ "," ]
 
 PrimaryExpr     ::= Identifier
                  | QualifiedName
+                 | GenericItemExpr
                  | Literal
                  | StructLiteral
                  | ArrayLiteral
@@ -1035,6 +1036,7 @@ SelectExpr      ::= [ "biased" ] "select" "{" SelectArm { SelectArm } "}"
 SelectArm       ::= "case" Identifier "=" Expr ":" Expr [ ";" ]
 
 QualifiedName   ::= Identifier "::" Identifier { "::" Identifier }
+GenericItemExpr ::= ( Identifier | QualifiedName ) TypeArgList
 Literal         ::= IntegerLiteral | FloatLiteral | CharLiteral
                  | StringLiteral | BoolLiteral | NullLiteral
 
@@ -1158,6 +1160,14 @@ messageable closure value.
 A call suffix may call a function item, function-pointer value, or closure
 value. Closure arguments are evaluated in source order, then the closure's
 generated call function is invoked with its environment and the arguments.
+
+A generic function item expression produces a concrete function item value from
+a generic function template, for example `compare<Item>`. It is valid only for a
+generic function item or qualified generic function item, not for locals,
+closures, dynamic interface calls, method values, or arbitrary expressions. The
+result has the substituted function-pointer type. When the type argument list
+is followed by an argument list, the expression is a generic call such as
+`f<T>(args)` instead.
 
 Receiver selectors let a function or interface declaration expose one
 receiver-call spelling while keeping the semantic model as an ordinary call.
@@ -2171,13 +2181,12 @@ future in a local, pass it to `async::spawn`, pass it to `select`, pass it to a
 generic future combinator, or await it. Users cannot name the generated frame
 type, inspect its layout, or reach into another task's frame through the future.
 
-Compiler-generated futures are single-consumer values. After a generated future
-has completed, awaiting it again is invalid unless the particular future type
-explicitly documents reusable await behavior. Dropping a future that has not
-registered a pending operation is allowed. Dropping or cancelling a pending
-future while the current task continues is allowed only through a path that has
-proved `CancelSafe`; tearing down a pending future because its owning task is
-terminating requires `Abortable`.
+Compiler-generated futures are resource-affine, single-consumer values. Awaiting
+or passing one by value consumes that future; awaiting it again is invalid.
+Dropping a future that has not registered a pending operation is allowed.
+Dropping or cancelling a pending future while the current task continues is
+allowed only through a path that has proved `CancelSafe`; tearing down a
+pending future because its owning task is terminating requires `Abortable`.
 
 ### Await
 
@@ -2262,8 +2271,9 @@ cancellation: waiting for capacity through `reserve` is cancellation-safe, but
 dropping a pending `send(value)` may otherwise discard a value that was moved
 into the send operation.
 
-Channel payloads cross task ownership and therefore carry hidden `Message`
-obligations at send and receive boundaries. Channel endpoint liveness is
+Channel payloads cross task ownership and therefore the async channel API
+requires `T: Message` on payload send, reservation, permit-send, and receive
+operations. Channel endpoint liveness is
 deterministic: closing or destroying the last sender wakes receivers after the
 buffer is drained, and closing or destroying the last receiver wakes blocked
 senders and reservations with `channel_closed_error()`. Task cleanup must
@@ -2895,14 +2905,14 @@ the registry and fail through the module's ordinary error path if the token is
 stale, closed, moved, wrong-kind, or over policy.
 
 The type checker treats a concrete type as resource-affine when it is
-`resource struct`, the canonical `Handle`, or a visible aggregate, array,
-closure capture, generated future state, or generated future output that
-contains a resource-affine value. Resource-affine values are move-only. Moving
-a whole local, parameter, enum payload, result payload, selected future output,
-or returned value consumes the source slot; later reads are rejected. Safe code
-cannot copy a resource-affine value, use an array repeat to duplicate it, move
-only a resource subvalue out of an aggregate, replace a resource subfield in
-place, erase it into a dynamic interface or boxed error, or send it through
+`resource struct`, the canonical `Handle`, a compiler-generated future, or a
+visible aggregate, array, or closure capture that contains a resource-affine
+value. Resource-affine values are move-only. Moving a whole local, parameter,
+enum payload, result payload, selected future output, or returned value
+consumes the source slot; later reads are rejected. Safe code cannot copy a
+resource-affine value, use an array repeat to duplicate it, move only a
+resource subvalue out of an aggregate, replace a resource subfield in place,
+erase it into a dynamic interface or boxed error, or send it through
 clone-based task, actor, and channel boundaries. Unsafe code may use the raw
 standard-library holes, but those holes must document and uphold uniqueness.
 
@@ -2963,8 +2973,8 @@ accept_resource<i64>(1);                         // error
 Generated code performs structural cleanup for live affine owner slots on
 normal cleanup paths. A cleanup helper closes a live `Handle` through the
 runtime registry and clears the token fields. It recursively cleans arrays,
-struct fields, enum payloads, closure captures, and generated future state; for
-generated futures, cleanup aborts the future handle. Cleanup is structural and
+struct fields, enum payloads, and closure captures; for generated futures,
+cleanup aborts the future handle. Cleanup is structural and
 compiler-generated. There is no public user-defined `drop` hook, and ordinary
 GC-managed fields remain GC-managed.
 
@@ -5361,8 +5371,9 @@ selectors.
 // /std/async
 export import /std/async/core;
 import /std/async/internal/adapter as adapter;
+import /std/async/internal/runtime_future;
 
-export struct Future<T> {
+export resource unsafe struct Future<T> {
     *void handle;
 }
 
@@ -5377,7 +5388,14 @@ export interface Abortable = abort_future;
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
 export Out block_on<A: Awaitable<Out = _> + Abortable>(A future);
-export Future<Result<Out, AsyncError>> future_from_op<Op: adapter::OperationFuture<Out = _>>(Op op);
+
+export resource unsafe struct OperationFutureAdapter<Op, Out> {
+    Future<Result<Out, AsyncError>> inner;
+}
+
+export OperationFutureAdapter<Op, Out> future_from_op<
+    resource Op: adapter::OperationFuture<Out = _>
+>(Op op);
 
 export AsyncError timeout_error();
 export AsyncError channel_closed_error();
@@ -5409,12 +5427,24 @@ export struct ChannelPair<T> {
     Receiver<T> receiver;
 }
 
+export resource unsafe struct ChannelSendFuture<T> {
+    Future<Result<void, AsyncError>> inner;
+}
+
+export resource unsafe struct ChannelReserveFuture<T> {
+    Future<Result<SendPermit<T>, AsyncError>> inner;
+}
+
+export resource unsafe struct ChannelRecvFuture<T> {
+    Future<Result<T, AsyncError>> inner;
+}
+
 export Result<ChannelPair<T>, AsyncError> channel<T>(usize capacity);
-export async Result<void, AsyncError> send<T>(Sender<T> sender, T value) = .send;
-export Result<void, AsyncError> try_send<T>(Sender<T> sender, T value) = .try_send;
-export async Result<SendPermit<T>, AsyncError> reserve<T>(Sender<T> sender) = .reserve;
-export Result<void, AsyncError> permit_send<T>(SendPermit<T> permit, T value) = .send;
-export async Result<T, AsyncError> recv<T>(Receiver<T> receiver) = .recv;
+export ChannelSendFuture<T> send<T: Message>(Sender<T> sender, T value);
+export Result<void, AsyncError> try_send<T: Message>(Sender<T> sender, T value) = .try_send;
+export ChannelReserveFuture<T> reserve<T: Message>(Sender<T> sender);
+export Result<void, AsyncError> permit_send<T: Message>(SendPermit<T> permit, T value) = .send;
+export ChannelRecvFuture<T> recv<T: Message>(Receiver<T> receiver);
 export Result<void, AsyncError> close<T>(Sender<T> sender) = .close;
 export Result<void, AsyncError> close_receiver<T>(Receiver<T> receiver) = .close;
 
@@ -5446,14 +5476,21 @@ export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
 ```
 
 `/std/async` is the user-facing async/await surface. `Future<T>` is a
-runtime-backed future handle; compiler-generated async functions and closures
-also implement `Awaitable<T>` without exposing their generated frame type. The
-`awaitable_future` interface determines `Out` from the awaitable receiver, so
-generic helpers can write `A: Awaitable<Out = _>` when they need to name the
-output without exposing it as an explicit type parameter. `block_on` is the
-synchronous bridge for `main`, tests, and embedding hosts; it starts a future on
-the task runtime and blocks the current thread until the future returns. Async
-bodies should use `await` instead of nested `block_on`.
+resource-backed, one-shot runtime future handle. It is resource-affine
+regardless of `T`, because the suspended frame or runtime context may own
+resources even when the eventual output is copyable. Compiler-generated async
+functions and closures also implement `Awaitable<T>` without exposing their
+generated frame type.
+Standard-library adapter types such as `OperationFutureAdapter<T, Out>`,
+`ChannelSendFuture<T>`, `ChannelReserveFuture<T>`, and
+`ChannelRecvFuture<T>` wrap `Future<T>` and implement `Awaitable`, `Abortable`,
+and, where the protocol permits, `CancelSafe`. The `awaitable_future` interface
+determines `Out` from the awaitable receiver, so generic helpers can write
+`A: Awaitable<Out = _>` when they need to name the output without exposing it as
+an explicit type parameter. `block_on` is the synchronous bridge for `main`,
+tests, and embedding hosts; it starts a future on the task runtime and blocks
+the current thread until the future returns. Async bodies should use `await`
+instead of nested `block_on`.
 
 `Task<T>` is an awaitable handle to a spawned task. `spawn` starts an awaitable
 body whose output is `Result<T, Error>`. The compiler attaches hidden
@@ -5468,8 +5505,13 @@ or closed without suspension, `reserve` waits for capacity and returns a
 permit, and `permit_send` commits a value into a reserved slot. Sender and
 receiver lifetimes wake the opposite side: the last sender wakes receivers, and
 the last receiver wakes senders and outstanding reservations with
-`channel_closed_error()`. Channel payloads carry hidden `Message` obligations
-at send and receive boundaries.
+`channel_closed_error()`. Channel payloads must satisfy the standard-library
+`Message` interface on `send`, `try_send`, `reserve`, `permit_send`, and `recv`.
+The async `send`, `reserve`, and `recv` functions are ordinary standard-library
+functions returning awaitable adapter newtypes; they are not compiler-generated
+future variants. Structural payloads become usable channel messages through
+ordinary `derive Message`, explicit `clone_message` implementations, or direct
+`meta::Repr<T>` payload types.
 
 Task groups support dynamic concurrency. `group_next` returns completed task
 results in completion order without cancelling unfinished tasks. `group_cancel_all`
@@ -5516,6 +5558,36 @@ runtime operation as a future while deriving `Out` from the operation token.
 Normal application code should call
 awaitable stdlib functions such as `async_io::read_bytes`, `async_net::read`,
 or `async_time::sleep_ms` instead of implementing operation adapters directly.
+
+```ciel
+// /std/async/internal/runtime_future
+import /std/c as c;
+
+export unsafe extern "C" {
+    opaque struct CielFuture;
+}
+
+export type RuntimeRun = extern "C" c::c_int fn(*CielFuture, *void, *void);
+export type RuntimeCleanup = extern "C" void fn(*CielFuture, *void, c::c_int);
+
+export unsafe Future<Out> new<Out, Ctx>(
+    Ctx @ctx,
+    RuntimeRun run,
+    RuntimeCleanup cleanup
+);
+
+export unsafe *T alloc_slot<T>();
+```
+
+`runtime_future::new` allocates runtime-owned context storage, moves `ctx` into
+it, and calls the C runtime future constructor with result size, result
+alignment, the run callback, the context pointer, and the cleanup callback. The
+run callback receives the `CielFuture*` being polled, the context pointer, and
+the output storage pointer. Returning `0` means the output has been completed;
+returning `ciel_async_again_errno()` means the future is pending. Cleanup
+receives the same future and context plus the runtime cleanup reason. The
+constructor is unsafe because the callbacks must cast the context and output
+pointers back to the exact types used at construction.
 
 ```ciel
 // /std/async_io
@@ -5848,8 +5920,11 @@ use the Ciel ABI.
 Imported C functions are unsafe functions. They must be declared with an unsafe
 C boundary, either as `unsafe extern "C" T name(...);` or inside an
 `unsafe extern "C"` block. A top-level `export extern "C" T name(...) { ... }`
-defines a C ABI symbol implemented in Ciel; it is not unsafe to call from Ciel
-unless the declaration itself is marked `unsafe`. `export unsafe extern "C" {
+defines a user-visible C ABI symbol implemented in Ciel; it is not unsafe to
+call from Ciel unless the declaration itself is marked `unsafe`. A non-exported
+top-level `extern "C" T name(...) { ... }` defines an internal C ABI function
+implemented in Ciel. It can be used as a C callback value from Ciel, but it does
+not expose the source name as a public C symbol. `export unsafe extern "C" {
 ... }` re-exports imported C declarations to Ciel importers; it does not define
 the C symbols. `noescape` is allowed only on imported C function declarations,
 so it appears in an unsafe C boundary. `extern "C"` functions may return
@@ -5982,6 +6057,31 @@ the target platform C ABI as written. By-value `void` parameters are invalid in
 `extern "C"` declarations; an empty C parameter list is written by omitting
 parameters. Opaque constrained returns are also invalid for C ABI declarations
 because the C signature must expose a concrete source return type.
+
+Imported C declarations cannot be generic. Exported C ABI functions cannot be
+generic because their source name is the stable C symbol. Non-exported
+`extern "C"` function bodies may be generic templates when their C-visible
+parameter and return types do not mention the template's type parameters. Type
+parameters may appear inside the body. A type-applied function item such as
+`compare<Item>` checks the generic arity and constraints, substitutes the
+function type, records the concrete instance for monomorphization, and lowers
+to the generated internal C symbol for that instance.
+
+```ciel
+type Compare = extern "C" c::c_int fn(*const void, *const void, *void);
+
+extern "C" c::c_int compare_items<T>(
+    *const void left_raw,
+    *const void right_raw,
+    *void ctx_raw,
+) {
+    *const T left = unsafe { left_raw as *const T };
+    *const T right = unsafe { right_raw as *const T };
+    ...
+}
+
+Compare compare = compare_items<Item>;
+```
 
 Generated Ciel libraries expose a small host ABI:
 

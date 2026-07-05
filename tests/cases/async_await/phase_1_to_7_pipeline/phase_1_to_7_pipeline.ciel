@@ -5,12 +5,15 @@
 import /std/async as async;
 import /std/async_time as async_time;
 import /std/io;
+import /std/message;
 import /std/panic;
 import /std/result;
 
 struct Packet {
     usize value;
 }
+
+derive Message<Packet>;
 
 Result<usize, Error> packet_value(Result<Packet, async::AsyncError> result) {
     Packet packet = result?;

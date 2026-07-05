@@ -3,6 +3,7 @@ use std::collections::{HashMap, HashSet};
 use crate::{
     diagnostic::Diagnostic,
     resolve::DefId,
+    std_id,
     types::{
         ConstraintBounds, ConstraintRef, Ty, contains_generic, map_ty_children,
         substitute_constraint_bounds, substitute_ty, unify_ty,
@@ -481,15 +482,18 @@ fn ty_is_affine_readonly(ctx: &TyCtx, ty: &Ty) -> bool {
 fn ty_is_affine_readonly_inner(ctx: &TyCtx, ty: &Ty, visiting: &mut HashSet<Ty>) -> bool {
     match ty {
         Ty::Array { elem, .. } => ty_is_affine_readonly_inner(ctx, elem, visiting),
-        Ty::GeneratedFuture {
-            output,
-            affine_state,
-            ..
-        } => *affine_state || ty_is_affine_readonly_inner(ctx, output, visiting),
+        Ty::GeneratedFuture { .. } => true,
         Ty::ClosureInstance { captures, .. } => captures
             .iter()
             .any(|capture| ty_is_affine_readonly_inner(ctx, capture, visiting)),
         Ty::Named { name, args } => {
+            let named_ty = Ty::Named {
+                name: name.clone(),
+                args: args.clone(),
+            };
+            if std_id::std_async_future_output_arg(&ctx.resolved, &named_ty).is_some() {
+                return true;
+            }
             let instance_name = super::enum_instance_name(name, args);
             if ctx.resource_structs.contains(&instance_name) {
                 return true;

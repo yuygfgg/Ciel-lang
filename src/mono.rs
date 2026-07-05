@@ -31,10 +31,10 @@ use crate::{
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_schema_marker_name,
         meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty, retained_closure_capabilities,
-        std_async_error_ty, std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty,
-        std_message_result_ty, std_meta_repr_marker_ty, std_meta_repr_source_name,
-        std_meta_schema_marker_ty, std_meta_schema_source_name, std_result_ty, std_send_permit_ty,
-        std_task_group_ty, std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
+        std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty, std_message_result_ty,
+        std_meta_repr_marker_ty, std_meta_repr_source_name, std_meta_schema_marker_ty,
+        std_meta_schema_source_name, std_result_ty, std_task_ty, ty_contains, ty_from_primitive,
+        type_complexity, unify_ty,
     },
 };
 
@@ -852,21 +852,6 @@ impl MonoContext {
                     output_ty: self.lower_opaque_returns_in_ty(&output_ty),
                 }
             }
-            TExprKind::AsyncOpFuture {
-                op,
-                output_ty,
-                raw_operation_def,
-                poll_done_def,
-            } => {
-                self.mark_standard_error_code_impl();
-                self.mark_async_op_impls(raw_operation_def, poll_done_def, &op.ty, &output_ty);
-                TExprKind::AsyncOpFuture {
-                    op: Box::new(self.rewrite_expr(*op)?),
-                    output_ty: self.lower_opaque_returns_in_ty(&output_ty),
-                    raw_operation_def,
-                    poll_done_def,
-                }
-            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -903,69 +888,6 @@ impl MonoContext {
                 TExprKind::AsyncTaskIsFinished {
                     task: Box::new(self.rewrite_expr(*task)?),
                     task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
-                }
-            }
-            TExprKind::AsyncChannelSend {
-                sender,
-                value,
-                payload_ty,
-            } => {
-                self.mark_standard_error_code_impl();
-                self.mark_task_boundary_clone_impls(&payload_ty);
-                TExprKind::AsyncChannelSend {
-                    sender: Box::new(self.rewrite_expr(*sender)?),
-                    value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
-                }
-            }
-            TExprKind::AsyncChannelTrySend {
-                sender,
-                value,
-                payload_ty,
-            } => {
-                self.mark_standard_error_code_impl();
-                self.mark_task_boundary_clone_impls(&payload_ty);
-                TExprKind::AsyncChannelTrySend {
-                    sender: Box::new(self.rewrite_expr(*sender)?),
-                    value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
-                }
-            }
-            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
-                self.mark_standard_error_code_impl();
-                TExprKind::AsyncChannelReserve {
-                    sender: Box::new(self.rewrite_expr(*sender)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
-                }
-            }
-            TExprKind::AsyncChannelPermitSend {
-                permit,
-                value,
-                payload_ty,
-            } => {
-                self.mark_standard_error_code_impl();
-                self.mark_task_boundary_clone_impls(&payload_ty);
-                TExprKind::AsyncChannelPermitSend {
-                    permit: Box::new(self.rewrite_expr(*permit)?),
-                    value: Box::new(self.rewrite_expr(*value)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
-                }
-            }
-            TExprKind::AsyncChannelRecv {
-                receiver,
-                payload_ty,
-            } => {
-                self.mark_standard_error_code_impl();
-                TExprKind::AsyncChannelRecv {
-                    receiver: Box::new(self.rewrite_expr(*receiver)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
-                }
-            }
-            TExprKind::AsyncTaskGroupNext { group, payload_ty } => {
-                self.mark_standard_error_code_impl();
-                TExprKind::AsyncTaskGroupNext {
-                    group: Box::new(self.rewrite_expr(*group)?),
-                    payload_ty: self.lower_opaque_returns_in_ty(&payload_ty),
                 }
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
@@ -1150,17 +1072,6 @@ impl MonoContext {
         }
     }
 
-    fn mark_async_op_impls(
-        &mut self,
-        raw_operation_def: DefId,
-        poll_done_def: DefId,
-        op_ty: &Ty,
-        output_ty: &Ty,
-    ) {
-        self.mark_async_op_impl(raw_operation_def, &[], op_ty);
-        self.mark_async_op_impl(poll_done_def, std::slice::from_ref(output_ty), op_ty);
-    }
-
     fn mark_awaitable_impl(&mut self, output_ty: &Ty, receiver_ty: &Ty) {
         if let Ty::GeneratedFuture { output, .. } = receiver_ty
             && output.as_ref() == output_ty
@@ -1177,25 +1088,6 @@ impl MonoContext {
                     self.std_async_interface_def(STD_ASYNC_AWAITABLE_FUTURE_INTERFACE),
                     std::slice::from_ref(output_ty),
                     receiver_ty,
-                )
-            })
-            .map(|implementation| implementation.function_def);
-        if let Some(function_def) = function_def {
-            self.mark_function(function_def);
-        }
-    }
-
-    fn mark_async_op_impl(&mut self, interface_def: DefId, interface_args: &[Ty], op_ty: &Ty) {
-        let function_def = self
-            .checked
-            .impls
-            .iter()
-            .find(|implementation| {
-                impl_matches_interface_receiver(
-                    implementation,
-                    interface_def,
-                    interface_args,
-                    op_ty,
                 )
             })
             .map(|implementation| implementation.function_def);
@@ -1291,6 +1183,7 @@ impl MonoContext {
 
 struct StructTemplate {
     is_resource: bool,
+    is_unsafe: bool,
     generics: Vec<String>,
     fields: Vec<FieldDecl>,
 }
@@ -1408,6 +1301,7 @@ impl<'a> AggregateCollector<'a> {
                             nominal_type_name(&checked.resolved, def_id),
                             StructTemplate {
                                 is_resource: decl.is_resource,
+                                is_unsafe: decl.is_unsafe,
                                 generics: decl
                                     .generics
                                     .iter()
@@ -1673,16 +1567,6 @@ impl<'a> AggregateCollector<'a> {
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
             }
-            TExprKind::AsyncOpFuture { op, output_ty, .. } => {
-                self.collect_expr(op);
-                let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
-                self.collect_ty(&std_future_ty(result_ty.clone()));
-                self.collect_ty(&result_ty);
-                self.collect_ty(output_ty);
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-            }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
@@ -1712,88 +1596,6 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(task);
                 self.collect_ty(task_output_ty);
                 self.collect_ty(&std_task_ty(task_output_ty.clone()));
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-            }
-            TExprKind::AsyncChannelSend {
-                sender,
-                value,
-                payload_ty,
-            } => {
-                self.collect_expr(sender);
-                self.collect_expr(value);
-                self.collect_ty(payload_ty);
-                let result_ty = std_result_ty(Ty::Void, std_async_error_ty());
-                self.collect_ty(&std_future_ty(result_ty.clone()));
-                self.collect_ty(&result_ty);
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-                self.collect_task_boundary_clone_result_tys(payload_ty);
-            }
-            TExprKind::AsyncChannelTrySend {
-                sender,
-                value,
-                payload_ty,
-            } => {
-                self.collect_expr(sender);
-                self.collect_expr(value);
-                self.collect_ty(payload_ty);
-                self.collect_ty(&std_result_ty(Ty::Void, std_async_error_ty()));
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-                self.collect_task_boundary_clone_result_tys(payload_ty);
-            }
-            TExprKind::AsyncChannelReserve { sender, payload_ty } => {
-                self.collect_expr(sender);
-                self.collect_ty(payload_ty);
-                let permit_ty = std_send_permit_ty(payload_ty.clone());
-                let result_ty = std_result_ty(permit_ty.clone(), std_async_error_ty());
-                self.collect_ty(&permit_ty);
-                self.collect_ty(&std_future_ty(result_ty.clone()));
-                self.collect_ty(&result_ty);
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-            }
-            TExprKind::AsyncChannelPermitSend {
-                permit,
-                value,
-                payload_ty,
-            } => {
-                self.collect_expr(permit);
-                self.collect_expr(value);
-                self.collect_ty(payload_ty);
-                self.collect_ty(&std_result_ty(Ty::Void, std_async_error_ty()));
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-                self.collect_task_boundary_clone_result_tys(payload_ty);
-            }
-            TExprKind::AsyncChannelRecv {
-                receiver,
-                payload_ty,
-            } => {
-                self.collect_expr(receiver);
-                self.collect_ty(payload_ty);
-                let result_ty = std_result_ty(payload_ty.clone(), std_async_error_ty());
-                self.collect_ty(&std_future_ty(result_ty.clone()));
-                self.collect_ty(&result_ty);
-                self.collect_ty(&std_error_code_ty());
-                let dyn_ty = self.std_error_trait_ty();
-                self.collect_ty(&dyn_ty);
-            }
-            TExprKind::AsyncTaskGroupNext { group, payload_ty } => {
-                self.collect_expr(group);
-                self.collect_ty(payload_ty);
-                self.collect_ty(&std_task_group_ty(payload_ty.clone()));
-                let task_ty = std_task_ty(payload_ty.clone());
-                let result_ty = std_result_ty(task_ty.clone(), std_async_error_ty());
-                self.collect_ty(&task_ty);
-                self.collect_ty(&std_future_ty(result_ty.clone()));
-                self.collect_ty(&result_ty);
                 self.collect_ty(&std_error_code_ty());
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
@@ -2255,6 +2057,7 @@ impl<'a> AggregateCollector<'a> {
         let generics = template.generics.clone();
         let template_fields = template.fields.clone();
         let is_resource = template.is_resource;
+        let is_unsafe = template.is_unsafe;
         let subst = generics
             .into_iter()
             .zip(args.iter().cloned())
@@ -2273,6 +2076,7 @@ impl<'a> AggregateCollector<'a> {
         self.checked_structs.push(CheckedStruct {
             name: instance_name,
             is_resource,
+            is_unsafe,
             fields,
         });
     }

@@ -21,8 +21,8 @@ void mark(i32 ch) {
     unsafe { putchar(ch) };
 }
 
-*CielFuture raw_future(async::Future<Result<usize, Error>> future) {
-    return unsafe { future.handle as *CielFuture };
+*CielFuture raw_future<A: async::Awaitable<Result<usize, Error>>>(*const A future) {
+    return unsafe { async::awaitable_future<Result<usize, Error>>(future) as *CielFuture };
 }
 
 async Result<usize, Error> child() {
@@ -40,11 +40,11 @@ async Result<usize, Error> parent() {
 i32 main() {
     async::Future<Result<usize, Error>> future = parent();
     Result<usize, Error> @out = Ok(0);
-    c::c_int start = unsafe { ciel_future_poll_trampoline(raw_future(future), &out as *void) };
+    c::c_int start = unsafe { ciel_future_poll_trampoline(raw_future(&future), &out as *void) };
     if (start == 0) {
         return 1;
     }
-    c::c_int canceled = unsafe { ciel_future_cancel(raw_future(future)) };
+    c::c_int canceled = unsafe { ciel_future_cancel(raw_future(&future)) };
     if (canceled != 0) {
         return 2;
     }

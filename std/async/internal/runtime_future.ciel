@@ -1,0 +1,68 @@
+import /std/c as c;
+import /std/meta as meta;
+import /std/panic as panic;
+
+export unsafe extern "C" {
+    opaque struct CielFuture;
+}
+
+export resource unsafe struct Future<T> {
+    *void handle;
+}
+
+export type RuntimeRun = extern "C" c::c_int fn(*CielFuture, *void, *void);
+
+export type RuntimeCleanup = extern "C" void fn(*CielFuture, *void, c::c_int);
+
+export unsafe extern "C" {
+    *void ciel_alloc(usize size);
+    ?*CielFuture ciel_future_new(
+        usize result_size,
+        usize result_align,
+        RuntimeRun run,
+        *void ctx,
+        RuntimeCleanup cleanup
+    );
+    *CielFuture ciel_future_from_handle(*void handle);
+    c::c_int ciel_future_abort(*CielFuture future);
+}
+
+export unsafe Future<Out> new<Out, Ctx>(
+    Ctx @ctx,
+    RuntimeRun run,
+    RuntimeCleanup cleanup
+) {
+    usize @ctx_size = meta::type_size<Ctx>();
+    if (ctx_size == 0) {
+        ctx_size = 1;
+    }
+    *void raw_ctx = unsafe { ciel_alloc(ctx_size) };
+    *Ctx slot = unsafe { raw_ctx as *Ctx };
+    unsafe { *slot = ctx; };
+
+    ?*CielFuture raw_future = unsafe {
+        ciel_future_new(
+            meta::type_size<Out>(),
+            meta::type_align<Out>(),
+            run,
+            raw_ctx,
+            cleanup
+        )
+    };
+    if (raw_future == null) {
+        panic::panic("future allocation failed");
+    }
+    return unsafe { { handle: raw_future as *void } };
+}
+
+export unsafe *T alloc_slot<T>() {
+    usize @size = meta::type_size<T>();
+    if (size == 0) {
+        size = 1;
+    }
+    return unsafe { ciel_alloc(size) as *T };
+}
+
+export unsafe c::c_int abort<T>(*Future<T> future) {
+    return unsafe { ciel_future_abort(ciel_future_from_handle(future->handle)) };
+}

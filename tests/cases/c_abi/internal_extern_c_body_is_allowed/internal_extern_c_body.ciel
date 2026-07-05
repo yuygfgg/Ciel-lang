@@ -1,0 +1,10 @@
+// ciel-test: run
+// expect-exit: 4
+
+extern "C" i32 internal_entry() {
+    return 4;
+}
+
+i32 main() {
+    return internal_entry();
+}

@@ -232,7 +232,6 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
         self.line_indent(indent, &format!("{ctx}->pc = 0;"));
         self.line_indent(indent, &format!("{ctx}->cleanup_state = 0;"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
         self.line_indent(indent, &format!("{ctx}->active_future = NULL;"));
 
         let env_name = if matches!(capture_init, AsyncClosureCaptureInit::Copy)
@@ -372,7 +371,6 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent + 1, "ciel_panic(NULL, 0);");
             self.line_indent(indent, "}");
         }
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
         Ok(raw)
     }
 
@@ -383,7 +381,7 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<()> {
         let names = self.async_closure_names(closure);
         self.line(&format!(
-            "static int32_t {}(void *ctx_raw, void *out_raw) {{",
+            "static int32_t {}(CielFuture *future, void *ctx_raw, void *out_raw) {{",
             names.run
         ));
         self.defer_stack.clear();
@@ -461,6 +459,7 @@ impl<'a> CGenerator<'a> {
             1,
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
         );
+        self.line_indent(1, "(void)future;");
         if !self.current_async_await_outputs.is_empty() {
             self.line_indent(1, "switch (ctx->pc) {");
             self.line_indent(2, "case 0: break;");

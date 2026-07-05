@@ -78,7 +78,6 @@ impl<'a> CGenerator<'a> {
         self.line_indent(1, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
         self.line_indent(1, &format!("{ctx}->pc = 0;"));
         self.line_indent(1, &format!("{ctx}->cleanup_state = 0;"));
-        self.line_indent(1, &format!("{ctx}->future = NULL;"));
         self.line_indent(1, &format!("{ctx}->active_future = NULL;"));
         for (idx, (_, name, ty, _)) in function
             .params
@@ -106,7 +105,6 @@ impl<'a> CGenerator<'a> {
             ),
         );
         self.line_indent(1, "}");
-        self.line_indent(1, &format!("{ctx}->future = {raw};"));
         self.line_indent(
             1,
             &format!(
@@ -117,7 +115,7 @@ impl<'a> CGenerator<'a> {
         self.line("}");
 
         self.line(&format!(
-            "static int32_t {}(void *ctx_raw, void *out_raw) {{",
+            "static int32_t {}(CielFuture *future, void *ctx_raw, void *out_raw) {{",
             names.run
         ));
         self.defer_stack.clear();
@@ -184,6 +182,7 @@ impl<'a> CGenerator<'a> {
             1,
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
         );
+        self.line_indent(1, "(void)future;");
         if !self.current_async_await_outputs.is_empty() {
             self.line_indent(1, "switch (ctx->pc) {");
             self.line_indent(2, "case 0: break;");
@@ -229,7 +228,7 @@ impl<'a> CGenerator<'a> {
         owned_resource_roots: &[(Ty, String)],
     ) {
         self.line(&format!(
-            "static void {}(void *ctx_raw, int32_t reason) {{",
+            "static void {}(CielFuture *future, void *ctx_raw, int32_t reason) {{",
             names.cleanup
         ));
         self.line_indent(
@@ -242,7 +241,7 @@ impl<'a> CGenerator<'a> {
         for (ty, value) in owned_resource_roots.iter().rev() {
             self.line_indent(2, &format!("{};", self.resource_cleanup_call(ty, value)));
         }
-        self.line_indent(2, "ciel_future_clear_pending_operation(ctx->future);");
+        self.line_indent(2, "ciel_future_clear_pending_operation(future);");
         self.line_indent(2, "return;");
         self.line_indent(1, "}");
         self.line_indent(1, "if (ctx->active_future != NULL) {");
@@ -263,7 +262,7 @@ impl<'a> CGenerator<'a> {
         self.line_indent(1, "}");
         self.line_indent(1, "ctx->pc = 0;");
         self.line_indent(1, "ctx->cleanup_state = 0;");
-        self.line_indent(1, "ciel_future_clear_pending_operation(ctx->future);");
+        self.line_indent(1, "ciel_future_clear_pending_operation(future);");
         self.line("}");
     }
 

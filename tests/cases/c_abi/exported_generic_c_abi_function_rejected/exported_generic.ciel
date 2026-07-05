@@ -1,0 +1,10 @@
+// ciel-test: error
+// expect-error: cannot be exported
+
+export extern "C" i32 exported_callback<T>() {
+    return 0;
+}
+
+i32 main() {
+    return 0;
+}

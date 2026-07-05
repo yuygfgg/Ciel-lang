@@ -25,11 +25,13 @@ typedef struct CielSelectResult {
     size_t index;
 } CielSelectResult;
 
-typedef int32_t (*CielFutureRunFn)(void* ctx, void* out);
-typedef void (*CielFutureCleanupFn)(void* ctx, int32_t reason);
+typedef int32_t (*CielFutureRunFn)(CielFuture* future, void* ctx, void* out);
+typedef void (*CielFutureCleanupFn)(CielFuture* future, void* ctx,
+                                    int32_t reason);
 
 int ciel_async_timeout_errno(void);
 int ciel_async_channel_closed_errno(void);
+int ciel_async_again_errno(void);
 
 int32_t ciel_async_channel_make(size_t value_size, size_t value_align,
                                 size_t capacity, CielAsyncSender** sender_out,

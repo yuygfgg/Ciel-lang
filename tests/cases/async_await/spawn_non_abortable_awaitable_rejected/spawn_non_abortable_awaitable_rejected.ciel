@@ -4,12 +4,12 @@
 import /std/async;
 import /std/result;
 
-struct Wrapped<T> {
+resource unsafe struct Wrapped<T> {
     Future<T> inner;
 }
 
 unsafe impl<T> awaitable_future<T>(*const Wrapped<T> awaitable) {
-    return awaitable->inner.handle;
+    return awaitable_future<T>(unsafe { &awaitable->inner });
 }
 
 Result<Task<usize>, Error> start(Wrapped<Result<usize, Error>> wrapped) {

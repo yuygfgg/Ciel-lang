@@ -187,6 +187,7 @@ impl TypeChecker {
             .map(|(name, fields)| CheckedStruct {
                 name: name.clone(),
                 is_resource: self.ctx.resource_structs.contains(name),
+                is_unsafe: self.ctx.unsafe_structs.contains(name),
                 fields: fields.clone(),
             })
             .collect::<Vec<_>>();

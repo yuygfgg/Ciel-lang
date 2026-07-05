@@ -139,17 +139,14 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, &format!("if ({rc} == EAGAIN) {{"));
             self.line_indent(
                 indent + 1,
-                &format!("ciel_future_adopt_pending_operation({ctx}->future, {raw});"),
+                &format!("ciel_future_adopt_pending_operation(future, {raw});"),
             );
             self.line_indent(indent + 1, "return EAGAIN;");
             self.line_indent(indent, "}");
             self.line_indent(indent, &format!("{ctx}->active_future = NULL;"));
             self.line_indent(indent, &format!("{ctx}->pc = 0;"));
             self.line_indent(indent, &format!("{ctx}->cleanup_state = 0;"));
-            self.line_indent(
-                indent,
-                &format!("ciel_future_clear_pending_operation({ctx}->future);"),
-            );
+            self.line_indent(indent, "ciel_future_clear_pending_operation(future);");
         }
         Ok((output.unwrap_or_else(|| "((void)0)".to_string()), rc))
     }
@@ -244,23 +241,6 @@ impl<'a> CGenerator<'a> {
             indent + 1,
             &format!(
                 "ciel_panic_at(\"future failed\", sizeof(\"future failed\") - 1, {file}, {line});"
-            ),
-        );
-        self.line_indent(indent, "}");
-    }
-
-    pub(super) fn emit_future_alloc_panic(
-        &mut self,
-        raw: &str,
-        span: crate::span::Span,
-        indent: usize,
-    ) {
-        let (file, line) = self.location_args(span);
-        self.line_indent(indent, &format!("if ({raw} == NULL) {{"));
-        self.line_indent(
-            indent + 1,
-            &format!(
-                "ciel_panic_at(\"future allocation failed\", sizeof(\"future allocation failed\") - 1, {file}, {line});"
             ),
         );
         self.line_indent(indent, "}");
@@ -543,17 +523,14 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, &format!("if ({rc} == EAGAIN) {{"));
             self.line_indent(
                 indent + 1,
-                &format!("ciel_future_adopt_pending_operation({ctx}->future, {raw});"),
+                &format!("ciel_future_adopt_pending_operation(future, {raw});"),
             );
             self.line_indent(indent + 1, "return EAGAIN;");
             self.line_indent(indent, "}");
             self.line_indent(indent, &format!("{ctx}->active_future = NULL;"));
             self.line_indent(indent, &format!("{ctx}->pc = 0;"));
             self.line_indent(indent, &format!("{ctx}->cleanup_state = 0;"));
-            self.line_indent(
-                indent,
-                &format!("ciel_future_clear_pending_operation({ctx}->future);"),
-            );
+            self.line_indent(indent, "ciel_future_clear_pending_operation(future);");
         }
         self.emit_async_error_return_from_rc(&rc, expr.span, indent)?;
         self.line_indent(indent, &format!("switch ({select_out}.index) {{"));
@@ -633,7 +610,6 @@ impl<'a> CGenerator<'a> {
             &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
         );
         self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
         self.line_indent(indent, &format!("{ctx}->op = NULL;"));
         self.line_indent(indent, &format!("{ctx}->ms = (uint64_t)({ms_value});"));
         let raw = self.next_temp("sleep_future");
@@ -653,352 +629,10 @@ impl<'a> CGenerator<'a> {
             ),
         );
         self.line_indent(indent, "}");
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
         Ok(format!(
             "({}){{ .handle = (void *){raw} }}",
             self.c_type(&expr.ty)
         ))
-    }
-
-    pub(super) fn emit_async_op_expr(
-        &mut self,
-        expr: &TExpr,
-        op: &TExpr,
-        output_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let ctx_name = self.async_op_context_name(&op.ty, output_ty);
-        let run_name = self.async_op_run_name(&op.ty, output_ty);
-        let cleanup_name = self.async_op_cleanup_name(&op.ty, output_ty);
-        let ctx = self.next_temp("async_op_ctx");
-        self.line_indent(
-            indent,
-            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
-        );
-        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
-        self.line_indent(indent, &format!("{ctx}->op = NULL;"));
-        let op_value = self.emit_temp_value("async_op_value", op, indent)?;
-        self.emit_value_copy(&format!("{ctx}->op_value"), &op_value, &op.ty, indent);
-
-        let raw = self.next_temp("async_op_future");
-        let result_ty = std_result_ty(output_ty.clone(), std_async_error_ty());
-        let (size_expr, align_expr) = self.future_result_layout_args(&result_ty);
-        self.line_indent(
-            indent,
-            &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {run_name}, {ctx}, {cleanup_name});"
-            ),
-        );
-        let (file, line) = self.location_args(expr.span);
-        self.line_indent(indent, &format!("if ({raw} == NULL) {{"));
-        self.line_indent(
-            indent + 1,
-            &format!(
-                "ciel_panic_at(\"future allocation failed\", sizeof(\"future allocation failed\") - 1, {file}, {line});"
-            ),
-        );
-        self.line_indent(indent, "}");
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
-        Ok(format!(
-            "({}){{ .handle = (void *){raw} }}",
-            self.c_type(&expr.ty)
-        ))
-    }
-
-    pub(super) fn emit_async_channel_send_expr(
-        &mut self,
-        expr: &TExpr,
-        sender: &TExpr,
-        value: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let ctx_name = self.async_channel_send_context_name(payload_ty);
-        let ctx = self.next_temp("channel_send_ctx");
-        self.line_indent(
-            indent,
-            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
-        );
-        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
-        let sender_value = self.emit_temp_value("channel_sender", sender, indent)?;
-        self.line_indent(indent, &format!("{ctx}->sender = {sender_value}.handle;"));
-        let source = self.emit_temp_value("channel_send_value", value, indent)?;
-        let clone = self.emit_task_boundary_clone_result_from_ptr(
-            payload_ty,
-            &format!("&{source}"),
-            indent,
-            expr.span,
-        )?;
-        let clone_layout = self.result_layout(
-            &std_result_ty(payload_ty.clone(), std_error_ty()),
-            expr.span,
-        )?;
-        self.line_indent(
-            indent,
-            &format!("if ({clone}.tag == {}) {{", clone_layout.err_index),
-        );
-        self.line_indent(indent + 1, &format!("{ctx}->init_failed = 1;"));
-        self.line_indent(
-            indent + 1,
-            &format!(
-                "{ctx}->init_error = {clone}.as.{}._0;",
-                clone_layout.err_name
-            ),
-        );
-        self.line_indent(indent, "} else {");
-        if !payload_ty.is_erased_value() {
-            self.emit_value_copy(
-                &format!("{ctx}->value"),
-                &format!("{clone}.as.{}._0", clone_layout.ok_name),
-                payload_ty,
-                indent + 1,
-            );
-        }
-        self.line_indent(indent, "}");
-        let raw = self.next_temp("channel_send_future");
-        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
-        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
-        self.line_indent(
-            indent,
-            &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
-                self.async_channel_send_run_name(payload_ty),
-                self.async_channel_send_cleanup_name(payload_ty)
-            ),
-        );
-        self.emit_future_alloc_panic(&raw, expr.span, indent);
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
-        Ok(format!(
-            "({}){{ .handle = (void *){raw} }}",
-            self.c_type(&expr.ty)
-        ))
-    }
-
-    pub(super) fn emit_async_channel_reserve_expr(
-        &mut self,
-        expr: &TExpr,
-        sender: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let ctx_name = self.async_channel_reserve_context_name(payload_ty);
-        let ctx = self.next_temp("channel_reserve_ctx");
-        self.line_indent(
-            indent,
-            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
-        );
-        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
-        let sender_value = self.emit_temp_value("channel_reserve_sender", sender, indent)?;
-        self.line_indent(indent, &format!("{ctx}->sender = {sender_value}.handle;"));
-        let raw = self.next_temp("channel_reserve_future");
-        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
-        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
-        self.line_indent(
-            indent,
-            &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
-                self.async_channel_reserve_run_name(payload_ty),
-                self.async_channel_reserve_cleanup_name(payload_ty)
-            ),
-        );
-        self.emit_future_alloc_panic(&raw, expr.span, indent);
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
-        Ok(format!(
-            "({}){{ .handle = (void *){raw} }}",
-            self.c_type(&expr.ty)
-        ))
-    }
-
-    pub(super) fn emit_async_channel_recv_expr(
-        &mut self,
-        expr: &TExpr,
-        receiver: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let ctx_name = self.async_channel_recv_context_name(payload_ty);
-        let ctx = self.next_temp("channel_recv_ctx");
-        self.line_indent(
-            indent,
-            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
-        );
-        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
-        let receiver_value = self.emit_temp_value("channel_recv_receiver", receiver, indent)?;
-        self.line_indent(
-            indent,
-            &format!("{ctx}->receiver = {receiver_value}.handle;"),
-        );
-        let raw = self.next_temp("channel_recv_future");
-        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
-        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
-        self.line_indent(
-            indent,
-            &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
-                self.async_channel_recv_run_name(payload_ty),
-                self.async_channel_recv_cleanup_name(payload_ty)
-            ),
-        );
-        self.emit_future_alloc_panic(&raw, expr.span, indent);
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
-        Ok(format!(
-            "({}){{ .handle = (void *){raw} }}",
-            self.c_type(&expr.ty)
-        ))
-    }
-
-    pub(super) fn emit_async_task_group_next_expr(
-        &mut self,
-        expr: &TExpr,
-        group: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let ctx_name = self.async_task_group_next_context_name(payload_ty);
-        let ctx = self.next_temp("task_group_next_ctx");
-        self.line_indent(
-            indent,
-            &format!("{ctx_name} *{ctx} = ({ctx_name} *)ciel_alloc(sizeof({ctx_name}));"),
-        );
-        self.line_indent(indent, &format!("memset({ctx}, 0, sizeof(*{ctx}));"));
-        self.line_indent(indent, &format!("{ctx}->future = NULL;"));
-        let group_value = self.emit_temp_value("task_group_next_group", group, indent)?;
-        self.line_indent(indent, &format!("{ctx}->group = {group_value}->handle;"));
-        let raw = self.next_temp("task_group_next_future");
-        let output_ty = generated_future_output_ty(&expr.ty).unwrap_or(Ty::Unknown);
-        let (size_expr, align_expr) = self.future_result_layout_args(&output_ty);
-        self.line_indent(
-            indent,
-            &format!(
-                "CielFuture *{raw} = ciel_future_new({size_expr}, {align_expr}, {}, {ctx}, {});",
-                self.async_task_group_next_run_name(payload_ty),
-                self.async_task_group_next_cleanup_name(payload_ty)
-            ),
-        );
-        self.emit_future_alloc_panic(&raw, expr.span, indent);
-        self.line_indent(indent, &format!("{ctx}->future = {raw};"));
-        Ok(format!(
-            "({}){{ .handle = (void *){raw} }}",
-            self.c_type(&expr.ty)
-        ))
-    }
-
-    pub(super) fn emit_async_channel_try_send_expr(
-        &mut self,
-        expr: &TExpr,
-        sender: &TExpr,
-        value: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let result_layout = self.result_layout(&expr.ty, expr.span)?;
-        let result_temp = self.next_temp("channel_try_send_result");
-        let done_label = self.next_temp("channel_try_send_done");
-        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
-        let source = self.emit_temp_value("channel_try_send_value", value, indent)?;
-        let clone = self.emit_task_boundary_clone_result_from_ptr(
-            payload_ty,
-            &format!("&{source}"),
-            indent,
-            expr.span,
-        )?;
-        self.emit_async_clone_error_jump(
-            &result_temp,
-            &result_layout,
-            &clone,
-            payload_ty,
-            &done_label,
-            indent,
-            expr.span,
-        )?;
-        let clone_layout = self.result_layout(
-            &std_result_ty(payload_ty.clone(), std_error_ty()),
-            expr.span,
-        )?;
-        let sender_value = self.emit_temp_value("channel_try_send_sender", sender, indent)?;
-        let value_arg = if payload_ty.is_erased_value() {
-            "NULL".to_string()
-        } else {
-            format!("&{clone}.as.{}._0", clone_layout.ok_name)
-        };
-        let rc = self.next_temp("channel_try_send_rc");
-        self.line_indent(
-            indent,
-            &format!(
-                "int32_t {rc} = ciel_async_channel_try_send((CielAsyncSender *){sender_value}.handle, {value_arg});"
-            ),
-        );
-        self.emit_async_channel_result_from_rc(
-            &result_temp,
-            &result_layout,
-            &rc,
-            &done_label,
-            indent,
-            expr.span,
-        )?;
-        self.line_indent(indent, &format!("{done_label}:;"));
-        Ok(result_temp)
-    }
-
-    pub(super) fn emit_async_channel_permit_send_expr(
-        &mut self,
-        expr: &TExpr,
-        permit: &TExpr,
-        value: &TExpr,
-        payload_ty: &Ty,
-        indent: usize,
-    ) -> DiagResult<String> {
-        let result_layout = self.result_layout(&expr.ty, expr.span)?;
-        let result_temp = self.next_temp("channel_permit_send_result");
-        let done_label = self.next_temp("channel_permit_send_done");
-        self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
-        let source = self.emit_temp_value("channel_permit_send_value", value, indent)?;
-        let clone = self.emit_task_boundary_clone_result_from_ptr(
-            payload_ty,
-            &format!("&{source}"),
-            indent,
-            expr.span,
-        )?;
-        self.emit_async_clone_error_jump(
-            &result_temp,
-            &result_layout,
-            &clone,
-            payload_ty,
-            &done_label,
-            indent,
-            expr.span,
-        )?;
-        let clone_layout = self.result_layout(
-            &std_result_ty(payload_ty.clone(), std_error_ty()),
-            expr.span,
-        )?;
-        let permit_value = self.emit_temp_value("channel_send_permit", permit, indent)?;
-        let value_arg = if payload_ty.is_erased_value() {
-            "NULL".to_string()
-        } else {
-            format!("&{clone}.as.{}._0", clone_layout.ok_name)
-        };
-        let rc = self.next_temp("channel_permit_send_rc");
-        self.line_indent(
-            indent,
-            &format!(
-                "int32_t {rc} = ciel_async_send_permit_send((CielAsyncSendPermit *){permit_value}.handle, {value_arg});"
-            ),
-        );
-        self.emit_async_channel_result_from_rc(
-            &result_temp,
-            &result_layout,
-            &rc,
-            &done_label,
-            indent,
-            expr.span,
-        )?;
-        self.line_indent(indent, &format!("{done_label}:;"));
-        Ok(result_temp)
     }
 
     pub(super) fn emit_async_spawn_expr(

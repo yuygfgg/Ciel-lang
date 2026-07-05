@@ -2065,17 +2065,45 @@ impl TypeChecker {
                     "`extern \"C\"` functions cannot be async",
                 ));
             }
-            if sig.has_body && !sig.exported {
-                self.diagnostics.push(Diagnostic::new(
-                    self.ctx.resolved.def(sig.def_id).span,
-                    "`extern \"C\"` function bodies must be declared with `export`",
-                ));
-            }
             if !sig.generics.is_empty() {
-                self.diagnostics.push(Diagnostic::new(
-                    self.ctx.resolved.def(sig.def_id).span,
-                    "`extern \"C\"` functions cannot be generic",
-                ));
+                let span = self.ctx.resolved.def(sig.def_id).span;
+                if !sig.has_body {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "imported C function declaration `{}` cannot be generic",
+                            sig.name
+                        ),
+                    ));
+                } else if sig.exported {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!(
+                            "`extern \"C\"` generic function `{}` cannot be exported; remove `export` or provide a concrete non-generic wrapper",
+                            sig.name
+                        ),
+                    ));
+                } else {
+                    let generic_names = sig
+                        .generics
+                        .iter()
+                        .map(|generic| generic.name.clone())
+                        .collect::<HashSet<_>>();
+                    if contains_any_generic_name(&sig.ret, &generic_names)
+                        || sig
+                            .params
+                            .iter()
+                            .any(|param| contains_any_generic_name(param, &generic_names))
+                    {
+                        self.diagnostics.push(Diagnostic::new(
+                            span,
+                            format!(
+                                "generic C ABI callback `{}` parameter or return type cannot mention type parameters",
+                                sig.name
+                            ),
+                        ));
+                    }
+                }
             }
             if type_contains_closure(&sig.ret) || sig.params.iter().any(type_contains_closure) {
                 self.diagnostics.push(Diagnostic::new(
@@ -2089,10 +2117,12 @@ impl TypeChecker {
                     "`extern \"C\"` parameters cannot have type `void` by value",
                 ));
             }
-            by_symbol
-                .entry(sig.name.clone())
-                .or_default()
-                .push(sig.clone());
+            if sig.exported || !sig.has_body {
+                by_symbol
+                    .entry(sig.name.clone())
+                    .or_default()
+                    .push(sig.clone());
+            }
         }
 
         for (symbol, mut sigs) in by_symbol {

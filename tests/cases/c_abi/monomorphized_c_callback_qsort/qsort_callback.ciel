@@ -1,0 +1,50 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-c-contains: compare_i32__i32
+
+import /std/c as c;
+import /std/meta as meta;
+
+#c_include "stdlib.h"
+
+unsafe extern "C" {
+    type Compare = c::c_int fn(*const void, *const void);
+
+    void qsort(
+        *void base,
+        c::c_size_t nmemb,
+        c::c_size_t size,
+        Compare compare,
+    );
+}
+
+extern "C" c::c_int compare_i32<T>(*const void left_raw, *const void right_raw) {
+    if (meta::type_size<T>() == 0) {
+        return 0 as c::c_int;
+    }
+    *const i32 left = unsafe { left_raw as *const i32 };
+    *const i32 right = unsafe { right_raw as *const i32 };
+    if (*left < *right) {
+        return (0 - 1) as c::c_int;
+    }
+    if (*left > *right) {
+        return 1 as c::c_int;
+    }
+    return 0 as c::c_int;
+}
+
+i32 main() {
+    [5]i32 @values = [4, 1, 5, 2, 3];
+    unsafe {
+        qsort(
+            &values[0] as *void,
+            5 as c::c_size_t,
+            meta::type_size<i32>() as c::c_size_t,
+            compare_i32<i32>,
+        )
+    };
+    if (values[0] != 1 || values[1] != 2 || values[2] != 3 || values[3] != 4 || values[4] != 5) {
+        return 1;
+    }
+    return 0;
+}

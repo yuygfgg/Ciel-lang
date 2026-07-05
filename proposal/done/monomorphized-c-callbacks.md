@@ -74,27 +74,28 @@ This defines a C ABI function template. It is not an imported declaration and
 not an exported symbol. Each used type argument list produces one internal C ABI
 function.
 
-Add explicit type application for function-item expressions:
+Use the existing generic function item syntax for explicit type application:
 
 ```ciel
-compare_items::<Item>
+compare_items<Item>
 ```
 
-Generic calls may keep the existing `f<T>(args)` syntax. The `::<...>` form is
-used when the result is a function value rather than a call.
+When the type argument list is followed by an argument list, the expression is
+a generic call such as `f<T>(args)`. Without the argument list, it is a generic
+function item value such as `f<T>`.
 
 Example:
 
 ```ciel
 type CompareFn = extern "C" c::c_int fn(*const void, *const void, *void);
 
-CompareFn compare = compare_items::<Item>;
+CompareFn compare = compare_items<Item>;
 ```
 
 ## Semantics
 
 A generic C ABI function body is a template. A type-applied function item such
-as `compare_items::<Item>`:
+as `compare_items<Item>`:
 
 1. resolves `compare_items` to a generic function item;
 2. checks generic arity;
@@ -153,14 +154,14 @@ lifetime, threading, or context-pointer contract is correct.
 Type checking adds a function-item type application expression:
 
 ```text
-Expr ::= FunctionItem "::" TypeArgList
+Expr ::= FunctionItem TypeArgList
 ```
 
 The expression is valid only when the receiver is a function item or a qualified
 function item. It is rejected for variables, closures, dynamic interface calls,
 method values, and arbitrary expressions.
 
-For `f::<A, B>`:
+For `f<A, B>`:
 
 1. resolve `f` to a generic function template;
 2. check the type argument count;
@@ -214,7 +215,7 @@ type-applied expression must be a generic function item
 ```
 
 ```text
-cannot pass Ciel ABI function `f::<T>` where `extern "C" ... fn(...)` is
+cannot pass Ciel ABI function `f<T>` where `extern "C" ... fn(...)` is
 expected
 ```
 
@@ -224,14 +225,14 @@ generic C ABI callback parameter type cannot mention type parameter `T`
 
 ## Implementation Plan
 
-1. Extend the parser with postfix `::<TypeArgs>` on expression function items.
+1. Reuse the existing `f<TypeArgs>` parser path for expression function items.
 2. Add an AST/HIR/THIR node for type-applied function items, or reuse the
    generic-function item representation with a flag that distinguishes value use
    from call use.
 3. Relax C ABI validation to allow non-exported `extern "C"` function bodies and
    generic non-exported `extern "C"` templates.
 4. Keep imported and exported C ABI declarations non-generic.
-5. Type-check `f::<Args>` by reusing generic function substitution and
+5. Type-check `f<Args>` by reusing generic function substitution and
    constraint checking.
 6. Reject type parameters in C-visible callback signatures for the first
    implementation.

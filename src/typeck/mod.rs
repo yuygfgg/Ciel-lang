@@ -24,8 +24,7 @@ use crate::{
         meta_schema_marker_source, meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty,
         pointer_view_can_weaken, receiver_ty_from_value_ty, retained_closure_proves_capability,
         std_actor_ty, std_async_error_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
-        std_meta_schema_marker_ty, std_receiver_ty, std_resource_error_ty, std_result_ty,
-        std_send_permit_ty, std_sender_ty, std_task_group_ty, std_task_ty,
+        std_meta_schema_marker_ty, std_resource_error_ty, std_result_ty, std_task_ty,
         substitute_constraint_bounds, substitute_ty, ty_from_primitive, unify_ty,
     },
 };
@@ -1026,6 +1025,7 @@ impl TypeChecker {
             .map(|(name, fields)| CheckedStruct {
                 name: name.clone(),
                 is_resource: self.ctx.resource_structs.contains(name),
+                is_unsafe: self.ctx.unsafe_structs.contains(name),
                 fields: fields.clone(),
             })
             .collect::<Vec<_>>();

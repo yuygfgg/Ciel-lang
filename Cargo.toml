@@ -2,6 +2,7 @@
 name = "cielc"
 version = "0.1.0"
 edition = "2024"
+default-run = "cielc"
 
 [dependencies]
 lsp-server = "0.7"

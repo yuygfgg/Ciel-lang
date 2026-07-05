@@ -196,6 +196,16 @@ impl TypeChecker {
                         kind: TExprKind::Local(local_id, name),
                     }
                 } else if let Some(sig) = self.resolve_function_name(name_ref) {
+                    if !sig.generics.is_empty() {
+                        self.diagnostics.push(Diagnostic::new(
+                            expr.span,
+                            format!(
+                                "generic function item `{}` needs explicit type arguments when used as a value",
+                                sig.name
+                            ),
+                        ));
+                        return None;
+                    }
                     if sig.is_unsafe {
                         self.require_unsafe(
                             expr.span,
@@ -802,7 +812,7 @@ impl TypeChecker {
                 } else {
                     self.diagnostics.push(Diagnostic::new(
                         expr.span,
-                        "type arguments can only be used on generic function values",
+                        "type-applied expression must be a generic function item",
                     ));
                     return None;
                 }

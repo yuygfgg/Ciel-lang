@@ -395,8 +395,9 @@ typedef enum {
     CIEL_ASYNC_SLEEP,
 } CielAsyncKind;
 
-typedef int32_t (*CielFutureRunFn)(void *ctx, void *out);
-typedef void (*CielFutureCleanupFn)(void *ctx, int32_t reason);
+typedef int32_t (*CielFutureRunFn)(CielFuture *future, void *ctx, void *out);
+typedef void (*CielFutureCleanupFn)(CielFuture *future, void *ctx,
+                                    int32_t reason);
 struct CielAsyncOp {
     CielAsyncKind kind;
     CielAsyncFd *fd;
@@ -2650,7 +2651,7 @@ static void ciel_future_run_cleanup(CielFuture *future, int32_t reason) {
     void *ctx = future->ctx;
     pthread_mutex_unlock(&future->mutex);
     CielResourceOwner *previous = ciel_resource_set_current_owner(owner);
-    cleanup(ctx, reason);
+    cleanup(future, ctx, reason);
     ciel_resource_restore_current_owner(previous);
 }
 
@@ -2895,7 +2896,7 @@ int32_t ciel_future_poll(CielFuture *future, void *out) {
     pthread_mutex_unlock(&future->mutex);
 
     CielResourceOwner *previous = ciel_resource_set_current_owner(owner);
-    int32_t rc = future->run(future->ctx, future->result);
+    int32_t rc = future->run(future, future->ctx, future->result);
     ciel_resource_restore_current_owner(previous);
 
     int32_t cleanup_reason = 0;
@@ -3334,7 +3335,9 @@ static void ciel_task_unpin_if_finished(CielTask *task) {
     ciel_root_unpin(root);
 }
 
-static int32_t ciel_task_wait_future_run(void *ctx_raw, void *out_raw) {
+static int32_t ciel_task_wait_future_run(CielFuture *future, void *ctx_raw,
+                                         void *out_raw) {
+    (void)future;
     CielTaskWait *wait = (CielTaskWait *)ctx_raw;
     if (wait == NULL || wait->task == NULL || wait->future == NULL)
         return EINVAL;
@@ -4012,7 +4015,9 @@ static void ciel_select_cancel(CielSelectSet *set) {
     }
 }
 
-static int32_t ciel_select_future_run(void *ctx_raw, void *out_raw) {
+static int32_t ciel_select_future_run(CielFuture *future, void *ctx_raw,
+                                      void *out_raw) {
+    (void)future;
     CielSelectSet *set = (CielSelectSet *)ctx_raw;
     if (set == NULL || out_raw == NULL)
         return EINVAL;
@@ -4039,7 +4044,9 @@ static int32_t ciel_select_future_run(void *ctx_raw, void *out_raw) {
     return EAGAIN;
 }
 
-static void ciel_select_future_cleanup(void *ctx_raw, int32_t reason) {
+static void ciel_select_future_cleanup(CielFuture *future, void *ctx_raw,
+                                       int32_t reason) {
+    (void)future;
     (void)reason;
     ciel_select_cancel((CielSelectSet *)ctx_raw);
 }

@@ -24,21 +24,16 @@ impl<'a> CGenerator<'a> {
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::GeneratedFuture {
-                output,
-                affine_state,
-                ..
-            } => *affine_state || self.type_is_affine_inner(output, visiting),
+            Ty::GeneratedFuture { .. } => true,
             Ty::Named { name, args } => {
                 let named_ty = Ty::Named {
                     name: name.clone(),
                     args: args.clone(),
                 };
-                if let Some(output_ty) =
-                    std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
-                        .cloned()
+                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
+                    .is_some()
                 {
-                    return self.type_is_affine_inner(&output_ty, visiting);
+                    return true;
                 }
                 let instance_name = aggregate_instance_name(name, args);
                 if !visiting.insert(ty.clone()) {

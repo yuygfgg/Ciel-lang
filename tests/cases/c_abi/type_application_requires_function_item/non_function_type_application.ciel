@@ -1,0 +1,8 @@
+// ciel-test: error
+// expect-error: type-applied expression must be a generic function item
+
+i32 main() {
+    i32 value = 1;
+    i32 fn() callback = value<i32>;
+    return callback();
+}

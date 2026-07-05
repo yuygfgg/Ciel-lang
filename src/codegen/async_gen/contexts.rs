@@ -8,7 +8,6 @@ impl<'a> CGenerator<'a> {
             }
             let names = self.async_function_names(function.def_id);
             self.line(&format!("typedef struct {} {{", names.context));
-            self.line("    CielFuture *future;");
             self.line("    uint32_t pc;");
             self.line("    uint32_t cleanup_state;");
             self.line("    CielFuture *active_future;");
@@ -69,7 +68,6 @@ impl<'a> CGenerator<'a> {
         for closure in closures.values().filter(|closure| closure.is_async) {
             let names = self.async_closure_names(closure);
             self.line(&format!("typedef struct {} {{", names.context));
-            self.line("    CielFuture *future;");
             self.line("    uint32_t pc;");
             self.line("    uint32_t cleanup_state;");
             self.line("    CielFuture *active_future;");
@@ -144,107 +142,11 @@ impl<'a> CGenerator<'a> {
         {
             let name = self.async_sleep_context_name(&output_ty);
             self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
             self.line("    CielAsyncOp *op;");
             self.line("    uint64_t ms;");
             self.line(&format!("}} {name};"));
         }
         if !self.plan.async_sleep_output_tys.is_empty() {
-            self.line("");
-        }
-    }
-
-    pub(in crate::codegen) fn emit_async_op_future_contexts(&mut self) {
-        for context in self
-            .plan
-            .async_op_contexts
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            let name = self.async_op_context_name(&context.op_ty, &context.output_ty);
-            self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
-            self.line("    CielAsyncOp *op;");
-            self.line(&format!("    {};", self.c_decl(&context.op_ty, "op_value")));
-            self.line(&format!("}} {name};"));
-        }
-        if !self.plan.async_op_contexts.is_empty() {
-            self.line("");
-        }
-    }
-
-    pub(in crate::codegen) fn emit_async_channel_future_contexts(&mut self) {
-        for payload_ty in self
-            .plan
-            .async_channel_send_payload_tys
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            let name = self.async_channel_send_context_name(&payload_ty);
-            self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
-            self.line("    void *sender;");
-            self.line("    int init_failed;");
-            self.line(&format!(
-                "    {};",
-                self.c_decl(&std_error_ty(), "init_error")
-            ));
-            if !payload_ty.is_erased_value() {
-                self.line(&format!("    {};", self.c_decl(&payload_ty, "value")));
-            }
-            self.line(&format!("}} {name};"));
-        }
-        for payload_ty in self
-            .plan
-            .async_channel_reserve_payload_tys
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            let name = self.async_channel_reserve_context_name(&payload_ty);
-            self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
-            self.line("    void *sender;");
-            self.line(&format!("}} {name};"));
-        }
-        for payload_ty in self
-            .plan
-            .async_channel_recv_payload_tys
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            let name = self.async_channel_recv_context_name(&payload_ty);
-            self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
-            self.line("    void *receiver;");
-            self.line(&format!("}} {name};"));
-        }
-        if !self.plan.async_channel_send_payload_tys.is_empty()
-            || !self.plan.async_channel_reserve_payload_tys.is_empty()
-            || !self.plan.async_channel_recv_payload_tys.is_empty()
-        {
-            self.line("");
-        }
-    }
-
-    pub(in crate::codegen) fn emit_async_task_group_future_contexts(&mut self) {
-        for payload_ty in self
-            .plan
-            .async_task_group_next_payload_tys
-            .values()
-            .cloned()
-            .collect::<Vec<_>>()
-        {
-            let name = self.async_task_group_next_context_name(&payload_ty);
-            self.line(&format!("typedef struct {name} {{"));
-            self.line("    CielFuture *future;");
-            self.line("    void *group;");
-            self.line(&format!("}} {name};"));
-        }
-        if !self.plan.async_task_group_next_payload_tys.is_empty() {
             self.line("");
         }
     }

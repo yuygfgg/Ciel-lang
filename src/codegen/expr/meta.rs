@@ -9,6 +9,16 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<(Ty, String)> {
+        if let Ty::Named { name, args } = ty
+            && matches!(meta_repr_marker_name(name), Some(false))
+            && args.len() == 1
+        {
+            let repr_ty = self.meta_owned_leaf_repr_ty(span, &args[0], root_ty)?;
+            return Ok((
+                repr_ty.clone(),
+                self.value_or_initializer_from_expr(&repr_ty, value_expr),
+            ));
+        }
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
             let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
             return Ok((
@@ -165,6 +175,12 @@ impl<'a> CGenerator<'a> {
         ty: &Ty,
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
+        if let Ty::Named { name, args } = ty
+            && matches!(meta_repr_marker_name(name), Some(false))
+            && args.len() == 1
+        {
+            return self.meta_owned_leaf_repr_ty(span, &args[0], root_ty);
+        }
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
             return Ok(self.meta_repr_policy_leaf_ty(ty));
         }
@@ -440,6 +456,14 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<()> {
+        if let Ty::Named { name, args } = ty
+            && matches!(meta_repr_marker_name(name), Some(false))
+            && args.len() == 1
+        {
+            let repr_ty = self.meta_owned_leaf_repr_ty(span, &args[0], root_ty)?;
+            self.emit_value_copy(target, repr_expr, &repr_ty, indent);
+            return Ok(());
+        }
         if self.is_owned_meta_policy_leaf(ty, root_ty) {
             let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
             self.emit_value_copy(target, repr_expr, &leaf_ty, indent);

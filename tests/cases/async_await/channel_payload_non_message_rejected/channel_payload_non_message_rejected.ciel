@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: async channel payload type `BadPayload` does not implement `Message`
+// expect-error: generic constraint not satisfied: `BadPayload` does not implement `clone_message`
 
 import /std/async as async;
 import /std/result;

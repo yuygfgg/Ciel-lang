@@ -1312,7 +1312,7 @@ impl<'a> FactsBuilder<'a> {
             }
             ExprKind::ReceiverSelector { base, selector } => {
                 self.collect_expr(base);
-                for name in selector {
+                if let Some(name) = selector.last() {
                     self.tokens.push(TokenFact {
                         span: name.span,
                         token_type: TOK_FUNCTION,
@@ -2573,5 +2573,60 @@ mod tests {
             .signature_help(&uri, second_arg_position)
             .expect("second signature help");
         assert_eq!(second_signature.active_parameter, Some(2));
+    }
+
+    #[test]
+    fn receiver_selector_tokens_only_mark_selector_name_as_function() {
+        let main_path = PathBuf::from("/tmp/ciel_lsp_receiver_selector_tokens.ciel");
+        let dep_path = PathBuf::from("/tmp/selector_symbols.ciel");
+        let main_source = r#"
+            import ./selector_symbols as symbols;
+
+            i64 main() {
+                symbols::Counter @counter = { value: 3 };
+                counter.symbols::add(4);
+                return counter.symbols::get();
+            }
+        "#;
+        let dep_source = r#"
+            export struct Counter {
+                i64 value;
+            }
+
+            export void counter_add(*Counter counter, i64 amount) = .add {
+                counter->value = counter->value + amount;
+            }
+
+            export i64 counter_get(*const Counter counter) = .get {
+                return counter->value;
+            }
+        "#;
+        let options = CompileOptions::new(&main_path)
+            .with_source_override(&main_path, main_source)
+            .with_source_override(&dep_path, dep_source);
+        let analysis = analyze_frontend_lossy(options).expect("frontend analysis should run");
+        let facts = DocumentFacts::from_analysis(analysis);
+        let uri = Url::from_file_path(&main_path).expect("file uri");
+        let file_id = facts.file_id_for_uri(&uri).expect("file id");
+        let call = main_source
+            .find("counter.symbols::add(4)")
+            .expect("qualified selector call");
+        let namespace_start = call + "counter.".len();
+        let namespace_end = namespace_start + "symbols".len();
+        let selector_start = namespace_end + "::".len();
+        let selector_end = selector_start + "add".len();
+
+        assert!(!facts.tokens.iter().any(|token| {
+            token.span.file == file_id
+                && token.token_type == TOK_FUNCTION
+                && token.span.start == namespace_start
+                && token.span.end == namespace_end
+        }));
+        assert!(facts.tokens.iter().any(|token| {
+            token.span.file == file_id
+                && token.token_type == TOK_FUNCTION
+                && token.span.start == selector_start
+                && token.span.end == selector_end
+        }));
     }
 }

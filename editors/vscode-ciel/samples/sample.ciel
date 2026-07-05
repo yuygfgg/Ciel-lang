@@ -1,6 +1,6 @@
 import /std/async as async;
-import /std/async_time;
-import /std/io;
+import /std/async_time as async_time;
+import /std/io as io;
 import /std/meta as meta;
 import /std/result;
 import /std/resource as resource;
@@ -66,7 +66,7 @@ _: Iterator<i64> make_range(i64 value) {
 async Result<Event, Error> read_event() {
     Event event = await select {
         case tick = async_time::sleep_ms(10): Event::Timeout;
-        case value = async::sleep_ms(1): Event::Data({ value: 1, count: 2 });
+        case value = async_time::sleep_ms(1): Event::Data({ value: 1, count: 2 });
     };
     return Ok(event);
 }
@@ -75,9 +75,9 @@ i32 main() {
     Result<Event, Error> event = async::block_on(read_event());
     switch (event) {
         case Result::Ok(Event::Data(packet)):
-            must(print_value(packet.measure()));
+            io::println("Data: {}", [packet.measure()]).expect("Failed to print");
         case Result::Ok(Event::Timeout):
-            must(print_value(0));
+            io::println("Timeout!", []).expect("Failed to print");
         case Result::Err(_):
             return 1;
     }

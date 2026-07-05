@@ -106,7 +106,7 @@ cargo run -- --manifest-path path/to/ciel.toml --std-path "$PWD" --entry main -o
 
 - `--manifest-path`: path to the `ciel.toml` project manifest
 - `--std-path`: path to the standard library root (use the repository root)
-- `--entry`: the name of the entry function to compile, as declared in the manifest
+- `--entry`: the name of the entry to compile, as declared in the manifest
 
 ### Emit C Without Compiling
 

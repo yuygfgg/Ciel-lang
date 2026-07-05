@@ -41,6 +41,7 @@ mod functions;
 mod helpers;
 mod infer;
 mod meta_repr;
+pub(crate) mod meta_repr_safety;
 
 use crate::common::nominal_type_name;
 use capability::CapabilityTable;

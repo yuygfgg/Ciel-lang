@@ -1,0 +1,35 @@
+// ciel-test: error
+// expect-error: owned meta representation cannot copy resource-affine type `File`
+
+import /std/io as io;
+import /std/meta as meta;
+import /std/result;
+
+type U64Tail2 = meta::HCons<meta::Field<u64>, meta::HNil>;
+type U64Tail1 = meta::HCons<meta::Field<u64>, U64Tail2>;
+type HandleRepr = meta::HCons<meta::Field<u64>, U64Tail1>;
+type FileRepr = meta::HCons<meta::Field<HandleRepr>, meta::HNil>;
+
+T rebuild<T>(meta::Repr<T> repr) {
+    return meta::from_repr<T>(repr);
+}
+
+i64 main() {
+    HandleRepr handle = {
+        head: { name: "owner_id", value: 0 },
+        tail: {
+            head: { name: "resource_id", value: 0 },
+            tail: {
+                head: { name: "generation", value: 0 },
+                tail: {},
+            },
+        },
+    };
+    FileRepr repr = {
+        head: { name: "handle", value: handle },
+        tail: {},
+    };
+    io::File file = rebuild<io::File>(repr);
+    must(io::close(file));
+    return 0;
+}

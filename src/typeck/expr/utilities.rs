@@ -835,6 +835,9 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn type_implements_meta_policy_marker(&mut self, ty: &Ty) -> bool {
+        // Marker normalization must preserve nominal resource/future boundaries so
+        // generic impl identity is stable, but owned meta representation still
+        // rejects affine values in `is_owned_meta_policy_leaf`.
         self.type_implements_share_handle(ty)
             || self.type_implements_thread_local(ty)
             || self.type_is_affine(ty)

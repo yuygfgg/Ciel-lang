@@ -1,5 +1,6 @@
 use super::*;
 use crate::ciel_display::format_typed_binding;
+use crate::typeck::meta_repr_safety::{MetaReprSafetyOperation, meta_repr_unsafe_struct_message};
 
 impl TypeChecker {
     pub(super) fn check_async_select_expr(
@@ -740,6 +741,12 @@ impl TypeChecker {
         if let Some(expected_arg) = expected_arg.as_ref() {
             self.require_assignable(expected_arg, &value.ty, value.span);
         }
+        if let Some(name) = self.meta_structural_repr_unsafe_struct_name(&source_ty, true) {
+            self.require_unsafe(
+                span,
+                meta_repr_unsafe_struct_message(MetaReprSafetyOperation::Reflection, &name),
+            );
+        }
         self.reject_meta_ref_repr_erased_fields(span, &source_ty);
         let ret = self.meta_repr_ty(span, &source_ty, true);
         Some(TExpr {
@@ -804,6 +811,13 @@ impl TypeChecker {
         if let Some(expected_arg) = expected_arg.as_ref() {
             self.require_assignable(expected_arg, &value.ty, value.span);
         }
+        self.reject_owned_meta_repr_affine_source(span, &source_ty);
+        if let Some(name) = self.meta_structural_repr_unsafe_struct_name(&source_ty, false) {
+            self.require_unsafe(
+                span,
+                meta_repr_unsafe_struct_message(MetaReprSafetyOperation::Reflection, &name),
+            );
+        }
         let ret = self.meta_repr_ty(span, &source_ty, false);
         Some(TExpr {
             span,
@@ -856,6 +870,13 @@ impl TypeChecker {
             // while representation operations lower through the concrete SOP layout.
         } else {
             self.require_assignable(&repr_ty, &value.ty, value.span);
+        }
+        self.reject_owned_meta_repr_affine_source(span, &target_ty);
+        if let Some(name) = self.meta_structural_repr_unsafe_struct_name(&target_ty, false) {
+            self.require_unsafe(
+                span,
+                meta_repr_unsafe_struct_message(MetaReprSafetyOperation::Reconstruction, &name),
+            );
         }
         Some(TExpr {
             span,

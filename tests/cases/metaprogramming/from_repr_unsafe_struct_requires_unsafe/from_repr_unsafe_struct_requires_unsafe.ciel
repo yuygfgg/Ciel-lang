@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: meta reconstruction of unsafe struct `Secret` requires unsafe block
+
+import /std/meta as meta;
+
+unsafe struct Secret {
+    i64 token;
+}
+
+type SecretRepr = meta::HCons<meta::Field<i64>, meta::HNil>;
+
+i64 main() {
+    SecretRepr repr = {
+        head: { name: "token", value: 42 },
+        tail: {},
+    };
+    Secret value = meta::from_repr<Secret>(repr);
+    return unsafe { value.token };
+}

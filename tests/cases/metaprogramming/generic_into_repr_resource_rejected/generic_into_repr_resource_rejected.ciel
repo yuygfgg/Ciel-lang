@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: owned meta representation cannot copy resource-affine type `File`
+
+import /std/env as env;
+import /std/io as io;
+import /std/meta as meta;
+import /std/result;
+
+meta::Repr<T> snapshot<T>(*const T value) {
+    return meta::into_repr<T>(value);
+}
+
+i64 main() {
+    []const char path = must(env::arg(1));
+    io::File file = must(io::open_read(path));
+    _ repr = snapshot<io::File>(&file);
+    must(io::close(file));
+    return 0;
+}

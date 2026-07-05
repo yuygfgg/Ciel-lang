@@ -1308,7 +1308,7 @@ impl TypeChecker {
         matches!(ty, Ty::Named { name, args } if args.is_empty() && self.ctx.opaque_structs.contains(name))
     }
 
-    pub(super) fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
+    pub(in crate::typeck) fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
         let instance_name = enum_instance_name(name, args);
         self.ctx.unsafe_structs.contains(&instance_name)
             || self

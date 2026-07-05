@@ -1811,7 +1811,10 @@ meta::RefRepr<Packet>
 ```
 
 `meta::Repr<T>` is an owned structural value with `Field<FieldType>` instead of
-`FieldRef<FieldType>`.
+`FieldRef<FieldType>`. Owned representation is a by-value copy shape and is
+available only for non-resource-affine values. A resource-affine `T`, including
+arrays, closures, structs, or enums that contain resource-affine values, cannot
+be represented by `meta::Repr<T>`.
 
 For a visible enum it normalizes to a `Coproduct` list in variant declaration
 order. Each branch is a `VariantRef<PayloadProduct>` for `RefRepr<T>` and a
@@ -1863,10 +1866,20 @@ meta::Schema<T> schema<T>();
 `as_ref_repr` creates read-only pointers to visible fields, enum payloads, or
 closure captures. Its result has the same lifetime and actor-local behavior as
 those pointers. For enums, projection switches on the active variant and returns
-the corresponding `Coproduct` branch. `into_repr` copies from a read-only source
-pointer into the owned representation. `from_repr` reconstructs a struct, enum,
-or concrete closure instance from the owned representation by structural
-position.
+the corresponding `Coproduct` branch. If this projection reads the fields of an
+`unsafe struct`, the call must appear in an `unsafe` block.
+
+`into_repr` copies from a read-only source pointer into the owned
+representation. It is rejected for resource-affine source types because copying
+from `*const T` cannot transfer affine ownership. If owned structural expansion
+reads the fields of an `unsafe struct`, the call must appear in an `unsafe`
+block.
+
+`from_repr` reconstructs a struct, enum, or concrete closure instance from the
+owned representation by structural position. It is rejected for resource-affine
+target types because owned representation values are copyable ordinary values.
+If reconstruction builds an `unsafe struct` through structural expansion, the
+call must appear in an `unsafe` block.
 
 `meta::Schema<T>` is an instance-free structural schema marker. It normalizes to
 ordinary `/std/meta` schema nodes without requiring an existing `T` value.
@@ -1971,13 +1984,21 @@ type with a capability excluded by `Message`.
 
 Owned representation recursively expands structs, enums, concrete closures, and
 fixed-size arrays where no nominal policy boundary exists. A named field or
-payload that already carries a nominal policy such as `clone_message`,
-`ShareHandle`, or `ThreadLocal` remains a leaf. This preserves both positive and
-negative capability facts through `meta::Repr<T>`. For example, a
-`ThreadLocal` handle inside `meta::Repr<Event>` still blocks `Event` from
-satisfying `Message`. Concrete closure instances are not opaque policy leaves;
-their standard-library `clone_message` impl reflects captures through
-`meta::Repr<C>`.
+payload that already carries a nominal non-resource policy such as
+`clone_message`, `ShareHandle`, or `ThreadLocal` remains a leaf. Resource-affine
+types are not owned policy leaves; they are rejected instead of copied into
+`meta::Repr<T>`. This preserves both positive and negative capability facts
+through `meta::Repr<T>`. For example, a `ThreadLocal` handle inside
+`meta::Repr<Event>` still blocks `Event` from satisfying `Message`. Concrete
+closure instances are not opaque policy leaves; their standard-library
+`clone_message` impl reflects captures through `meta::Repr<C>`.
+
+Type normalization still preserves nominal resource-affine boundaries, including
+compiler futures and resource-backed async values, so generic impl identity does
+not change merely because a type argument mentions `meta::Repr<T>`. This
+normalization boundary does not make the resource type an owned representation
+leaf; attempting to build or consume `meta::Repr<T>` for that resource-affine
+type remains rejected.
 
 Structural metaprogramming is not a text macro system. It does not generate
 Ciel source, paste tokens, or run before name resolution. The order is:

@@ -1,4 +1,8 @@
 use super::*;
+use crate::typeck::meta_repr_safety::{
+    MetaReprSafetyEnv, meta_structural_repr_unsafe_struct_name, owned_meta_repr_affine_message,
+    owned_meta_repr_contains_affine,
+};
 
 impl TypeChecker {
     pub(super) fn expand_type_alias(
@@ -94,6 +98,9 @@ impl TypeChecker {
         let source_ty = self.lower_type_with_subst_inner(&args[0], subst, allow_holes);
         if let Ty::Array { len, elem } = &source_ty {
             self.check_meta_array_budget(Some(span), &source_ty, *len, elem, true);
+        }
+        if !borrowed {
+            self.reject_owned_meta_repr_affine_source(span, &source_ty);
         }
         Some(std_meta_repr_marker_ty(borrowed, source_ty))
     }
@@ -1777,16 +1784,38 @@ impl TypeChecker {
             return false;
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);
+        if self.type_is_affine(&leaf_ty) {
+            return false;
+        }
         let is_thread_local = self.type_implements_thread_local(&leaf_ty);
-        let is_resource = self.type_is_affine(&leaf_ty);
-        if root.is_some_and(|root| ty == root) && !(is_thread_local || is_resource) {
+        if root.is_some_and(|root| ty == root) && !is_thread_local {
             return false;
         }
         matches!(ty, Ty::Named { .. })
             && (is_thread_local
-                || is_resource
                 || self.type_implements_share_handle(&leaf_ty)
                 || self.type_implements_message(&leaf_ty))
+    }
+
+    pub(super) fn reject_owned_meta_repr_affine_source(
+        &mut self,
+        span: crate::span::Span,
+        source_ty: &Ty,
+    ) {
+        if owned_meta_repr_contains_affine(self, source_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                owned_meta_repr_affine_message(source_ty),
+            ));
+        }
+    }
+
+    pub(super) fn meta_structural_repr_unsafe_struct_name(
+        &mut self,
+        source_ty: &Ty,
+        borrowed: bool,
+    ) -> Option<String> {
+        meta_structural_repr_unsafe_struct_name(self, source_ty, borrowed)
     }
 
     pub(super) fn meta_array_repr_ty_inner(
@@ -1910,5 +1939,50 @@ impl TypeChecker {
 
     pub(super) fn alloc_synthetic_def(&mut self) -> DefId {
         self.ctx.alloc_synthetic_def()
+    }
+}
+
+impl MetaReprSafetyEnv for TypeChecker {
+    fn meta_safety_type_is_affine(&mut self, ty: &Ty) -> bool {
+        self.type_is_affine(ty)
+    }
+
+    fn meta_safety_is_owned_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
+        self.is_owned_meta_policy_leaf(ty, root)
+    }
+
+    fn meta_safety_is_unsafe_struct_instance(&mut self, name: &str, args: &[Ty]) -> bool {
+        self.is_unsafe_struct_instance(name, args)
+    }
+
+    fn meta_safety_struct_fields(
+        &mut self,
+        instance_ty: &Ty,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<(String, Ty)>> {
+        self.ensure_struct_instance(instance_ty);
+        self.ctx
+            .structs
+            .get(&enum_instance_name(name, args))
+            .cloned()
+    }
+
+    fn meta_safety_enum_payloads(
+        &mut self,
+        instance_ty: &Ty,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<Vec<Ty>>> {
+        self.ensure_enum_instance(instance_ty);
+        self.ctx
+            .checked_enums
+            .get(&enum_instance_name(name, args))
+            .map(|enm| {
+                enm.variants
+                    .iter()
+                    .map(|variant| variant.payload.clone())
+                    .collect()
+            })
     }
 }

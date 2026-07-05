@@ -22,7 +22,15 @@ use crate::{
         TForInit, TPattern, TSelectArm, TStmt, TStmtKind,
     },
     type_display::result_args,
-    typeck::{CheckedGenericInstance, type_check_generic_instance},
+    typeck::{
+        CheckedGenericInstance,
+        meta_repr_safety::{
+            MetaReprSafetyEnv, MetaReprSafetyOperation, meta_repr_unsafe_struct_message,
+            meta_structural_repr_unsafe_struct_name, owned_meta_repr_affine_message,
+            owned_meta_repr_contains_affine,
+        },
+        type_check_generic_instance,
+    },
     types::{
         ConstraintBounds, ConstraintRef, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
         STD_ERROR_FORMAT_INTERFACE, STD_ERROR_TRAIT_ALIAS, STD_MESSAGE_CLONE_INTERFACE,
@@ -1226,6 +1234,7 @@ struct AggregateCollector<'a> {
     checked_enums: Vec<CheckedEnum>,
     diagnostics: Vec<Diagnostic>,
     deferred_meta_repr_roots: Vec<Ty>,
+    unsafe_depth: usize,
 }
 
 impl<'a> AggregateCollector<'a> {
@@ -1369,6 +1378,7 @@ impl<'a> AggregateCollector<'a> {
             checked_enums: Vec::new(),
             diagnostics: Vec::new(),
             deferred_meta_repr_roots: Vec::new(),
+            unsafe_depth: 0,
         }
     }
 
@@ -1611,12 +1621,14 @@ impl<'a> AggregateCollector<'a> {
                 }
             }
             TExprKind::UnsafeBlock { statements, value } => {
+                self.unsafe_depth += 1;
                 for stmt in statements {
                     self.collect_stmt(stmt);
                 }
                 if let Some(value) = value {
                     self.collect_expr(value);
                 }
+                self.unsafe_depth -= 1;
             }
             TExprKind::Closure { body, .. } => self.collect_closure_body(body),
             TExprKind::FunctionToClosure(inner) => {
@@ -1684,14 +1696,37 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_expr(end);
                 }
             }
-            TExprKind::MetaAsRefRepr { value, source_ty }
-            | TExprKind::MetaIntoRepr { value, source_ty } => {
+            TExprKind::MetaAsRefRepr { value, source_ty } => {
                 self.collect_expr(value);
                 self.collect_ty(source_ty);
+                self.check_meta_repr_unsafe_struct(
+                    expr.span,
+                    source_ty,
+                    true,
+                    MetaReprSafetyOperation::Reflection,
+                );
+            }
+            TExprKind::MetaIntoRepr { value, source_ty } => {
+                self.collect_expr(value);
+                self.collect_ty(source_ty);
+                self.reject_owned_meta_repr_affine_source(Some(expr.span), source_ty);
+                self.check_meta_repr_unsafe_struct(
+                    expr.span,
+                    source_ty,
+                    false,
+                    MetaReprSafetyOperation::Reflection,
+                );
             }
             TExprKind::MetaFromRepr { value, target_ty } => {
                 self.collect_expr(value);
                 self.collect_ty(target_ty);
+                self.reject_owned_meta_repr_affine_source(Some(expr.span), target_ty);
+                self.check_meta_repr_unsafe_struct(
+                    expr.span,
+                    target_ty,
+                    false,
+                    MetaReprSafetyOperation::Reconstruction,
+                );
             }
             TExprKind::MetaSchema { source_ty } => {
                 self.collect_ty(source_ty);
@@ -1801,6 +1836,9 @@ impl<'a> AggregateCollector<'a> {
                     && args.len() == 1
                     && !contains_generic(&args[0])
                 {
+                    if !borrowed {
+                        self.reject_owned_meta_repr_affine_source(None, &args[0]);
+                    }
                     let storage_ty = self.meta_repr_ty(None, &args[0], borrowed);
                     self.collect_ty(&storage_ty);
                     return;
@@ -2630,7 +2668,10 @@ impl<'a> AggregateCollector<'a> {
         })
     }
 
-    fn type_matches_meta_policy_marker(&self, ty: &Ty) -> bool {
+    fn type_matches_meta_policy_marker(&mut self, ty: &Ty) -> bool {
+        // Preserve nominal resource/future boundaries while normalizing marker
+        // arguments. Owned meta representation still rejects affine values
+        // before using them as leaves.
         self.type_matches_policy_marker(
             STD_MESSAGE_SHARE_HANDLE_INTERFACE,
             &self.share_handle_templates,
@@ -2639,7 +2680,7 @@ impl<'a> AggregateCollector<'a> {
             STD_MESSAGE_THREAD_LOCAL_INTERFACE,
             &self.thread_local_templates,
             ty,
-        )
+        ) || self.type_is_affine(ty)
     }
 
     fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
@@ -2647,6 +2688,9 @@ impl<'a> AggregateCollector<'a> {
             return false;
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);
+        if self.type_is_affine(&leaf_ty) {
+            return false;
+        }
         let is_thread_local = self.type_matches_policy_marker(
             STD_MESSAGE_THREAD_LOCAL_INTERFACE,
             &self.thread_local_templates,
@@ -2671,6 +2715,186 @@ impl<'a> AggregateCollector<'a> {
                             .is_some_and(|receiver| receiver == &leaf_ty)
                         && implementation.interface_args.get(1..) == Some(&[][..])
                 }))
+    }
+
+    fn reject_owned_meta_repr_affine_source(
+        &mut self,
+        span: Option<crate::span::Span>,
+        source_ty: &Ty,
+    ) {
+        if owned_meta_repr_contains_affine(self, source_ty) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                owned_meta_repr_affine_message(source_ty),
+            ));
+        }
+    }
+
+    fn check_meta_repr_unsafe_struct(
+        &mut self,
+        span: crate::span::Span,
+        source_ty: &Ty,
+        borrowed: bool,
+        operation: MetaReprSafetyOperation,
+    ) {
+        if self.unsafe_depth > 0 {
+            return;
+        }
+        if let Some(name) = meta_structural_repr_unsafe_struct_name(self, source_ty, borrowed) {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                meta_repr_unsafe_struct_message(operation, &name),
+            ));
+        }
+    }
+
+    fn type_is_affine(&mut self, ty: &Ty) -> bool {
+        let mut visiting = HashSet::new();
+        self.type_is_affine_inner(ty, &mut visiting)
+    }
+
+    fn type_is_affine_inner(&mut self, ty: &Ty, visiting: &mut HashSet<Ty>) -> bool {
+        if self.type_is_resource_handle_leaf(ty) {
+            return true;
+        }
+        match ty {
+            Ty::Unknown
+            | Ty::Hole(_)
+            | Ty::Never
+            | Ty::Void
+            | Ty::Bool
+            | Ty::Char
+            | Ty::I8
+            | Ty::I16
+            | Ty::I32
+            | Ty::I64
+            | Ty::U8
+            | Ty::U16
+            | Ty::U32
+            | Ty::U64
+            | Ty::Usize
+            | Ty::F32
+            | Ty::F64
+            | Ty::CSpelling { .. }
+            | Ty::Function { .. }
+            | Ty::Closure { .. }
+            | Ty::Pointer { .. }
+            | Ty::Slice { .. }
+            | Ty::DynamicInterface { .. } => false,
+            Ty::OpaqueReturn { .. } => false,
+            Ty::Generic(_) => false,
+            Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
+            Ty::GeneratedFuture { .. } => true,
+            Ty::ClosureInstance { captures, .. } => captures
+                .iter()
+                .any(|capture| self.type_is_affine_inner(capture, visiting)),
+            Ty::Named { name, args } => {
+                let named_ty = Ty::Named {
+                    name: name.clone(),
+                    args: args.clone(),
+                };
+                if std_id::std_async_future_output_arg(&self.checked.resolved, &named_ty).is_some()
+                {
+                    return true;
+                }
+                if !visiting.insert(ty.clone()) {
+                    return false;
+                }
+                let instance_name = aggregate_instance_name(name, args);
+                self.instantiate_struct(name, args);
+                if let Some((is_resource, fields)) = self.struct_info_for_instance(&instance_name) {
+                    if is_resource {
+                        visiting.remove(ty);
+                        return true;
+                    }
+                    let affine = fields
+                        .iter()
+                        .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
+                    visiting.remove(ty);
+                    return affine;
+                }
+                if self
+                    .structs
+                    .get(name)
+                    .is_some_and(|template| template.is_resource)
+                {
+                    visiting.remove(ty);
+                    return true;
+                }
+                self.instantiate_enum(name, args);
+                if let Some(enm) = self.enum_for_instance(&instance_name) {
+                    let affine = enm.variants.iter().any(|variant| {
+                        variant
+                            .payload
+                            .iter()
+                            .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
+                    });
+                    visiting.remove(ty);
+                    return affine;
+                }
+                visiting.remove(ty);
+                false
+            }
+        }
+    }
+
+    fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
+        matches!(ty, Ty::Named { name, args } if args.is_empty()
+            && std_id::is_std_resource_handle_type_name(&self.checked.resolved, name))
+    }
+
+    fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
+        let instance_name = aggregate_instance_name(name, args);
+        self.checked_struct_is_unsafe(&instance_name)
+            || self
+                .structs
+                .get(name)
+                .is_some_and(|template| template.is_unsafe)
+    }
+
+    fn checked_struct_is_unsafe(&self, instance_name: &str) -> bool {
+        self.checked_structs
+            .iter()
+            .find(|strukt| strukt.name == instance_name)
+            .or_else(|| {
+                self.checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+            })
+            .is_some_and(|strukt| strukt.is_unsafe)
+    }
+
+    fn struct_info_for_instance(&self, instance_name: &str) -> Option<(bool, Vec<(String, Ty)>)> {
+        self.checked_structs
+            .iter()
+            .find(|strukt| strukt.name == instance_name)
+            .or_else(|| {
+                self.checked
+                    .structs
+                    .iter()
+                    .find(|strukt| strukt.name == instance_name)
+            })
+            .map(|strukt| (strukt.is_resource, strukt.fields.clone()))
+    }
+
+    fn struct_fields_for_instance(&self, instance_name: &str) -> Option<Vec<(String, Ty)>> {
+        self.struct_info_for_instance(instance_name)
+            .map(|(_, fields)| fields)
+    }
+
+    fn enum_for_instance(&self, instance_name: &str) -> Option<CheckedEnum> {
+        self.checked_enums
+            .iter()
+            .find(|enm| enm.name == instance_name)
+            .cloned()
+            .or_else(|| {
+                self.checked
+                    .enums
+                    .iter()
+                    .find(|enm| enm.name == instance_name)
+                    .cloned()
+            })
     }
 
     fn meta_array_repr_ty_rec(
@@ -3017,6 +3241,47 @@ impl<'a> AggregateCollector<'a> {
                 .cloned()
                 .unwrap_or_else(|| Ty::Generic(name.name.clone())),
         }
+    }
+}
+
+impl<'a> MetaReprSafetyEnv for AggregateCollector<'a> {
+    fn meta_safety_type_is_affine(&mut self, ty: &Ty) -> bool {
+        self.type_is_affine(ty)
+    }
+
+    fn meta_safety_is_owned_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
+        self.is_owned_meta_policy_leaf(ty, root)
+    }
+
+    fn meta_safety_is_unsafe_struct_instance(&mut self, name: &str, args: &[Ty]) -> bool {
+        self.is_unsafe_struct_instance(name, args)
+    }
+
+    fn meta_safety_struct_fields(
+        &mut self,
+        _instance_ty: &Ty,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<(String, Ty)>> {
+        let instance_name = aggregate_instance_name(name, args);
+        self.instantiate_struct(name, args);
+        self.struct_fields_for_instance(&instance_name)
+    }
+
+    fn meta_safety_enum_payloads(
+        &mut self,
+        _instance_ty: &Ty,
+        name: &str,
+        args: &[Ty],
+    ) -> Option<Vec<Vec<Ty>>> {
+        let instance_name = aggregate_instance_name(name, args);
+        self.instantiate_enum(name, args);
+        self.enum_for_instance(&instance_name).map(|enm| {
+            enm.variants
+                .into_iter()
+                .map(|variant| variant.payload)
+                .collect()
+        })
     }
 }
 

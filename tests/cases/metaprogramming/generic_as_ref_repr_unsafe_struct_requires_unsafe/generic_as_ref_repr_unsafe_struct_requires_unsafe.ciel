@@ -1,0 +1,18 @@
+// ciel-test: error
+// expect-error: meta reflection on unsafe struct `Secret` requires unsafe block
+
+import /std/meta as meta;
+
+unsafe struct Secret {
+    i64 token;
+}
+
+meta::RefRepr<T> borrow_repr<T>(*const T value) {
+    return meta::as_ref_repr<T>(value);
+}
+
+i64 main() {
+    Secret value = unsafe { { token: 7 } };
+    _ repr = borrow_repr<Secret>(&value);
+    return 0;
+}

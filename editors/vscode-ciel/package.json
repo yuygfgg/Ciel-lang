@@ -33,6 +33,13 @@
       }
     ],
     "configurationDefaults": {
+      "editor.semanticTokenColorCustomizations": {
+        "rules": {
+          "*.mutable:ciel": {
+            "fontStyle": "underline"
+          }
+        }
+      },
       "[ciel]": {
         "editor.semanticHighlighting.enabled": true
       },

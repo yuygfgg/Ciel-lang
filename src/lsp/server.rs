@@ -6,12 +6,13 @@ use std::{
 
 use lsp_server::{Connection, Message, Request, RequestId, Response};
 use lsp_types::{
-    DidChangeTextDocumentParams, DidCloseTextDocumentParams, DidOpenTextDocumentParams,
-    DidSaveTextDocumentParams, GotoDefinitionParams, Hover, HoverContents, HoverParams,
-    InitializeParams, InlayHint, InlayHintKind, InlayHintLabel, InlayHintParams, Location,
-    MarkedString, OneOf, ParameterInformation, ParameterLabel, Position, PublishDiagnosticsParams,
-    Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokens,
-    SemanticTokensFullOptions, SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
+    CompletionOptions, CompletionParams, CompletionResponse, DidChangeTextDocumentParams,
+    DidCloseTextDocumentParams, DidOpenTextDocumentParams, DidSaveTextDocumentParams,
+    GotoDefinitionParams, Hover, HoverContents, HoverParams, InitializeParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkedString, OneOf,
+    ParameterInformation, ParameterLabel, Position, PublishDiagnosticsParams, Range, SemanticToken,
+    SemanticTokenModifier, SemanticTokenType, SemanticTokens, SemanticTokensFullOptions,
+    SemanticTokensLegend, SemanticTokensOptions, SemanticTokensParams,
     SemanticTokensServerCapabilities, ServerCapabilities, SignatureHelp, SignatureHelpOptions,
     SignatureHelpParams, SignatureInformation, TextDocumentSyncCapability, TextDocumentSyncKind,
     Url,
@@ -20,7 +21,7 @@ use lsp_types::{
         Notification,
     },
     request::{
-        GotoDefinition, HoverRequest, InlayHintRequest, Request as LspRequest,
+        Completion, GotoDefinition, HoverRequest, InlayHintRequest, Request as LspRequest,
         SemanticTokensFullRequest, SignatureHelpRequest,
     },
 };
@@ -44,6 +45,8 @@ use crate::{
 };
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
+use super::completion_facts::CompletionFacts;
+
 const TOK_NAMESPACE: u32 = 0;
 const TOK_TYPE: u32 = 1;
 const TOK_STRUCT: u32 = 2;
@@ -66,6 +69,7 @@ const MOD_DEFINITION: u32 = 1 << 1;
 const MOD_READONLY: u32 = 1 << 2;
 const MOD_ASYNC: u32 = 1 << 3;
 const MOD_DEFAULT_LIBRARY: u32 = 1 << 4;
+const MOD_MUTABLE: u32 = 1 << 6;
 
 pub fn run_stdio() -> Result<(), Box<dyn Error + Send + Sync>> {
     let (connection, io_threads) = Connection::stdio();
@@ -96,6 +100,11 @@ fn server_capabilities() -> ServerCapabilities {
     ServerCapabilities {
         text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         hover_provider: Some(lsp_types::HoverProviderCapability::Simple(true)),
+        completion_provider: Some(CompletionOptions {
+            trigger_characters: Some(vec![".".to_string(), ">".to_string(), ":".to_string()]),
+            resolve_provider: Some(false),
+            ..CompletionOptions::default()
+        }),
         definition_provider: Some(OneOf::Left(true)),
         semantic_tokens_provider: Some(SemanticTokensServerCapabilities::SemanticTokensOptions(
             SemanticTokensOptions {
@@ -142,6 +151,7 @@ fn semantic_tokens_legend() -> SemanticTokensLegend {
             SemanticTokenModifier::ASYNC,
             SemanticTokenModifier::DEFAULT_LIBRARY,
             SemanticTokenModifier::MODIFICATION,
+            SemanticTokenModifier::new("mutable"),
         ],
     }
 }
@@ -200,6 +210,17 @@ impl LspState {
                 let result = self
                     .analyze_uri(uri)
                     .and_then(|facts| facts.hover(uri, position));
+                send_ok(connection, id, result)?;
+            }
+            Completion::METHOD => {
+                let id = request.id;
+                let params: CompletionParams = serde_json::from_value(request.params)?;
+                let uri = &params.text_document_position.text_document.uri;
+                let position = params.text_document_position.position;
+                let result = self
+                    .analyze_uri(uri)
+                    .and_then(|facts| facts.completion(uri, position))
+                    .unwrap_or_else(|| CompletionResponse::Array(Vec::new()));
                 send_ok(connection, id, result)?;
             }
             GotoDefinition::METHOD => {
@@ -388,8 +409,8 @@ fn send_notification<T: Serialize>(
 }
 
 #[derive(Debug)]
-struct DocumentFacts {
-    source_map: SourceMap,
+pub(super) struct DocumentFacts {
+    pub(super) source_map: SourceMap,
     line_indices: HashMap<FileId, LineIndex>,
     diagnostics: Vec<CielDiagnostic>,
     symbols: Vec<SymbolFact>,
@@ -397,10 +418,12 @@ struct DocumentFacts {
     tokens: Vec<TokenFact>,
     inlay_hints: Vec<InlayHintFact>,
     signatures: Vec<SignatureFact>,
+    pub(super) completion_facts: CompletionFacts,
 }
 
 impl DocumentFacts {
     fn from_analysis(analysis: FrontendAnalysis) -> Self {
+        let completion_facts = CompletionFacts::from_checked(&analysis.checked);
         let mut builder = FactsBuilder::new(&analysis.checked);
         builder.collect();
         let mut tokens = lexical_tokens(&analysis.source_map);
@@ -420,6 +443,7 @@ impl DocumentFacts {
             tokens,
             inlay_hints: builder.inlay_hints,
             signatures: builder.signatures,
+            completion_facts,
         }
     }
 
@@ -681,7 +705,11 @@ impl DocumentFacts {
         Url::from_file_path(&self.source_map.get(file_id).path).ok()
     }
 
-    fn offset_for_position(&self, uri: &Url, position: Position) -> Option<(FileId, usize)> {
+    pub(super) fn offset_for_position(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Option<(FileId, usize)> {
         let file_id = self.file_id_for_uri(uri)?;
         let offset = self.offset_for_file_position(file_id, position)?;
         Some((file_id, offset))
@@ -705,6 +733,25 @@ impl DocumentFacts {
         Some(Range {
             start: self.position_for_offset(span.file, span.start)?,
             end: self.position_for_offset(span.file, span.end)?,
+        })
+    }
+
+    pub(super) fn completion_prefix_range(&self, file_id: FileId, offset: usize) -> Option<Range> {
+        let file = self.source_map.get(file_id);
+        if offset > file.text.len() || !file.text.is_char_boundary(offset) {
+            return None;
+        }
+        let mut start = offset;
+        for (idx, ch) in file.text.get(..offset)?.char_indices().rev() {
+            if ch == '_' || ch.is_ascii_alphanumeric() {
+                start = idx;
+            } else {
+                break;
+            }
+        }
+        Some(Range {
+            start: self.position_for_offset(file_id, start)?,
+            end: self.position_for_offset(file_id, offset)?,
         })
     }
 }
@@ -1408,21 +1455,21 @@ impl<'a> FactsBuilder<'a> {
                 } else {
                     TOK_VARIABLE
                 };
+                let mutability = self
+                    .local_mutabilities
+                    .get(local_id)
+                    .copied()
+                    .unwrap_or(BindingMutability::Immutable);
                 self.tokens.push(TokenFact {
                     span: name.name_span,
                     token_type,
-                    modifiers: 0,
+                    modifiers: binding_reference_mutability_modifiers(mutability),
                 });
                 let ty = self
                     .local_tys
                     .get(local_id)
                     .map(ToString::to_string)
                     .unwrap_or_else(|| "unknown".to_string());
-                let mutability = self
-                    .local_mutabilities
-                    .get(local_id)
-                    .copied()
-                    .unwrap_or(BindingMutability::Immutable);
                 self.symbols.push(SymbolFact {
                     span: name.name_span,
                     definition: self.local_defs.get(local_id).copied(),
@@ -1513,13 +1560,8 @@ impl<'a> FactsBuilder<'a> {
         } else {
             TOK_VARIABLE
         };
-        let modifiers = MOD_DECLARATION
-            | MOD_DEFINITION
-            | if mutability == BindingMutability::Immutable {
-                MOD_READONLY
-            } else {
-                0
-            };
+        let modifiers =
+            MOD_DECLARATION | MOD_DEFINITION | binding_declaration_mutability_modifiers(mutability);
         self.tokens.push(TokenFact {
             span,
             token_type,
@@ -1959,6 +2001,20 @@ fn tree_sitter_highlight_token(name: &str) -> Option<(u32, u32)> {
     }
 }
 
+fn binding_declaration_mutability_modifiers(mutability: BindingMutability) -> u32 {
+    match mutability {
+        BindingMutability::Immutable => MOD_READONLY,
+        BindingMutability::Mutable => MOD_MUTABLE,
+    }
+}
+
+fn binding_reference_mutability_modifiers(mutability: BindingMutability) -> u32 {
+    match mutability {
+        BindingMutability::Immutable => 0,
+        BindingMutability::Mutable => MOD_MUTABLE,
+    }
+}
+
 fn span_contains(span: Span, file_id: FileId, offset: usize) -> bool {
     span.file == file_id && span.start <= offset && offset <= span.end
 }
@@ -2196,6 +2252,39 @@ mod tests {
         let uri = Url::from_file_path(&path).expect("file uri");
         let file_id = facts.file_id_for_uri(&uri).expect("file id");
 
+        let has_token_modifier = |offset: usize, token_type: u32, modifier: u32| {
+            facts.tokens.iter().any(|token| {
+                token.span.file == file_id
+                    && token.span.start == offset
+                    && token.token_type == token_type
+                    && token.modifiers & modifier != 0
+            })
+        };
+        let lacks_token_modifier = |offset: usize, token_type: u32, modifier: u32| {
+            facts.tokens.iter().all(|token| {
+                token.span.file != file_id
+                    || token.span.start != offset
+                    || token.token_type != token_type
+                    || token.modifiers & modifier == 0
+            })
+        };
+
+        let value_decl = source.find("value").expect("value declaration");
+        assert!(has_token_modifier(value_decl, TOK_PARAMETER, MOD_READONLY));
+        assert!(lacks_token_modifier(value_decl, TOK_PARAMETER, MOD_MUTABLE));
+
+        let state_decl = source.find("@state").expect("state declaration") + 1;
+        assert!(has_token_modifier(state_decl, TOK_PARAMETER, MOD_MUTABLE));
+        assert!(lacks_token_modifier(
+            state_decl,
+            TOK_PARAMETER,
+            MOD_READONLY
+        ));
+
+        let count_decl = source.find("@count").expect("count declaration") + 1;
+        assert!(has_token_modifier(count_decl, TOK_VARIABLE, MOD_MUTABLE));
+        assert!(lacks_token_modifier(count_decl, TOK_VARIABLE, MOD_READONLY));
+
         let value_use = source.find("value;").expect("value use");
         let value_position = facts
             .position_for_offset(file_id, value_use)
@@ -2204,6 +2293,7 @@ mod tests {
         assert!(format!("{:?}", value_hover.contents).contains("i64 value"));
 
         let state_use = source.find("state;").expect("state use");
+        assert!(has_token_modifier(state_use, TOK_PARAMETER, MOD_MUTABLE));
         let state_position = facts
             .position_for_offset(file_id, state_use)
             .expect("state position");
@@ -2211,6 +2301,7 @@ mod tests {
         assert!(format!("{:?}", state_hover.contents).contains("i64 @state"));
 
         let count_use = source.rfind("count;").expect("count use");
+        assert!(has_token_modifier(count_use, TOK_VARIABLE, MOD_MUTABLE));
         let count_position = facts
             .position_for_offset(file_id, count_use)
             .expect("count position");
@@ -2319,6 +2410,84 @@ mod tests {
                 && token.token_type == TOK_FUNCTION
                 && &source[token.span.start..token.span.end] == "sleeper"
         }));
+    }
+
+    #[test]
+    fn completion_returns_bare_member_and_qualified_candidates() {
+        let path = PathBuf::from("/tmp/ciel_lsp_completion.ciel");
+        let source = r#"
+            enum Status {
+                Success,
+                Failure,
+            }
+
+            struct Packet {
+                i64 value;
+            }
+
+            i64 load(*const Packet packet) = .load {
+                return packet->value;
+            }
+
+            i64 add(i64 lhs, i64 rhs) {
+                return lhs + rhs;
+            }
+
+            i64 main() {
+                Packet packet = { value: 1 };
+                i64 actor = 2;
+                return actor;
+            }
+        "#;
+        let options = CompileOptions::new(&path).with_source_override(&path, source);
+        let analysis = analyze_frontend_lossy(options).expect("frontend analysis should run");
+        let facts = DocumentFacts::from_analysis(analysis);
+        let uri = Url::from_file_path(&path).expect("file uri");
+        let file_id = facts.file_id_for_uri(&uri).expect("file id");
+
+        let bare_offset = source.find("return actor").expect("bare completion") + "return ".len();
+        let bare_position = facts
+            .position_for_offset(file_id, bare_offset)
+            .expect("bare position");
+        let bare = facts
+            .completion(&uri, bare_position)
+            .expect("bare completion");
+        assert_completion_contains(&bare, "actor");
+        assert_completion_contains(&bare, "add");
+
+        let member_offset = source.find("packet->value").expect("member") + "packet->".len();
+        let member_position = facts
+            .position_for_offset(file_id, member_offset)
+            .expect("member position");
+        let member = facts
+            .completion(&uri, member_position)
+            .expect("member completion");
+        assert_completion_contains(&member, "value");
+        assert_completion_contains(&member, "load");
+
+        let qualified_source = format!("{source}\nStatus::");
+        let qualified_path = PathBuf::from("/tmp/ciel_lsp_completion_qualified.ciel");
+        let qualified_options = CompileOptions::new(&qualified_path)
+            .with_source_override(&qualified_path, qualified_source.clone());
+        let qualified_analysis =
+            analyze_frontend_lossy(qualified_options).expect("qualified frontend analysis");
+        let qualified_facts = DocumentFacts::from_analysis(qualified_analysis);
+        let qualified_uri = Url::from_file_path(&qualified_path).expect("qualified uri");
+        let qualified_file_id = qualified_facts
+            .file_id_for_uri(&qualified_uri)
+            .expect("qualified file id");
+        let offset = qualified_source
+            .rfind("Status::")
+            .expect("qualified completion")
+            + "Status::".len();
+        let position = qualified_facts
+            .position_for_offset(qualified_file_id, offset)
+            .expect("qualified position");
+        let qualified = qualified_facts
+            .completion(&qualified_uri, position)
+            .expect("qualified completion");
+        assert_completion_contains(&qualified, "Success");
+        assert_completion_contains(&qualified, "Failure");
     }
 
     #[test]
@@ -2490,6 +2659,20 @@ mod tests {
             .position_for_offset(expected_file_id, expected_offset)
             .expect("expected definition position");
         assert_eq!(location.range.start, expected_position);
+    }
+
+    fn assert_completion_contains(completion: &CompletionResponse, label: &str) {
+        let CompletionResponse::Array(items) = completion else {
+            panic!("expected completion array");
+        };
+        assert!(
+            items.iter().any(|item| item.label == label),
+            "completion should contain `{label}`; got {:?}",
+            items
+                .iter()
+                .map(|item| item.label.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     #[test]

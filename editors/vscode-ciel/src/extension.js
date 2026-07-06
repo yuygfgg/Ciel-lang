@@ -36,6 +36,7 @@ const TOKEN_MODIFIERS = [
     'async',
     'defaultLibrary',
     'modification',
+    'mutable',
 ];
 
 const TOKEN_TYPE_INDEX = new Map(TOKEN_TYPES.map((type, index) => [type, index]));

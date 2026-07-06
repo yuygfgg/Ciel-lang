@@ -2304,6 +2304,17 @@ opaque future state; the erased parameter type is not a way to hide
 non-boundary-safe state from a later `spawn`, `await`, `block_on`, `select`, or
 other ownership boundary.
 
+Generic helpers that spawn a caller-provided future use
+`async::SpawnableFuture<Out>`. This alias includes `Awaitable<Out>`,
+`Abortable`, and the unsafe `spawnable_future_marker` policy marker. The
+compiler provides the marker for compiler-generated futures and erased
+`Future<Out>` values only when their tracked hidden state satisfies the same
+task-boundary check as a direct `spawn(existing_future)`. Custom awaitable
+wrappers may `unsafe derive spawnable_future_marker<Wrapper<...>>` or write an
+explicit unsafe impl, but that policy never erases hidden state already attached
+to a concrete value; a wrapper around a borrowed-slice future is still rejected
+at the spawn boundary.
+
 Compiler-generated futures are affine, single-consumer values. If such a
 future already owns resource-affine state, `spawn` consumes the future and moves
 that state into the new task frame. This is an ownership transfer, not a
@@ -5557,13 +5568,14 @@ boundaries, and `Message` boundaries.
 Standard-library adapter types such as `OperationFutureAdapter<T, Out>`,
 `ChannelSendFuture<T>`, `ChannelReserveFuture<T>`, and
 `ChannelRecvFuture<T>` wrap `Future<T>` and implement `Awaitable`, `Abortable`,
-and, where the protocol permits, `CancelSafe`. The `awaitable_future` interface
-determines `Out` from the awaitable receiver, so generic helpers can write
-`A: Awaitable<Out = _>` when they need to name the output without exposing it as
-an explicit type parameter. `block_on` is the synchronous bridge for `main`,
-tests, and embedding hosts; it starts a future on the task runtime and blocks
-the current thread until the future returns. Async bodies should use `await`
-instead of nested `block_on`.
+and, where the protocol permits, `CancelSafe`. `SpawnableFuture<Out>` is the
+separate boundary proof for generic helpers that move a caller-provided future
+into `spawn`. The `awaitable_future` interface determines `Out` from the
+awaitable receiver, so generic helpers can write `A: Awaitable<Out = _>` when
+they need to name the output without exposing it as an explicit type parameter.
+`block_on` is the synchronous bridge for `main`, tests, and embedding hosts; it
+starts a future on the task runtime and blocks the current thread until the
+future returns. Async bodies should use `await` instead of nested `block_on`.
 
 `Task<T>` is an awaitable handle to a spawned task. `spawn` starts an awaitable
 body whose output is `Result<T, Error>`. The compiler attaches hidden

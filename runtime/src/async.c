@@ -3176,6 +3176,35 @@ ciel_async_channel_ready_for_mode_locked(CielAsyncChannel *channel,
     }
 }
 
+static void
+ciel_async_channel_wait_until_ready(CielAsyncChannel *channel,
+                                    CielPendingChannelMode mode) {
+    if (channel == NULL) {
+        sched_yield();
+        return;
+    }
+    pthread_mutex_lock(&channel->mutex);
+    while (!ciel_async_channel_ready_for_mode_locked(channel, mode))
+        pthread_cond_wait(&channel->cond, &channel->mutex);
+    pthread_mutex_unlock(&channel->mutex);
+}
+
+static int ciel_task_group_ready_locked(CielTaskGroup *group) {
+    return group == NULL || group->done_head != NULL || group->closed ||
+           group->live_tasks == 0;
+}
+
+static void ciel_task_group_wait_until_ready(CielTaskGroup *group) {
+    if (group == NULL) {
+        sched_yield();
+        return;
+    }
+    pthread_mutex_lock(&group->mutex);
+    while (!ciel_task_group_ready_locked(group))
+        pthread_cond_wait(&group->cond, &group->mutex);
+    pthread_mutex_unlock(&group->mutex);
+}
+
 static int ciel_task_register_future_pending_source(CielFuture *future,
                                                     CielTask *task) {
     if (future == NULL || task == NULL)
@@ -3271,6 +3300,7 @@ static void ciel_future_wait_until_ready(CielFuture *future) {
     CielTask *task = future->pending_task;
     CielSelectSet *select = future->pending_select;
     CielAsyncChannel *channel = future->pending_channel;
+    CielPendingChannelMode channel_mode = future->pending_channel_mode;
     CielTaskGroup *group = future->pending_group;
     pthread_mutex_unlock(&future->mutex);
     if (op == NULL) {
@@ -3278,15 +3308,11 @@ static void ciel_future_wait_until_ready(CielFuture *future) {
             ciel_select_wait_until_ready(select);
         else if (task != NULL)
             ciel_task_wait_until_finished(task);
-        else if (channel != NULL) {
-            pthread_mutex_lock(&channel->mutex);
-            pthread_cond_wait(&channel->cond, &channel->mutex);
-            pthread_mutex_unlock(&channel->mutex);
-        } else if (group != NULL) {
-            pthread_mutex_lock(&group->mutex);
-            pthread_cond_wait(&group->cond, &group->mutex);
-            pthread_mutex_unlock(&group->mutex);
-        } else
+        else if (channel != NULL)
+            ciel_async_channel_wait_until_ready(channel, channel_mode);
+        else if (group != NULL)
+            ciel_task_group_wait_until_ready(group);
+        else
             sched_yield();
         return;
     }

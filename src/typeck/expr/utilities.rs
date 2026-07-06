@@ -134,6 +134,7 @@ impl TypeChecker {
             && !self.is_std_message_capability_interface_def(interface_def)
             && !self.is_std_message_clone_interface_def(interface_def)
             && !self.is_std_message_share_handle_marker_def(interface_def)
+            && !self.is_std_async_spawnable_future_marker_def(interface_def)
         {
             return self.type_implements_capability_inner(
                 interface_def,
@@ -173,6 +174,13 @@ impl TypeChecker {
             )
         {
             return true;
+        }
+        if self.is_std_async_spawnable_future_marker_def(interface_def) && args.is_empty() {
+            return self.type_implements_spawnable_future_marker(
+                interface_def,
+                interface_name,
+                receiver_ty,
+            );
         }
         if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
             return true;
@@ -509,6 +517,62 @@ impl TypeChecker {
         visiting: &mut HashSet<Ty>,
     ) -> Option<String> {
         self.future_state_escape_violation_inner(ty, path, visiting)
+    }
+
+    pub(in crate::typeck) fn spawnable_future_state_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+    ) -> Option<String> {
+        if matches!(ty, Ty::GeneratedFuture { .. }) || ty_has_hidden_state(ty) {
+            return self.task_boundary_future_state_violation(ty, path, &mut HashSet::new());
+        }
+        None
+    }
+
+    pub(in crate::typeck) fn is_spawnable_future_ty(&mut self, ty: &Ty) -> bool {
+        let Some(interface_def) =
+            self.std_async_interface_def(STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE)
+        else {
+            return false;
+        };
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE,
+            &[],
+            ty,
+        )
+    }
+
+    fn type_implements_spawnable_future_marker(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        receiver_ty: &Ty,
+    ) -> bool {
+        if self
+            .spawnable_future_state_violation(receiver_ty, "future")
+            .is_some()
+        {
+            return false;
+        }
+        let base_ty = strip_opaque_state_for_lookup(receiver_ty);
+        if matches!(base_ty, Ty::GeneratedFuture { .. })
+            || std_id::std_async_future_output_arg(&self.ctx.resolved, &base_ty).is_some()
+        {
+            return true;
+        }
+        self.find_impl(interface_def, interface_name, &[], &base_ty)
+            .is_some()
+            || self
+                .instantiate_generic_impl_for_receiver(
+                    interface_def,
+                    interface_name,
+                    &[],
+                    &base_ty,
+                    None,
+                )
+                .is_some()
     }
 
     fn future_state_escape_violation_inner(
@@ -1628,6 +1692,13 @@ impl TypeChecker {
         if self.symbolic_generic_env_proves_capability(interface_def, args, receiver_ty) {
             return true;
         }
+        if self.is_std_async_spawnable_future_marker_def(interface_def) && args.is_empty() {
+            return self.type_implements_spawnable_future_marker(
+                interface_def,
+                interface_name,
+                receiver_ty,
+            );
+        }
         if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
             return true;
         }
@@ -2491,6 +2562,17 @@ impl TypeChecker {
             .keys()
             .copied()
             .find(|def_id| std_id::is_std_async_interface(&self.ctx.resolved, *def_id, name))
+    }
+
+    pub(in crate::typeck) fn is_std_async_spawnable_future_marker_def(
+        &self,
+        def_id: DefId,
+    ) -> bool {
+        std_id::is_std_async_interface(
+            &self.ctx.resolved,
+            def_id,
+            STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE,
+        )
     }
 
     pub(in crate::typeck) fn is_std_message_share_handle_marker_def(&self, def_id: DefId) -> bool {

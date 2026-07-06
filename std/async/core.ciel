@@ -124,6 +124,19 @@ export unsafe interface<F> Result<void, Error> abort_future(*F future);
 // Constraint alias for abortable futures.
 export interface Abortable = abort_future;
 
+// Unsafe policy marker: futures may implement this when moving the awaitable
+// body into a new task cannot expose non-message task-local state. The compiler
+// provides this marker for generated futures and erased Future<T> values whose
+// tracked hidden state satisfies the spawn boundary.
+export unsafe interface<F> bool spawnable_future_marker(*const F future);
+
+// Constraint alias required when generic helpers spawn a caller-provided future.
+export interface SpawnableFuture<Out> = Awaitable<Out> + Abortable + spawnable_future_marker;
+
+unsafe derivable unsafe impl<T> spawnable_future_marker(*const T future) {
+    return true;
+}
+
 // Future constraint required by select and timeout losing arms.
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
@@ -296,6 +309,8 @@ unsafe impl<T> abort_future(*Task<T> task) {
     cancel(task)?;
     return Ok;
 }
+
+unsafe derive<T: Message> spawnable_future_marker<Task<T>>;
 
 unsafe impl<T> abort_future(*Future<T> future) {
     unsafe { runtime_future::abort<T>(future) };

@@ -1,0 +1,35 @@
+// ciel-test: error
+// expect-error: `async::spawn` future state does not implement `Message`
+// expect-error: borrowed read-only slice
+
+import /std/async as async;
+import /std/result;
+
+resource unsafe struct Wrapped<T> {
+    async::Future<T> inner;
+}
+
+unsafe impl<T> async::awaitable_future<T>(*const Wrapped<T> awaitable) {
+    return async::awaitable_future<T>(unsafe { &awaitable->inner });
+}
+
+unsafe impl<T> async::abort_future(*Wrapped<T> awaitable) {
+    async::abort_future(unsafe { &awaitable->inner })?;
+    return Ok;
+}
+
+unsafe derive<T> async::spawnable_future_marker<Wrapped<T>>;
+
+Wrapped<Result<usize, Error>> wrap(async::Future<Result<usize, Error>> future) {
+    return unsafe { { inner: future } };
+}
+
+async Result<usize, Error> len_later([]const i64 view) {
+    return Ok(view.len);
+}
+
+i32 main() {
+    [3]i64 values = [1, 2, 3];
+    _ task = must(async::spawn<usize>(wrap(len_later(values[..]))));
+    return 0;
+}

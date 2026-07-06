@@ -2513,16 +2513,30 @@ impl TypeChecker {
                 reason,
             ));
         }
-        if !matches!(body.kind, TExprKind::Closure { .. })
-            && (matches!(body.ty, Ty::GeneratedFuture { .. }) || ty_has_hidden_state(&body.ty))
-            && let Some(reason) =
-                self.task_boundary_future_state_violation(&body.ty, "future", &mut HashSet::new())
-        {
-            self.diagnostics.push(self.diagnostic_with_reason_note(
-                body.span,
-                "`async::spawn` future state does not implement `Message`",
-                reason,
-            ));
+        if !matches!(body.kind, TExprKind::Closure { .. }) {
+            if let Some(reason) = self.spawnable_future_state_violation(&body.ty, "future") {
+                self.diagnostics.push(self.diagnostic_with_reason_note(
+                    body.span,
+                    "`async::spawn` future state does not implement `Message`",
+                    reason,
+                ));
+            } else if !self.is_spawnable_future_ty(&body.ty) {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        body.span,
+                        format!(
+                            "`async::spawn` requires a `SpawnableFuture`, got `{}`",
+                            body.ty
+                        ),
+                    )
+                    .note(
+                        "generic helpers that spawn caller-provided futures must require `SpawnableFuture`",
+                    )
+                    .note(format!(
+                        "required capability: `{STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE}`"
+                    )),
+                );
+            }
         }
 
         let body = self.consume_affine_expr(scopes, body, false);

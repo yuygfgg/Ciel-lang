@@ -1,0 +1,23 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied
+// expect-error: spawnable_future_marker
+// expect-error: borrowed read-only slice
+
+import /std/async as async;
+import /std/result;
+
+async Result<usize, Error> len_later([]const i64 view) {
+    return Ok(view.len);
+}
+
+async::Task<usize> spawn_future<A: async::SpawnableFuture<Result<usize, Error>>>(
+    A future
+) {
+    return must(async::spawn<usize>(future));
+}
+
+i32 main() {
+    [3]i64 values = [1, 2, 3];
+    _ task = spawn_future(len_later(values[..]));
+    return 0;
+}

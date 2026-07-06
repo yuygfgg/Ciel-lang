@@ -37,6 +37,7 @@ pub const STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE: &str = "async_frame_opt_in_m
 pub const STD_ASYNC_AWAITABLE_FUTURE_INTERFACE: &str = "awaitable_future";
 pub const STD_ASYNC_CANCEL_SAFE_INTERFACE: &str = "cancel_safe_marker";
 pub const STD_ASYNC_ABORT_FUTURE_INTERFACE: &str = "abort_future";
+pub const STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE: &str = "spawnable_future_marker";
 
 pub fn clone_message_capability(def_id: DefId) -> ConstraintRef {
     ConstraintRef {

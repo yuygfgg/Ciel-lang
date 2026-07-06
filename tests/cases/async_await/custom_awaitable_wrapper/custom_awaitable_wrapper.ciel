@@ -21,6 +21,8 @@ unsafe impl<T> abort_future(*Wrapped<T> awaitable) {
     return Ok;
 }
 
+unsafe derive<T> spawnable_future_marker<Wrapped<T>>;
+
 async Result<usize, Error> compute(usize value) {
     await async_time::sleep_ms(0)?;
     return Ok(value + 3);

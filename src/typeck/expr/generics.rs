@@ -450,14 +450,21 @@ impl TypeChecker {
             let bounds = self.constraint_bounds(constraint, subst);
             for capability in &bounds.positive {
                 if !self.type_implements_capability_ref(capability, concrete) {
-                    self.diagnostics
-                        .push(self.positive_capability_constraint_diagnostic(
-                            span,
-                            concrete,
-                            capability,
-                            Some(&generic.name),
-                            Some(&bounds),
-                        ));
+                    let mut diagnostic = self.positive_capability_constraint_diagnostic(
+                        span,
+                        concrete,
+                        capability,
+                        Some(&generic.name),
+                        Some(&bounds),
+                    );
+                    if self.is_std_async_spawnable_future_marker_def(capability.def_id)
+                        && capability.args.is_empty()
+                        && let Some(reason) =
+                            self.spawnable_future_state_violation(concrete, "future")
+                    {
+                        diagnostic = diagnostic.note(format!("reason: {reason}"));
+                    }
+                    self.diagnostics.push(diagnostic);
                 }
             }
             for capability in &bounds.negative {

@@ -2043,9 +2043,10 @@ impl Parser {
                     },
                 };
             } else if self.eat(TokenKind::Dot).is_some() {
-                let field = self.expect_ident("expected field name")?;
+                let field = self.expect_ident_or_missing("expected field name");
                 if self.eat(TokenKind::ColonColon).is_some() {
-                    let selector = self.expect_ident("expected selector name after `::`")?;
+                    let selector =
+                        self.expect_ident_or_missing("expected selector name after `::`");
                     expr = Expr {
                         span: expr.span.merge(selector.span),
                         kind: ExprKind::ReceiverSelector {
@@ -2063,7 +2064,7 @@ impl Parser {
                     },
                 };
             } else if self.eat(TokenKind::Arrow).is_some() {
-                let field = self.expect_ident("expected field name")?;
+                let field = self.expect_ident_or_missing("expected field name");
                 expr = Expr {
                     span: expr.span.merge(field.span),
                     kind: ExprKind::Arrow {
@@ -3037,6 +3038,22 @@ impl Parser {
             })
         } else {
             Err(Diagnostic::new(self.peek().span, message))
+        }
+    }
+
+    fn expect_ident_or_missing(&mut self, message: &str) -> Ident {
+        if self.at(TokenKind::Ident) {
+            let token = self.advance().clone();
+            Ident {
+                name: token.lexeme,
+                span: token.span,
+            }
+        } else {
+            self.push_diagnostic(self.recovery_diagnostic(self.missing_span(), message));
+            Ident {
+                name: String::new(),
+                span: self.missing_span(),
+            }
         }
     }
 

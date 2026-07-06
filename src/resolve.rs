@@ -214,6 +214,21 @@ impl ResolvedProgram {
         }
     }
 
+    pub fn visible_imported_bare_defs(&self, module: ModuleId, kinds: &[DefKind]) -> Vec<DefId> {
+        let mut candidates = Vec::new();
+        let mut visited = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_defs(target, kinds, &mut visited, &mut candidates);
+            }
+        }
+        dedup_defs(&mut candidates);
+        candidates
+    }
+
     pub fn lookup_bare_variants(
         &self,
         module: ModuleId,
@@ -257,6 +272,21 @@ impl ResolvedProgram {
         Ok(candidates)
     }
 
+    pub fn visible_imported_bare_variants(&self, module: ModuleId) -> Vec<DefId> {
+        let mut candidates = Vec::new();
+        let mut visited = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_variant_defs(target, &mut visited, &mut candidates);
+            }
+        }
+        dedup_defs(&mut candidates);
+        candidates
+    }
+
     pub fn lexical_def_before(
         &self,
         module: ModuleId,
@@ -276,6 +306,27 @@ impl ResolvedProgram {
                     self.local_def(module.id, name, &kinds)
                 })?
             })
+    }
+
+    pub fn visible_import_aliases(&self, module: ModuleId) -> Vec<String> {
+        let mut aliases = Vec::new();
+        for import in &self.modules[module.0].imports {
+            if let Some(alias) = &import.alias {
+                aliases.push(alias.clone());
+            }
+        }
+        let mut visited = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_aliases(target, &mut visited, &mut aliases);
+            }
+        }
+        aliases.sort();
+        aliases.dedup();
+        aliases
     }
 
     pub fn lookup_qualified(
@@ -414,6 +465,50 @@ impl ResolvedProgram {
         Ok(candidates)
     }
 
+    pub fn visible_qualified_defs(
+        &self,
+        module: ModuleId,
+        alias: &str,
+        kinds: &[DefKind],
+    ) -> Result<Vec<DefId>, LookupError> {
+        let targets = self.visible_alias_targets(module, alias)?;
+        let mut candidates = Vec::new();
+        for target in targets {
+            let mut visited = HashSet::new();
+            self.exported_defs(target, kinds, &mut visited, &mut candidates);
+        }
+        dedup_defs(&mut candidates);
+        Ok(candidates)
+    }
+
+    pub fn visible_qualified_variants(
+        &self,
+        module: ModuleId,
+        alias: &str,
+    ) -> Result<Vec<DefId>, LookupError> {
+        let targets = self.visible_alias_targets(module, alias)?;
+        let mut candidates = Vec::new();
+        for target in targets {
+            let mut visited = HashSet::new();
+            self.exported_variant_defs(target, &mut visited, &mut candidates);
+        }
+        dedup_defs(&mut candidates);
+        Ok(candidates)
+    }
+
+    pub fn enum_variant_defs(&self, enum_def: DefId) -> Vec<DefId> {
+        let enum_module = self.def(enum_def).module;
+        self.modules[enum_module.0]
+            .defs
+            .iter()
+            .copied()
+            .filter(|id| {
+                let def = self.def(*id);
+                def.kind == DefKind::EnumVariant && def.parent == Some(enum_def)
+            })
+            .collect()
+    }
+
     pub fn lookup_path(
         &self,
         module: ModuleId,
@@ -439,6 +534,119 @@ impl ResolvedProgram {
                 }
             })
         })
+    }
+
+    fn visible_alias_targets(
+        &self,
+        module: ModuleId,
+        alias: &str,
+    ) -> Result<Vec<ModuleId>, LookupError> {
+        let mut targets = Vec::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.as_deref() != Some(alias) {
+                continue;
+            }
+            let Some(target) = import.target else {
+                return Err(LookupError::UnresolvedImport {
+                    path: import.path.clone(),
+                });
+            };
+            targets.push(target);
+        }
+
+        let mut visited_aliases = HashSet::new();
+        for import in &self.modules[module.0].imports {
+            if import.alias.is_some() {
+                continue;
+            }
+            let Some(target) = import.target else {
+                return Err(LookupError::UnresolvedImport {
+                    path: import.path.clone(),
+                });
+            };
+            self.exported_alias_targets(target, alias, &mut visited_aliases, &mut targets);
+        }
+
+        dedup_modules(&mut targets);
+        if targets.is_empty() {
+            Err(LookupError::UnknownAlias {
+                alias: alias.to_string(),
+            })
+        } else {
+            Ok(targets)
+        }
+    }
+
+    fn exported_defs(
+        &self,
+        module: ModuleId,
+        kinds: &[DefKind],
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<DefId>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        for id in &self.modules[module.0].defs {
+            let def = self.def(*id);
+            if def.exported && kind_matches(&def.kind, kinds) {
+                out.push(*id);
+            }
+        }
+        for import in &self.modules[module.0].imports {
+            if !import.exported || import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_defs(target, kinds, visited, out);
+            }
+        }
+    }
+
+    fn exported_variant_defs(
+        &self,
+        module: ModuleId,
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<DefId>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        for id in &self.modules[module.0].defs {
+            let def = self.def(*id);
+            if def.exported && def.kind == DefKind::EnumVariant {
+                out.push(*id);
+            }
+        }
+        for import in &self.modules[module.0].imports {
+            if !import.exported || import.alias.is_some() {
+                continue;
+            }
+            if let Some(target) = import.target {
+                self.exported_variant_defs(target, visited, out);
+            }
+        }
+    }
+
+    fn exported_aliases(
+        &self,
+        module: ModuleId,
+        visited: &mut HashSet<ModuleId>,
+        out: &mut Vec<String>,
+    ) {
+        if !visited.insert(module) {
+            return;
+        }
+        for import in &self.modules[module.0].imports {
+            if !import.exported {
+                continue;
+            }
+            if let Some(alias) = &import.alias {
+                out.push(alias.clone());
+            } else if let Some(target) = import.target {
+                self.exported_aliases(target, visited, out);
+            }
+        }
     }
 
     fn exported_bare_defs(

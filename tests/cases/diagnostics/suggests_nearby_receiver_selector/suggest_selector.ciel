@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: no selector `.laod` for receiver type `Packet`
+// expect-error: did you mean `.load`?
+
+struct Packet {
+    i64 value;
+}
+
+i64 packet_load(*const Packet packet) = .load {
+    return packet->value;
+}
+
+i64 main() {
+    Packet packet = { value: 1 };
+    return packet.laod();
+}

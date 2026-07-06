@@ -20,6 +20,7 @@ pub mod retained;
 pub mod source;
 pub mod span;
 pub mod std_id;
+pub mod suggest;
 pub mod thir;
 pub mod tree_sitter_ciel;
 pub mod type_display;

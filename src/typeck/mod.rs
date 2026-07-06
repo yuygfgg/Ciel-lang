@@ -7,7 +7,7 @@ use crate::{
     hir::*,
     layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ModuleId},
-    std_id,
+    std_id, suggest,
     thir::*,
     types::{
         ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, OpaqueReturnKey,

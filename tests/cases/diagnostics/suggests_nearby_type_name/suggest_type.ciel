@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: unknown type `Pakcet`
+// expect-error: did you mean `Packet`?
+
+struct Packet {
+    i64 value;
+}
+
+Pakcet main() {
+    Packet packet = { value: 1 };
+    return packet;
+}

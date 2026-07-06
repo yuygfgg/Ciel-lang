@@ -1927,13 +1927,36 @@ impl TypeChecker {
         }
         match matches.len() {
             0 => {
-                self.diagnostics.push(Diagnostic::new(
+                let mut diagnostic = Diagnostic::new(
                     span,
                     format!(
                         "no selector `.{selector_name}` for receiver type `{}`",
                         checked_receiver.ty
                     ),
-                ));
+                );
+                let candidates = self
+                    .visible_receiver_selector_candidates_for_suggestion(
+                        self.current_module,
+                        selector_path,
+                    )
+                    .into_iter()
+                    .filter_map(|candidate| {
+                        let param_ty = self.receiver_selector_pattern_ty(&candidate)?;
+                        receiver_selector_adaptation(&param_ty, &checked_receiver.ty)?;
+                        let display = if selector_path.len() == 2 {
+                            format!("{}::{}", selector_path[0].name, candidate.selector)
+                        } else {
+                            candidate.selector.clone()
+                        };
+                        Some((candidate.selector, format!(".{display}")))
+                    })
+                    .collect::<Vec<_>>();
+                if let Some(note) =
+                    suggest::did_you_mean_note_with_display(&selector_name, candidates)
+                {
+                    diagnostic = diagnostic.note(note);
+                }
+                self.diagnostics.push(diagnostic);
                 None
             }
             1 => {
@@ -2027,6 +2050,30 @@ impl TypeChecker {
         let Some(selector_name) = selector_path.last().map(|name| name.name.as_str()) else {
             return Vec::new();
         };
+        self.visible_receiver_selector_candidates_matching(
+            module,
+            selector_path,
+            Some(selector_name),
+        )
+    }
+
+    pub(super) fn visible_receiver_selector_candidates_for_suggestion(
+        &self,
+        module: ModuleId,
+        selector_path: &[crate::ast::Ident],
+    ) -> Vec<ReceiverSelectorSig> {
+        self.visible_receiver_selector_candidates_matching(module, selector_path, None)
+    }
+
+    fn visible_receiver_selector_candidates_matching(
+        &self,
+        module: ModuleId,
+        selector_path: &[crate::ast::Ident],
+        selector_filter: Option<&str>,
+    ) -> Vec<ReceiverSelectorSig> {
+        if selector_path.is_empty() {
+            return Vec::new();
+        }
         let mut out = Vec::new();
         match selector_path {
             [_name] => {
@@ -2035,7 +2082,8 @@ impl TypeChecker {
                         .receiver_selectors
                         .iter()
                         .filter(|selector| {
-                            selector.module == module && selector.selector == selector_name
+                            selector.module == module
+                                && selector_filter.is_none_or(|name| selector.selector == name)
                         })
                         .cloned(),
                 );
@@ -2047,7 +2095,7 @@ impl TypeChecker {
                     if let Some(target) = import.target {
                         self.exported_receiver_selectors_from_module(
                             target,
-                            selector_name,
+                            selector_filter,
                             &mut visited,
                             &mut out,
                         );
@@ -2059,7 +2107,7 @@ impl TypeChecker {
                     let mut visited = HashSet::new();
                     self.exported_receiver_selectors_from_module(
                         target,
-                        selector_name,
+                        selector_filter,
                         &mut visited,
                         &mut out,
                     );
@@ -2074,7 +2122,7 @@ impl TypeChecker {
     pub(super) fn exported_receiver_selectors_from_module(
         &self,
         module: ModuleId,
-        selector_name: &str,
+        selector_name: Option<&str>,
         visited: &mut HashSet<ModuleId>,
         out: &mut Vec<ReceiverSelectorSig>,
     ) {
@@ -2088,7 +2136,7 @@ impl TypeChecker {
                 .filter(|selector| {
                     selector.module == module
                         && selector.exported
-                        && selector.selector == selector_name
+                        && selector_name.is_none_or(|name| selector.selector == name)
                 })
                 .cloned(),
         );

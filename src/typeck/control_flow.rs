@@ -727,13 +727,20 @@ impl TypeChecker {
             .iter()
             .any(|variant| variant.name == *variant_name)
         {
-            self.diagnostics.push(Diagnostic::new(
+            let mut diagnostic = Diagnostic::new(
                 name.span,
                 format!(
                     "`{}` is not a variant of `{}`",
                     name.display, checked_enum.name
                 ),
-            ));
+            );
+            if let Some(note) = suggest::did_you_mean_note(
+                variant_name,
+                checked_enum.variants.iter().map(|variant| &variant.name),
+            ) {
+                diagnostic = diagnostic.note(note);
+            }
+            self.diagnostics.push(diagnostic);
             return None;
         }
         Some((*variant_index, checked_pattern))
@@ -797,10 +804,24 @@ impl TypeChecker {
             (expected_ty, None)
         };
         let Some((_def_id, sig)) = self.lookup_pattern_variant_name(name, expected_base_ty) else {
-            self.diagnostics.push(Diagnostic::new(
+            let mut diagnostic = Diagnostic::new(
                 name.span,
                 format!("unknown enum variant `{}`", name.display),
-            ));
+            );
+            if let Some(checked_enum) = self.checked_enum_for_type(expected_base_ty)
+                && let Some(note) = suggest::did_you_mean_note_with_display(
+                    name.display.rsplit("::").next().unwrap_or(&name.display),
+                    checked_enum.variants.iter().map(|variant| {
+                        (
+                            variant.name.clone(),
+                            format!("{}::{}", checked_enum.name, variant.name),
+                        )
+                    }),
+                )
+            {
+                diagnostic = diagnostic.note(note);
+            }
+            self.diagnostics.push(diagnostic);
             return None;
         };
         let Ty::Named {

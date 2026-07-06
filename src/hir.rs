@@ -6,6 +6,7 @@ use crate::{
     diagnostic::{DiagResult, Diagnostic, DiagnosticPhase, WithDiagnostics},
     resolve::{DefId, DefKind, LookupError, ModuleId, ResolvedImport, ResolvedProgram},
     span::{FileId, Span},
+    suggest,
 };
 
 pub use ast::{
@@ -1326,10 +1327,12 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                                 PatternNameKind::Error
                             }
                             Some(_) | None if is_case_head => {
-                                self.lowerer.diagnostics.push(Diagnostic::new(
-                                    span,
-                                    "switch case must name an enum variant",
-                                ));
+                                let mut diagnostic =
+                                    Diagnostic::new(span, "switch case must name an enum variant");
+                                if let Some(note) = self.suggestion_note_for_path(path, "pattern") {
+                                    diagnostic = diagnostic.note(note);
+                                }
+                                self.lowerer.diagnostics.push(diagnostic);
                                 PatternNameKind::Error
                             }
                             Some(_) | None if path.len() == 1 => {
@@ -1341,10 +1344,12 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                                 }
                             }
                             Some(_) | None => {
-                                self.lowerer.diagnostics.push(Diagnostic::new(
+                                self.push_diagnostic_with_suggestion(
                                     span,
                                     format!("unknown pattern `{display}`"),
-                                ));
+                                    path,
+                                    "pattern",
+                                );
                                 PatternNameKind::Error
                             }
                         }
@@ -1648,9 +1653,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 } else {
                     format!("unresolved {context} `{display}`")
                 };
-                self.lowerer
-                    .diagnostics
-                    .push(Diagnostic::new(span, message));
+                self.push_diagnostic_with_suggestion(span, message, path, context);
                 NameRef {
                     path: path.to_vec(),
                     display,
@@ -1823,6 +1826,264 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
             .collect()
     }
 
+    fn visible_def_candidates(&self, kinds: &[DefKind]) -> Vec<DefId> {
+        let mut candidates = self
+            .lexical_defs
+            .values()
+            .copied()
+            .filter(|def_id| kind_matches(&self.lowerer.resolved.def(*def_id).kind, kinds))
+            .collect::<Vec<_>>();
+        candidates.extend(
+            self.lowerer
+                .resolved
+                .visible_imported_bare_defs(self.module, kinds),
+        );
+        dedup_def_ids(&mut candidates);
+        candidates
+    }
+
+    fn visible_variant_candidates(&self) -> Vec<DefId> {
+        let visible_enums = self
+            .lexical_defs
+            .values()
+            .copied()
+            .filter(|def_id| self.lowerer.resolved.def(*def_id).kind == DefKind::Enum)
+            .collect::<HashSet<_>>();
+        let mut candidates = self.lowerer.resolved.modules[self.module.0]
+            .defs
+            .iter()
+            .copied()
+            .filter(|def_id| {
+                let def = self.lowerer.resolved.def(*def_id);
+                def.kind == DefKind::EnumVariant
+                    && def
+                        .parent
+                        .is_some_and(|enum_def| visible_enums.contains(&enum_def))
+            })
+            .collect::<Vec<_>>();
+        candidates.extend(
+            self.lowerer
+                .resolved
+                .visible_imported_bare_variants(self.module),
+        );
+        dedup_def_ids(&mut candidates);
+        candidates
+    }
+
+    fn local_suggestion_candidates(&self) -> Vec<(String, String)> {
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        for scope in &self.local_scopes {
+            for name in scope.keys() {
+                if seen.insert(name.clone()) {
+                    candidates.push((name.clone(), name.clone()));
+                }
+            }
+        }
+        candidates
+    }
+
+    fn generic_suggestion_candidates(&self) -> Vec<(String, String)> {
+        let mut candidates = Vec::new();
+        let mut seen = HashSet::new();
+        for scope in &self.generic_scopes {
+            for name in scope {
+                if seen.insert(name.clone()) {
+                    candidates.push((name.clone(), name.clone()));
+                }
+            }
+        }
+        candidates
+    }
+
+    fn def_suggestion_candidates(&self, defs: Vec<DefId>) -> Vec<(String, String)> {
+        defs.into_iter()
+            .map(|def_id| {
+                let def = self.lowerer.resolved.def(def_id);
+                let display = if let Some(parent_id) = def.parent {
+                    let parent = self.lowerer.resolved.def(parent_id);
+                    format!("{}::{}", parent.name, def.name)
+                } else {
+                    def.name.clone()
+                };
+                (def.name.clone(), display)
+            })
+            .collect()
+    }
+
+    fn bare_suggestion_candidates(&self, context: &str) -> Vec<(String, String)> {
+        let mut candidates = Vec::new();
+        match context {
+            "type" => {
+                candidates.extend(self.generic_suggestion_candidates());
+                candidates.extend(
+                    self.def_suggestion_candidates(self.visible_def_candidates(&type_def_kinds())),
+                );
+            }
+            "interface" => {
+                candidates.extend(self.def_suggestion_candidates(
+                    self.visible_def_candidates(&[DefKind::Interface, DefKind::InterfaceAlias]),
+                ));
+            }
+            "pattern" => {
+                candidates
+                    .extend(self.def_suggestion_candidates(self.visible_variant_candidates()));
+            }
+            _ => {
+                candidates.extend(self.local_suggestion_candidates());
+                candidates.extend(self.def_suggestion_candidates(
+                    self.visible_def_candidates(&non_variant_def_kinds()),
+                ));
+                candidates
+                    .extend(self.def_suggestion_candidates(self.visible_variant_candidates()));
+            }
+        }
+        candidates
+    }
+
+    fn qualified_suggestion_candidates(&self, alias: &str, context: &str) -> Vec<(String, String)> {
+        let resolved = &self.lowerer.resolved;
+        let mut candidates = Vec::new();
+        match context {
+            "type" => {
+                if let Ok(defs) =
+                    resolved.visible_qualified_defs(self.module, alias, &type_def_kinds())
+                {
+                    candidates.extend(defs.into_iter().map(|def_id| {
+                        let def = resolved.def(def_id);
+                        (def.name.clone(), format!("{alias}::{}", def.name))
+                    }));
+                }
+            }
+            "interface" => {
+                if let Ok(defs) = resolved.visible_qualified_defs(
+                    self.module,
+                    alias,
+                    &[DefKind::Interface, DefKind::InterfaceAlias],
+                ) {
+                    candidates.extend(defs.into_iter().map(|def_id| {
+                        let def = resolved.def(def_id);
+                        (def.name.clone(), format!("{alias}::{}", def.name))
+                    }));
+                }
+            }
+            "pattern" => {
+                if let Ok(defs) = resolved.visible_qualified_variants(self.module, alias) {
+                    candidates.extend(defs.into_iter().map(|def_id| {
+                        let def = resolved.def(def_id);
+                        (def.name.clone(), format!("{alias}::{}", def.name))
+                    }));
+                }
+            }
+            _ => {
+                if let Ok(defs) =
+                    resolved.visible_qualified_defs(self.module, alias, &non_variant_def_kinds())
+                {
+                    candidates.extend(defs.into_iter().map(|def_id| {
+                        let def = resolved.def(def_id);
+                        (def.name.clone(), format!("{alias}::{}", def.name))
+                    }));
+                }
+                if let Ok(defs) = resolved.visible_qualified_variants(self.module, alias) {
+                    candidates.extend(defs.into_iter().map(|def_id| {
+                        let def = resolved.def(def_id);
+                        (def.name.clone(), format!("{alias}::{}", def.name))
+                    }));
+                }
+            }
+        }
+        candidates
+    }
+
+    fn enum_variant_suggestion_candidates(&self, enum_def: DefId) -> Vec<(String, String)> {
+        let enum_name = self.lowerer.resolved.def(enum_def).name.clone();
+        self.lowerer
+            .resolved
+            .enum_variant_defs(enum_def)
+            .into_iter()
+            .map(|def_id| {
+                let def = self.lowerer.resolved.def(def_id);
+                (def.name.clone(), format!("{enum_name}::{}", def.name))
+            })
+            .collect()
+    }
+
+    fn suggestion_note_for_path(&self, path: &[ast::Ident], context: &str) -> Option<String> {
+        let needle = &path.last()?.name;
+        match path {
+            [_name] => suggest::did_you_mean_note_with_display(
+                needle,
+                self.bare_suggestion_candidates(context),
+            ),
+            [head, _tail] => {
+                if let Ok(Some(enum_def)) = self.resolve_visible_enum_path_ref(&[head.clone()]) {
+                    suggest::did_you_mean_note_with_display(
+                        needle,
+                        self.enum_variant_suggestion_candidates(enum_def),
+                    )
+                } else {
+                    suggest::did_you_mean_note_with_display(
+                        needle,
+                        self.qualified_suggestion_candidates(&head.name, context),
+                    )
+                }
+            }
+            [alias, enum_name, _variant] => {
+                if let Ok(Some(enum_def)) =
+                    self.resolve_visible_enum_path_ref(&[alias.clone(), enum_name.clone()])
+                {
+                    suggest::did_you_mean_note_with_display(
+                        needle,
+                        self.enum_variant_suggestion_candidates(enum_def),
+                    )
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn resolve_visible_enum_path_ref(
+        &self,
+        path: &[ast::Ident],
+    ) -> Result<Option<DefId>, LookupError> {
+        match path {
+            [name] => {
+                if let Some(def_id) = self.lexical_defs.get(&name.name).copied() {
+                    let def = self.lowerer.resolved.def(def_id);
+                    return Ok((def.kind == DefKind::Enum).then_some(def_id));
+                }
+                self.lowerer.resolved.lookup_imported_bare(
+                    self.module,
+                    &name.name,
+                    &[DefKind::Enum],
+                )
+            }
+            [alias, name] => self.lowerer.resolved.lookup_qualified(
+                self.module,
+                &alias.name,
+                &name.name,
+                &[DefKind::Enum],
+            ),
+            _ => Err(LookupError::TooManySegments { len: path.len() }),
+        }
+    }
+
+    fn push_diagnostic_with_suggestion(
+        &mut self,
+        span: Span,
+        message: String,
+        path: &[ast::Ident],
+        context: &str,
+    ) {
+        let mut diagnostic = Diagnostic::new(span, message);
+        if let Some(note) = self.suggestion_note_for_path(path, context) {
+            diagnostic = diagnostic.note(note);
+        }
+        self.lowerer.diagnostics.push(diagnostic);
+    }
+
     fn require_type_name_kind(&mut self, name: &NameRef) {
         self.require_def_kind(
             name,
@@ -1876,10 +2137,15 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 );
             }
             LookupError::UnknownAlias { alias } => {
-                self.lowerer.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!("unknown import alias `{alias}`"),
-                ));
+                let mut diagnostic =
+                    Diagnostic::new(span, format!("unknown import alias `{alias}`"));
+                if let Some(note) = suggest::did_you_mean_note(
+                    &alias,
+                    self.lowerer.resolved.visible_import_aliases(self.module),
+                ) {
+                    diagnostic = diagnostic.note(note);
+                }
+                self.lowerer.diagnostics.push(diagnostic);
             }
             LookupError::NotExported { name } => {
                 self.lowerer
@@ -2086,6 +2352,17 @@ fn non_variant_def_kinds() -> [DefKind; 8] {
         DefKind::InterfaceAlias,
         DefKind::Function,
         DefKind::ExternFunction,
+        DefKind::OpaqueStruct,
+    ]
+}
+
+fn type_def_kinds() -> [DefKind; 6] {
+    [
+        DefKind::TypeAlias,
+        DefKind::Struct,
+        DefKind::Enum,
+        DefKind::Interface,
+        DefKind::InterfaceAlias,
         DefKind::OpaqueStruct,
     ]
 }

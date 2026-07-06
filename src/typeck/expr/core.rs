@@ -316,10 +316,24 @@ impl TypeChecker {
                         .iter()
                         .find(|(field_name, _)| field_name == &init.name.name)
                     else {
-                        self.diagnostics.push(Diagnostic::new(
+                        let mut diagnostic = Diagnostic::new(
                             init.name.span,
                             format!("unknown field `{}` on `{type_name}`", init.name.name),
-                        ));
+                        );
+                        if init.name.name.is_empty() {
+                            if let Some(note) = suggest::available_names_note(
+                                "available fields",
+                                struct_fields.iter().map(|(name, _)| name),
+                            ) {
+                                diagnostic = diagnostic.note(note);
+                            }
+                        } else if let Some(note) = suggest::did_you_mean_note(
+                            &init.name.name,
+                            struct_fields.iter().map(|(name, _)| name),
+                        ) {
+                            diagnostic = diagnostic.note(note);
+                        }
+                        self.diagnostics.push(diagnostic);
                         continue;
                     };
                     let field_ty = self.resolve_type_holes(field_ty);

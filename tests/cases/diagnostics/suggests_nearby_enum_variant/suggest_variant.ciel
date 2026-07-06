@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: switch case must name an enum variant
+// expect-error: did you mean `Status::Success`?
+
+enum Status {
+    Success,
+    Failure,
+}
+
+i64 main() {
+    Status status = Success;
+    switch (status) {
+    case Succes:
+        return 1;
+    case Failure:
+        return 2;
+    }
+    return 0;
+}

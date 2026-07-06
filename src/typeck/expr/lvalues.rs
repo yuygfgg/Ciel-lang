@@ -945,18 +945,33 @@ impl TypeChecker {
                     }
                     Some(ty)
                 } else {
-                    self.diagnostics.push(Diagnostic::new(
-                        span,
-                        format!("unknown field `{field}` on `{view}`"),
-                    ));
+                    let mut diagnostic =
+                        Diagnostic::new(span, format!("unknown field `{field}` on `{view}`"));
+                    if field.is_empty() {
+                        if let Some(note) = suggest::available_names_note(
+                            "available fields",
+                            fields.iter().map(|(name, _)| name),
+                        ) {
+                            diagnostic = diagnostic.note(note);
+                        }
+                    } else if let Some(note) =
+                        suggest::did_you_mean_note(field, fields.iter().map(|(name, _)| name))
+                    {
+                        diagnostic = diagnostic.note(note);
+                    }
+                    self.diagnostics.push(diagnostic);
                     None
                 }
             }
             _ => {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!("type `{view}` has no field `{field}`"),
-                ));
+                let mut diagnostic =
+                    Diagnostic::new(span, format!("type `{view}` has no field `{field}`"));
+                if let Ty::Slice { .. } = view
+                    && let Some(note) = suggest::did_you_mean_note(field, ["ptr", "len"])
+                {
+                    diagnostic = diagnostic.note(note);
+                }
+                self.diagnostics.push(diagnostic);
                 None
             }
         }

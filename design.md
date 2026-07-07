@@ -673,8 +673,8 @@ template body needs `T: message::Message`, then `derive<T>
 message::Message<Envelope<T>>;` is rejected instead of registering an
 under-constrained generic impl template for later capability solving.
 Likewise, derived impls must satisfy the same receiver safety rules as ordinary
-impls: affine or resource receiver types cannot derive message cloning or share
-handle marker interfaces that would bypass resource ownership policy.
+impls: affine or resource receiver types cannot derive message cloning or
+share-handle policy interfaces that would bypass resource ownership policy.
 
 Interfaces with additional policy parameters expose one-argument interface
 aliases for derivation. For example, a JSON module can publish
@@ -1574,19 +1574,22 @@ interface<F, In -> Out> Out map_call(*F f, In value);
 interface Mapper<In, Out> = map_call<In, Out>;
 ```
 
-Generic impls are checked conservatively. If two generic impls may overlap on
-the determinant side and could produce different determined parameters, the
-program is rejected unless the existing coherence machinery can prove the
-determinant sets are disjoint. Duplicate impls with the same determined
-parameters are still rejected by the ordinary duplicate-impl rule; determined
-parameters are not overloads.
+Determined parameters are a functional dependency. Generic impls are checked
+conservatively for that dependency: if two generic impls may overlap on the
+determinant side and could produce different determined parameters, the program
+is rejected unless the existing coherence machinery can prove the determinant
+sets are disjoint. Duplicate impls with the same determined parameters are
+still rejected by the ordinary duplicate-impl rule; determined parameters are
+not overloads.
 
 At a concrete use site, capability solving must select a unique implementation.
 If more than one generic impl is usable for the same fully applied interface
-term, the use is ambiguous and is rejected with candidate notes. This ambiguity
-rule applies to every interface. Marker interfaces also participate in the
-ordinary duplicate and overlap diagnostics; they are not allowed to fail
-silently when multiple marker proofs would apply.
+term, the use is ambiguous and is rejected with candidate notes. Generic
+constraint discharge is a capability-solving use site: proving `T: Interface`
+for a concrete `T` uses the same implementation-selection rules as an interface
+call at that point. Negative constraints require the queried capability to be
+absent; an ambiguous query is not a proof of absence. Interface names carry no
+marker semantics.
 
 An `impl` may have its own generic parameter list. Those parameters are inferred
 from the receiver and other interface arguments, then monomorphized like a
@@ -2481,7 +2484,7 @@ frame. Safe code allows owned scalars, structs, enums, arrays, owned runtime
 handles documented as async-frame opt-ins, direct local static read-only slices
 such as string literals, and compiler-generated operation keys. `ShareHandle`
 values opt into async-frame storage through the standard library's generic
-marker implementation.
+async-frame opt-in implementation.
 
 Safe code rejects the following values across `await`: raw pointers, nullable
 raw pointers, mutable slices, borrowed read-only slices whose owner is not
@@ -2941,7 +2944,7 @@ The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
 `clone_message` functions where the standard library writes those calls.
 Whole-program coherence rejects duplicate concrete `clone_message` impls and
-generic marker impls that overlap. At capability use sites, multiple usable
+overlapping standard policy impls. At capability use sites, multiple usable
 generic impls for any interface are reported as ambiguity rather than being
 treated as a missing capability.
 

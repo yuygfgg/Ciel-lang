@@ -1,0 +1,28 @@
+// ciel-test: error
+// expect-error: ambiguous generic impls for interface `proof`
+
+interface<T> bool proof(*const T value);
+
+struct Box<T> {
+    T value;
+}
+
+impl<T> proof(*const T value) {
+    value;
+    return true;
+}
+
+impl<T> proof(*const Box<T> value) {
+    value;
+    return true;
+}
+
+void require_proof<T: proof>(*const T value) {
+    value;
+}
+
+i64 main() {
+    Box<i64> box = { value: 10 };
+    require_proof(&box);
+    return 0;
+}

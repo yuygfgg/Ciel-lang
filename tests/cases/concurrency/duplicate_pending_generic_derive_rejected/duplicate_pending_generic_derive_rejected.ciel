@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: ambiguous generic impls for marker interface `clone_message`
+// expect-error: ambiguous generic impls for interface `clone_message`
 
 import /std/lib;
 

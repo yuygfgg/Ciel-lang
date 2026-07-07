@@ -276,17 +276,16 @@ impl TypeChecker {
         if retained_closure_proves_capability(receiver_ty, interface_def, args) {
             return true;
         }
-        self.find_impl(interface_def, interface_name, args, receiver_ty)
-            .is_some()
-            || self
-                .instantiate_generic_impl_for_receiver(
-                    interface_def,
-                    interface_name,
-                    args,
-                    receiver_ty,
-                    None,
-                )
-                .is_some()
+        self.find_or_instantiate_impl_by_full_args_optional_span(
+            interface_def,
+            interface_name,
+            &std::iter::once(receiver_ty.clone())
+                .chain(args.iter().cloned())
+                .collect::<Vec<_>>(),
+            Some(receiver_ty),
+            None,
+        )
+        .is_some()
             || ((std_id::is_std_async_interface(
                 &self.ctx.resolved,
                 interface_def,
@@ -1546,6 +1545,23 @@ impl TypeChecker {
         receiver_ty: Option<&Ty>,
         span: crate::span::Span,
     ) -> Option<ImplSig> {
+        self.find_or_instantiate_impl_by_full_args_optional_span(
+            interface_def,
+            interface_name,
+            interface_args,
+            receiver_ty,
+            Some(span),
+        )
+    }
+
+    pub(super) fn find_or_instantiate_impl_by_full_args_optional_span(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        interface_args: &[Ty],
+        receiver_ty: Option<&Ty>,
+        span: Option<crate::span::Span>,
+    ) -> Option<ImplSig> {
         let stripped_interface_args = interface_args
             .iter()
             .map(strip_opaque_state_for_lookup)
@@ -1554,7 +1570,7 @@ impl TypeChecker {
         if stripped_interface_args.as_slice() != interface_args
             || stripped_receiver_ty.as_ref() != receiver_ty
         {
-            return self.find_or_instantiate_impl_by_full_args(
+            return self.find_or_instantiate_impl_by_full_args_optional_span(
                 interface_def,
                 interface_name,
                 &stripped_interface_args,
@@ -1575,7 +1591,7 @@ impl TypeChecker {
                     .iter()
                     .map(|arg| self.lower_opaque_returns_in_ty(arg))
                     .collect::<Vec<_>>();
-                return self.find_or_instantiate_impl_by_full_args(
+                return self.find_or_instantiate_impl_by_full_args_optional_span(
                     interface_def,
                     interface_name,
                     &concrete_args,
@@ -1594,7 +1610,7 @@ impl TypeChecker {
             interface_name,
             interface_args,
             receiver_ty,
-            Some(span),
+            span,
         ) {
             return Some(implementation);
         }
@@ -1627,7 +1643,7 @@ impl TypeChecker {
                         interface_name,
                         &storage_interface_args,
                         storage_receiver_ty.as_ref(),
-                        Some(span),
+                        span,
                     )
                 })
         {
@@ -2093,14 +2109,9 @@ impl TypeChecker {
             ));
         }
         if matches.len() > 1 {
-            let marker_label = if self.is_marker_interface_def(interface_def) {
-                "marker interface"
-            } else {
-                "interface"
-            };
             let mut diagnostic = Diagnostic::new(
                 span.unwrap_or(matches[0].0.item_span),
-                format!("ambiguous generic impls for {marker_label} `{interface_name}`"),
+                format!("ambiguous generic impls for interface `{interface_name}`"),
             );
             for (idx, (template, _, _, _, _, _)) in matches.iter().take(3).enumerate() {
                 diagnostic = diagnostic.note(format!(
@@ -2876,17 +2887,10 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn is_marker_interface_def(&self, def_id: DefId) -> bool {
-        if self.is_std_message_capability_interface_def(def_id)
+        self.is_std_message_capability_interface_def(def_id)
             || self.is_std_message_async_frame_opt_in_marker_def(def_id)
             || self.is_std_async_spawnable_future_marker_def(def_id)
             || self.is_compiler_provided_meta_marker_def(def_id)
-        {
-            return true;
-        }
-        self.ctx
-            .interfaces
-            .get(&def_id)
-            .is_some_and(|interface| interface.name.ends_with("_marker"))
     }
 
     pub(in crate::typeck) fn apply_condition_narrowing(

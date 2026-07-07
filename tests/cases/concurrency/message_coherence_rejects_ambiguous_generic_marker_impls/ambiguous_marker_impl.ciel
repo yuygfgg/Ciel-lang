@@ -1,5 +1,5 @@
 // ciel-test: error
-// expect-error: ambiguous generic impls for marker interface `thread_local_marker`
+// expect-error: ambiguous generic impls for interface `thread_local_marker`
 
 import /std/message;
 

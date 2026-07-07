@@ -1369,19 +1369,19 @@ impl TypeChecker {
             let message = match conflict {
                 MarkerImplOverlapKind::GenericTemplate if analysis.generics.is_empty() => {
                     format!(
-                        "marker impl for `{}` conflicts with an existing generic impl",
+                        "impl for `{}` conflicts with an existing generic impl",
                         analysis.interface_name
                     )
                 }
                 MarkerImplOverlapKind::GenericTemplate => {
                     format!(
-                        "ambiguous generic impls for marker interface `{}`",
+                        "ambiguous generic impls for interface `{}`",
                         analysis.interface_name
                     )
                 }
                 MarkerImplOverlapKind::ConcreteImpl => {
                     format!(
-                        "generic marker impl for `{}` conflicts with an existing concrete impl",
+                        "generic impl for `{}` conflicts with an existing concrete impl",
                         analysis.interface_name
                     )
                 }

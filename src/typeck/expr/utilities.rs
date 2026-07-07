@@ -2656,7 +2656,6 @@ impl TypeChecker {
         if interface.determined_start.is_none() {
             return None;
         }
-        let storage_receiver_ty = self.meta_repr_storage_ty(receiver_ty, span);
         let hidden_name = format!("__ciel_{interface_name}_determined");
         let hidden_names = HashSet::from([hidden_name.clone()]);
         let capability = ConstraintRef {
@@ -2664,36 +2663,51 @@ impl TypeChecker {
             name: interface_name.to_string(),
             args: vec![Ty::Generic(hidden_name.clone())],
         };
-        let assumptions = self.hidden_solver_assumptions(&storage_receiver_ty);
-        let result = capability_solve::solve_hidden_from_capability(
-            &self.ctx,
-            &storage_receiver_ty,
-            &capability,
-            &hidden_names,
-            &assumptions,
-        );
-        let bindings = match result {
-            capability_solve::HiddenSolveResult::Unique(bindings) => bindings,
-            capability_solve::HiddenSolveResult::Ambiguous => {
-                self.diagnostics.push(Diagnostic::new(
-                    span,
-                    format!("ambiguous impls for {binding_label}"),
-                ));
-                return None;
+        let mut receiver_candidates = vec![receiver_ty.clone()];
+        let stripped_receiver_ty = strip_opaque_state_for_lookup(receiver_ty);
+        if !receiver_candidates.contains(&stripped_receiver_ty) {
+            receiver_candidates.push(stripped_receiver_ty);
+        }
+
+        let mut solved_receiver_ty = None;
+        let mut solved_bindings = None;
+        for candidate_receiver_ty in &receiver_candidates {
+            let assumptions = self.hidden_solver_assumptions(candidate_receiver_ty);
+            match capability_solve::solve_hidden_from_capability(
+                &self.ctx,
+                candidate_receiver_ty,
+                &capability,
+                &hidden_names,
+                &assumptions,
+            ) {
+                capability_solve::HiddenSolveResult::Unique(bindings) => {
+                    solved_receiver_ty = Some(candidate_receiver_ty.clone());
+                    solved_bindings = Some(bindings);
+                    break;
+                }
+                capability_solve::HiddenSolveResult::Ambiguous => {
+                    self.diagnostics.push(Diagnostic::new(
+                        span,
+                        format!("ambiguous impls for {binding_label}"),
+                    ));
+                    return None;
+                }
+                capability_solve::HiddenSolveResult::NoSolution => {}
             }
-            capability_solve::HiddenSolveResult::NoSolution => return None,
-        };
+        }
+        let solved_receiver_ty = solved_receiver_ty?;
+        let bindings = solved_bindings?;
         let output_ty = bindings
             .into_iter()
             .find_map(|(name, ty)| (name == hidden_name).then_some(ty))?;
 
-        if !contains_generic(&storage_receiver_ty) && !contains_generic(&output_ty) {
-            let interface_args = vec![storage_receiver_ty.clone(), output_ty.clone()];
+        if !contains_generic(&solved_receiver_ty) && !contains_generic(&output_ty) {
+            let interface_args = vec![solved_receiver_ty.clone(), output_ty.clone()];
             let _ = self.find_or_instantiate_impl_by_full_args(
                 interface_def,
                 interface_name,
                 &interface_args,
-                Some(&storage_receiver_ty),
+                Some(&solved_receiver_ty),
                 span,
             );
         }

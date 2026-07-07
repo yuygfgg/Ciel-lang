@@ -175,6 +175,25 @@ impl format_error(*const AsyncNetError error) {
     }
 }
 
+export resource unsafe struct BufferedReadFuture<T> {
+    async_core::Future<T> inner;
+}
+
+unsafe derive<T> async_frame_opt_in_marker<BufferedReadFuture<T>>;
+
+unsafe impl<T> async_core::awaitable_future<T>(
+    *const BufferedReadFuture<T> future
+) {
+    return async_core::awaitable_future<T>(unsafe { &future->inner });
+}
+
+unsafe derive<T> async_core::cancel_safe_marker<BufferedReadFuture<T>>;
+
+unsafe impl<T> async_core::abort_future(*BufferedReadFuture<T> future) {
+    async_core::abort_future(unsafe { &future->inner })?;
+    return Ok;
+}
+
 unsafe derive cancel_safe_marker<AsyncAccept>;
 
 unsafe derive cancel_safe_marker<AsyncConnect>;
@@ -1243,22 +1262,34 @@ export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWri
     return Ok(half);
 }
 
-// Awaits a cancel-safe buffered read.
-export async Result<bytes::Bytes, AsyncNetError> read_buffered(
-    *const BufferedStreamReader reader,
-    usize max_len
-) = .read {
-    AsyncBufferedRead op = read_buffered_async(reader, max_len)?;
+async Result<bytes::Bytes, AsyncNetError> read_buffered_inner(
+    Result<AsyncBufferedRead, AsyncNetError> op_result
+) {
+    AsyncBufferedRead op = op_result?;
     return async_result(await async_core::future_from_op(op));
 }
 
-// Awaits exactly len buffered bytes unless EOF or error is reached first.
-export async Result<bytes::Bytes, AsyncNetError> read_exact_buffered(
+// Returns a future for a cancel-safe buffered read.
+export BufferedReadFuture<Result<bytes::Bytes, AsyncNetError>> read_buffered(
+    *const BufferedStreamReader reader,
+    usize max_len
+) = .read {
+    return unsafe { { inner: read_buffered_inner(read_buffered_async(reader, max_len)) } };
+}
+
+async Result<bytes::Bytes, AsyncNetError> read_exact_buffered_inner(
+    Result<AsyncBufferedRead, AsyncNetError> op_result
+) {
+    AsyncBufferedRead op = op_result?;
+    return async_result(await async_core::future_from_op(op));
+}
+
+// Returns a future for reading exactly len buffered bytes unless EOF or error is reached first.
+export BufferedReadFuture<Result<bytes::Bytes, AsyncNetError>> read_exact_buffered(
     *const BufferedStreamReader reader,
     usize len
 ) = .read_exact {
-    AsyncBufferedRead op = read_exact_buffered_async(reader, len)?;
-    return async_result(await async_core::future_from_op(op));
+    return unsafe { { inner: read_exact_buffered_inner(read_exact_buffered_async(reader, len)) } };
 }
 
 // Sends message to actor_handle when an accept operation completes.

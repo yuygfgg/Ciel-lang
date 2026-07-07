@@ -374,19 +374,21 @@ impl TypeChecker {
                 step,
                 body,
             } => {
-                let mut live = live_after;
-                if let Some(step) = step {
-                    live = self.async_live_frame_locals_before_for_init(step, live, out);
-                }
+                let loop_live = self.async_live_frame_locals_before_for_loop(
+                    cond.as_ref(),
+                    step.as_ref(),
+                    body,
+                    live_after,
+                    out,
+                );
                 if let Some(cond) = cond {
-                    self.async_collect_live_awaits_in_expr(cond, &live, out);
-                    live.extend(Self::async_expr_used_locals(cond));
+                    self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
                 }
-                live = self.async_live_frame_locals_before_block(body, live, out);
                 if let Some(init) = init {
-                    live = self.async_live_frame_locals_before_for_init(init, live, out);
+                    self.async_live_frame_locals_before_for_init(init, loop_live, out)
+                } else {
+                    loop_live
                 }
-                live
             }
             TStmtKind::Switch {
                 expr,
@@ -466,6 +468,38 @@ impl TypeChecker {
                 live
             }
         }
+    }
+
+    pub(super) fn async_live_frame_locals_before_for_loop(
+        &self,
+        cond: Option<&TExpr>,
+        step: Option<&TForInit>,
+        body: &TBlock,
+        live_after: HashSet<LocalId>,
+        out: &mut HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        let cond_uses = cond.map(Self::async_expr_used_locals).unwrap_or_default();
+        let mut loop_live = live_after.clone();
+        loop_live.extend(cond_uses.iter().copied());
+
+        loop {
+            let mut live_before_step = loop_live.clone();
+            if let Some(step) = step {
+                live_before_step =
+                    self.async_live_frame_locals_before_for_init(step, live_before_step, out);
+            }
+            let body_live = self.async_live_frame_locals_before_block(body, live_before_step, out);
+
+            let mut next_loop_live = live_after.clone();
+            next_loop_live.extend(cond_uses.iter().copied());
+            next_loop_live.extend(body_live);
+            if next_loop_live == loop_live {
+                break;
+            }
+            loop_live = next_loop_live;
+        }
+
+        loop_live
     }
 
     pub(super) fn async_collect_live_awaits_in_expr(
@@ -653,19 +687,28 @@ impl TypeChecker {
                 step,
                 body,
             } => {
-                let mut live = live_after;
-                if let Some(step) = step {
-                    live = self.async_live_before_for_init(step, live, infos);
-                }
+                let mut scratch = HashSet::new();
+                let loop_live = self.async_live_frame_locals_before_for_loop(
+                    cond.as_ref(),
+                    step.as_ref(),
+                    body,
+                    live_after,
+                    &mut scratch,
+                );
                 if let Some(cond) = cond {
-                    self.async_validate_awaits_in_expr(cond, &live, infos);
-                    live.extend(Self::async_expr_used_locals(cond));
+                    self.async_validate_awaits_in_expr(cond, &loop_live, infos);
                 }
-                live = self.async_live_before_block(body, live, infos);
+                let mut live_before_step = loop_live.clone();
+                if let Some(step) = step {
+                    live_before_step =
+                        self.async_live_before_for_init(step, live_before_step, infos);
+                }
+                self.async_live_before_block(body, live_before_step, infos);
                 if let Some(init) = init {
-                    live = self.async_live_before_for_init(init, live, infos);
+                    self.async_live_before_for_init(init, loop_live, infos)
+                } else {
+                    loop_live
                 }
-                live
             }
             TStmtKind::Switch {
                 expr,
@@ -861,10 +904,57 @@ impl TypeChecker {
         if self.type_implements_thread_local(ty) {
             return Some(format!("{path} has ThreadLocal type `{ty}`"));
         }
-        if self.type_implements_async_frame_opt_in(ty) {
-            return None;
-        }
         match ty {
+            Ty::GeneratedFuture { state, .. } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) = self.async_future_state_frame_safety_violation(
+                        state_ty,
+                        &state_path,
+                        visiting,
+                    ) {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            Ty::OpaqueState { base, state } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                if let Some(reason) = self.async_frame_safety_violation(base, false, path, visiting)
+                {
+                    visiting.remove(ty);
+                    return Some(reason);
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) = self.async_future_state_frame_safety_violation(
+                        state_ty,
+                        &state_path,
+                        visiting,
+                    ) {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            _ if self.type_implements_async_frame_opt_in(ty) => None,
             Ty::Pointer { nullable, .. } => {
                 if *nullable {
                     Some(format!("{path} has nullable raw pointer type `{ty}`"))
@@ -886,26 +976,6 @@ impl TypeChecker {
             }
             Ty::Array { elem, .. } => {
                 self.async_frame_safety_violation(elem, false, &format!("{path} element"), visiting)
-            }
-            Ty::GeneratedFuture { .. } => None,
-            Ty::OpaqueState { base, state } => {
-                if let Some(reason) = self.async_frame_safety_violation(base, false, path, visiting)
-                {
-                    return Some(reason);
-                }
-                for (name, state_ty) in state {
-                    let state_path = if name.is_empty() {
-                        format!("{path} state")
-                    } else {
-                        format!("{path} state `{name}`")
-                    };
-                    if let Some(reason) =
-                        self.async_frame_safety_violation(state_ty, false, &state_path, visiting)
-                    {
-                        return Some(reason);
-                    }
-                }
-                None
             }
             Ty::Named { name, args, .. } => {
                 if !visiting.insert(ty.clone()) {
@@ -988,6 +1058,66 @@ impl TypeChecker {
             | Ty::F64
             | Ty::CSpelling { .. }
             | Ty::Unknown => None,
+        }
+    }
+
+    pub(super) fn async_future_state_frame_safety_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        match ty {
+            Ty::GeneratedFuture { state, .. } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) = self.async_future_state_frame_safety_violation(
+                        state_ty,
+                        &state_path,
+                        visiting,
+                    ) {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            Ty::OpaqueState { base, state } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                if let Some(reason) = self.async_frame_safety_violation(base, false, path, visiting)
+                {
+                    visiting.remove(ty);
+                    return Some(reason);
+                }
+                for (name, state_ty) in state {
+                    let state_path = if name.is_empty() {
+                        format!("{path} state")
+                    } else {
+                        format!("{path} state `{name}`")
+                    };
+                    if let Some(reason) = self.async_future_state_frame_safety_violation(
+                        state_ty,
+                        &state_path,
+                        visiting,
+                    ) {
+                        visiting.remove(ty);
+                        return Some(reason);
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            _ => self.async_frame_safety_violation(ty, false, path, visiting),
         }
     }
 

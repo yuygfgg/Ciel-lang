@@ -1,0 +1,61 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+resource unsafe struct Wrapped {
+    async::Future<Result<usize, Error>> inner;
+}
+
+unsafe impl async::awaitable_future<Result<usize, Error>>(*const Wrapped future) {
+    return async::awaitable_future<Result<usize, Error>>(unsafe { &future->inner });
+}
+
+unsafe impl async::abort_future(*Wrapped future) {
+    async::abort_future(unsafe { &future->inner })?;
+    return Ok;
+}
+
+unsafe derive async::cancel_safe_marker<Wrapped>;
+
+Out consume<A: async::SelectableFuture<Out = _>>(A future) {
+    return async::block_on(future);
+}
+
+Result<usize, Error> consume_direct(Wrapped future) {
+    return async::block_on(future);
+}
+
+async Result<usize, Error> await_direct(Wrapped future) {
+    return await future;
+}
+
+async Result<usize, Error> compute(usize value) {
+    await async_time::sleep_ms(0)?;
+    return Ok(value);
+}
+
+i32 main() {
+    Wrapped first = unsafe { { inner: compute(7) } };
+    *void raw_future = async::awaitable_future<Result<usize, Error>>(&first);
+    if (raw_future == null) {
+        return 1;
+    }
+    if (must(consume(first)) != 7) {
+        return 2;
+    }
+
+    Wrapped second = unsafe { { inner: compute(11) } };
+    if (must(consume_direct(second)) != 11) {
+        return 3;
+    }
+
+    Wrapped third = unsafe { { inner: compute(13) } };
+    if (must(async::block_on(await_direct(third))) != 13) {
+        return 4;
+    }
+
+    return 0;
+}

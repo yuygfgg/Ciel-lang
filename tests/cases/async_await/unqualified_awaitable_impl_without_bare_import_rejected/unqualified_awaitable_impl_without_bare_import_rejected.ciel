@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: unresolved interface `awaitable_future`
+// expect-error: unknown interface `awaitable_future` in impl
+
+import /std/async/core as async_core;
+
+resource unsafe struct Wrapped {
+    async_core::Future<usize> inner;
+}
+
+unsafe impl awaitable_future<usize>(*const Wrapped future) {
+    return async_core::awaitable_future<usize>(unsafe { &future->inner });
+}
+
+i32 main() {
+    return 0;
+}

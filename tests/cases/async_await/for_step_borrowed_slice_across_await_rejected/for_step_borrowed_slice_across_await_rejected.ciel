@@ -1,0 +1,24 @@
+// ciel-test: error
+// expect-error: non-static borrowed read-only slice type `[]const usize`
+
+import /std/async_time as async_time;
+import /std/result;
+
+async Result<usize, Error> next_index(usize i) {
+    await async_time::sleep_ms(0)?;
+    return Ok(i + 1);
+}
+
+async Result<usize, Error> bad_loop() {
+    [1]usize values = [41;];
+    []const usize view = values[..];
+    usize @sum = 0;
+    for (usize @i = 0; i < 2; i = await next_index(i)?) {
+        sum = sum + view[0];
+    }
+    return Ok(sum);
+}
+
+i32 main() {
+    return 0;
+}

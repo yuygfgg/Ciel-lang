@@ -32,6 +32,68 @@ impl TypeChecker {
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
+        let cache_key =
+            self.capability_resolution_cache_key(interface_def, interface_name, args, receiver_ty);
+        if let Some(key) = cache_key.as_ref()
+            && let Some(cached) = self.capability_resolution_cache.get(key)
+        {
+            return *cached;
+        }
+        let diagnostic_count = self.diagnostics.len();
+        let implements = self.type_implements_capability_by_def_uncached(
+            interface_def,
+            interface_name,
+            args,
+            receiver_ty,
+        );
+        if let Some(key) = cache_key
+            && self.diagnostics.len() == diagnostic_count
+        {
+            self.capability_resolution_cache.insert(key, implements);
+        }
+        implements
+    }
+
+    fn capability_resolution_cache_key(
+        &self,
+        interface_def: DefId,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> Option<CapabilityResolutionCacheKey> {
+        if self.symbolic_impl_resolution_depth > 0
+            || contains_generic(receiver_ty)
+            || contains_type_hole(receiver_ty)
+            || args
+                .iter()
+                .any(|arg| contains_generic(arg) || contains_type_hole(arg))
+        {
+            return None;
+        }
+        Some(CapabilityResolutionCacheKey {
+            epoch: self.capability_resolution_epoch,
+            resolution: CapabilityResolutionKey {
+                interface_def,
+                interface_name: interface_name.to_string(),
+                args: args.to_vec(),
+                receiver_ty: receiver_ty.clone(),
+            },
+        })
+    }
+
+    pub(in crate::typeck) fn bump_capability_resolution_epoch(&mut self) {
+        self.capability_resolution_epoch = self.capability_resolution_epoch.wrapping_add(1);
+        self.capability_resolution_cache.clear();
+        self.meta_repr_storage_cache.clear();
+    }
+
+    fn type_implements_capability_by_def_uncached(
+        &mut self,
+        interface_def: DefId,
+        interface_name: &str,
+        args: &[Ty],
+        receiver_ty: &Ty,
+    ) -> bool {
         if let Ty::OpaqueReturn { .. } = receiver_ty {
             if self.opaque_return_bounds_forbid(receiver_ty, interface_def, args) {
                 return false;
@@ -342,9 +404,13 @@ impl TypeChecker {
         self.meta_repr_marker_sop_ty(ty)
     }
 
+    fn type_implements_structural_message_clone(&mut self, ty: &Ty) -> bool {
+        let repr_marker = self.std_meta_repr_marker_ty(false, ty.clone());
+        self.type_implements_message(&repr_marker)
+    }
+
     pub(super) fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { name, args } if args.is_empty()
-            && std_id::is_std_resource_handle_type_name(&self.ctx.resolved, name))
+        std_id::is_std_resource_handle_ty(&self.ctx.resolved, ty)
     }
 
     pub(super) fn generic_is_resource_only(&self, name: &str) -> bool {
@@ -411,11 +477,8 @@ impl TypeChecker {
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
                     return true;
                 }
@@ -698,11 +761,6 @@ impl TypeChecker {
                 "{path} has generic type `{ty}` without a proven `Message` boundary"
             ));
         }
-        if let Some(repr_ty) = self.try_meta_repr_ty(ty, false)
-            && self.type_implements_message(&repr_ty)
-        {
-            return None;
-        }
         match ty {
             Ty::Unknown
             | Ty::Hole(_)
@@ -740,12 +798,23 @@ impl TypeChecker {
                     "read-only "
                 }
             )),
-            Ty::Array { elem, .. } => self.task_boundary_message_violation_inner(
-                elem,
-                &format!("{path} element"),
-                visiting,
-                allow_affine_move,
-            ),
+            Ty::Array { elem, .. } => {
+                if let Some(reason) = self.task_boundary_message_violation_inner(
+                    elem,
+                    &format!("{path} element"),
+                    visiting,
+                    allow_affine_move,
+                ) {
+                    return Some(reason);
+                }
+                if self.type_implements_structural_message_clone(ty) {
+                    None
+                } else {
+                    Some(format!(
+                        "{path} has fixed-size array type `{ty}` without a `Message` capability"
+                    ))
+                }
+            }
             Ty::GeneratedFuture { state, .. } => {
                 if !visiting.insert(ty.clone()) {
                     return Some(format!("{path} is recursive through `{ty}`"));
@@ -769,7 +838,7 @@ impl TypeChecker {
                 visiting.remove(ty);
                 None
             }
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 if !visiting.insert(ty.clone()) {
                     return Some(format!("{path} is recursive through `{ty}`"));
                 }
@@ -788,8 +857,11 @@ impl TypeChecker {
                         }
                     }
                     visiting.remove(ty);
+                    if self.type_implements_structural_message_clone(ty) {
+                        return None;
+                    }
                     return Some(format!(
-                        "{path} has struct type `{ty}` without a generated `Message` witness"
+                        "{path} has struct type `{ty}` without a `Message` capability"
                     ));
                 }
                 self.ensure_enum_instance(ty);
@@ -808,13 +880,16 @@ impl TypeChecker {
                         }
                     }
                     visiting.remove(ty);
+                    if self.type_implements_structural_message_clone(ty) {
+                        return None;
+                    }
                     return Some(format!(
-                        "{path} has enum type `{ty}` without a generated `Message` witness"
+                        "{path} has enum type `{ty}` without a `Message` capability"
                     ));
                 }
                 visiting.remove(ty);
                 Some(format!(
-                    "{path} has nominal type `{ty}` without a `Message` policy"
+                    "{path} has nominal type `{ty}` without a `Message` capability"
                 ))
             }
             Ty::DynamicInterface { .. } => Some(format!(
@@ -857,11 +932,8 @@ impl TypeChecker {
                 &concrete != ty && self.task_boundary_affine_move_allowed(&concrete, visiting)
             }
             Ty::Generic(name) => self.generic_is_resource_only(name),
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
                     return false;
                 }
@@ -913,9 +985,10 @@ impl TypeChecker {
 
     pub(in crate::typeck) fn storage_and_flow_ty(&self, ty: &Ty) -> (Ty, Option<Ty>) {
         match ty {
-            Ty::GeneratedFuture { output, .. } => {
-                (std_future_ty((**output).clone()), Some(ty.clone()))
-            }
+            Ty::GeneratedFuture { output, .. } => (
+                std_future_ty(&self.ctx.resolved, (**output).clone()),
+                Some(ty.clone()),
+            ),
             Ty::OpaqueState { base, .. } => ((**base).clone(), Some(ty.clone())),
             _ => (ty.clone(), None),
         }
@@ -1020,11 +1093,8 @@ impl TypeChecker {
                     opaque_state_ty(ty.clone(), vec![("element *".to_string(), elem_ty)])
                 }
             }
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !visiting.insert(named_ty.clone()) {
                     return ty.clone();
                 }
@@ -1205,15 +1275,17 @@ impl TypeChecker {
             }
             (
                 Ty::Named {
+                    def_id: left_def_id,
                     name: left_name,
                     args: left_args,
                 },
                 Ty::Named {
+                    def_id: right_def_id,
                     name: right_name,
                     args: right_args,
                 },
             ) => {
-                left_name == right_name
+                named_ty_identity_eq(*left_def_id, left_name, *right_def_id, right_name)
                     && left_args.len() == right_args.len()
                     && left_args
                         .iter()
@@ -2021,12 +2093,23 @@ impl TypeChecker {
             ));
         }
         if matches.len() > 1 {
-            if self.is_std_message_capability_interface_def(interface_def) {
-                self.diagnostics.push(Diagnostic::new(
-                    span.unwrap_or(matches[0].0.item_span),
-                    format!("ambiguous generic impls for marker interface `{interface_name}`"),
+            let marker_label = if self.is_marker_interface_def(interface_def) {
+                "marker interface"
+            } else {
+                "interface"
+            };
+            let mut diagnostic = Diagnostic::new(
+                span.unwrap_or(matches[0].0.item_span),
+                format!("ambiguous generic impls for {marker_label} `{interface_name}`"),
+            );
+            for (idx, (template, _, _, _, _, _)) in matches.iter().take(3).enumerate() {
+                diagnostic = diagnostic.note(format!(
+                    "candidate {}: generic impl declared in module `{}`",
+                    idx + 1,
+                    self.ctx.resolved.modules[template.module.0].path.display()
                 ));
             }
+            self.diagnostics.push(diagnostic);
             return None;
         }
         if let Some((template, concrete_interface_args, concrete_receiver, ret, params, subst)) =
@@ -2321,7 +2404,7 @@ impl TypeChecker {
                 self.project_opaque_variant_payload_ty(err_ty, state, "Err", 0),
             ));
         }
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return None;
         };
         if args.len() != 2 {
@@ -2341,6 +2424,83 @@ impl TypeChecker {
             return None;
         }
         Some((args[0].clone(), args[1].clone()))
+    }
+
+    pub(in crate::typeck) fn async_result_error_can_represent_runtime_failure(
+        &mut self,
+        err_ty: &Ty,
+    ) -> bool {
+        if err_ty == &std_error_ty(&self.ctx.resolved)
+            || err_ty == &std_async_error_ty(&self.ctx.resolved)
+        {
+            return true;
+        }
+        let Ty::Named { name, args, .. } = err_ty else {
+            return false;
+        };
+        let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
+            return false;
+        };
+        if args.len() != template.generics.len() {
+            return true;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        template.variants.iter().any(|variant| {
+            let payload = variant
+                .payload
+                .iter()
+                .map(|ty| self.lower_type_with_subst(ty, &subst))
+                .collect::<Vec<_>>();
+            match variant.name.as_str() {
+                "Runtime" => payload == [Ty::I64],
+                "Async" | "TaskGroupAsync" => payload == [std_async_error_ty(&self.ctx.resolved)],
+                "Resource" => payload == [std_resource_error_ty(&self.ctx.resolved)],
+                _ => false,
+            }
+        })
+    }
+
+    pub(in crate::typeck) fn async_result_error_can_represent_message_clone_failure(
+        &mut self,
+        err_ty: &Ty,
+    ) -> bool {
+        if err_ty == &std_error_ty(&self.ctx.resolved)
+            || err_ty == &std_async_error_ty(&self.ctx.resolved)
+        {
+            return true;
+        }
+        let Ty::Named { name, args, .. } = err_ty else {
+            return false;
+        };
+        let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
+            return false;
+        };
+        if args.len() != template.generics.len() {
+            return true;
+        }
+        let subst = template
+            .generics
+            .iter()
+            .map(|generic| generic.name.clone())
+            .zip(args.iter().cloned())
+            .collect::<HashMap<_, _>>();
+        template.variants.iter().any(|variant| {
+            let payload = variant
+                .payload
+                .iter()
+                .map(|ty| self.lower_type_with_subst(ty, &subst))
+                .collect::<Vec<_>>();
+            match variant.name.as_str() {
+                "MessageClone" => payload == [std_error_ty(&self.ctx.resolved)],
+                "Async" | "TaskGroupAsync" => payload == [std_async_error_ty(&self.ctx.resolved)],
+                _ => false,
+            }
+        })
     }
 
     pub(super) fn awaitable_ty(
@@ -2536,11 +2696,12 @@ impl TypeChecker {
         std_id::std_async_future_output_arg(&self.ctx.resolved, ty).cloned()
     }
 
-    pub(super) fn task_output_ty(&self, ty: &Ty) -> Option<Ty> {
-        std_id::std_async_task_output_arg(&self.ctx.resolved, ty).cloned()
+    pub(super) fn task_tys(&self, ty: &Ty) -> Option<(Ty, Ty)> {
+        std_id::std_async_task_args(&self.ctx.resolved, ty)
+            .map(|(output_ty, error_ty)| (output_ty.clone(), error_ty.clone()))
     }
 
-    pub(super) fn task_output_from_pointer_ty(&self, ty: &Ty) -> Option<Ty> {
+    pub(super) fn task_tys_from_pointer_ty(&self, ty: &Ty) -> Option<(Ty, Ty)> {
         let Ty::Pointer {
             nullable: false,
             inner,
@@ -2549,7 +2710,65 @@ impl TypeChecker {
         else {
             return None;
         };
-        self.task_output_ty(inner)
+        self.task_tys(inner)
+    }
+
+    pub(super) fn check_task_await_boundary(&mut self, task_ty: &Ty, span: crate::span::Span) {
+        let Some((task_output_ty, task_error_ty)) = self.task_tys(task_ty) else {
+            return;
+        };
+        self.check_task_result_payload_boundary(&task_output_ty, "result", span);
+        self.check_task_result_payload_boundary(&task_error_ty, "error", span);
+        self.check_task_error_carriers(&task_error_ty, span);
+    }
+
+    pub(super) fn check_task_result_payload_boundary(
+        &mut self,
+        payload_ty: &Ty,
+        label: &str,
+        span: crate::span::Span,
+    ) {
+        if let Some(reason) =
+            self.task_boundary_message_violation(payload_ty, label, &mut HashSet::new())
+        {
+            self.diagnostics.push(self.diagnostic_with_reason_note(
+                span,
+                format!("`async` task {label} type `{payload_ty}` does not implement `Message`"),
+                reason,
+            ));
+        }
+    }
+
+    pub(super) fn check_task_error_carriers(&mut self, error_ty: &Ty, span: crate::span::Span) {
+        if contains_generic(error_ty) || contains_type_hole(error_ty) {
+            return;
+        }
+        if !self.async_result_error_can_represent_runtime_failure(error_ty) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    span,
+                    format!(
+                        "`async` task error type `{error_ty}` cannot represent async runtime failures"
+                    ),
+                )
+                .note(
+                    "custom task error types need a carrier such as `Runtime(i64)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
+                ),
+            );
+        }
+        if !self.async_result_error_can_represent_message_clone_failure(error_ty) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    span,
+                    format!(
+                        "`async` task error type `{error_ty}` cannot represent task-boundary message-clone failures"
+                    ),
+                )
+                .note(
+                    "custom task error types need a carrier such as `MessageClone(Error)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
+                ),
+            );
+        }
     }
 
     pub(in crate::typeck) fn is_std_message_clone_interface_def(&self, def_id: DefId) -> bool {
@@ -2592,7 +2811,7 @@ impl TypeChecker {
     }
 
     pub(super) fn is_std_error_ty(&self, ty: &Ty) -> bool {
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return false;
         };
         if !args.is_empty() {
@@ -2643,6 +2862,31 @@ impl TypeChecker {
                 def_id,
                 STD_MESSAGE_THREAD_LOCAL_INTERFACE,
             )
+    }
+
+    pub(in crate::typeck) fn is_std_message_async_frame_opt_in_marker_def(
+        &self,
+        def_id: DefId,
+    ) -> bool {
+        std_id::is_std_message_interface(
+            &self.ctx.resolved,
+            def_id,
+            STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE,
+        )
+    }
+
+    pub(in crate::typeck) fn is_marker_interface_def(&self, def_id: DefId) -> bool {
+        if self.is_std_message_capability_interface_def(def_id)
+            || self.is_std_message_async_frame_opt_in_marker_def(def_id)
+            || self.is_std_async_spawnable_future_marker_def(def_id)
+            || self.is_compiler_provided_meta_marker_def(def_id)
+        {
+            return true;
+        }
+        self.ctx
+            .interfaces
+            .get(&def_id)
+            .is_some_and(|interface| interface.name.ends_with("_marker"))
     }
 
     pub(in crate::typeck) fn apply_condition_narrowing(

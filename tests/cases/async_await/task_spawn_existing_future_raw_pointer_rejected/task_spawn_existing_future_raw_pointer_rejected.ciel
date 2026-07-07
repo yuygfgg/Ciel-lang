@@ -9,7 +9,7 @@ async Result<usize, Error> read_later(*const usize ptr) {
     return Ok(unsafe { *ptr });
 }
 
-async::Task<usize> spawn_dangling() {
+async::Task<usize, Error> spawn_dangling() {
     usize local = 12345;
     async::Future<Result<usize, Error>> future = read_later(&local);
     return must(async::spawn<usize>(future));

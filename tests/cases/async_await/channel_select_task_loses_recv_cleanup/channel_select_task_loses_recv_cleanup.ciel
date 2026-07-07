@@ -20,7 +20,7 @@ async Result<usize, Error> delayed_value() {
 
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    async::Task<usize> task = async::spawn<usize>(delayed_value())?;
+    async::Task<usize, Error> task = async::spawn<usize>(delayed_value())?;
     Result<usize, Error> picked = await select {
         case value = async::recv<usize>(pair.receiver): recv_value(value);
         case done = task: done;

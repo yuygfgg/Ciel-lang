@@ -34,9 +34,10 @@ use crate::{
         mangle_constraint_ref, mangle_ty_fragment, map_ty_children, meta_array_split_len,
         meta_named, meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
         meta_repr_marker_name, meta_schema_marker_name, meta_schema_product_ty, meta_schema_sum_ty,
-        meta_sum_ty, retained_closure_capabilities, std_async_error_ty, std_error_code_ty,
-        std_error_trait_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
-        std_meta_schema_marker_ty, std_resource_error_ty, std_result_ty, std_task_ty, unify_ty,
+        meta_sum_ty, named_ty, named_ty_identity_eq, retained_closure_capabilities, std_actor_ty,
+        std_async_error_ty, std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty,
+        std_meta_repr_marker_ty_with_def_id, std_meta_schema_marker_ty_with_def_id,
+        std_resource_error_ty, std_result_ty, std_task_ty, unify_ty,
     },
 };
 

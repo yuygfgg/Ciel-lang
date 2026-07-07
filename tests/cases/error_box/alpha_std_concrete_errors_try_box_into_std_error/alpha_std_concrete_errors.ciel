@@ -104,7 +104,7 @@ Result<void, smap::SharedMapError> fail_shared_map() {
 }
 
 Result<void, crypto::CryptoError> fail_crypto() {
-    return Err(crypto::Backend("crypto backend"));
+    return Err(crypto::Backend(-1));
 }
 
 Result<void, env::EnvError> fail_env() {

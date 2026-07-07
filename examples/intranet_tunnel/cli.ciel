@@ -3,6 +3,7 @@ import /std/env as env;
 import /std/net as net;
 import /std/result;
 import /std/text as text;
+import ./error as app_error;
 
 export struct ServerConfig {
     net::SocketAddr control_addr;
@@ -54,68 +55,68 @@ bool is_agent_flag([]const char flag) {
         same_text(flag, "--psk");
 }
 
-Result<void, Error> validate_pairs(bool server) {
-    usize len = env::args_len()?;
+Result<void, app_error::TunnelError> validate_pairs(bool server) {
+    usize len = app_error::tunnel(env::args_len())?;
     usize @i = 1;
     while (i < len) {
-        []const char flag = env::arg(i)?;
+        []const char flag = app_error::tunnel(env::arg(i))?;
         if (server) {
             if (!is_server_flag(flag)) {
-                return Err(text_error("unknown tunnel-server flag"));
+                return Err(app_error::CliUnknownServerFlag);
             }
         } else {
             if (!is_agent_flag(flag)) {
-                return Err(text_error("unknown tunnel-agent flag"));
+                return Err(app_error::CliUnknownAgentFlag);
             }
         }
         if ((i + 1) >= len) {
-            return Err(text_error("missing flag value"));
+            return Err(app_error::CliMissingFlagValue);
         }
-        []const char value = env::arg(i + 1)?;
+        []const char value = app_error::tunnel(env::arg(i + 1))?;
         if (value.len >= 2 && value[0] == '-' && value[1] == '-') {
-            return Err(text_error("missing flag value"));
+            return Err(app_error::CliMissingFlagValue);
         }
         i = i + 2;
     }
     return Ok;
 }
 
-Result<[]const char, Error> required_flag([]const char flag) {
-    usize len = env::args_len()?;
+Result<[]const char, app_error::TunnelError> required_flag([]const char flag) {
+    usize len = app_error::tunnel(env::args_len())?;
     usize @i = 1;
     while ((i + 1) < len) {
-        if (same_text(env::arg(i)?, flag)) {
-            return Ok(env::arg(i + 1)?);
+        if (same_text(app_error::tunnel(env::arg(i))?, flag)) {
+            return Ok(app_error::tunnel(env::arg(i + 1))?);
         }
         i = i + 2;
     }
-    return Err(text_error("missing required flag"));
+    return Err(app_error::CliMissingRequiredFlag);
 }
 
-export Result<ServerConfig, Error> parse_server_args() {
+export Result<ServerConfig, app_error::TunnelError> parse_server_args() {
     validate_pairs(true)?;
     []const char control = required_flag("--control")?;
     []const char public = required_flag("--public")?;
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
     return Ok({
-        control_addr: control.net::parse_addr()?,
-        public_addr: public.net::parse_addr()?,
-        route: text::text_copy(route)?,
-        psk: bytes::bytes_from_text(psk)?
+        control_addr: app_error::tunnel(control.net::parse_addr())?,
+        public_addr: app_error::tunnel(public.net::parse_addr())?,
+        route: app_error::tunnel(text::text_copy(route))?,
+        psk: app_error::tunnel(bytes::bytes_from_text(psk))?
     });
 }
 
-export Result<AgentConfig, Error> parse_agent_args() {
+export Result<AgentConfig, app_error::TunnelError> parse_agent_args() {
     validate_pairs(false)?;
     []const char server = required_flag("--server")?;
     []const char target = required_flag("--target")?;
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
     return Ok({
-        server_addr: server.net::parse_addr()?,
-        target_addr: target.net::parse_addr()?,
-        route: text::text_copy(route)?,
-        psk: bytes::bytes_from_text(psk)?
+        server_addr: app_error::tunnel(server.net::parse_addr())?,
+        target_addr: app_error::tunnel(target.net::parse_addr())?,
+        route: app_error::tunnel(text::text_copy(route))?,
+        psk: app_error::tunnel(bytes::bytes_from_text(psk))?
     });
 }

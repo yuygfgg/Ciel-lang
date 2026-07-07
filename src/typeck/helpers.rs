@@ -601,13 +601,14 @@ pub(super) fn known_ty_matches(left: &Ty, right: &Ty) -> bool {
             },
         ) => mutability == right_mutability && known_ty_matches(elem, right_elem),
         (
-            Ty::Named { name, args },
+            Ty::Named { def_id, name, args },
             Ty::Named {
+                def_id: right_def_id,
                 name: right_name,
                 args: right_args,
             },
         ) => {
-            name == right_name
+            named_ty_identity_eq(*def_id, name, *right_def_id, right_name)
                 && args.len() == right_args.len()
                 && args
                     .iter()

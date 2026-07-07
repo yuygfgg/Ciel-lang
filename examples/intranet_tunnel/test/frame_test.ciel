@@ -144,10 +144,10 @@ i32 main() {
     if (!protocol_text_nonempty(terr::InvalidStreamId(8 as u16, 7 as u32))) {
         return 13;
     }
-    if (!protocol_text_nonempty(terr::InvalidTransition("bad state"))) {
+    if (!protocol_text_nonempty(terr::InvalidTransition)) {
         return 14;
     }
-    if (!protocol_text_nonempty(terr::MalformedPayload("bad payload"))) {
+    if (!protocol_text_nonempty(terr::MalformedPayload)) {
         return 15;
     }
     if (!auth_text_nonempty(terr::RouteMismatch)) {

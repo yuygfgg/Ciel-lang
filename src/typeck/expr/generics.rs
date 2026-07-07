@@ -785,7 +785,11 @@ impl TypeChecker {
                 span,
             );
             let value = checked_args.remove(receiver_index);
-            let ret = std_result_ty(message_ty.clone(), std_error_ty());
+            let ret = std_result_ty(
+                &self.ctx.resolved,
+                message_ty.clone(),
+                std_error_ty(&self.ctx.resolved),
+            );
             return Some(TExpr {
                 span,
                 ty: ret,

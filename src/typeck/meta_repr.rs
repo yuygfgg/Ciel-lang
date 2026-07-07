@@ -5,6 +5,26 @@ use crate::typeck::meta_repr_safety::{
 };
 
 impl TypeChecker {
+    pub(super) fn std_meta_repr_marker_ty(&self, borrowed: bool, source_ty: Ty) -> Ty {
+        let source_name = if borrowed { "RefRepr" } else { "Repr" };
+        std_meta_repr_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.ctx.resolved, source_name),
+            borrowed,
+            source_ty,
+        )
+    }
+
+    pub(super) fn std_meta_schema_marker_ty(&self, source_ty: Ty) -> Ty {
+        std_meta_schema_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.ctx.resolved, "Schema"),
+            source_ty,
+        )
+    }
+
+    pub(super) fn attach_std_meta_def_ids(&self, ty: Ty) -> Ty {
+        std_id::attach_std_meta_def_ids(&self.ctx.resolved, &ty)
+    }
+
     pub(super) fn expand_type_alias(
         &mut self,
         span: crate::span::Span,
@@ -77,7 +97,7 @@ impl TypeChecker {
             if let Ty::Array { len, elem } = &source_ty {
                 self.check_meta_schema_array_budget(Some(span), &source_ty, *len, elem, true);
             }
-            return Some(std_meta_schema_marker_ty(source_ty));
+            return Some(self.std_meta_schema_marker_ty(source_ty));
         }
 
         let borrowed = if std_id::is_std_meta_type(&self.ctx.resolved, def_id, "RefRepr") {
@@ -102,7 +122,7 @@ impl TypeChecker {
         if !borrowed {
             self.reject_owned_meta_repr_affine_source(span, &source_ty);
         }
-        Some(std_meta_repr_marker_ty(borrowed, source_ty))
+        Some(self.std_meta_repr_marker_ty(borrowed, source_ty))
     }
 
     pub(super) fn should_preserve_meta_repr_marker_source(&self, source_ty: &Ty) -> bool {
@@ -119,16 +139,21 @@ impl TypeChecker {
 
     pub(super) fn meta_repr_source_visible_from_current_module(&self, source_ty: &Ty) -> bool {
         match source_ty {
-            Ty::Named { name, args: _ } => {
+            Ty::Named {
+                def_id,
+                name,
+                args: _,
+            } => {
                 let current_module = self
                     .meta_reflection_module_stack
                     .last()
                     .copied()
                     .unwrap_or(self.current_module);
-                let Some(def_id) = self.ctx.nominal_type_defs.get(name) else {
+                let Some(def_id) = def_id.or_else(|| self.ctx.nominal_type_defs.get(name).copied())
+                else {
                     return false;
                 };
-                let def = self.ctx.resolved.def(*def_id);
+                let def = self.ctx.resolved.def(def_id);
                 if !matches!(def.kind, DefKind::Struct | DefKind::Enum) {
                     return true;
                 }
@@ -143,7 +168,7 @@ impl TypeChecker {
                 matches!(
                     self.ctx.resolved
                         .lookup_bare(current_module, &def.name, std::slice::from_ref(&def.kind)),
-                    Ok(Some(visible_def_id)) if visible_def_id == *def_id
+                    Ok(Some(visible_def_id)) if visible_def_id == def_id
                 )
             }
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => {
@@ -181,7 +206,7 @@ impl TypeChecker {
     }
 
     pub(super) fn is_visiting_aggregate_instance(&self, ty: &Ty) -> bool {
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return false;
         };
         let instance_name = enum_instance_name(name, args);
@@ -317,6 +342,7 @@ impl TypeChecker {
                     root.as_ref(),
                     &mut expanding,
                 )
+                .map(|ty| self.attach_std_meta_def_ids(ty))
                 .unwrap_or_else(|| ty.clone());
         }
         if let Some(source_ty) = meta_schema_marker_source(ty)
@@ -327,6 +353,7 @@ impl TypeChecker {
             let mut expanding = HashSet::new();
             return self
                 .symbolic_meta_schema_ty_inner_rec(span, source_ty, Some(&root), &mut expanding)
+                .map(|ty| self.attach_std_meta_def_ids(ty))
                 .unwrap_or_else(|| ty.clone());
         }
         self.meta_repr_constraint_receiver_ty(ty, span)
@@ -341,7 +368,7 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if contains_type_hole(source_ty) || matches!(source_ty, Ty::Generic(_)) {
-            return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
+            return Some(self.std_meta_repr_marker_ty(borrowed, source_ty.clone()));
         }
         match source_ty {
             Ty::Array { len, elem } => {
@@ -352,7 +379,7 @@ impl TypeChecker {
                     self.symbolic_meta_array_repr_ty_inner(span, *len, elem, root, expanding)?
                 })
             }
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(marker_borrowed) = meta_repr_marker_name(name) {
                     if args.len() != 1 {
                         return None;
@@ -365,10 +392,7 @@ impl TypeChecker {
                         expanding,
                     );
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !contains_generic(&instance_ty)
                     && !borrowed
                     && self.is_owned_meta_policy_leaf(&instance_ty, root)
@@ -418,9 +442,9 @@ impl TypeChecker {
                     return Some(meta_sum_ty(variant_tys, borrowed));
                 }
                 expanding.remove(&instance_ty);
-                Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()))
+                Some(self.std_meta_repr_marker_ty(borrowed, source_ty.clone()))
             }
-            _ => Some(std_meta_repr_marker_ty(borrowed, source_ty.clone())),
+            _ => Some(self.std_meta_repr_marker_ty(borrowed, source_ty.clone())),
         }
     }
 
@@ -476,23 +500,20 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if contains_type_hole(source_ty) || matches!(source_ty, Ty::Generic(_)) {
-            return Some(std_meta_schema_marker_ty(source_ty.clone()));
+            return Some(self.std_meta_schema_marker_ty(source_ty.clone()));
         }
         match source_ty {
             Ty::Array { len, elem } => {
                 self.symbolic_meta_schema_array_ty_inner(span, *len, elem, root, expanding)
             }
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return None;
                     }
                     return self.symbolic_meta_schema_ty_inner_rec(span, &args[0], root, expanding);
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !expanding.insert(instance_ty.clone()) {
                     return None;
                 }
@@ -533,9 +554,9 @@ impl TypeChecker {
                     return Some(meta_schema_sum_ty(variant_tys));
                 }
                 expanding.remove(&instance_ty);
-                Some(std_meta_schema_marker_ty(source_ty.clone()))
+                Some(self.std_meta_schema_marker_ty(source_ty.clone()))
             }
-            _ => Some(std_meta_schema_marker_ty(source_ty.clone())),
+            _ => Some(self.std_meta_schema_marker_ty(source_ty.clone())),
         }
     }
 
@@ -648,8 +669,31 @@ impl TypeChecker {
         span: Option<crate::span::Span>,
         in_meta_sop: bool,
     ) -> Ty {
+        let cache_key = MetaReprStorageCacheKey {
+            epoch: self.capability_resolution_epoch,
+            in_meta_sop,
+            ty: ty.clone(),
+        };
+        if let Some(cached) = self.meta_repr_storage_cache.get(&cache_key) {
+            return cached.clone();
+        }
+        let diagnostic_count = self.diagnostics.len();
+        let storage_ty = self.meta_repr_storage_ty_inner_uncached(ty, span, in_meta_sop);
+        if self.diagnostics.len() == diagnostic_count {
+            self.meta_repr_storage_cache
+                .insert(cache_key, storage_ty.clone());
+        }
+        storage_ty
+    }
+
+    fn meta_repr_storage_ty_inner_uncached(
+        &mut self,
+        ty: &Ty,
+        span: Option<crate::span::Span>,
+        in_meta_sop: bool,
+    ) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() {
                     return self
                         .meta_repr_marker_storage_ty(ty, span)
@@ -666,10 +710,7 @@ impl TypeChecker {
                         vec![self.meta_repr_storage_ty_inner(&args[0], span, false)],
                     );
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let original = named_ty(*def_id, name.clone(), args.clone());
                 if self.type_implements_meta_policy_marker(&original) {
                     if in_meta_sop {
                         return original;
@@ -696,15 +737,15 @@ impl TypeChecker {
         in_meta_sop: bool,
     ) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
-                    return Ty::Named {
-                        name: name.clone(),
-                        args: args
-                            .iter()
+                    return named_ty(
+                        *def_id,
+                        name.clone(),
+                        args.iter()
                             .map(|arg| {
                                 self.normalize_meta_repr_markers_inner(
                                     arg,
@@ -714,7 +755,7 @@ impl TypeChecker {
                                 )
                             })
                             .collect(),
-                    };
+                    );
                 }
                 if name == "Type" && args.len() == 1 {
                     return meta_named(
@@ -722,10 +763,7 @@ impl TypeChecker {
                         vec![self.meta_repr_storage_ty_inner(&args[0], span, false)],
                     );
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let original = named_ty(*def_id, name.clone(), args.clone());
                 if self.type_implements_meta_policy_marker(&original) {
                     if in_meta_sop {
                         return original;
@@ -804,7 +842,7 @@ impl TypeChecker {
                     .unwrap_or_else(|| Ty::Generic(name.clone())),
                 from_replacement: subst.contains_key(name),
             },
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     let args = args
                         .iter()
@@ -826,10 +864,7 @@ impl TypeChecker {
                         };
                     }
                     return SubstitutedTy {
-                        ty: Ty::Named {
-                            name: name.clone(),
-                            args,
-                        },
+                        ty: named_ty(*def_id, name.clone(), args),
                         from_replacement: false,
                     };
                 }
@@ -850,10 +885,7 @@ impl TypeChecker {
                         from_replacement: has_replacement_arg,
                     };
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args,
-                };
+                let original = named_ty(*def_id, name.clone(), args);
                 if !has_replacement_arg && self.type_implements_meta_policy_marker(&original) {
                     let ty = if in_meta_sop {
                         original
@@ -1200,13 +1232,13 @@ impl TypeChecker {
                 mutability: *mutability,
                 elem: Box::new(self.partial_inference_ty(elem, holes)),
             },
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
+            Ty::Named { def_id, name, args } => named_ty(
+                *def_id,
+                name.clone(),
+                args.iter()
                     .map(|arg| self.partial_inference_ty(arg, holes))
                     .collect(),
-            },
+            ),
             Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
                 def_id: *def_id,
                 name: name.clone(),
@@ -1328,6 +1360,7 @@ impl TypeChecker {
             root.as_ref(),
             &mut expanding,
         )
+        .map(|ty| self.attach_std_meta_def_ids(ty))
     }
 
     pub(super) fn meta_repr_ty_inner_rec(
@@ -1340,7 +1373,7 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
-            return Some(std_meta_repr_marker_ty(borrowed, source_ty.clone()));
+            return Some(self.std_meta_repr_marker_ty(borrowed, source_ty.clone()));
         }
         match source_ty {
             Ty::Array { len, elem } => {
@@ -1359,7 +1392,7 @@ impl TypeChecker {
                     )?
                 })
             }
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(marker_borrowed) = meta_repr_marker_name(name) {
                     if args.len() != 1 {
                         return None;
@@ -1373,10 +1406,7 @@ impl TypeChecker {
                         expanding,
                     );
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
                     return Some(self.meta_repr_policy_leaf_ty(&instance_ty, root));
                 }
@@ -1505,13 +1535,13 @@ impl TypeChecker {
 
     pub(super) fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty, root: Option<&Ty>) -> Ty {
         match ty {
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
+            Ty::Named { def_id, name, args } => named_ty(
+                *def_id,
+                name.clone(),
+                args.iter()
                     .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, false))
                     .collect(),
-            },
+            ),
             _ => ty.clone(),
         }
     }
@@ -1523,31 +1553,25 @@ impl TypeChecker {
         in_meta_sop: bool,
     ) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
-                    return Ty::Named {
-                        name: name.clone(),
-                        args: args.clone(),
-                    };
+                    return named_ty(*def_id, name.clone(), args.clone());
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let original = named_ty(*def_id, name.clone(), args.clone());
                 if in_meta_sop && self.type_implements_meta_policy_marker(&original) {
                     return original;
                 }
                 let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
-                Ty::Named {
-                    name: name.clone(),
-                    args: args
-                        .iter()
+                named_ty(
+                    *def_id,
+                    name.clone(),
+                    args.iter()
                         .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop))
                         .collect(),
-                }
+                )
             }
             _ => map_ty_children(ty, |arg| {
                 self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop)
@@ -1614,6 +1638,7 @@ impl TypeChecker {
             Some(&root),
             &mut expanding,
         )
+        .map(|ty| self.attach_std_meta_def_ids(ty))
     }
 
     pub(super) fn meta_schema_ty_inner_rec(
@@ -1625,13 +1650,13 @@ impl TypeChecker {
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
         if contains_generic(source_ty) || contains_type_hole(source_ty) {
-            return Some(std_meta_schema_marker_ty(source_ty.clone()));
+            return Some(self.std_meta_schema_marker_ty(source_ty.clone()));
         }
         match source_ty {
             Ty::Array { len, elem } => {
                 self.meta_schema_array_ty_inner(span, *len, elem, emit_diagnostics, root, expanding)
             }
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return None;
@@ -1644,10 +1669,7 @@ impl TypeChecker {
                         expanding,
                     );
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !expanding.insert(instance_ty.clone()) {
                     if emit_diagnostics {
                         self.diagnostics.push(Diagnostic::new(

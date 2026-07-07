@@ -18,7 +18,7 @@ async Result<usize, Error> keep_choice(FutureChoice choice) {
     return Ok(0);
 }
 
-async::Task<usize> spawn_enum_future() {
+async::Task<usize, Error> spawn_enum_future() {
     [3]i64 values = [1, 2, 3];
     FutureChoice choice = One(len_later(values[..]));
     return must(async::spawn<usize>(keep_choice(choice)));

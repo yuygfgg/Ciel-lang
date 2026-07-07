@@ -8,8 +8,6 @@ import /std/resource as resource;
 unsafe extern "C" {
     opaque struct CielSocketAddr;
 
-    c::c_int ciel_errno();
-
     c::c_int ciel_net_parse_addr(*const char text, usize text_len, *?*CielSocketAddr out);
     c::c_int ciel_net_resolve_tcp(*const char host, usize host_len, u16 port, *?*CielSocketAddr out);
     c::c_int ciel_net_addr_family(*CielSocketAddr addr, *c::c_int out);
@@ -61,6 +59,8 @@ export enum NetError {
     WriteZero,
 }
 
+derive Message<NetError>;
+
 // Errors produced by scoped blocking TCP helpers.
 export enum NetWithError<E> {
     Net(NetError),
@@ -99,7 +99,7 @@ unsafe impl clone_message(*const SocketAddr value) {
 unsafe derive share_handle_marker<SocketAddr>;
 
 NetError last_error() {
-    c::c_int code = unsafe { ciel_errno() };
+    c::c_int code = unsafe { c::ciel_errno() };
     if ((code as i64) == 0) {
         return Runtime(5);
     }

@@ -12,7 +12,6 @@ import /std/meta;
 unsafe extern "C" {
     opaque struct CielAtomic;
 
-    c::c_int ciel_errno();
     ?*CielAtomic ciel_atomic_make(usize value_size, usize value_align, *const void initial);
     ?*void ciel_atomic_load(*CielAtomic atomic, c::c_int order);
     c::c_int ciel_atomic_store(*CielAtomic atomic, *const void value, c::c_int order);
@@ -107,7 +106,7 @@ unsafe impl<T> clone_message(*const Atomic<T> value) {
 unsafe derive<T> share_handle_marker<Atomic<T>>;
 
 AtomicError runtime_error() {
-    c::c_int code = unsafe { ciel_errno() };
+    c::c_int code = unsafe { c::ciel_errno() };
     if ((code as i64) == 0) {
         return Runtime(5);
     }

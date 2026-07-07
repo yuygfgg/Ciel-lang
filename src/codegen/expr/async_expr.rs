@@ -182,49 +182,96 @@ impl<'a> CGenerator<'a> {
         output: &str,
         output_ty: &Ty,
         task_output_ty: &Ty,
+        task_error_ty: &Ty,
         rc: &str,
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<()> {
-        if task_output_ty.is_erased_value() {
-            return Ok(());
-        }
         let layout = self.result_layout(output_ty, span)?;
-        if !layout.ok_has_payload {
+        let clone_ok = layout.ok_has_payload && !task_output_ty.is_erased_value();
+        let clone_err = layout.err_has_payload && !task_error_ty.is_erased_value();
+        if !clone_ok && !clone_err {
             return Ok(());
         }
-        self.line_indent(
-            indent,
-            &format!("if ({rc} == 0 && {output}.tag == {}) {{", layout.ok_index),
-        );
-        let ok_field = format!("{output}.as.{}._0", layout.ok_name);
+        self.line_indent(indent, &format!("if ({rc} == 0) {{"));
+        if clone_ok {
+            self.line_indent(
+                indent + 1,
+                &format!("if ({output}.tag == {}) {{", layout.ok_index),
+            );
+            let ok_field = format!("{output}.as.{}._0", layout.ok_name);
+            self.emit_task_await_payload_clone(
+                output,
+                &layout,
+                task_output_ty,
+                &ok_field,
+                indent + 2,
+                span,
+            )?;
+            if clone_err {
+                self.line_indent(
+                    indent + 1,
+                    &format!("}} else if ({output}.tag == {}) {{", layout.err_index),
+                );
+            } else {
+                self.line_indent(indent + 1, "}");
+            }
+        } else if clone_err {
+            self.line_indent(
+                indent + 1,
+                &format!("if ({output}.tag == {}) {{", layout.err_index),
+            );
+        }
+        if clone_err {
+            let err_field = format!("{output}.as.{}._0", layout.err_name);
+            self.emit_task_await_payload_clone(
+                output,
+                &layout,
+                task_error_ty,
+                &err_field,
+                indent + 2,
+                span,
+            )?;
+            self.line_indent(indent + 1, "}");
+        }
+        self.line_indent(indent, "}");
+        Ok(())
+    }
+
+    fn emit_task_await_payload_clone(
+        &mut self,
+        output: &str,
+        output_layout: &ResultLayout,
+        payload_ty: &Ty,
+        payload_field: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<()> {
         let cloned = self.emit_task_boundary_clone_result_from_ptr(
-            task_output_ty,
-            &format!("&{ok_field}"),
-            indent + 1,
+            payload_ty,
+            &format!("&{payload_field}"),
+            indent,
             span,
         )?;
-        let clone_layout =
-            self.result_layout(&std_result_ty(task_output_ty.clone(), std_error_ty()), span)?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(
+                &self.program.checked.resolved,
+                payload_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
+            span,
+        )?;
         self.line_indent(
-            indent + 1,
+            indent,
             &format!("if ({cloned}.tag == {}) {{", clone_layout.err_index),
         );
-        self.line_indent(
-            indent + 2,
-            &format!(
-                "{output} = {};",
-                self.result_err_literal(&layout, &clone_layout, &cloned)
-            ),
-        );
-        self.line_indent(indent + 1, "} else {");
-        self.emit_value_copy(
-            &ok_field,
-            &format!("{cloned}.as.{}._0", clone_layout.ok_name),
-            task_output_ty,
-            indent + 2,
-        );
-        self.line_indent(indent + 1, "}");
+        let clone_error = format!("{cloned}.as.{}._0", clone_layout.err_name);
+        let err_value =
+            self.result_err_from_message_clone_literal(output_layout, &clone_error, span)?;
+        self.line_indent(indent + 1, &format!("{output} = {err_value};"));
+        self.line_indent(indent, "} else {");
+        let cloned_payload = format!("{cloned}.as.{}._0", clone_layout.ok_name);
+        self.emit_value_copy(payload_field, &cloned_payload, payload_ty, indent + 1);
         self.line_indent(indent, "}");
         Ok(())
     }
@@ -279,11 +326,12 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<String> {
         let (output, rc) = self.emit_future_run(future, &expr.ty, "await", indent)?;
         self.emit_async_error_return_from_rc(&rc, expr.span, indent)?;
-        if let Some(task_output_ty) = self.task_output_ty_for_codegen(&future.ty) {
+        if let Some((task_output_ty, task_error_ty)) = self.task_tys_for_codegen(&future.ty) {
             self.emit_task_await_output_clone(
                 &output,
                 &expr.ty,
                 &task_output_ty,
+                &task_error_ty,
                 &rc,
                 indent,
                 expr.span,
@@ -436,11 +484,12 @@ impl<'a> CGenerator<'a> {
             self.emit_resource_zero_expr(&arm.future_output_ty, &format!("*{value_ptr}"), indent);
         }
         self.push_resource_cleanup_defer(&arm.future_output_ty, &binding_expr);
-        if let Some(task_output_ty) = self.task_output_ty_for_codegen(&arm.future.ty) {
+        if let Some((task_output_ty, task_error_ty)) = self.task_tys_for_codegen(&arm.future.ty) {
             self.emit_task_await_output_clone(
                 &binding_expr,
                 &arm.future_output_ty,
                 &task_output_ty,
+                &task_error_ty,
                 rc,
                 indent,
                 span,
@@ -580,11 +629,12 @@ impl<'a> CGenerator<'a> {
         } else {
             self.emit_future_failure_panic(&rc, expr.span, indent);
         }
-        if let Some(task_output_ty) = self.task_output_ty_for_codegen(&future.ty) {
+        if let Some((task_output_ty, task_error_ty)) = self.task_tys_for_codegen(&future.ty) {
             self.emit_task_await_output_clone(
                 &output,
                 &expr.ty,
                 &task_output_ty,
+                &task_error_ty,
                 &rc,
                 indent,
                 expr.span,
@@ -640,13 +690,18 @@ impl<'a> CGenerator<'a> {
         expr: &TExpr,
         body: &TExpr,
         task_output_ty: &Ty,
+        task_error_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
         let result_layout = self.result_layout(&expr.ty, expr.span)?;
         let result_temp = self.next_temp("task_spawn_result");
         let done_label = self.next_temp("task_spawn_done");
         self.line_indent(indent, &format!("{};", self.c_decl(&expr.ty, &result_temp)));
-        let result_output_ty = std_result_ty(task_output_ty.clone(), std_error_ty());
+        let result_output_ty = std_result_ty(
+            &self.program.checked.resolved,
+            task_output_ty.clone(),
+            task_error_ty.clone(),
+        );
 
         let raw_future = if let TExprKind::Closure { is_async, .. } = &body.kind {
             if !*is_async {
@@ -699,7 +754,11 @@ impl<'a> CGenerator<'a> {
         );
         self.line_indent(indent + 1, &format!("goto {done_label};"));
         self.line_indent(indent, "}");
-        let task_ty = std_task_ty(task_output_ty.clone());
+        let task_ty = std_task_ty(
+            &self.program.checked.resolved,
+            task_output_ty.clone(),
+            task_error_ty.clone(),
+        );
         let task_value = format!(
             "({}){{ .handle = (void *){raw_task} }}",
             self.c_type(&task_ty)

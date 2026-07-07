@@ -2,8 +2,7 @@ use super::*;
 
 impl<'a> CGenerator<'a> {
     pub(in crate::codegen) fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { name, args } if args.is_empty()
-            && std_id::is_std_resource_handle_type_name(&self.program.checked.resolved, name))
+        std_id::is_std_resource_handle_ty(&self.program.checked.resolved, ty)
     }
 
     pub(in crate::codegen) fn type_is_affine(&self, ty: &Ty) -> bool {
@@ -31,11 +30,8 @@ impl<'a> CGenerator<'a> {
                         .iter()
                         .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
             }
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
                     .is_some()
                 {
@@ -256,11 +252,8 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent + 1, &format!("{helper}(&(*{value})[{index} - 1]);"));
                 self.line_indent(indent, "}");
             }
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
                     .is_some()
                 {
@@ -381,11 +374,8 @@ impl<'a> CGenerator<'a> {
                 self.line_indent(indent, "}");
                 self.line_indent(indent, "return 0;");
             }
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
                     .is_some()
                 {
@@ -494,11 +484,8 @@ impl<'a> CGenerator<'a> {
                 self.emit_resource_zero_expr(elem, &format!("({value})[{index}]"), indent + 1);
                 self.line_indent(indent, "}");
             }
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
                     .is_some()
                 {

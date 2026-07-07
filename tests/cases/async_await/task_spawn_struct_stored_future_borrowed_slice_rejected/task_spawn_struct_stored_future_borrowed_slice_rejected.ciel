@@ -17,7 +17,7 @@ async Result<usize, Error> keep_box(FutureBox box) {
     return Ok(0);
 }
 
-async::Task<usize> spawn_boxed_future() {
+async::Task<usize, Error> spawn_boxed_future() {
     [3]i64 values = [1, 2, 3];
     FutureBox box = { inner: len_later(values[..]) };
     return must(async::spawn<usize>(keep_box(box)));

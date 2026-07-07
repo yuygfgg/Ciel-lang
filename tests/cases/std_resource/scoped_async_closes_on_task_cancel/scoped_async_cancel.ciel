@@ -58,7 +58,7 @@ i32 main() {
     }));
 
     async::ChannelPair<HandleParts> pair = must(async::channel<HandleParts>(1));
-    async::Task<void> task = must(async::spawn<void>(scoped_worker(pair.sender)));
+    async::Task<void, Error> task = must(async::spawn<void>(scoped_worker(pair.sender)));
     HandleParts parts = must(async::block_on(async::recv<HandleParts>(pair.receiver)));
     must(async::cancel<void>(&task));
     must(async::close<HandleParts>(pair.sender));

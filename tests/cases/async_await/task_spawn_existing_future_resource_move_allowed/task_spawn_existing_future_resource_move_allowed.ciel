@@ -26,7 +26,7 @@ i32 main() {
     text::Text owned_path = must(text::text_copy(path));
     io::File file = must(io::open_read(must(text::text_to_slice(owned_path))));
     async::Future<Result<usize, Error>> future = read_one(file);
-    async::Task<usize> task = must(async::spawn<usize>(future));
+    async::Task<usize, Error> task = must(async::spawn<usize>(future));
     if (must(async::block_on(task)) != 1) {
         return 1;
     }

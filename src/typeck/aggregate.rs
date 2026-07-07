@@ -3,7 +3,11 @@ use super::*;
 impl TypeChecker {
     pub(super) fn ensure_enum_instance(&mut self, ty: &Ty) {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named {
+                def_id: _,
+                name,
+                args,
+            } => {
                 let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
                     return;
                 };
@@ -89,7 +93,7 @@ impl TypeChecker {
 
     pub(super) fn ensure_struct_instance(&mut self, ty: &Ty) {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 let Some(template) = self.ctx.struct_templates.get(name).cloned() else {
                     return;
                 };
@@ -131,10 +135,7 @@ impl TypeChecker {
                     })
                     .collect::<Vec<_>>();
                 self.visiting_structs.remove(&instance_name);
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if template.is_resource {
                     self.ctx.resource_structs.insert(instance_name.clone());
                 }

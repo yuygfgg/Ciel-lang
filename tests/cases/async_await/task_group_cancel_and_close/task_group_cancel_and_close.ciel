@@ -14,8 +14,8 @@ async Result<usize, Error> slow() {
 }
 
 i32 main() {
-    async::TaskGroup<usize> group = must(async::task_group<usize>());
-    async::Task<usize> task = must(async::spawn<usize>(slow()));
+    async::TaskGroup<usize, Error> group = must(async::task_group<usize, Error>());
+    async::Task<usize, Error> task = must(async::spawn<usize>(slow()));
     must(async::group_add<usize>(&group, task));
     must(async::group_cancel_all<usize>(&group));
     must(async::group_close<usize>(&group));

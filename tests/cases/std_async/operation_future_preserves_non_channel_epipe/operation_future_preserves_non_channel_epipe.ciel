@@ -18,7 +18,6 @@ import /std/result;
 unsafe extern "C" {
     c::c_int pipe(*c::c_int fds);
     c::c_int close(c::c_int fd);
-    c::c_int ciel_async_channel_closed_errno();
 }
 
 resource struct NonChannelEpipeOp {

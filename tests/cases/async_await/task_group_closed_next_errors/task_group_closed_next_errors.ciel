@@ -8,7 +8,7 @@ import /std/panic;
 import /std/result;
 
 async Result<usize, Error> drive() {
-    async::TaskGroup<usize> group = async::task_group<usize>()?;
+    async::TaskGroup<usize, Error> group = async::task_group<usize, Error>()?;
     async::group_close<usize>(&group)?;
     Result<usize, Error> next = await async::group_next<usize>(&group);
     switch (next) {

@@ -19,7 +19,7 @@ async Result<usize, Error> consumer(async::Receiver<usize> receiver) {
 
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    async::Task<usize> task = async::spawn<usize>(producer(pair.sender))?;
+    async::Task<usize, Error> task = async::spawn<usize>(producer(pair.sender))?;
     usize value = await consumer(pair.receiver)?;
     await task?;
     return Ok(value);

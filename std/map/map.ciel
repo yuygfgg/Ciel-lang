@@ -67,6 +67,8 @@ export enum MapError {
     MessageClone(Error),
 }
 
+derive Message<MapError>;
+
 // Errors produced while running a hash-map scoped callback.
 export enum MapWithError<E> {
     Map(MapError),

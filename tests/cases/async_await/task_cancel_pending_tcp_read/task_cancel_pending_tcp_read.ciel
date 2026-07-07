@@ -35,7 +35,7 @@ Result<usize, Error> drive() {
     net::SocketAddr requested = net::parse_addr("127.0.0.1:0")?;
     anet::AsyncTcpListener listener = anet::listen_async(requested)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize> task = async::spawn<usize>(read_until_cancelled(listener))?;
+    async::Task<usize, Error> task = async::spawn<usize>(read_until_cancelled(listener))?;
     anet::AsyncTcpStream client = async::block_on(connect_and_wait_ready(bound))?;
 
     async::block_on(async_time::sleep_ms(10))?;

@@ -2,6 +2,7 @@ import /std/buf as buf;
 import /std/codec as codec;
 import /std/crypto as crypto;
 import /std/error;
+import /std/message as message;
 
 export enum ProtocolError {
     UnexpectedEof,
@@ -10,9 +11,11 @@ export enum ProtocolError {
     UnknownFrameKind(u16),
     OversizedPayload(usize),
     InvalidStreamId(u16, u32),
-    InvalidTransition([]const char),
-    MalformedPayload([]const char),
+    InvalidTransition,
+    MalformedPayload,
 }
+
+derive message::Message<ProtocolError>;
 
 export enum AuthError {
     RouteMismatch,
@@ -23,11 +26,15 @@ export enum AuthError {
     TagLengthMismatch(usize),
 }
 
+derive message::Message<AuthError>;
+
 export enum FrameCodecError {
     FrameProtocol(ProtocolError),
     FrameStdCodec(codec::CodecError),
     FrameBuf(buf::BufError),
 }
+
+derive message::Message<FrameCodecError>;
 
 export enum AuthCodecError {
     AuthProtocol(ProtocolError),
@@ -37,13 +44,7 @@ export enum AuthCodecError {
     AuthCrypto(crypto::CryptoError),
 }
 
-export ProtocolError protocol_error(ProtocolError error) {
-    return error;
-}
-
-export AuthError auth_error(AuthError error) {
-    return error;
-}
+derive message::Message<AuthCodecError>;
 
 impl format_error(*const ProtocolError error) {
     switch (*error) {
@@ -59,10 +60,10 @@ impl format_error(*const ProtocolError error) {
             return "payload length exceeds maximum";
         case InvalidStreamId(_, _):
             return "invalid stream id for frame kind";
-        case InvalidTransition(reason):
-            return reason;
-        case MalformedPayload(reason):
-            return reason;
+        case InvalidTransition:
+            return "invalid stream state transition";
+        case MalformedPayload:
+            return "malformed payload";
     }
 }
 

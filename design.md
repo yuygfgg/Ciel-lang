@@ -1581,6 +1581,13 @@ determinant sets are disjoint. Duplicate impls with the same determined
 parameters are still rejected by the ordinary duplicate-impl rule; determined
 parameters are not overloads.
 
+At a concrete use site, capability solving must select a unique implementation.
+If more than one generic impl is usable for the same fully applied interface
+term, the use is ambiguous and is rejected with candidate notes. This ambiguity
+rule applies to every interface. Marker interfaces also participate in the
+ordinary duplicate and overlap diagnostics; they are not allowed to fail
+silently when multiple marker proofs would apply.
+
 An `impl` may have its own generic parameter list. Those parameters are inferred
 from the receiver and other interface arguments, then monomorphized like a
 generic function:
@@ -2101,6 +2108,11 @@ the standard `ErrorTrait` formatting capability. In the latter case, `?` boxes
 the concrete error through `error_box`. No general implicit conversion graph is
 searched.
 
+Application and library code should model its own recoverable failure domain
+with concrete error enums and explicit adapter functions. Use the standard
+boxed `Error` only at boundaries that require type erasure, and use ordinary
+status enums instead of nesting `Result` solely to carry non-fatal outcomes.
+
 `must` and `expect` are standard-library generic functions. They are not
 special syntax. On error, they call a runtime panic function.
 
@@ -2244,28 +2256,45 @@ non-awaiting cleanup before the frame is released.
 `async::spawn` starts an awaitable body as an independent task:
 
 ```ciel
-Task<usize> task = async::spawn(async || compute_size(path))?;
+Task<usize, Error> task = async::spawn<usize>(async || compute_size(path))?;
 usize size = await task?;
 ```
 
-The body passed to `spawn` must be awaitable with output `Result<T, Error>` and
-must be abortable. `Task<T>` is itself awaitable with output
-`Result<T, Error>`: awaiting a task waits for normal completion, failure, or
-cancellation of that task. Cancelling a wait on a task handle does not cancel
-the running task; it unregisters the waiter. `async::cancel` requests task
-termination through the task's abort path.
+The body passed to `spawn` must be awaitable with output `Result<T, E>` and
+must be abortable. `spawn` returns `Result<Task<T, E>, AsyncError>` because task
+creation can fail before the body starts. `Task<T, E>` is itself awaitable with
+output `Result<T, E>`: awaiting a task waits for normal completion, body
+failure, cancellation, or runtime failure of that task. Cancelling a wait on a
+task handle does not cancel the running task; it unregisters the waiter.
+`async::cancel` requests task termination through the task's abort path.
+
+Until the language has default generic arguments, the standard task handle has
+no `Task<T>` compatibility spelling. Code that wants erased task errors must
+write `Task<T, Error>` explicitly.
 
 Spawning is a task-ownership boundary. Values captured by a directly spawned
-async closure and the task result `T` must satisfy hidden `Message`
-obligations, because they cross from one task owner to another through the
-high-level task handle. The source API does not require users to write these
-bounds on ordinary calls to `spawn`; the compiler attaches the obligations at
-the boundary, resolves structural messageability when possible, and reports the
-failing captured value or result field when proof fails.
+async closure, the task result `T`, and the task error `E` must satisfy hidden
+`Message` obligations, because they cross from one task owner to another
+through the high-level task handle. The source API does not require users to
+write these bounds on ordinary calls to `spawn`; the compiler attaches the
+obligations at the boundary, resolves structural messageability when possible,
+and reports the failing captured value, result field, or error field when proof
+fails.
 When a hidden async boundary uses a structural `meta::Repr<T>` crossing path,
 that fact is local to the boundary. It does not make the original nominal type
 implement `Message` for explicit low-level actor APIs or for any API spelling a
 public `T: Message` bound.
+
+Task error type `E` must also be able to represent failures synthesized while
+awaiting the task. `/std/error.Error` and `async::AsyncError` satisfy this
+directly. A concrete enum satisfies the runtime-failure side with a carrier such
+as `Runtime(i64)`, `Async(async::AsyncError)`,
+`TaskGroupAsync(async::AsyncError)`, or `Resource(resource::ResourceError)`.
+It satisfies the task-boundary clone-failure side with
+`MessageClone(Error)`, `Async(async::AsyncError)`, or
+`TaskGroupAsync(async::AsyncError)`. A single `Async(async::AsyncError)` or
+`TaskGroupAsync(async::AsyncError)` carrier covers both sides because
+`AsyncError` includes `MessageClone(Error)`.
 
 `spawn(existing_future)` is valid. `async::Future<Out>` is an opaque future
 handle, not a type erasure boundary for safety facts. Storing a
@@ -2336,7 +2365,7 @@ Async tasks communicate through bounded async channels:
 
 ```ciel
 ChannelPair<bytes::Bytes> ch = async::channel<bytes::Bytes>(1024)?;
-Task<void> writer = async::spawn(async || write_loop(ch.receiver))?;
+Task<void, Error> writer = async::spawn<void>(async || write_loop(ch.receiver))?;
 await async::send(ch.sender, payload)?;
 await writer?;
 ```
@@ -2441,9 +2470,9 @@ Async-frame safety is separate from `Message`. `Message` is required when a
 value crosses task ownership or enters a low-level actor mailbox:
 
 1. values captured by a spawned task body;
-2. task result values delivered through `Task<T>`;
+2. task result and error values delivered through `Task<T, E>`;
 3. async channel payloads;
-4. task-group result payloads;
+4. task-group result and error payloads;
 5. explicit low-level actor mailbox payloads.
 
 Task-local values that remain inside one task do not need `Message`. If they
@@ -2487,6 +2516,10 @@ valid, but it does not imply cross-thread shared mutation safety. Ordinary
 users should fix the reported local, move the data into an owned value such as
 `Bytes` or `ByteBuf`, or construct the non-message resource inside the task
 that owns it.
+Standard-library resource handles are not whitelisted by name for async-frame
+storage. They must either be compiler-generated futures or operation keys, prove
+`ShareHandle`, or carry an explicit unsafe `async_frame_opt_in_marker` derive or
+impl.
 
 ### Lowering and Execution Invariants
 
@@ -2866,9 +2899,9 @@ means an explicit `clone_message` witness and no thread-local marker.
 `ShareHandle` means a share-handle marker, `Message`, and no thread-local
 marker. `ThreadLocal` means a thread-local marker and neither a message clone
 witness nor a share-handle marker. The standard library provides
-`unsafe impl<T: ShareHandle> async_frame_opt_in_marker(*const T)` so
-synchronized or immutable share handles opt into async-frame storage through
-normal interface composition, not a user-facing alias.
+`unsafe derive<T: ShareHandle> async_frame_opt_in_marker<T>` so synchronized or
+immutable share handles opt into async-frame storage through normal interface
+composition, not a user-facing alias.
 
 Examples:
 
@@ -2908,7 +2941,9 @@ The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
 `clone_message` functions where the standard library writes those calls.
 Whole-program coherence rejects duplicate concrete `clone_message` impls and
-ambiguous generic marker impls.
+generic marker impls that overlap. At capability use sites, multiple usable
+generic impls for any interface are reported as ambiguity rather than being
+treated as a missing capability.
 
 Concrete closure value layouts used by the C backend expose the call entry and
 environment pointer. `clone_message` for a concrete closure is ordinary
@@ -5384,7 +5419,7 @@ I/O, async TCP, and package APIs. It is backed by
 handled by `/std/buf.ByteBuf`. `Bytes` implements `Message` through an explicit
 standard-library clone policy and implements `ShareHandle` because it exposes
 only immutable views. `ShareHandle` values opt into async-frame storage through
-the standard-library `async_frame_opt_in_marker` impl. Async modules import
+the standard-library `async_frame_opt_in_marker` derive. Async modules import
 `/std/bytes` in their signatures; there is no separate async-specific bytes
 public namespace. `bytes_iter` is exposed as `.iter()` and yields `u8` byte
 items, matching the byte-sequence contract.
@@ -5462,6 +5497,8 @@ export interface CancelSafe = cancel_safe_marker;
 
 export unsafe interface<F> Result<void, Error> abort_future(*F future);
 export interface Abortable = abort_future;
+export unsafe interface<F> bool spawnable_future_marker(*const F future);
+export interface SpawnableFuture<Out> = Awaitable<Out> + Abortable + spawnable_future_marker;
 export interface SelectableFuture<Out> = Awaitable<Out> + CancelSafe + Abortable;
 
 export Out block_on<A: Awaitable<Out = _> + Abortable>(A future);
@@ -5477,15 +5514,15 @@ export OperationFutureAdapter<Op, Out> future_from_op<
 export AsyncError timeout_error();
 export AsyncError channel_closed_error();
 
-export struct Task<T> {
+export struct Task<T, E> {
     *void handle;
 }
 
-export Result<Task<T>, AsyncError> spawn<T, A: Awaitable<Result<T, Error>> + Abortable>(
+export Result<Task<T, E>, AsyncError> spawn<T, E, A: Awaitable<Result<T, E>> + Abortable>(
     A body
 );
-export Result<void, AsyncError> cancel<T>(*const Task<T> task) = .cancel;
-export Result<bool, AsyncError> is_finished<T>(*const Task<T> task) = .is_finished;
+export Result<void, AsyncError> cancel<T, E>(*const Task<T, E> task) = .cancel;
+export Result<bool, AsyncError> is_finished<T, E>(*const Task<T, E> task) = .is_finished;
 
 export struct Sender<T> {
     *void handle;
@@ -5525,15 +5562,24 @@ export ChannelRecvFuture<T> recv<T: Message>(Receiver<T> receiver);
 export Result<void, AsyncError> close<T>(Sender<T> sender) = .close;
 export Result<void, AsyncError> close_receiver<T>(Receiver<T> receiver) = .close;
 
-export struct TaskGroup<T> {
+export struct TaskGroup<T, E> {
     *void handle;
 }
 
-export Result<TaskGroup<T>, AsyncError> task_group<T>();
-export Result<void, AsyncError> group_add<T>(*const TaskGroup<T> group, Task<T> task) = .add;
-export async Result<T, Error> group_next<T>(*const TaskGroup<T> group) = .next;
-export Result<void, AsyncError> group_cancel_all<T>(*const TaskGroup<T> group) = .cancel_all;
-export Result<void, AsyncError> group_close<T>(*const TaskGroup<T> group) = .close;
+export Result<TaskGroup<T, E>, AsyncError> task_group<T, E>();
+export Result<void, AsyncError> group_add<T, E>(
+    *const TaskGroup<T, E> group,
+    Task<T, E> task
+) = .add;
+export async Result<T, E> group_next<T: Message, E: Message>(
+    *const TaskGroup<T, E> group
+) = .next;
+export Result<void, AsyncError> group_cancel_all<T, E>(
+    *const TaskGroup<T, E> group
+) = .cancel_all;
+export Result<void, AsyncError> group_close<T, E>(
+    *const TaskGroup<T, E> group
+) = .close;
 
 export enum TaskGroupError<E> {
     TaskGroupAsync(AsyncError),
@@ -5542,8 +5588,12 @@ export enum TaskGroupError<E> {
     TaskGroupBodyCleanup(E, AsyncError),
 }
 
-export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
-    Future<Result<R, E>> |(TaskGroup<T>)| body
+export async Result<R, TaskGroupError<E>> with_task_group<
+    T: Message,
+    R,
+    E: ErrorTrait + Message
+>(
+    Future<Result<R, E>> |(TaskGroup<T, E>)| body
 ) = .with_task_group;
 
 export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
@@ -5577,13 +5627,17 @@ they need to name the output without exposing it as an explicit type parameter.
 starts a future on the task runtime and blocks the current thread until the
 future returns. Async bodies should use `await` instead of nested `block_on`.
 
-`Task<T>` is an awaitable handle to a spawned task. `spawn` starts an awaitable
-body whose output is `Result<T, Error>`. The compiler attaches hidden
-`Message` obligations to spawned-task captures and to `T`, because those values
-cross task ownership. `cancel` aborts the task's current suspended operation
-and runs deterministic cleanup; awaiting a cancelled task produces the stable
-runtime cancellation error. `is_finished` reports whether the task has reached
-a terminal state.
+`Task<T, E>` is an awaitable handle to a spawned task. `spawn` starts an
+awaitable body whose output is `Result<T, E>`. The compiler attaches hidden
+`Message` obligations to spawned-task captures, to `T`, and to `E`, because
+those values cross task ownership. `E` must also be able to represent async
+runtime failures and task-boundary message-clone failures, using either
+`Error`, `AsyncError`, or a concrete enum carrier. There is no `Task<T>`
+standard-library compatibility spelling before default generic arguments.
+`cancel` aborts the task's current suspended operation and runs deterministic
+cleanup; awaiting a cancelled task produces the stable runtime cancellation
+error through `E`. `is_finished` reports whether the task has reached a terminal
+state.
 
 Async channels are bounded. `send` waits for capacity, `try_send` reports full
 or closed without suspension, `reserve` waits for capacity and returns a
@@ -5598,15 +5652,16 @@ future variants. Structural payloads become usable channel messages through
 ordinary `derive Message`, explicit `clone_message` implementations, or direct
 `meta::Repr<T>` payload types.
 
-Task groups support dynamic concurrency. `group_next` returns completed task
-results in completion order without cancelling unfinished tasks. `group_cancel_all`
-aborts unfinished tasks through `Abortable`, and `group_close` releases the
-remaining group handle state. `with_task_group` creates a group for an async
-body and closes it on return or cancellation, cancelling unfinished tasks before
-closing the group. On normal return paths it reports group creation and async
-runtime failures as `TaskGroupAsync`, body failures as `TaskGroupBody`, cleanup
-failures as `TaskGroupCleanup`, and the combination of body plus cleanup
-failure as `TaskGroupBodyCleanup`.
+Task groups support dynamic concurrency with a homogeneous success and error
+type. `TaskGroup<T, E>` accepts only `Task<T, E>` values. `group_next` returns
+completed task results in completion order without cancelling unfinished tasks.
+`group_cancel_all` aborts unfinished tasks through `Abortable`, and
+`group_close` releases the remaining group handle state. `with_task_group`
+creates a group for an async body and closes it on return or cancellation,
+cancelling unfinished tasks before closing the group. On normal return paths it
+reports group creation and async runtime failures as `TaskGroupAsync`, body
+failures as `TaskGroupBody`, cleanup failures as `TaskGroupCleanup`, and the
+combination of body plus cleanup failure as `TaskGroupBodyCleanup`.
 
 `timeout` races a selectable future with a timer. Timing out cancels only the
 waiter future; it does not assume that an arbitrary underlying protocol can
@@ -6018,6 +6073,15 @@ non-fallthrough.
 When an unsafe function is stored as a value, its function-pointer type keeps
 the unsafe bit. Assigning it to an ordinary function-pointer type is rejected;
 calling it through an unsafe function value requires `unsafe { ... }`.
+
+Within one generated C translation unit, every imported C function declaration
+and every exported C ABI function body reserves its unmangled C symbol. The
+same C ABI symbol may be declared or defined at most once across the imported
+program, even if repeated declarations have identical Ciel signatures. Ciel
+rejects duplicates instead of deduplicating them because the current build model
+emits a single generated C unit. A non-exported `extern "C"` function body is an
+internal C ABI callback and lowers to a generated internal symbol; it does not
+reserve the source name as a public C symbol unless it is exported.
 
 A top-level `export extern "C" type name = "C spelling";` declares a C
 spelling type. Inside an `extern "C"` block the ABI is inherited, so

@@ -25,6 +25,8 @@ export enum TextError {
     NotFound,
 }
 
+derive Message<TextError>;
+
 impl format_error(*const TextError error) {
     switch (*error) {
         case Bytes(inner):

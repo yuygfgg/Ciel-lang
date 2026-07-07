@@ -34,11 +34,11 @@ export enum AgentTransition {
 }
 
 tunnel_error::ProtocolError invalid_server_transition() {
-    return tunnel_error::InvalidTransition("server stream state");
+    return tunnel_error::InvalidTransition;
 }
 
 tunnel_error::ProtocolError invalid_agent_transition() {
-    return tunnel_error::InvalidTransition("agent stream state");
+    return tunnel_error::InvalidTransition;
 }
 
 export Result<ServerStreamState, tunnel_error::ProtocolError> server_transition(

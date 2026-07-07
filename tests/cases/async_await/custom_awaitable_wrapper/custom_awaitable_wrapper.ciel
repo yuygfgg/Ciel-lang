@@ -35,7 +35,7 @@ async Result<usize, Error> await_wrapped(usize value) {
 
 i32 main() {
     Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(5) } };
-    Task<usize> task = must(spawn<usize>(wrapped));
+    Task<usize, Error> task = must(spawn<usize>(wrapped));
     usize from_spawn = must(block_on(task));
     usize from_await = must(block_on(await_wrapped(8)));
     must(print_value(from_spawn + from_await));

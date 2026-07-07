@@ -65,11 +65,8 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
             .or_insert_with(|| ty.clone());
         match ty {
             Ty::Array { elem, .. } => self.collect_resource_cleanup_ty(elem),
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+            Ty::Named { def_id, name, args } => {
+                let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(
                     &self.generator.program.checked.resolved,
                     &named_ty,
@@ -213,7 +210,7 @@ impl<'a> CGenerator<'a> {
     ) {
         match ty {
             Ty::Array { elem, .. } => self.collect_aggregate_value_deps(elem, aggregate_names, out),
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 if let Some(storage_ty) = self.meta_repr_marker_storage_ty(name, args) {
                     self.collect_aggregate_value_deps(&storage_ty, aggregate_names, out);
                     return;
@@ -661,7 +658,7 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
 
     fn collect_standard_error_code_dynamic(&mut self) {
         let dyn_ty = self.generator.std_error_trait_ty();
-        let code_ty = std_error_code_ty();
+        let code_ty = std_error_code_ty(&self.generator.program.checked.resolved);
         self.collect_ty_dynamic(&dyn_ty);
         self.collect_ty_dynamic(&code_ty);
         self.plan.dynamic_impls.insert(
@@ -906,24 +903,49 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
                 }
             }
             TExprKind::AsyncSleep { output_ty, .. } => {
-                self.builder
-                    .collect_ty_array_returns(&std_future_ty(output_ty.clone()));
+                self.builder.collect_ty_array_returns(&std_future_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    output_ty.clone(),
+                ));
                 self.builder.collect_ty_array_returns(output_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncSpawn { task_output_ty, .. } => {
-                self.builder
-                    .collect_ty_array_returns(&std_task_ty(task_output_ty.clone()));
+            TExprKind::AsyncSpawn {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
+                self.builder.collect_ty_array_returns(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 self.builder.collect_ty_array_returns(&std_result_ty(
-                    std_task_ty(task_output_ty.clone()),
-                    std_async_error_ty(),
+                    &self.builder.generator.program.checked.resolved,
+                    std_task_ty(
+                        &self.builder.generator.program.checked.resolved,
+                        task_output_ty.clone(),
+                        task_error_ty.clone(),
+                    ),
+                    std_async_error_ty(&self.builder.generator.program.checked.resolved),
                 ));
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncTaskCancel { task_output_ty, .. }
-            | TExprKind::AsyncTaskIsFinished { task_output_ty, .. } => {
-                self.builder
-                    .collect_ty_array_returns(&std_task_ty(task_output_ty.clone()));
+            TExprKind::AsyncTaskCancel {
+                task_output_ty,
+                task_error_ty,
+                ..
+            }
+            | TExprKind::AsyncTaskIsFinished {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
+                self.builder.collect_ty_array_returns(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 walk_expr(self, expr);
             }
             TExprKind::ActorSpawn {
@@ -1061,17 +1083,38 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                     .insert(mangle_ty_fragment(output_ty), output_ty.clone());
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncSpawn { task_output_ty, .. } => {
-                self.builder
-                    .collect_ty_closure(&std_task_ty(task_output_ty.clone()));
-                self.builder
-                    .collect_ty_closure(&std_result_ty(task_output_ty.clone(), std_error_ty()));
+            TExprKind::AsyncSpawn {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
+                self.builder.collect_ty_closure(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.builder.collect_ty_closure(&std_result_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncTaskCancel { task_output_ty, .. }
-            | TExprKind::AsyncTaskIsFinished { task_output_ty, .. } => {
-                self.builder
-                    .collect_ty_closure(&std_task_ty(task_output_ty.clone()));
+            TExprKind::AsyncTaskCancel {
+                task_output_ty,
+                task_error_ty,
+                ..
+            }
+            | TExprKind::AsyncTaskIsFinished {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
+                self.builder.collect_ty_closure(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 walk_expr(self, expr);
             }
             TExprKind::MakeDynamicInterface { concrete_ty, .. }
@@ -1234,21 +1277,44 @@ impl ThirVisitor for DynamicVisitor<'_, '_, '_> {
                 self.builder.collect_ty_dynamic(output_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncSpawn { task_output_ty, .. } => {
+            TExprKind::AsyncSpawn {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
                 self.builder.collect_standard_error_code_dynamic();
                 self.builder.collect_ty_dynamic(task_output_ty);
-                self.builder
-                    .collect_ty_dynamic(&std_task_ty(task_output_ty.clone()));
-                self.builder
-                    .collect_ty_dynamic(&std_result_ty(task_output_ty.clone(), std_error_ty()));
+                self.builder.collect_ty_dynamic(task_error_ty);
+                self.builder.collect_ty_dynamic(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.builder.collect_ty_dynamic(&std_result_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncTaskCancel { task_output_ty, .. }
-            | TExprKind::AsyncTaskIsFinished { task_output_ty, .. } => {
+            TExprKind::AsyncTaskCancel {
+                task_output_ty,
+                task_error_ty,
+                ..
+            }
+            | TExprKind::AsyncTaskIsFinished {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
                 self.builder.collect_standard_error_code_dynamic();
                 self.builder.collect_ty_dynamic(task_output_ty);
-                self.builder
-                    .collect_ty_dynamic(&std_task_ty(task_output_ty.clone()));
+                self.builder.collect_ty_dynamic(task_error_ty);
+                self.builder.collect_ty_dynamic(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
                 walk_expr(self, expr);
             }
             TExprKind::RetainClosure { source_ty, .. } => {
@@ -1323,26 +1389,52 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
             }
             TExprKind::AsyncSleep { output_ty, .. } => {
                 self.builder.collect_ty_slice(output_ty);
-                self.builder.collect_ty_slice(&std_error_code_ty());
+                self.builder.collect_ty_slice(&std_error_code_ty(
+                    &self.builder.generator.program.checked.resolved,
+                ));
                 let dyn_ty = self.builder.generator.std_error_trait_ty();
                 self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncSpawn { task_output_ty, .. } => {
+            TExprKind::AsyncSpawn {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
                 self.builder.collect_ty_slice(task_output_ty);
-                self.builder
-                    .collect_ty_slice(&std_task_ty(task_output_ty.clone()));
-                self.builder.collect_ty_slice(&std_error_code_ty());
+                self.builder.collect_ty_slice(task_error_ty);
+                self.builder.collect_ty_slice(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.builder.collect_ty_slice(&std_error_code_ty(
+                    &self.builder.generator.program.checked.resolved,
+                ));
                 let dyn_ty = self.builder.generator.std_error_trait_ty();
                 self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);
             }
-            TExprKind::AsyncTaskCancel { task_output_ty, .. }
-            | TExprKind::AsyncTaskIsFinished { task_output_ty, .. } => {
+            TExprKind::AsyncTaskCancel {
+                task_output_ty,
+                task_error_ty,
+                ..
+            }
+            | TExprKind::AsyncTaskIsFinished {
+                task_output_ty,
+                task_error_ty,
+                ..
+            } => {
                 self.builder.collect_ty_slice(task_output_ty);
-                self.builder
-                    .collect_ty_slice(&std_task_ty(task_output_ty.clone()));
-                self.builder.collect_ty_slice(&std_error_code_ty());
+                self.builder.collect_ty_slice(task_error_ty);
+                self.builder.collect_ty_slice(&std_task_ty(
+                    &self.builder.generator.program.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.builder.collect_ty_slice(&std_error_code_ty(
+                    &self.builder.generator.program.checked.resolved,
+                ));
                 let dyn_ty = self.builder.generator.std_error_trait_ty();
                 self.builder.collect_ty_slice(&dyn_ty);
                 walk_expr(self, expr);

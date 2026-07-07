@@ -12,7 +12,6 @@ import /std/meta;
 unsafe extern "C" {
     opaque struct CielMutex;
 
-    c::c_int ciel_errno();
     ?*CielMutex ciel_mutex_make(usize value_size, usize value_align, *const void initial);
     ?*void ciel_mutex_lock(*CielMutex mutex);
     c::c_int ciel_mutex_unlock(*CielMutex mutex);
@@ -34,6 +33,8 @@ export enum SyncError {
     Runtime(i64),
     MessageClone(Error),
 }
+
+derive Message<SyncError>;
 
 // Errors produced while running a mutex scoped callback.
 export enum SyncWithError<E> {
@@ -69,7 +70,7 @@ unsafe impl<T> clone_message(*const Mutex<T> value) {
 unsafe derive<T> share_handle_marker<Mutex<T>>;
 
 SyncError runtime_error() {
-    c::c_int code = unsafe { ciel_errno() };
+    c::c_int code = unsafe { c::ciel_errno() };
     if ((code as i64) == 0) {
         return Runtime(5);
     }

@@ -16,14 +16,8 @@ import /std/result;
 #c_include "unistd.h"
 
 unsafe extern "C" {
-    opaque struct CielAsyncOp;
-    opaque struct CielFuture;
-
     c::c_int pipe(*c::c_int fds);
     c::c_int close(c::c_int fd);
-    c::c_int ciel_async_again_errno();
-    c::c_int ciel_async_finish_read(*CielAsyncOp op, *?*u8 out, *usize len, *usize cap);
-    c::c_int ciel_future_poll_trampoline(*CielFuture future, *void out);
 }
 
 *CielFuture raw_future<A: async::Awaitable<Result<bytes::Bytes, async::AsyncError>>>(

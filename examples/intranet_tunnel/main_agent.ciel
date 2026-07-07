@@ -2,12 +2,13 @@ import /std/io as io;
 import /std/result;
 import ./agent as agent;
 import ./cli as cli;
+import ./error as app_error;
 
 i32 main() {
-    Result<cli::AgentConfig, Error> parsed = cli::parse_agent_args();
+    Result<cli::AgentConfig, app_error::TunnelError> parsed = cli::parse_agent_args();
     switch (parsed) {
         case Ok(_):
-            Result<void, Error> run = agent::run_agent();
+            Result<void, app_error::TunnelError> run = agent::run_agent();
             switch (run) {
                 case Ok:
                     return 0;

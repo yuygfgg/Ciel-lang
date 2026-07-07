@@ -1,14 +1,20 @@
 import /std/c as c;
+import /std/message;
 import /std/meta as meta;
 import /std/panic as panic;
 
 export unsafe extern "C" {
+    opaque struct CielActor;
+    opaque struct CielAsyncFd;
     opaque struct CielFuture;
+    opaque struct CielAsyncOp;
 }
 
 export resource unsafe struct Future<T> {
     *void handle;
 }
+
+unsafe derive<T> async_frame_opt_in_marker<Future<T>>;
 
 export type RuntimeRun = extern "C" c::c_int fn(*CielFuture, *void, *void);
 
@@ -24,7 +30,45 @@ export unsafe extern "C" {
         RuntimeCleanup cleanup
     );
     *CielFuture ciel_future_from_handle(*void handle);
+    c::c_int ciel_future_cancel(*CielFuture future);
     c::c_int ciel_future_abort(*CielFuture future);
+    c::c_int ciel_future_poll_trampoline(*CielFuture future, *void out);
+    *CielFuture ciel_task_future_from_handle(*void handle);
+    c::c_int ciel_async_timeout_errno();
+    c::c_int ciel_async_channel_closed_errno();
+    c::c_int ciel_async_again_errno();
+    c::c_int ciel_async_cancel(*CielAsyncOp op);
+    c::c_int ciel_async_close(*CielAsyncFd fd);
+    c::c_int ciel_async_notify_read(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_notify_write(*CielAsyncOp op, *CielActor actor, *void message);
+    c::c_int ciel_async_finish_read(*CielAsyncOp op, *?*u8 out, *usize len, *usize cap);
+    c::c_int ciel_async_finish_write(*CielAsyncOp op, *usize written);
+    void ciel_future_bind_operation(*CielFuture future, *CielAsyncOp op);
+    void ciel_future_clear_operation(*CielFuture future, *CielAsyncOp op);
+    c::c_int ciel_resource_register_async_fd_handle(
+        *CielAsyncFd fd,
+        *u64 out_owner_id,
+        *u64 out_resource_id,
+        *u64 out_generation
+    );
+    c::c_int ciel_resource_async_fd_snapshot_handle(
+        u64 owner_id,
+        u64 resource_id,
+        u64 generation,
+        *?*CielAsyncFd out
+    );
+    c::c_int ciel_resource_register_async_op_handle(
+        *CielAsyncOp op,
+        *u64 out_owner_id,
+        *u64 out_resource_id,
+        *u64 out_generation
+    );
+    c::c_int ciel_resource_async_op_snapshot_handle(
+        u64 owner_id,
+        u64 resource_id,
+        u64 generation,
+        *?*CielAsyncOp out
+    );
 }
 
 export unsafe Future<Out> new<Out, Ctx>(

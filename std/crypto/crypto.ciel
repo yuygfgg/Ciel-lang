@@ -105,14 +105,19 @@ export enum MacAlgorithm {
 
 // Errors produced by cryptographic operations.
 export enum CryptoError {
-    Backend([]const char),
+    Backend(i64),
     Runtime(i64),
 }
 
+derive Message<CryptoError>;
+
 impl format_error(*const CryptoError error) {
     switch (*error) {
-        case Backend(message):
-            return message;
+        case Backend(code):
+            // TODO: Store an owned backend message when constructing this error
+            // so exception-specific Botan diagnostics do not depend on backend
+            // last-error state.
+            return unsafe { ciel_crypto_error_message(code as c::c_int) };
         case Runtime(_):
             return "crypto runtime error";
     }
@@ -132,7 +137,7 @@ CryptoError crypto_error(c::c_int code) {
     if ((code as i64) < 0) {
         []const char message = unsafe { ciel_crypto_error_message(code) };
         if (message.len > 0) {
-            return Backend(message);
+            return Backend(code as i64);
         }
     }
     if ((code as i64) != 0) {

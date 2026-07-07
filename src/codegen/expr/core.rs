@@ -700,6 +700,7 @@ impl<'a> CGenerator<'a> {
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
+                task_error_ty,
             } => {
                 let Some(indent) = stmt_indent else {
                     return Err(vec![Diagnostic::new(
@@ -707,7 +708,7 @@ impl<'a> CGenerator<'a> {
                         "`spawn` needs statement lowering in this context",
                     )]);
                 };
-                self.emit_async_spawn_expr(expr, body, task_output_ty, indent)?
+                self.emit_async_spawn_expr(expr, body, task_output_ty, task_error_ty, indent)?
             }
             TExprKind::AsyncTaskCancel { task, .. } => {
                 let Some(indent) = stmt_indent else {
@@ -1233,15 +1234,17 @@ impl<'a> CGenerator<'a> {
         match (left, right) {
             (
                 Ty::Named {
+                    def_id: left_def_id,
                     name: left_name,
                     args: left_args,
                 },
                 Ty::Named {
+                    def_id: right_def_id,
                     name: right_name,
                     args: right_args,
                 },
             ) => {
-                left_name == right_name
+                named_ty_identity_eq(*left_def_id, left_name, *right_def_id, right_name)
                     && left_args.len() == right_args.len()
                     && left_args
                         .iter()
@@ -1359,10 +1362,12 @@ impl<'a> CGenerator<'a> {
     ) -> DiagResult<Option<String>> {
         let (
             Ty::Named {
+                def_id: source_def_id,
                 name: source_name,
                 args: source_args,
             },
             Ty::Named {
+                def_id: target_def_id,
                 name: target_name,
                 args: target_args,
             },
@@ -1370,7 +1375,7 @@ impl<'a> CGenerator<'a> {
         else {
             return Ok(None);
         };
-        if source_name != target_name
+        if !named_ty_identity_eq(*source_def_id, source_name, *target_def_id, target_name)
             || source_args.len() != target_args.len()
             || !self.type_matches_meta_policy_marker(source_ty)
             || !self.type_matches_meta_policy_marker(target_ty)

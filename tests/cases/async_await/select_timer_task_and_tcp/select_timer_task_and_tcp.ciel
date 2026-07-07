@@ -28,7 +28,7 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize> task = async::spawn<usize>(ready_task())?;
+    async::Task<usize, Error> task = async::spawn<usize>(ready_task())?;
 
     Result<usize, Error> picked = await select {
         case connected = anet::connect(bound): tag_stream(connected, 1);

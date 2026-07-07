@@ -27,7 +27,7 @@ async Result<void, Error> send_value<T: Message>(async::Sender<T> sender, T valu
 
 async Result<T, Error> roundtrip<T: Message>(T value) {
     async::ChannelPair<T> pair = async::channel<T>(1)?;
-    async::Task<void> task = async::spawn<void>(send_value<T>(pair.sender, value))?;
+    async::Task<void, Error> task = async::spawn<void>(send_value<T>(pair.sender, value))?;
     T received = await async::recv<T>(pair.receiver)?;
     await task?;
     async::close<T>(pair.sender)?;
@@ -42,7 +42,7 @@ async Result<T, Error> relay_twice<T: Message>(T value) {
 
 async Result<usize, Error> drive() {
     Weighted<usize> seed = { value: 4, weight: 3 };
-    async::Task<Weighted<usize>> task =
+    async::Task<Weighted<usize>, Error> task =
         async::spawn<Weighted<usize>>(relay_twice<Weighted<usize>>(seed))?;
     Weighted<usize> weighted = await task?;
     usize plain = await relay_twice<usize>(5)?;

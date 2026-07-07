@@ -1,0 +1,57 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/message as message;
+import /std/result;
+
+enum LocalError {
+    Async(async::AsyncError),
+    Local(usize),
+}
+
+derive message::Message<LocalError>;
+
+impl format_error(*const LocalError error) {
+    switch (*error) {
+        case Async(inner):
+            return format_error(&inner);
+        case Local(_):
+            return "local task error";
+    }
+}
+
+async Result<usize, LocalError> fail_later() {
+    return Err(Local(23));
+}
+
+async Result<usize, LocalError> join_task() {
+    Result<async::Task<usize, LocalError>, async::AsyncError> spawned =
+        async::spawn<usize, LocalError>(fail_later());
+    async::Task<usize, LocalError> task;
+    switch (spawned) {
+        case Ok(value):
+            task = value;
+        case Err(error):
+            return Err(Async(error));
+    }
+    usize value = await task?;
+    return Ok(value);
+}
+
+i32 main() {
+    Result<usize, LocalError> result = async::block_on(join_task());
+    switch (result) {
+        case Ok(_):
+            return 1;
+        case Err(Local(value)):
+            if (value == 23) {
+                return 0;
+            }
+            return 2;
+        case Err(Async(_)):
+            return 3;
+    }
+    return 4;
+}

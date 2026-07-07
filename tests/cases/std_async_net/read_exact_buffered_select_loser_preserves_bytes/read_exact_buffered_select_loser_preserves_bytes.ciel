@@ -54,7 +54,7 @@ async Result<usize, Error> drive() {
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::ChannelPair<usize> write_done = async::channel<usize>(1)?;
-    async::Task<void> server =
+    async::Task<void, Error> server =
         async::spawn<void>(write_once(listener, write_done.sender))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;

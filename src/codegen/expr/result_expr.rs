@@ -9,7 +9,7 @@ impl<'a> CGenerator<'a> {
         if let Ty::OpaqueState { base, .. } = ty {
             return self.result_layout(base, span);
         }
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected Result type, got `{ty}`"),
@@ -217,7 +217,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<String> {
         self.enum_variant_literal(
-            &std_async_error_ty(),
+            &std_async_error_ty(&self.program.checked.resolved),
             "Runtime",
             &[format!("(int64_t)({code})")],
             span,
@@ -230,7 +230,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<String> {
         self.enum_variant_literal(
-            &std_async_error_ty(),
+            &std_async_error_ty(&self.program.checked.resolved),
             "MessageClone",
             &[error.to_string()],
             span,
@@ -243,7 +243,7 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
     ) -> DiagResult<String> {
         self.enum_variant_literal(
-            &std_resource_error_ty(),
+            &std_resource_error_ty(&self.program.checked.resolved),
             "Runtime",
             &[format!("(int64_t)({code})")],
             span,
@@ -282,17 +282,25 @@ impl<'a> CGenerator<'a> {
         let Some(err_ty) = layout.err_payload_ty.as_ref() else {
             return Ok("0".to_string());
         };
-        if err_ty == &std_error_ty() {
+        if err_ty == &std_error_ty(&self.program.checked.resolved) {
             return Ok(self.error_code_literal(code));
         }
-        if err_ty == &std_async_error_ty() {
+        if err_ty == &std_async_error_ty(&self.program.checked.resolved) {
             return self.async_error_runtime_literal(code, span);
         }
-        if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "Async",
+            &[std_async_error_ty(&self.program.checked.resolved)],
+        ) {
             let inner = self.async_error_runtime_literal(code, span)?;
             return self.enum_variant_literal(err_ty, "Async", &[inner], span);
         }
-        if self.enum_has_variant_with_payload(err_ty, "TaskGroupAsync", &[std_async_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "TaskGroupAsync",
+            &[std_async_error_ty(&self.program.checked.resolved)],
+        ) {
             let inner = self.async_error_runtime_literal(code, span)?;
             return self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span);
         }
@@ -304,7 +312,11 @@ impl<'a> CGenerator<'a> {
                 span,
             );
         }
-        if self.enum_has_variant_with_payload(err_ty, "Resource", &[std_resource_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "Resource",
+            &[std_resource_error_ty(&self.program.checked.resolved)],
+        ) {
             let inner = self.resource_error_runtime_literal(code, span)?;
             return self.enum_variant_literal(err_ty, "Resource", &[inner], span);
         }
@@ -325,20 +337,32 @@ impl<'a> CGenerator<'a> {
         let Some(err_ty) = layout.err_payload_ty.as_ref() else {
             return Ok("0".to_string());
         };
-        if err_ty == &std_error_ty() {
+        if err_ty == &std_error_ty(&self.program.checked.resolved) {
             return Ok(error.to_string());
         }
-        if err_ty == &std_async_error_ty() {
+        if err_ty == &std_async_error_ty(&self.program.checked.resolved) {
             return self.async_error_message_clone_literal(error, span);
         }
-        if self.enum_has_variant_with_payload(err_ty, "MessageClone", &[std_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "MessageClone",
+            &[std_error_ty(&self.program.checked.resolved)],
+        ) {
             return self.enum_variant_literal(err_ty, "MessageClone", &[error.to_string()], span);
         }
-        if self.enum_has_variant_with_payload(err_ty, "Async", &[std_async_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "Async",
+            &[std_async_error_ty(&self.program.checked.resolved)],
+        ) {
             let inner = self.async_error_message_clone_literal(error, span)?;
             return self.enum_variant_literal(err_ty, "Async", &[inner], span);
         }
-        if self.enum_has_variant_with_payload(err_ty, "TaskGroupAsync", &[std_async_error_ty()]) {
+        if self.enum_has_variant_with_payload(
+            err_ty,
+            "TaskGroupAsync",
+            &[std_async_error_ty(&self.program.checked.resolved)],
+        ) {
             let inner = self.async_error_message_clone_literal(error, span)?;
             return self.enum_variant_literal(err_ty, "TaskGroupAsync", &[inner], span);
         }
@@ -377,7 +401,7 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<String> {
-        let error_ty = std_error_ty();
+        let error_ty = std_error_ty(&self.program.checked.resolved);
         let trait_ty = self.std_error_trait_ty();
         let trait_value = self.emit_dynamic_interface_value_from_code(
             &trait_ty,
@@ -390,7 +414,7 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(super) fn error_code_literal(&self, code: &str) -> String {
-        let code_ty = std_error_code_ty();
+        let code_ty = std_error_code_ty(&self.program.checked.resolved);
         let code_ptr = format!(
             "(({})ciel_box_value(&({}){{ .code = (int64_t)({code}) }}, sizeof({})))",
             self.c_pointer_type(&code_ty),
@@ -399,7 +423,12 @@ impl<'a> CGenerator<'a> {
         );
         let trait_ty = self.std_error_trait_ty();
         let trait_value = self.dynamic_interface_from_ptr_literal(&trait_ty, &code_ty, &code_ptr);
-        self.error_value_literal(&std_error_ty(), &trait_value, "\"\"", "NULL")
+        self.error_value_literal(
+            &std_error_ty(&self.program.checked.resolved),
+            &trait_value,
+            "\"\"",
+            "NULL",
+        )
     }
 
     pub(super) fn error_value_literal(
@@ -470,7 +499,11 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<String> {
-        let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
+        let result_ty = std_result_ty(
+            &self.program.checked.resolved,
+            message_ty.clone(),
+            std_error_ty(&self.program.checked.resolved),
+        );
         let result_temp = self.next_temp("clone_result");
         self.line_indent(
             indent,
@@ -530,11 +563,15 @@ impl<'a> CGenerator<'a> {
         {
             return self.emit_clone_message_result_from_ptr(message_ty, source_ptr, indent, span);
         }
-        if let Ty::Named { name, args } = message_ty
+        if let Ty::Named { name, args, .. } = message_ty
             && matches!(meta_repr_marker_name(name), Some(false))
             && let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args)
         {
-            let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
+            let result_ty = std_result_ty(
+                &self.program.checked.resolved,
+                message_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            );
             let result_layout = self.result_layout(&result_ty, span)?;
             let result_temp = self.next_temp("task_boundary_repr_clone");
             self.line_indent(
@@ -545,7 +582,11 @@ impl<'a> CGenerator<'a> {
             let repr_source_ptr = format!("(const {} *)({source_ptr})", self.c_type(&repr_ty));
             let repr_clone =
                 self.emit_clone_message_result_from_ptr(&repr_ty, &repr_source_ptr, indent, span)?;
-            let repr_result_ty = std_result_ty(repr_ty.clone(), std_error_ty());
+            let repr_result_ty = std_result_ty(
+                &self.program.checked.resolved,
+                repr_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            );
             let repr_layout = self.result_layout(&repr_result_ty, span)?;
             self.line_indent(
                 indent,
@@ -587,7 +628,11 @@ impl<'a> CGenerator<'a> {
             return self.emit_clone_message_result_from_ptr(message_ty, source_ptr, indent, span);
         }
 
-        let result_ty = std_result_ty(message_ty.clone(), std_error_ty());
+        let result_ty = std_result_ty(
+            &self.program.checked.resolved,
+            message_ty.clone(),
+            std_error_ty(&self.program.checked.resolved),
+        );
         let result_layout = self.result_layout(&result_ty, span)?;
         let result_temp = self.next_temp("task_boundary_clone");
         let done_label = self.next_temp("task_boundary_clone_done");
@@ -615,7 +660,11 @@ impl<'a> CGenerator<'a> {
             indent,
             span,
         )?;
-        let repr_result_ty = std_result_ty(repr_ty.clone(), std_error_ty());
+        let repr_result_ty = std_result_ty(
+            &self.program.checked.resolved,
+            repr_ty.clone(),
+            std_error_ty(&self.program.checked.resolved),
+        );
         let repr_layout = self.result_layout(&repr_result_ty, span)?;
         self.line_indent(
             indent,

@@ -563,10 +563,11 @@ impl TypeChecker {
                                     .collect(),
                             )
                         };
-                        Ty::Named {
-                            name: nominal_name,
-                            args: canonical_args.unwrap_or_default(),
-                        }
+                        named_ty(
+                            Some(def_id),
+                            nominal_name,
+                            canonical_args.unwrap_or_default(),
+                        )
                     }
                 } else {
                     self.diagnostics.push(Diagnostic::new(
@@ -731,13 +732,13 @@ impl TypeChecker {
                 mutability: *mutability,
                 elem: Box::new(self.resolve_type_holes(elem)),
             },
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
+            Ty::Named { def_id, name, args } => named_ty(
+                *def_id,
+                name.clone(),
+                args.iter()
                     .map(|arg| self.resolve_type_holes(arg))
                     .collect(),
-            },
+            ),
             Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
                 def_id: *def_id,
                 name: name.clone(),
@@ -869,15 +870,19 @@ impl TypeChecker {
                 },
             ) => self.unify_type_holes(expected_elem, actual_elem),
             (
-                Ty::Named { name, args },
+                Ty::Named { def_id, name, args },
                 Ty::Named {
+                    def_id: actual_def_id,
                     name: actual_name,
                     args: actual_args,
                 },
-            ) if name == actual_name && args.len() == actual_args.len() => args
-                .iter()
-                .zip(actual_args.iter())
-                .all(|(expected, actual)| self.unify_type_holes(expected, actual)),
+            ) if named_ty_identity_eq(*def_id, name, *actual_def_id, actual_name)
+                && args.len() == actual_args.len() =>
+            {
+                args.iter()
+                    .zip(actual_args.iter())
+                    .all(|(expected, actual)| self.unify_type_holes(expected, actual))
+            }
             (
                 Ty::DynamicInterface { def_id, args, .. },
                 Ty::DynamicInterface {
@@ -1068,14 +1073,20 @@ impl TypeChecker {
                 } => self.unify_ty_for_inference(pattern_elem, actual_elem, subst),
                 _ => false,
             },
-            Ty::Named { name, args } => match &actual {
+            Ty::Named { def_id, name, args } => match &actual {
                 Ty::Named {
+                    def_id: actual_def_id,
                     name: actual_name,
                     args: actual_args,
-                } if name == actual_name && args.len() == actual_args.len() => args
-                    .iter()
-                    .zip(actual_args.iter())
-                    .all(|(pattern, actual)| self.unify_ty_for_inference(pattern, actual, subst)),
+                } if named_ty_identity_eq(*def_id, name, *actual_def_id, actual_name)
+                    && args.len() == actual_args.len() =>
+                {
+                    args.iter()
+                        .zip(actual_args.iter())
+                        .all(|(pattern, actual)| {
+                            self.unify_ty_for_inference(pattern, actual, subst)
+                        })
+                }
                 Ty::GeneratedFuture { .. } | Ty::OpaqueState { .. } => {
                     self.unify_std_async_future_generated_for_inference(&pattern, &actual, subst)
                 }

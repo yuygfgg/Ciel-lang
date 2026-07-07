@@ -13,7 +13,7 @@ async Result<usize, Error> ready() {
     return Ok(0);
 }
 
-async::Task<usize> spawn_branch_assigned_future(bool flag) {
+async::Task<usize, Error> spawn_branch_assigned_future(bool flag) {
     [3]i64 values = [1, 2, 3];
     async::Future<Result<usize, Error>> future;
     if (flag) {

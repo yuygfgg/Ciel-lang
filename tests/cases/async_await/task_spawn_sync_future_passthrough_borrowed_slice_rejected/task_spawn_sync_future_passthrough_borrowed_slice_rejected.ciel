@@ -13,7 +13,7 @@ async::Future<Result<usize, Error>> pass(async::Future<Result<usize, Error>> fut
     return future;
 }
 
-async::Task<usize> spawn_borrowed_slice() {
+async::Task<usize, Error> spawn_borrowed_slice() {
     [3]i64 values = [1, 2, 3];
     return must(async::spawn<usize>(pass(len_later(values[..]))));
 }

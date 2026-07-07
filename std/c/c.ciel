@@ -59,3 +59,13 @@ export type c_string = *char;
 
 // Read-only NUL-terminated C string pointer.
 export type const_c_string = *const char;
+
+// Runtime C helpers shared by standard-library packages. Keep these declared
+// in one module so a single generated C translation unit never sees duplicate
+// extern declarations for the same runtime symbol.
+export unsafe extern "C" {
+    c_int ciel_errno();
+    *char ciel_cstr_from_slice(*const char ptr, usize len);
+    c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
+    ?*void ciel_actor_box_copy(usize size, usize align, *const void source);
+}

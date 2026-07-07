@@ -475,15 +475,14 @@ impl TypeChecker {
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
         let enum_ty = match expected {
-            Some(Ty::Named { name, args }) if name == &sig.enum_name => Ty::Named {
-                name: name.clone(),
-                args: args.clone(),
-            },
+            Some(Ty::Named { def_id, name, args })
+                if def_id == &Some(sig.enum_def_id)
+                    || (def_id.is_none() && name == &sig.enum_name) =>
+            {
+                named_ty(*def_id, name.clone(), args.clone())
+            }
             Some(other) if self.is_std_error_ty(other) && sig.enum_generics.is_empty() => {
-                Ty::Named {
-                    name: sig.enum_name.clone(),
-                    args: Vec::new(),
-                }
+                named_ty(Some(sig.enum_def_id), sig.enum_name.clone(), Vec::new())
             }
             Some(other) => {
                 self.diagnostics.push(Diagnostic::new(
@@ -495,10 +494,9 @@ impl TypeChecker {
                 ));
                 return None;
             }
-            None if sig.enum_generics.is_empty() => Ty::Named {
-                name: sig.enum_name.clone(),
-                args: Vec::new(),
-            },
+            None if sig.enum_generics.is_empty() => {
+                named_ty(Some(sig.enum_def_id), sig.enum_name.clone(), Vec::new())
+            }
             None => {
                 self.diagnostics.push(Diagnostic::new(
                     span,
@@ -511,6 +509,7 @@ impl TypeChecker {
         let Ty::Named {
             name: enum_name,
             args: enum_args,
+            ..
         } = &enum_ty
         else {
             unreachable!("variant enum type is always named");
@@ -580,6 +579,7 @@ impl TypeChecker {
         let Ty::Named {
             name: enum_name,
             args: enum_args,
+            ..
         } = &enum_ty
         else {
             unreachable!("variant enum type is always named");
@@ -895,7 +895,7 @@ impl TypeChecker {
                 inner: Box::new((**elem).clone()),
             }),
             Ty::Slice { .. } if field == "len" => Some(Ty::Usize),
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 let instance_name = enum_instance_name(name, args);
                 let fields = if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
                     fields
@@ -1424,7 +1424,7 @@ impl TypeChecker {
     }
 
     pub(super) fn is_opaque_by_value(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { name, args } if args.is_empty() && self.ctx.opaque_structs.contains(name))
+        matches!(ty, Ty::Named { name, args, .. } if args.is_empty() && self.ctx.opaque_structs.contains(name))
     }
 
     pub(in crate::typeck) fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
@@ -1439,7 +1439,7 @@ impl TypeChecker {
 
     pub(super) fn is_c_aggregate_value(&self, ty: &Ty) -> bool {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 let instance_name = enum_instance_name(name, args);
                 self.ctx.structs.contains_key(&instance_name)
                     || self.ctx.checked_enums.contains_key(&instance_name)

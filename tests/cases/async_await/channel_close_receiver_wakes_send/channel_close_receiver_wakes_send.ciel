@@ -20,7 +20,7 @@ async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::ChannelPair<usize> ready = async::channel<usize>(1)?;
     async::try_send<usize>(pair.sender, 1)?;
-    async::Task<usize> task =
+    async::Task<usize, Error> task =
         async::spawn<usize>(pending_send(pair.sender, ready.sender))?;
     _ sender_ready = await async::recv<usize>(ready.receiver)?;
     async::close_receiver<usize>(pair.receiver)?;

@@ -32,6 +32,8 @@ export enum SharedMapError {
     Sync(sync::SyncError),
 }
 
+derive Message<SharedMapError>;
+
 impl format_error(*const SharedMapError error) {
     switch (*error) {
         case Map(inner):

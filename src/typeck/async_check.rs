@@ -853,9 +853,6 @@ impl TypeChecker {
                 );
             }
         }
-        if std_id::is_std_async_runtime_handle_ty(&self.ctx.resolved, ty) {
-            return None;
-        }
         if contains_generic(ty) || contains_type_hole(ty) {
             return Some(format!(
                 "{path} has generic type `{ty}` without a proven async-frame-safety policy"
@@ -910,10 +907,7 @@ impl TypeChecker {
                 }
                 None
             }
-            Ty::Named { name, args } => {
-                if std_id::is_std_async_runtime_handle_ty(&self.ctx.resolved, ty) {
-                    return None;
-                }
+            Ty::Named { name, args, .. } => {
                 if !visiting.insert(ty.clone()) {
                     return None;
                 }

@@ -41,7 +41,7 @@ use crate::{
     source::SourceMap,
     span::{FileId, Span},
     thir::{self, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, ThirVisitor},
-    types::Ty,
+    types::{Ty, named_ty},
 };
 use tree_sitter_highlight::{HighlightConfiguration, HighlightEvent, Highlighter};
 
@@ -2119,10 +2119,11 @@ impl HirTypeToTy for Ty {
                 hir::PrimitiveType::F32 => Ty::F32,
                 hir::PrimitiveType::F64 => Ty::F64,
             },
-            TypeKind::Named(name, args) => Ty::Named {
-                name: name.display.clone(),
-                args: args.iter().map(Ty::from_hir_lossy).collect(),
-            },
+            TypeKind::Named(name, args) => named_ty(
+                None,
+                name.display.clone(),
+                args.iter().map(Ty::from_hir_lossy).collect(),
+            ),
             TypeKind::Pointer {
                 nullable,
                 mutability,

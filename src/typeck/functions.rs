@@ -364,9 +364,11 @@ impl TypeChecker {
                         analysis.ret,
                         analysis.params,
                     ) {
+                        self.bump_capability_resolution_epoch();
                         self.queue_impl_body(pending, HashMap::new(), None);
                     }
                 } else {
+                    self.bump_capability_resolution_epoch();
                     self.ctx.generic_impls.push(GenericImplTemplate {
                         module: module.id,
                         body_reflection_module: None,
@@ -758,6 +760,7 @@ impl TypeChecker {
                 analysis.ret,
                 analysis.params,
             ) {
+                self.bump_capability_resolution_epoch();
                 self.pending_derived_template_constraint_checks.push(
                     PendingDerivedTemplateConstraintCheck {
                         derive_span: decl.name.span,
@@ -1044,6 +1047,7 @@ impl TypeChecker {
         self.ctx
             .impls
             .retain(|implementation| !pending_defs.contains(&implementation.function_def));
+        self.bump_capability_resolution_epoch();
 
         while !candidates.is_empty() {
             let mut next = Vec::new();
@@ -1089,6 +1093,7 @@ impl TypeChecker {
             .is_none()
         {
             self.ctx.impls.push(implementation);
+            self.bump_capability_resolution_epoch();
         }
     }
 
@@ -1324,6 +1329,7 @@ impl TypeChecker {
             }
             if rejected.is_empty() {
                 self.pending_derived_generic_impls.clear();
+                self.bump_capability_resolution_epoch();
                 self.ctx
                     .generic_impls
                     .extend(validated.into_iter().map(|pending| pending.template));
@@ -1355,7 +1361,7 @@ impl TypeChecker {
         span: crate::span::Span,
         analysis: &ImplAnalysis,
     ) -> bool {
-        if !self.is_std_message_capability_interface_def(analysis.interface_def) {
+        if !self.is_marker_interface_def(analysis.interface_def) {
             return false;
         }
         if let Some(conflict) = self.marker_capability_impl_overlap_kind(analysis) {
@@ -1394,7 +1400,7 @@ impl TypeChecker {
         &mut self,
         analysis: &ImplAnalysis,
     ) -> Option<MarkerImplOverlapKind> {
-        if !self.is_std_message_capability_interface_def(analysis.interface_def) {
+        if !self.is_marker_interface_def(analysis.interface_def) {
             return None;
         }
         let current_domain =
@@ -1402,6 +1408,16 @@ impl TypeChecker {
         let templates = self.visible_generic_impl_templates();
         for template in &templates {
             if template.interface_def != analysis.interface_def {
+                continue;
+            }
+            if self.marker_impl_constraints_disjoint(
+                &template.generics,
+                &template.generic_constraints,
+                template.receiver_ty.as_ref(),
+                &analysis.generics,
+                &analysis.generic_constraints,
+                analysis.receiver_ty.as_ref(),
+            ) {
                 continue;
             }
             let template_domain = self
@@ -1426,8 +1442,19 @@ impl TypeChecker {
         if analysis.generics.is_empty() {
             return None;
         }
-        for existing in &self.ctx.impls {
+        let existing_impls = self.ctx.impls.clone();
+        for existing in &existing_impls {
             if existing.interface_def != analysis.interface_def {
+                continue;
+            }
+            if self.marker_impl_constraints_disjoint(
+                &analysis.generics,
+                &analysis.generic_constraints,
+                analysis.receiver_ty.as_ref(),
+                &[],
+                &[],
+                existing.receiver_ty.as_ref(),
+            ) {
                 continue;
             }
             if capability::marker_impl_domains_disjoint(
@@ -1448,6 +1475,74 @@ impl TypeChecker {
             }
         }
         None
+    }
+
+    fn marker_impl_constraints_disjoint(
+        &mut self,
+        left_generics: &[GenericInfo],
+        left_constraints: &[GenericConstraintBounds],
+        left_receiver: Option<&Ty>,
+        right_generics: &[GenericInfo],
+        right_constraints: &[GenericConstraintBounds],
+        right_receiver: Option<&Ty>,
+    ) -> bool {
+        self.receiver_constraints_reject_marker_overlap(
+            left_generics,
+            left_constraints,
+            left_receiver,
+            right_receiver,
+        ) || self.receiver_constraints_reject_marker_overlap(
+            right_generics,
+            right_constraints,
+            right_receiver,
+            left_receiver,
+        )
+    }
+
+    fn receiver_constraints_reject_marker_overlap(
+        &mut self,
+        _generics: &[GenericInfo],
+        constraints: &[GenericConstraintBounds],
+        constrained_receiver: Option<&Ty>,
+        candidate_receiver: Option<&Ty>,
+    ) -> bool {
+        let (Some(Ty::Generic(name)), Some(candidate)) = (constrained_receiver, candidate_receiver)
+        else {
+            return false;
+        };
+        let Some(constraint) = constraints
+            .iter()
+            .find(|constraint| constraint.name == *name)
+        else {
+            return false;
+        };
+        if constraint.is_resource && !self.type_is_affine(candidate) {
+            return true;
+        }
+        constraint
+            .bounds
+            .positive
+            .iter()
+            .any(|capability| !self.candidate_receiver_satisfies_capability(candidate, capability))
+    }
+
+    fn candidate_receiver_satisfies_capability(
+        &mut self,
+        candidate: &Ty,
+        capability: &ConstraintRef,
+    ) -> bool {
+        if matches!(candidate, Ty::Generic(_)) {
+            return true;
+        }
+        let diagnostic_count = self.diagnostics.len();
+        let satisfies = self.type_implements_capability_by_def(
+            capability.def_id,
+            &capability.name,
+            &capability.args,
+            candidate,
+        );
+        self.diagnostics.truncate(diagnostic_count);
+        satisfies
     }
 
     pub(super) fn resource_handle_message_impl_forbidden(
@@ -2130,21 +2225,18 @@ impl TypeChecker {
             let Some(first) = sigs.first() else {
                 continue;
             };
-            for sig in sigs.iter().skip(1) {
-                if sig.ret != first.ret || sig.params != first.params {
-                    self.diagnostics.push(Diagnostic::new(
-                        self.ctx.resolved.def(sig.def_id).span,
-                        format!("conflicting `extern \"C\"` declarations for symbol `{symbol}`"),
-                    ));
-                }
-            }
-            let definitions = sigs.iter().filter(|sig| sig.has_body).collect::<Vec<_>>();
-            if definitions.len() > 1 {
-                for sig in definitions.iter().skip(1) {
-                    self.diagnostics.push(Diagnostic::new(
-                        self.ctx.resolved.def(sig.def_id).span,
-                        format!("multiple definitions of C ABI symbol `{symbol}`"),
-                    ));
+            if sigs.len() > 1 {
+                for sig in sigs.iter().skip(1) {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            self.ctx.resolved.def(sig.def_id).span,
+                            format!("duplicate C ABI symbol `{symbol}`"),
+                        )
+                        .note(format!(
+                            "first declaration is at `{}`",
+                            self.ctx.resolved.def(first.def_id).name
+                        )),
+                    );
                 }
             }
         }
@@ -2375,39 +2467,5 @@ impl TypeChecker {
             )
             .note("alternatively return `Result<_, Error>` or `Result<_, async::AsyncError>`"),
         );
-    }
-
-    fn async_result_error_can_represent_runtime_failure(&mut self, err_ty: &Ty) -> bool {
-        if err_ty == &std_error_ty() || err_ty == &std_async_error_ty() {
-            return true;
-        }
-        let Ty::Named { name, args } = err_ty else {
-            return false;
-        };
-        let Some(template) = self.ctx.enum_templates.get(name).cloned() else {
-            return false;
-        };
-        if args.len() != template.generics.len() {
-            return true;
-        }
-        let subst = template
-            .generics
-            .iter()
-            .map(|generic| generic.name.clone())
-            .zip(args.iter().cloned())
-            .collect::<HashMap<_, _>>();
-        template.variants.iter().any(|variant| {
-            let payload = variant
-                .payload
-                .iter()
-                .map(|ty| self.lower_type_with_subst(ty, &subst))
-                .collect::<Vec<_>>();
-            match variant.name.as_str() {
-                "Runtime" => payload == [Ty::I64],
-                "Async" | "TaskGroupAsync" => payload == [std_async_error_ty()],
-                "Resource" => payload == [std_resource_error_ty()],
-                _ => false,
-            }
-        })
     }
 }

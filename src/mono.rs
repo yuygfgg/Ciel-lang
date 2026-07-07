@@ -38,11 +38,11 @@ use crate::{
         aggregate_instance_name, contains_generic, mangle_ty_fragment, map_ty_children,
         meta_array_split_len, meta_named, meta_product_ty, meta_ref_array_repr_ty,
         meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_schema_marker_name,
-        meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty, retained_closure_capabilities,
-        std_error_code_ty, std_error_trait_ty, std_error_ty, std_future_ty, std_message_result_ty,
-        std_meta_repr_marker_ty, std_meta_repr_source_name, std_meta_schema_marker_ty,
-        std_meta_schema_source_name, std_result_ty, std_task_ty, ty_contains, ty_from_primitive,
-        type_complexity, unify_ty,
+        meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty, named_ty,
+        retained_closure_capabilities, std_error_code_ty, std_error_trait_ty, std_future_ty,
+        std_message_result_ty, std_meta_repr_marker_ty_with_def_id, std_meta_repr_source_name,
+        std_meta_schema_marker_ty_with_def_id, std_meta_schema_source_name, std_result_ty,
+        std_task_ty, ty_contains, ty_from_primitive, type_complexity, unify_ty,
     },
 };
 
@@ -811,8 +811,11 @@ impl MonoContext {
             TExprKind::Await { future } => {
                 self.mark_standard_error_code_impl();
                 self.mark_awaitable_impl(&expr.ty, &future.ty);
-                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                if let Some((task_output_ty, task_error_ty)) =
+                    task_tys(&self.checked.resolved, &future.ty)
+                {
                     self.mark_task_boundary_clone_impls(&task_output_ty);
+                    self.mark_task_boundary_clone_impls(&task_error_ty);
                 }
                 TExprKind::Await {
                     future: Box::new(self.rewrite_expr(*future)?),
@@ -826,10 +829,11 @@ impl MonoContext {
                         .into_iter()
                         .map(|arm| {
                             self.mark_awaitable_impl(&arm.future_output_ty, &arm.future.ty);
-                            if let Some(task_output_ty) =
-                                task_output_ty(&self.checked.resolved, &arm.future.ty)
+                            if let Some((task_output_ty, task_error_ty)) =
+                                task_tys(&self.checked.resolved, &arm.future.ty)
                             {
                                 self.mark_task_boundary_clone_impls(&task_output_ty);
+                                self.mark_task_boundary_clone_impls(&task_error_ty);
                             }
                             Ok(TSelectArm {
                                 binding_local: arm.binding_local,
@@ -846,8 +850,11 @@ impl MonoContext {
             TExprKind::AsyncBlockOn { future } => {
                 self.mark_standard_error_code_impl();
                 self.mark_awaitable_impl(&expr.ty, &future.ty);
-                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                if let Some((task_output_ty, task_error_ty)) =
+                    task_tys(&self.checked.resolved, &future.ty)
+                {
                     self.mark_task_boundary_clone_impls(&task_output_ty);
+                    self.mark_task_boundary_clone_impls(&task_error_ty);
                 }
                 TExprKind::AsyncBlockOn {
                     future: Box::new(self.rewrite_expr(*future)?),
@@ -863,10 +870,16 @@ impl MonoContext {
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
+                task_error_ty,
             } => {
                 self.mark_standard_error_code_impl();
                 self.mark_task_boundary_clone_impls(&task_output_ty);
-                let spawn_output_ty = std_result_ty(task_output_ty.clone(), std_error_ty());
+                self.mark_task_boundary_clone_impls(&task_error_ty);
+                let spawn_output_ty = std_result_ty(
+                    &self.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                );
                 self.mark_awaitable_impl(&spawn_output_ty, &body.ty);
                 if let TExprKind::Closure { captures, .. } = &body.kind {
                     for capture in captures {
@@ -876,26 +889,31 @@ impl MonoContext {
                 TExprKind::AsyncSpawn {
                     body: Box::new(self.rewrite_expr(*body)?),
                     task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
+                    task_error_ty: self.lower_opaque_returns_in_ty(&task_error_ty),
                 }
             }
             TExprKind::AsyncTaskCancel {
                 task,
                 task_output_ty,
+                task_error_ty,
             } => {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncTaskCancel {
                     task: Box::new(self.rewrite_expr(*task)?),
                     task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
+                    task_error_ty: self.lower_opaque_returns_in_ty(&task_error_ty),
                 }
             }
             TExprKind::AsyncTaskIsFinished {
                 task,
                 task_output_ty,
+                task_error_ty,
             } => {
                 self.mark_standard_error_code_impl();
                 TExprKind::AsyncTaskIsFinished {
                     task: Box::new(self.rewrite_expr(*task)?),
                     task_output_ty: self.lower_opaque_returns_in_ty(&task_output_ty),
+                    task_error_ty: self.lower_opaque_returns_in_ty(&task_error_ty),
                 }
             }
             TExprKind::MetaAsRefRepr { value, source_ty } => TExprKind::MetaAsRefRepr {
@@ -975,7 +993,7 @@ impl MonoContext {
             },
             TExprKind::StructLiteral { type_name, fields } => {
                 let type_name = match &lowered_expr_ty {
-                    Ty::Named { name, args } => aggregate_instance_name(name, args),
+                    Ty::Named { name, args, .. } => aggregate_instance_name(name, args),
                     _ => type_name,
                 };
                 TExprKind::StructLiteral {
@@ -993,7 +1011,7 @@ impl MonoContext {
                 payload,
             } => {
                 let type_name = match &lowered_expr_ty {
-                    Ty::Named { name, args } => aggregate_instance_name(name, args),
+                    Ty::Named { name, args, .. } => aggregate_instance_name(name, args),
                     _ => type_name,
                 };
                 TExprKind::EnumLiteral {
@@ -1061,7 +1079,7 @@ impl MonoContext {
     }
 
     fn mark_standard_error_code_impl(&mut self) {
-        let code_ty = std_error_code_ty();
+        let code_ty = std_error_code_ty(&self.checked.resolved);
         let function_def = self
             .checked
             .impls
@@ -1238,6 +1256,26 @@ struct AggregateCollector<'a> {
 }
 
 impl<'a> AggregateCollector<'a> {
+    fn std_meta_repr_marker_ty(&self, borrowed: bool, source_ty: Ty) -> Ty {
+        let source_name = if borrowed { "RefRepr" } else { "Repr" };
+        std_meta_repr_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.checked.resolved, source_name),
+            borrowed,
+            source_ty,
+        )
+    }
+
+    fn std_meta_schema_marker_ty(&self, source_ty: Ty) -> Ty {
+        std_meta_schema_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.checked.resolved, "Schema"),
+            source_ty,
+        )
+    }
+
+    fn attach_std_meta_def_ids(&self, ty: Ty) -> Ty {
+        std_id::attach_std_meta_def_ids(&self.checked.resolved, &ty)
+    }
+
     fn std_message_interface_def(&self, name: &str) -> DefId {
         self.checked
             .interfaces
@@ -1386,7 +1424,7 @@ impl<'a> AggregateCollector<'a> {
         for function in functions {
             self.collect_ty(&function.ret);
             if function.is_async {
-                self.collect_ty(&std_future_ty(function.ret.clone()));
+                self.collect_ty(&std_future_ty(&self.checked.resolved, function.ret.clone()));
             }
             for (_, _, ty, _) in &function.params {
                 self.collect_ty(ty);
@@ -1546,46 +1584,71 @@ impl<'a> AggregateCollector<'a> {
             }
             TExprKind::Await { future } | TExprKind::AsyncBlockOn { future } => {
                 self.collect_expr(future);
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
-                if let Some(task_output_ty) = task_output_ty(&self.checked.resolved, &future.ty) {
+                if let Some((task_output_ty, task_error_ty)) =
+                    task_tys(&self.checked.resolved, &future.ty)
+                {
                     self.collect_task_boundary_clone_result_tys(&task_output_ty);
+                    self.collect_task_boundary_clone_result_tys(&task_error_ty);
                 }
             }
             TExprKind::AsyncSelect { arms, .. } => {
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
                 for arm in arms {
                     self.collect_expr(&arm.future);
                     self.collect_expr(&arm.body);
                     self.collect_ty(&arm.future_output_ty);
-                    self.collect_ty(&std_future_ty(arm.future_output_ty.clone()));
-                    if let Some(task_output_ty) =
-                        task_output_ty(&self.checked.resolved, &arm.future.ty)
+                    self.collect_ty(&std_future_ty(
+                        &self.checked.resolved,
+                        arm.future_output_ty.clone(),
+                    ));
+                    if let Some((task_output_ty, task_error_ty)) =
+                        task_tys(&self.checked.resolved, &arm.future.ty)
                     {
                         self.collect_task_boundary_clone_result_tys(&task_output_ty);
+                        self.collect_task_boundary_clone_result_tys(&task_error_ty);
                     }
                 }
             }
             TExprKind::AsyncSleep { ms, output_ty } => {
                 self.collect_expr(ms);
-                self.collect_ty(&std_future_ty(output_ty.clone()));
+                self.collect_ty(&std_future_ty(&self.checked.resolved, output_ty.clone()));
                 self.collect_ty(output_ty);
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
             }
             TExprKind::AsyncSpawn {
                 body,
                 task_output_ty,
+                task_error_ty,
             } => {
                 self.collect_expr(body);
                 self.collect_ty(task_output_ty);
-                self.collect_ty(&std_task_ty(task_output_ty.clone()));
-                self.collect_ty(&std_message_result_ty(task_output_ty.clone()));
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(task_error_ty);
+                self.collect_ty(&std_task_ty(
+                    &self.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.collect_ty(&std_message_result_ty(
+                    &self.checked.resolved,
+                    task_output_ty.clone(),
+                ));
+                self.collect_ty(&std_message_result_ty(
+                    &self.checked.resolved,
+                    task_error_ty.clone(),
+                ));
+                self.collect_ty(&std_result_ty(
+                    &self.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
                 if let TExprKind::Closure { captures, .. } = &body.kind {
@@ -1594,19 +1657,27 @@ impl<'a> AggregateCollector<'a> {
                     }
                 }
                 self.collect_task_boundary_clone_result_tys(task_output_ty);
+                self.collect_task_boundary_clone_result_tys(task_error_ty);
             }
             TExprKind::AsyncTaskCancel {
                 task,
                 task_output_ty,
+                task_error_ty,
             }
             | TExprKind::AsyncTaskIsFinished {
                 task,
                 task_output_ty,
+                task_error_ty,
             } => {
                 self.collect_expr(task);
                 self.collect_ty(task_output_ty);
-                self.collect_ty(&std_task_ty(task_output_ty.clone()));
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(task_error_ty);
+                self.collect_ty(&std_task_ty(
+                    &self.checked.resolved,
+                    task_output_ty.clone(),
+                    task_error_ty.clone(),
+                ));
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
                 let dyn_ty = self.std_error_trait_ty();
                 self.collect_ty(&dyn_ty);
             }
@@ -1746,10 +1817,16 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(handle_message_ty);
                 self.collect_ty(message_ty);
                 self.collect_ty(handler_ty);
-                self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_message_result_ty(handler_ty.clone()));
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
+                self.collect_ty(&std_message_result_ty(
+                    &self.checked.resolved,
+                    handler_ty.clone(),
+                ));
                 if matches!(mode, ActorSpawnMode::Cloned) {
-                    self.collect_ty(&std_message_result_ty(state_ty.clone()));
+                    self.collect_ty(&std_message_result_ty(
+                        &self.checked.resolved,
+                        state_ty.clone(),
+                    ));
                     self.collect_message_clone_result_tys(state_ty);
                 }
                 self.collect_message_clone_result_tys(handler_ty);
@@ -1762,15 +1839,18 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_expr(actor);
                 self.collect_expr(value);
                 self.collect_ty(message_ty);
-                self.collect_ty(&std_error_code_ty());
-                self.collect_ty(&std_message_result_ty(message_ty.clone()));
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
+                self.collect_ty(&std_message_result_ty(
+                    &self.checked.resolved,
+                    message_ty.clone(),
+                ));
                 self.collect_message_clone_result_tys(message_ty);
             }
             TExprKind::ActorStop { actor, message_ty }
             | TExprKind::ActorJoin { actor, message_ty } => {
                 self.collect_expr(actor);
                 self.collect_ty(message_ty);
-                self.collect_ty(&std_error_code_ty());
+                self.collect_ty(&std_error_code_ty(&self.checked.resolved));
             }
             TExprKind::TypeSize { ty }
             | TExprKind::TypeAlign { ty }
@@ -1807,7 +1887,7 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn collect_message_clone_result_tys(&mut self, ty: &Ty) {
-        self.collect_ty(&std_message_result_ty(ty.clone()));
+        self.collect_ty(&std_message_result_ty(&self.checked.resolved, ty.clone()));
     }
 
     fn collect_task_boundary_clone_result_tys(&mut self, ty: &Ty) {
@@ -1831,7 +1911,7 @@ impl<'a> AggregateCollector<'a> {
 
     fn collect_ty(&mut self, ty: &Ty) {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name)
                     && args.len() == 1
                     && !contains_generic(&args[0])
@@ -1848,10 +1928,7 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_ty(&storage_ty);
                     return;
                 }
-                let ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let ty = named_ty(*def_id, name.clone(), args.clone());
                 if self.is_owned_meta_policy_leaf(&ty, None) {
                     if self.structs.contains_key(name) {
                         self.instantiate_struct(name, args);
@@ -1875,7 +1952,7 @@ impl<'a> AggregateCollector<'a> {
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => self.collect_ty(elem),
             Ty::GeneratedFuture { output, .. } => {
                 self.collect_ty(output);
-                self.collect_ty(&std_future_ty((**output).clone()));
+                self.collect_ty(&std_future_ty(&self.checked.resolved, (**output).clone()));
             }
             Ty::OpaqueState { base, state } => {
                 self.collect_ty(base);
@@ -2201,15 +2278,15 @@ impl<'a> AggregateCollector<'a> {
         in_meta_sop: bool,
     ) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
-                    return Ty::Named {
-                        name: name.clone(),
-                        args: args
-                            .iter()
+                    return named_ty(
+                        *def_id,
+                        name.clone(),
+                        args.iter()
                             .map(|arg| {
                                 self.normalize_meta_repr_markers_inner(
                                     arg,
@@ -2218,15 +2295,12 @@ impl<'a> AggregateCollector<'a> {
                                 )
                             })
                             .collect(),
-                    };
+                    );
                 }
                 if name == "Type" && args.len() == 1 && !preserve_markers {
                     return meta_named("Type", vec![self.meta_marker_storage_ty(&args[0])]);
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let original = named_ty(*def_id, name.clone(), args.clone());
                 if !preserve_markers && self.type_matches_meta_policy_marker(&original) {
                     if in_meta_sop {
                         return original;
@@ -2266,7 +2340,8 @@ impl<'a> AggregateCollector<'a> {
         let span = span.into();
         let root = (!borrowed).then(|| source_ty.clone());
         let mut expanding = HashSet::new();
-        self.meta_repr_ty_rec(span, source_ty, borrowed, root.as_ref(), &mut expanding)
+        let ty = self.meta_repr_ty_rec(span, source_ty, borrowed, root.as_ref(), &mut expanding);
+        self.attach_std_meta_def_ids(ty)
     }
 
     fn meta_repr_ty_rec(
@@ -2278,7 +2353,7 @@ impl<'a> AggregateCollector<'a> {
         expanding: &mut HashSet<Ty>,
     ) -> Ty {
         if contains_generic(source_ty) {
-            return std_meta_repr_marker_ty(borrowed, source_ty.clone());
+            return self.std_meta_repr_marker_ty(borrowed, source_ty.clone());
         }
         match source_ty {
             Ty::Array { .. } => {
@@ -2294,7 +2369,7 @@ impl<'a> AggregateCollector<'a> {
                     self.meta_array_repr_ty_rec(*len, elem, false, root, expanding)
                 }
             }
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(marker_borrowed) = meta_repr_marker_name(name) {
                     if args.len() != 1 {
                         self.push_meta_unsupported_repr(span, source_ty);
@@ -2302,10 +2377,7 @@ impl<'a> AggregateCollector<'a> {
                     }
                     return self.meta_repr_ty_rec(span, &args[0], marker_borrowed, root, expanding);
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
                     return self.meta_repr_policy_leaf_ty(&instance_ty, root);
                 }
@@ -2418,13 +2490,13 @@ impl<'a> AggregateCollector<'a> {
 
     fn meta_repr_policy_leaf_ty(&mut self, ty: &Ty, root: Option<&Ty>) -> Ty {
         match ty {
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
+            Ty::Named { def_id, name, args } => named_ty(
+                *def_id,
+                name.clone(),
+                args.iter()
                     .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, false))
                     .collect(),
-            },
+            ),
             _ => ty.clone(),
         }
     }
@@ -2436,31 +2508,25 @@ impl<'a> AggregateCollector<'a> {
         in_meta_sop: bool,
     ) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_repr_marker_name(name).is_some() || meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         return Ty::Unknown;
                     }
-                    return Ty::Named {
-                        name: name.clone(),
-                        args: args.clone(),
-                    };
+                    return named_ty(*def_id, name.clone(), args.clone());
                 }
-                let original = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let original = named_ty(*def_id, name.clone(), args.clone());
                 if in_meta_sop && self.type_matches_meta_policy_marker(&original) {
                     return original;
                 }
                 let in_meta_sop = in_meta_sop || std_id::is_std_meta_sop_node_name(name);
-                Ty::Named {
-                    name: name.clone(),
-                    args: args
-                        .iter()
+                named_ty(
+                    *def_id,
+                    name.clone(),
+                    args.iter()
                         .map(|arg| self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop))
                         .collect(),
-                }
+                )
             }
             _ => map_ty_children(ty, |arg| {
                 self.meta_repr_policy_leaf_arg_ty(arg, root, in_meta_sop)
@@ -2491,7 +2557,7 @@ impl<'a> AggregateCollector<'a> {
 
     fn meta_marker_storage_ty(&mut self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name)
                     && args.len() == 1
                     && !contains_generic(&args[0])
@@ -2501,13 +2567,13 @@ impl<'a> AggregateCollector<'a> {
                 if meta_schema_marker_name(name) && args.len() == 1 && !contains_generic(&args[0]) {
                     return self.meta_schema_ty(None, &args[0]);
                 }
-                Ty::Named {
-                    name: name.clone(),
-                    args: args
-                        .iter()
+                named_ty(
+                    *def_id,
+                    name.clone(),
+                    args.iter()
                         .map(|arg| self.meta_marker_storage_ty(arg))
                         .collect(),
-                }
+                )
             }
             _ => map_ty_children(ty, |arg| self.meta_marker_storage_ty(arg)),
         }
@@ -2517,7 +2583,8 @@ impl<'a> AggregateCollector<'a> {
         let span = span.into();
         let root = source_ty.clone();
         let mut expanding = HashSet::new();
-        self.meta_schema_ty_rec(span, source_ty, Some(&root), &mut expanding)
+        let ty = self.meta_schema_ty_rec(span, source_ty, Some(&root), &mut expanding);
+        self.attach_std_meta_def_ids(ty)
     }
 
     fn meta_schema_ty_rec(
@@ -2528,11 +2595,11 @@ impl<'a> AggregateCollector<'a> {
         expanding: &mut HashSet<Ty>,
     ) -> Ty {
         if contains_generic(source_ty) {
-            return std_meta_schema_marker_ty(source_ty.clone());
+            return self.std_meta_schema_marker_ty(source_ty.clone());
         }
         match source_ty {
             Ty::Array { len, elem } => self.meta_schema_array_ty_rec(*len, elem, root, expanding),
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if meta_schema_marker_name(name) {
                     if args.len() != 1 {
                         self.push_meta_unsupported_schema(span, source_ty);
@@ -2540,10 +2607,7 @@ impl<'a> AggregateCollector<'a> {
                     }
                     return self.meta_schema_ty_rec(span, &args[0], root, expanding);
                 }
-                let instance_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
+                let instance_ty = named_ty(*def_id, name.clone(), args.clone());
                 if !expanding.insert(instance_ty.clone()) {
                     self.diagnostics.push(Diagnostic::new(
                         span,
@@ -2800,12 +2864,9 @@ impl<'a> AggregateCollector<'a> {
             Ty::ClosureInstance { captures, .. } => captures
                 .iter()
                 .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::Named { name, args } => {
-                let named_ty = Ty::Named {
-                    name: name.clone(),
-                    args: args.clone(),
-                };
-                if std_id::std_async_future_output_arg(&self.checked.resolved, &named_ty).is_some()
+            Ty::Named { def_id, name, args } => {
+                let future_ty = named_ty(*def_id, name.clone(), args.clone());
+                if std_id::std_async_future_output_arg(&self.checked.resolved, &future_ty).is_some()
                 {
                     return true;
                 }
@@ -2851,8 +2912,7 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
-        matches!(ty, Ty::Named { name, args } if args.is_empty()
-            && std_id::is_std_resource_handle_type_name(&self.checked.resolved, name))
+        std_id::is_std_resource_handle_ty(&self.checked.resolved, ty)
     }
 
     fn is_unsafe_struct_instance(&self, name: &str, args: &[Ty]) -> bool {
@@ -3025,7 +3085,7 @@ impl<'a> AggregateCollector<'a> {
                         ));
                         return Ty::Unknown;
                     }
-                    return std_meta_repr_marker_ty(borrowed, args[0].clone());
+                    return self.std_meta_repr_marker_ty(borrowed, args[0].clone());
                 }
                 if let Some(def_id) = def_id
                     && self.std_meta_schema_marker(def_id, &name)
@@ -3037,7 +3097,7 @@ impl<'a> AggregateCollector<'a> {
                         ));
                         return Ty::Unknown;
                     }
-                    return std_meta_schema_marker_ty(args[0].clone());
+                    return self.std_meta_schema_marker_ty(args[0].clone());
                 }
                 if matches!(def_kind, Some(DefKind::TypeAlias))
                     && let Some(alias) = self.aliases.get(&name)
@@ -3098,7 +3158,7 @@ impl<'a> AggregateCollector<'a> {
                 {
                     Ty::DynamicInterface { def_id, name, args }
                 } else {
-                    let ty = Ty::Named { name, args };
+                    let ty = named_ty(def_id, name, args);
                     if preserve_meta_repr_markers {
                         self.normalize_meta_repr_markers_preserving_markers(&ty)
                     } else {
@@ -3314,13 +3374,14 @@ fn generic_instance_name(name: &str, args: &[Ty]) -> String {
 
 fn enum_c_name_from_ty(ty: &Ty) -> Option<String> {
     match ty {
-        Ty::Named { name, args } => Some(aggregate_instance_name(name, args)),
+        Ty::Named { name, args, .. } => Some(aggregate_instance_name(name, args)),
         _ => None,
     }
 }
 
-fn task_output_ty(resolved: &ResolvedProgram, ty: &Ty) -> Option<Ty> {
-    std_id::std_async_task_output_arg(resolved, ty).cloned()
+fn task_tys(resolved: &ResolvedProgram, ty: &Ty) -> Option<(Ty, Ty)> {
+    std_id::std_async_task_args(resolved, ty)
+        .map(|(output_ty, error_ty)| (output_ty.clone(), error_ty.clone()))
 }
 
 fn is_strict_generic_growth(previous: &[Ty], next: &[Ty]) -> bool {

@@ -14,18 +14,18 @@ async Result<usize, Error> len_later([]const i64 view) {
     return Ok(view.len);
 }
 
-async::Task<usize> spawn_enum_payload_future() {
+async::Task<usize, Error> spawn_enum_payload_future() {
     [3]i64 values = [1, 2, 3];
     FutureChoice choice = One(len_later(values[..]));
     switch (choice) {
         case One(future):
             return must(async::spawn<usize>(future));
         case Empty:
-            return must(async::spawn<usize>(async || {
+            return must(async::spawn<usize, Error>(async || {
                 return Ok(0);
             }));
     }
-    return must(async::spawn<usize>(async || {
+    return must(async::spawn<usize, Error>(async || {
         return Ok(1);
     }));
 }

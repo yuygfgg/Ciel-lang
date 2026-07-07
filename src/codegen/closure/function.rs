@@ -131,7 +131,8 @@ impl<'a> CGenerator<'a> {
         std_id::std_async_future_output_arg(&self.program.checked.resolved, ty).cloned()
     }
 
-    pub(in crate::codegen) fn task_output_ty_for_codegen(&self, ty: &Ty) -> Option<Ty> {
-        std_id::std_async_task_output_arg(&self.program.checked.resolved, ty).cloned()
+    pub(in crate::codegen) fn task_tys_for_codegen(&self, ty: &Ty) -> Option<(Ty, Ty)> {
+        std_id::std_async_task_args(&self.program.checked.resolved, ty)
+            .map(|(output_ty, error_ty)| (output_ty.clone(), error_ty.clone()))
     }
 }

@@ -14,7 +14,7 @@ struct Config {
 
 i32 main() {
     Config config = { values: [2, 5, 7] };
-    async::Task<usize> task = must(async::spawn<usize>(async || {
+    async::Task<usize, Error> task = must(async::spawn<usize, Error>(async || {
         await async_time::sleep_ms(1)?;
         return Ok(config.values[0] + config.values[1] + config.values[2]);
     }));

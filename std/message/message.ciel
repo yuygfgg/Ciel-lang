@@ -105,9 +105,7 @@ unsafe impl clone_message(*const Error value) {
     return Ok(*value);
 }
 
-unsafe impl<T: ShareHandle> async_frame_opt_in_marker(*const T value) {
-    return true;
-}
+unsafe derive<T: ShareHandle> async_frame_opt_in_marker<T>;
 
 derivable unsafe impl<T> clone_message(*const T value) {
     meta::Repr<T> repr = meta::into_repr(value);

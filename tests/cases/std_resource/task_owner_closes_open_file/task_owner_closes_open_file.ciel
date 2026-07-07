@@ -52,7 +52,7 @@ i32 main() {
     }));
 
     text::Text owned_path = must(text::text_copy(path));
-    async::Task<HandleParts> task = must(async::spawn<HandleParts>(open_in_task(owned_path)));
+    async::Task<HandleParts, Error> task = must(async::spawn<HandleParts>(open_in_task(owned_path)));
     HandleParts parts = must(async::block_on(task));
     io::File stale = file_from_parts(parts);
 

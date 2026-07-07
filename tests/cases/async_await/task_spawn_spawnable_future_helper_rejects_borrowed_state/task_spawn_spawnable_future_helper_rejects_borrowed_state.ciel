@@ -10,7 +10,7 @@ async Result<usize, Error> len_later([]const i64 view) {
     return Ok(view.len);
 }
 
-async::Task<usize> spawn_future<A: async::SpawnableFuture<Result<usize, Error>>>(
+async::Task<usize, Error> spawn_future<A: async::SpawnableFuture<Result<usize, Error>>>(
     A future
 ) {
     return must(async::spawn<usize>(future));

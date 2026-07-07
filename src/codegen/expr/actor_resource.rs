@@ -79,8 +79,14 @@ impl<'a> CGenerator<'a> {
                 self.c_pointer_decl(state_ty, &state_box)
             ),
         );
-        let state_clone_layout =
-            self.result_layout(&std_result_ty(state_ty.clone(), std_error_ty()), expr.span)?;
+        let state_clone_layout = self.result_layout(
+            &std_result_ty(
+                &self.program.checked.resolved,
+                state_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
+            expr.span,
+        )?;
         self.emit_value_copy(
             &format!("(*{state_box})"),
             &format!("{state_clone}.as.{}._0", state_clone_layout.ok_name),
@@ -113,7 +119,11 @@ impl<'a> CGenerator<'a> {
             ),
         );
         let handler_clone_layout = self.result_layout(
-            &std_result_ty(handler_ty.clone(), std_error_ty()),
+            &std_result_ty(
+                &self.program.checked.resolved,
+                handler_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
             expr.span,
         )?;
         self.emit_value_copy(
@@ -144,10 +154,7 @@ impl<'a> CGenerator<'a> {
         );
         self.line_indent(indent + 1, &format!("goto {done_label};"));
         self.line_indent(indent, "}");
-        let actor_ty = Ty::Named {
-            name: "Actor".to_string(),
-            args: vec![handle_message_ty.clone()],
-        };
+        let actor_ty = std_actor_ty(&self.program.checked.resolved, handle_message_ty.clone());
         let actor_value = format!(
             "({}){{ .handle = (void *){raw_actor} }}",
             self.c_type(&actor_ty)
@@ -209,7 +216,11 @@ impl<'a> CGenerator<'a> {
         self.line_indent(indent + 1, &format!("goto {done_label};"));
         self.line_indent(indent, "}");
         let init_call = self.callable_call_expr(&init.ty, &init_src, &[])?;
-        let init_result_ty = std_result_ty(state_ty.clone(), std_error_ty());
+        let init_result_ty = std_result_ty(
+            &self.program.checked.resolved,
+            state_ty.clone(),
+            std_error_ty(&self.program.checked.resolved),
+        );
         let init_result_layout = self.result_layout(&init_result_ty, expr.span)?;
         let init_result = self.next_temp("actor_state_init_result");
         let previous_owner = self.next_temp("actor_previous_owner");
@@ -274,7 +285,11 @@ impl<'a> CGenerator<'a> {
             expr.span,
         )?;
         let handler_clone_layout = self.result_layout(
-            &std_result_ty(handler_ty.clone(), std_error_ty()),
+            &std_result_ty(
+                &self.program.checked.resolved,
+                handler_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
             expr.span,
         )?;
         self.line_indent(
@@ -362,10 +377,7 @@ impl<'a> CGenerator<'a> {
         );
         self.line_indent(indent + 1, &format!("goto {done_label};"));
         self.line_indent(indent, "}");
-        let actor_ty = Ty::Named {
-            name: "Actor".to_string(),
-            args: vec![handle_message_ty.clone()],
-        };
+        let actor_ty = std_actor_ty(&self.program.checked.resolved, handle_message_ty.clone());
         let actor_value = format!(
             "({}){{ .handle = (void *){raw_actor} }}",
             self.c_type(&actor_ty)
@@ -411,7 +423,11 @@ impl<'a> CGenerator<'a> {
             expr.span,
         )?;
         let clone_layout = self.result_layout(
-            &std_result_ty(message_ty.clone(), std_error_ty()),
+            &std_result_ty(
+                &self.program.checked.resolved,
+                message_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
             expr.span,
         )?;
         let msg_box = self.next_temp("actor_msg_box");
@@ -468,8 +484,14 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<()> {
-        let clone_layout =
-            self.result_layout(&std_result_ty(cloned_ty.clone(), std_error_ty()), span)?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(
+                &self.program.checked.resolved,
+                cloned_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
+            span,
+        )?;
         self.line_indent(
             indent,
             &format!("if ({clone_result}.tag == {}) {{", clone_layout.err_index),
@@ -496,8 +518,14 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<()> {
-        let clone_layout =
-            self.result_layout(&std_result_ty(cloned_ty.clone(), std_error_ty()), span)?;
+        let clone_layout = self.result_layout(
+            &std_result_ty(
+                &self.program.checked.resolved,
+                cloned_ty.clone(),
+                std_error_ty(&self.program.checked.resolved),
+            ),
+            span,
+        )?;
         self.line_indent(
             indent,
             &format!("if ({clone_result}.tag == {}) {{", clone_layout.err_index),
@@ -739,7 +767,7 @@ impl<'a> CGenerator<'a> {
         if !self.enum_has_variant_with_payload(
             scoped_err_ty,
             "Resource",
-            &[std_resource_error_ty()],
+            &[std_resource_error_ty(&self.program.checked.resolved)],
         ) {
             return Err(vec![Diagnostic::new(
                 expr.span,

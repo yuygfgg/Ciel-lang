@@ -23,7 +23,11 @@ impl<'a> CGenerator<'a> {
     fn emit_actor_dispatch(&mut self, dispatch: &ActorDispatch) -> DiagResult<()> {
         let result_ty = match dispatch.mode {
             ActorSpawnMode::Cloned => self.callable_ret_params(&dispatch.handler_ty)?.0,
-            ActorSpawnMode::State => std_result_ty(Ty::Void, std_error_ty()),
+            ActorSpawnMode::State => std_result_ty(
+                &self.program.checked.resolved,
+                Ty::Void,
+                std_error_ty(&self.program.checked.resolved),
+            ),
         };
         let result_layout = self.result_layout(
             &result_ty,
@@ -61,10 +65,10 @@ impl<'a> CGenerator<'a> {
                 &["(*state)", "(*message)"],
             )?,
             ActorSpawnMode::State => {
-                let actor_ty = Ty::Named {
-                    name: "Actor".to_string(),
-                    args: vec![dispatch.handle_message_ty.clone()],
-                };
+                let actor_ty = std_actor_ty(
+                    &self.program.checked.resolved,
+                    dispatch.handle_message_ty.clone(),
+                );
                 self.line_indent(
                     1,
                     &format!(

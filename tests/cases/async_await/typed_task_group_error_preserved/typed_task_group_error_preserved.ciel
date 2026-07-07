@@ -1,0 +1,73 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/message as message;
+import /std/result;
+
+enum GroupError {
+    Async(async::AsyncError),
+    Worker(i64),
+}
+
+derive message::Message<GroupError>;
+
+impl format_error(*const GroupError error) {
+    switch (*error) {
+        case Async(inner):
+            return format_error(&inner);
+        case Worker(_):
+            return "worker failed";
+    }
+}
+
+async Result<usize, GroupError> worker() {
+    return Err(Worker(41));
+}
+
+async Result<usize, GroupError> run_group() {
+    Result<async::TaskGroup<usize, GroupError>, async::AsyncError> group_result =
+        async::task_group<usize, GroupError>();
+    async::TaskGroup<usize, GroupError> group;
+    switch (group_result) {
+        case Ok(value):
+            group = value;
+        case Err(error):
+            return Err(Async(error));
+    }
+
+    Result<async::Task<usize, GroupError>, async::AsyncError> task_result =
+        async::spawn<usize, GroupError>(worker());
+    async::Task<usize, GroupError> task;
+    switch (task_result) {
+        case Ok(value):
+            task = value;
+        case Err(error):
+            return Err(Async(error));
+    }
+
+    switch (async::group_add<usize, GroupError>(&group, task)) {
+        case Ok:
+            {}
+        case Err(error):
+            return Err(Async(error));
+    }
+    return await async::group_next<usize, GroupError>(&group);
+}
+
+i32 main() {
+    Result<usize, GroupError> result = async::block_on(run_group());
+    switch (result) {
+        case Ok(_):
+            return 1;
+        case Err(Worker(value)):
+            if (value == 41) {
+                return 0;
+            }
+            return 2;
+        case Err(Async(_)):
+            return 3;
+    }
+    return 4;
+}

@@ -18,15 +18,15 @@ async Result<usize, Error> controlled(
 }
 
 async Result<usize, Error> drive() {
-    async::TaskGroup<usize> group = async::task_group<usize>()?;
+    async::TaskGroup<usize, Error> group = async::task_group<usize, Error>()?;
     async::ChannelPair<usize> slow_ready = async::channel<usize>(1)?;
     async::ChannelPair<usize> fast_ready = async::channel<usize>(1)?;
     async::ChannelPair<usize> slow_release = async::channel<usize>(1)?;
     async::ChannelPair<usize> fast_release = async::channel<usize>(1)?;
-    async::Task<usize> slow = async::spawn<usize>(
+    async::Task<usize, Error> slow = async::spawn<usize>(
         controlled(slow_ready.sender, slow_release.receiver, 9)
     )?;
-    async::Task<usize> fast = async::spawn<usize>(
+    async::Task<usize, Error> fast = async::spawn<usize>(
         controlled(fast_ready.sender, fast_release.receiver, 3)
     )?;
     group.async::add(slow)?;

@@ -34,7 +34,7 @@ async Result<usize, Error> drive() {
     anet::AsyncTcpListener listener =
         anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<void> server = async::spawn<void>(write_chunks(listener))?;
+    async::Task<void, Error> server = async::spawn<void>(write_chunks(listener))?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 2)?;

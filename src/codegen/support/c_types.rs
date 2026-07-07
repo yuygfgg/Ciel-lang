@@ -80,6 +80,7 @@ impl<'a> CGenerator<'a> {
             Ty::Named {
                 name: ty_name,
                 args,
+                ..
             } => {
                 if self.is_std_meta_type_witness(ty_name, args) {
                     return c_base_decl(&c_qualified_base(C_META_TYPE_TAG, top_const), name);
@@ -95,9 +96,11 @@ impl<'a> CGenerator<'a> {
                     name,
                 )
             }
-            Ty::GeneratedFuture { output, .. } => {
-                self.c_decl_qualified(&std_future_ty((**output).clone()), name, top_const)
-            }
+            Ty::GeneratedFuture { output, .. } => self.c_decl_qualified(
+                &std_future_ty(&self.program.checked.resolved, (**output).clone()),
+                name,
+                top_const,
+            ),
             Ty::OpaqueState { base, .. } => self.c_decl_qualified(base, name, top_const),
             Ty::OpaqueReturn { .. } => c_base_decl(&c_qualified_base("void", top_const), name),
             Ty::DynamicInterface { .. } => c_base_decl(
@@ -196,7 +199,7 @@ impl<'a> CGenerator<'a> {
             | Ty::GeneratedFuture { .. } => true,
             Ty::OpaqueState { base, .. } => self.ty_can_carry_gc_pointer_inner(base, visiting),
             Ty::Array { elem, .. } => self.ty_can_carry_gc_pointer_inner(elem, visiting),
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 if self.is_std_meta_type_witness(name, args) {
                     return false;
                 }
@@ -300,17 +303,17 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(in crate::codegen) fn c_type(&self, ty: &Ty) -> String {
-        if let Ty::Named { name, args } = ty
+        if let Ty::Named { name, args, .. } = ty
             && self.is_std_meta_type_witness(name, args)
         {
             return C_META_TYPE_TAG.to_string();
         }
-        if let Ty::Named { name, args } = ty
+        if let Ty::Named { name, args, .. } = ty
             && let Some(repr_ty) = self.meta_repr_marker_storage_ty(name, args)
         {
             return self.c_decl(&repr_ty, "").trim().to_string();
         }
-        if let Ty::Named { name, args } = ty
+        if let Ty::Named { name, args, .. } = ty
             && let Some(schema_ty) = self.meta_schema_marker_storage_ty(name, args)
         {
             return self.c_decl(&schema_ty, "").trim().to_string();

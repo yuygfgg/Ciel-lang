@@ -246,6 +246,7 @@ impl TypeChecker {
             ExprKind::Literal(literal) => self.check_literal(expr.span, literal, expected)?,
             ExprKind::StructLiteral(fields) => {
                 let Some(Ty::Named {
+                    def_id: type_def_id,
                     name: type_name,
                     args,
                 }) = expected
@@ -357,12 +358,14 @@ impl TypeChecker {
                         ));
                     }
                 }
-                let ty = self.resolve_type_holes(&Ty::Named {
-                    name: type_name.clone(),
-                    args: args.clone(),
-                });
+                let ty = self.resolve_type_holes(&named_ty(
+                    *type_def_id,
+                    type_name.clone(),
+                    args.clone(),
+                ));
                 self.ensure_struct_instance(&ty);
                 let Ty::Named {
+                    def_id: _,
                     name: concrete_name,
                     args: concrete_args,
                 } = &ty
@@ -1116,6 +1119,7 @@ impl TypeChecker {
                 };
                 let output_ty =
                     self.awaited_output_future_state_ty(&future.ty, awaitable.output_ty);
+                self.check_task_await_boundary(&future.ty, expr.span);
                 let future = self.consume_affine_expr(scopes, future, false);
                 TExpr {
                     span: expr.span,

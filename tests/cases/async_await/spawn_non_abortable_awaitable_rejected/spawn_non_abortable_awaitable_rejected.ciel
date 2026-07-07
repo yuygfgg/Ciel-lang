@@ -12,7 +12,7 @@ unsafe impl<T> awaitable_future<T>(*const Wrapped<T> awaitable) {
     return awaitable_future<T>(unsafe { &awaitable->inner });
 }
 
-Result<Task<usize>, Error> start(Wrapped<Result<usize, Error>> wrapped) {
+Result<Task<usize, Error>, Error> start(Wrapped<Result<usize, Error>> wrapped) {
     return spawn<usize>(wrapped);
 }
 

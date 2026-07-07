@@ -13,7 +13,7 @@ async Result<usize, Error> outer(async::Future<Result<usize, Error>> inner) {
     return await inner;
 }
 
-async::Task<usize> spawn_dangling() {
+async::Task<usize, Error> spawn_dangling() {
     usize local = 12345;
     async::Future<Result<usize, Error>> future = read_later(&local);
     return must(async::spawn<usize>(outer(future)));

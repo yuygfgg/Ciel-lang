@@ -1,6 +1,9 @@
 use std::collections::HashMap;
 
-use crate::types::{META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, Ty, unify_ty};
+use crate::types::{
+    META_ARRAY_CHUNK_SIZE, STD_MESSAGE_CLONE_INTERFACE, STD_META_REF_REPR_MARKER,
+    STD_META_REPR_MARKER, STD_META_SCHEMA_MARKER, Ty, map_ty_children, named_ty, unify_ty,
+};
 use crate::{
     common::{is_nominal_type_def_kind, nominal_type_name},
     resolve::{DefId, DefKind, ModuleId, ResolvedProgram},
@@ -19,8 +22,6 @@ const STD_ASYNC_EXPORT: &str = "/std/async";
 const STD_ASYNC_CORE_EXPORT: &str = "/std/async/core";
 const STD_ASYNC_INTERNAL_ADAPTER_EXPORT: &str = "/std/async/internal/adapter";
 const STD_ASYNC_INTERNAL_RUNTIME_FUTURE_EXPORT: &str = "/std/async/internal/runtime_future";
-const STD_ASYNC_IO_EXPORT: &str = "/std/async_io";
-const STD_ASYNC_NET_EXPORT: &str = "/std/async_net";
 const STD_ASYNC_TIME_EXPORT: &str = "/std/async_time";
 
 fn module_export_matches(resolved: &ResolvedProgram, module: ModuleId, export: &str) -> bool {
@@ -168,6 +169,27 @@ pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId)
 
 pub fn is_std_resource_handle_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
     is_std_exported_struct_type_name(resolved, ty_name, STD_RESOURCE_EXPORT, "Handle")
+}
+
+pub fn is_std_resource_handle_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Struct,
+        "Handle",
+        STD_RESOURCE_EXPORT,
+    )
+}
+
+pub fn is_std_resource_handle_ty(resolved: &ResolvedProgram, ty: &Ty) -> bool {
+    let Ty::Named { def_id, name, args } = ty else {
+        return false;
+    };
+    args.is_empty()
+        && def_id.map_or_else(
+            || is_std_resource_handle_type_name(resolved, name),
+            |def_id| is_std_resource_handle_struct(resolved, def_id),
+        )
 }
 
 pub fn is_std_resource_function(
@@ -323,6 +345,17 @@ pub fn is_std_async_type(
     ty_name == expected_name && !has_user_nominal
 }
 
+fn is_std_async_type_def(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected: StdAsyncType,
+) -> bool {
+    let def = resolved.def(def_id);
+    def.name == expected.name()
+        && def.kind == DefKind::Struct
+        && module_export_matches_std_async(resolved, def.module)
+}
+
 pub fn is_std_async_future_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
     is_std_async_type(resolved, ty_name, StdAsyncType::Future)
 }
@@ -379,59 +412,28 @@ fn is_std_exported_struct_type_name(
     has_std_def && ty_name == expected_name && !has_user_nominal
 }
 
-pub fn is_std_async_resource_runtime_handle_type_name(
+fn is_std_async_type_name_or_def(
     resolved: &ResolvedProgram,
-    ty_name: &str,
+    def_id: Option<DefId>,
+    name: &str,
+    expected: StdAsyncType,
 ) -> bool {
-    const ASYNC_IO_HANDLES: &[&str] = &["AsyncFd", "AsyncRead", "AsyncWrite"];
-    const ASYNC_NET_HANDLES: &[&str] = &[
-        "AsyncTcpListener",
-        "AsyncTcpStream",
-        "AsyncTcpReadHalf",
-        "AsyncTcpWriteHalf",
-        "AsyncTcpSplit",
-        "BufferedStreamReader",
-        "AsyncAccept",
-        "AsyncConnect",
-        "AsyncTcpRead",
-        "AsyncTcpReadInto",
-        "AsyncTcpWrite",
-        "AsyncBufferedRead",
-    ];
-
-    ASYNC_IO_HANDLES
-        .iter()
-        .any(|name| is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_IO_EXPORT, name))
-        || ASYNC_NET_HANDLES.iter().any(|name| {
-            is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_NET_EXPORT, name)
-        })
-        || is_std_exported_struct_type_name(resolved, ty_name, STD_ASYNC_TIME_EXPORT, "AsyncSleep")
-}
-
-pub fn is_std_async_runtime_handle_ty(resolved: &ResolvedProgram, ty: &Ty) -> bool {
-    let Ty::Named { name, args } = ty else {
-        return false;
-    };
-    if args.len() == 1 {
-        return is_std_async_future_type_name(resolved, name)
-            || is_std_async_task_type_name(resolved, name)
-            || is_std_async_sender_type_name(resolved, name)
-            || is_std_async_receiver_type_name(resolved, name)
-            || is_std_async_send_permit_type_name(resolved, name)
-            || is_std_async_channel_pair_type_name(resolved, name)
-            || is_std_async_task_group_type_name(resolved, name);
-    }
-    args.is_empty() && is_std_async_resource_runtime_handle_type_name(resolved, name)
+    def_id.map_or_else(
+        || is_std_async_type(resolved, name, expected),
+        |def_id| is_std_async_type_def(resolved, def_id, expected),
+    )
 }
 
 pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
     if let Ty::OpaqueState { base, .. } = ty {
         return std_async_future_output_arg(resolved, base);
     }
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_future_type_name(resolved, name) {
+    if args.len() == 1
+        && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::Future)
+    {
         args.first()
     } else {
         None
@@ -439,24 +441,35 @@ pub fn std_async_future_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -
 }
 
 pub fn std_async_task_output_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    std_async_task_args(resolved, ty).map(|(output, _)| output)
+}
+
+pub fn std_async_task_error_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
+    std_async_task_args(resolved, ty).map(|(_, error)| error)
+}
+
+pub fn std_async_task_args<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<(&'a Ty, &'a Ty)> {
     if let Ty::OpaqueState { base, .. } = ty {
-        return std_async_task_output_arg(resolved, base);
+        return std_async_task_args(resolved, base);
     }
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_task_type_name(resolved, name) {
-        args.first()
+    if args.len() == 2 && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::Task)
+    {
+        Some((&args[0], &args[1]))
     } else {
         None
     }
 }
 
 pub fn std_async_sender_payload_arg<'a>(resolved: &ResolvedProgram, ty: &'a Ty) -> Option<&'a Ty> {
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_sender_type_name(resolved, name) {
+    if args.len() == 1
+        && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::Sender)
+    {
         args.first()
     } else {
         None
@@ -467,10 +480,12 @@ pub fn std_async_receiver_payload_arg<'a>(
     resolved: &ResolvedProgram,
     ty: &'a Ty,
 ) -> Option<&'a Ty> {
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_receiver_type_name(resolved, name) {
+    if args.len() == 1
+        && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::Receiver)
+    {
         args.first()
     } else {
         None
@@ -481,10 +496,12 @@ pub fn std_async_send_permit_payload_arg<'a>(
     resolved: &ResolvedProgram,
     ty: &'a Ty,
 ) -> Option<&'a Ty> {
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_send_permit_type_name(resolved, name) {
+    if args.len() == 1
+        && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::SendPermit)
+    {
         args.first()
     } else {
         None
@@ -495,11 +512,27 @@ pub fn std_async_task_group_payload_arg<'a>(
     resolved: &ResolvedProgram,
     ty: &'a Ty,
 ) -> Option<&'a Ty> {
-    let Ty::Named { name, args } = ty else {
+    std_async_task_group_args(resolved, ty).map(|(payload, _)| payload)
+}
+
+pub fn std_async_task_group_error_arg<'a>(
+    resolved: &ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<&'a Ty> {
+    std_async_task_group_args(resolved, ty).map(|(_, error)| error)
+}
+
+pub fn std_async_task_group_args<'a>(
+    resolved: &ResolvedProgram,
+    ty: &'a Ty,
+) -> Option<(&'a Ty, &'a Ty)> {
+    let Ty::Named { def_id, name, args } = ty else {
         return None;
     };
-    if args.len() == 1 && is_std_async_task_group_type_name(resolved, name) {
-        args.first()
+    if args.len() == 2
+        && is_std_async_type_name_or_def(resolved, *def_id, name, StdAsyncType::TaskGroup)
+    {
+        Some((&args[0], &args[1]))
     } else {
         None
     }
@@ -563,6 +596,41 @@ pub fn is_std_meta_type(resolved: &ResolvedProgram, def_id: DefId, expected_name
         expected_name,
         STD_META_EXPORT,
     )
+}
+
+pub fn std_meta_type_def_id(resolved: &ResolvedProgram, expected_name: &str) -> Option<DefId> {
+    resolved
+        .defs
+        .iter()
+        .find(|def| {
+            def.name == expected_name
+                && is_nominal_type_def_kind(&def.kind)
+                && module_export_matches(resolved, def.module, STD_META_EXPORT)
+        })
+        .map(|def| def.id)
+}
+
+pub fn std_meta_named_def_id(resolved: &ResolvedProgram, name: &str) -> Option<DefId> {
+    let source_name = match name {
+        STD_META_REF_REPR_MARKER => "RefRepr",
+        STD_META_REPR_MARKER => "Repr",
+        STD_META_SCHEMA_MARKER => "Schema",
+        other => other,
+    };
+    std_meta_type_def_id(resolved, source_name)
+}
+
+pub fn attach_std_meta_def_ids(resolved: &ResolvedProgram, ty: &Ty) -> Ty {
+    match ty {
+        Ty::Named { def_id, name, args } => named_ty(
+            def_id.or_else(|| std_meta_named_def_id(resolved, name)),
+            name.clone(),
+            args.iter()
+                .map(|arg| attach_std_meta_def_ids(resolved, arg))
+                .collect(),
+        ),
+        _ => map_ty_children(ty, |arg| attach_std_meta_def_ids(resolved, arg)),
+    }
 }
 
 pub fn is_std_meta_sop_node_name(name: &str) -> bool {

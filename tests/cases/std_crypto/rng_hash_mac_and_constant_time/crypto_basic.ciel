@@ -73,6 +73,20 @@ bool numeric_error_text([]const char text) {
     return true;
 }
 
+bool text_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @i = 0;
+    while (i < left.len) {
+        if (left[i] != right[i]) {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
 i64 test_rng() {
     [16]u8 @first = [0;];
     [16]u8 @second = [0;];
@@ -182,7 +196,11 @@ i64 test_hash() {
             return 14;
         case Err(error):
             []const char message = format_error(&error);
-            if (message.len == 0 || numeric_error_text(message)) {
+            if (
+                message.len == 0 ||
+                numeric_error_text(message) ||
+                text_eq(message, "crypto backend error")
+            ) {
                 return 19;
             }
     }

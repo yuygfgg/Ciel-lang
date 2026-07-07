@@ -1,6 +1,26 @@
 use super::*;
 
 impl<'a> CGenerator<'a> {
+    fn std_meta_repr_marker_ty(&self, borrowed: bool, source_ty: Ty) -> Ty {
+        let source_name = if borrowed { "RefRepr" } else { "Repr" };
+        std_meta_repr_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.program.checked.resolved, source_name),
+            borrowed,
+            source_ty,
+        )
+    }
+
+    fn std_meta_schema_marker_ty(&self, source_ty: Ty) -> Ty {
+        std_meta_schema_marker_ty_with_def_id(
+            std_id::std_meta_type_def_id(&self.program.checked.resolved, "Schema"),
+            source_ty,
+        )
+    }
+
+    fn attach_std_meta_def_ids(&self, ty: Ty) -> Ty {
+        std_id::attach_std_meta_def_ids(&self.program.checked.resolved, &ty)
+    }
+
     pub(super) fn emit_meta_owned_leaf_repr_expr(
         &mut self,
         span: crate::span::Span,
@@ -9,7 +29,7 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<(Ty, String)> {
-        if let Ty::Named { name, args } = ty
+        if let Ty::Named { name, args, .. } = ty
             && matches!(meta_repr_marker_name(name), Some(false))
             && args.len() == 1
         {
@@ -175,7 +195,16 @@ impl<'a> CGenerator<'a> {
         ty: &Ty,
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
-        if let Ty::Named { name, args } = ty
+        Ok(self.attach_std_meta_def_ids(self.meta_owned_leaf_repr_ty_inner(span, ty, root_ty)?))
+    }
+
+    fn meta_owned_leaf_repr_ty_inner(
+        &self,
+        span: crate::span::Span,
+        ty: &Ty,
+        root_ty: &Ty,
+    ) -> DiagResult<Ty> {
+        if let Ty::Named { name, args, .. } = ty
             && matches!(meta_repr_marker_name(name), Some(false))
             && args.len() == 1
         {
@@ -287,6 +316,10 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Ty> {
+        Ok(self.attach_std_meta_def_ids(self.meta_borrowed_repr_ty_inner(span, ty)?))
+    }
+
+    fn meta_borrowed_repr_ty_inner(&self, span: crate::span::Span, ty: &Ty) -> DiagResult<Ty> {
         match ty {
             Ty::Array { len, elem } => Ok(meta_ref_array_repr_ty(*len, elem)),
             Ty::Named { .. } => {
@@ -336,9 +369,13 @@ impl<'a> CGenerator<'a> {
         span: crate::span::Span,
         ty: &Ty,
     ) -> DiagResult<Ty> {
+        Ok(self.attach_std_meta_def_ids(self.meta_schema_ty_inner(span, ty)?))
+    }
+
+    fn meta_schema_ty_inner(&self, span: crate::span::Span, ty: &Ty) -> DiagResult<Ty> {
         match ty {
             Ty::Array { len, elem } => self.meta_schema_array_ty(span, *len, elem, ty),
-            Ty::Named { name, args } if meta_schema_marker_name(name) && args.len() == 1 => {
+            Ty::Named { name, args, .. } if meta_schema_marker_name(name) && args.len() == 1 => {
                 self.meta_schema_ty(span, &args[0])
             }
             Ty::Named { .. } => {
@@ -406,21 +443,25 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
         if len == 0 {
-            return Ok(meta_named("ArrayNil", Vec::new()));
+            return Ok(self.attach_std_meta_def_ids(meta_named("ArrayNil", Vec::new())));
         }
         if len <= crate::types::META_ARRAY_CHUNK_SIZE {
             let repr_ty = self.meta_owned_leaf_repr_ty(span, elem, root_ty)?;
-            let elem_schema = meta_named("ElementSchema", vec![elem.clone(), repr_ty]);
-            return Ok(meta_named(&format!("ArrayChunk{len}"), vec![elem_schema]));
+            let elem_schema = self
+                .attach_std_meta_def_ids(meta_named("ElementSchema", vec![elem.clone(), repr_ty]));
+            return Ok(self.attach_std_meta_def_ids(meta_named(
+                &format!("ArrayChunk{len}"),
+                vec![elem_schema],
+            )));
         }
         let split = meta_array_split_len(len);
-        Ok(meta_named(
+        Ok(self.attach_std_meta_def_ids(meta_named(
             "ArrayCat",
             vec![
                 self.meta_schema_array_ty(span, split, elem, root_ty)?,
                 self.meta_schema_array_ty(span, len - split, elem, root_ty)?,
             ],
-        ))
+        )))
     }
 
     pub(super) fn meta_array_repr_item_expr(
@@ -456,7 +497,7 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
         indent: usize,
     ) -> DiagResult<()> {
-        if let Ty::Named { name, args } = ty
+        if let Ty::Named { name, args, .. } = ty
             && matches!(meta_repr_marker_name(name), Some(false))
             && args.len() == 1
         {
@@ -545,13 +586,13 @@ impl<'a> CGenerator<'a> {
 
     pub(super) fn meta_repr_policy_leaf_ty(&self, ty: &Ty) -> Ty {
         match ty {
-            Ty::Named { name, args } => Ty::Named {
-                name: name.clone(),
-                args: args
-                    .iter()
+            Ty::Named { def_id, name, args } => named_ty(
+                *def_id,
+                name.clone(),
+                args.iter()
                     .map(|arg| self.preserve_meta_repr_markers(arg))
                     .collect(),
-            },
+            ),
             _ => ty.clone(),
         }
     }
@@ -575,22 +616,22 @@ impl<'a> CGenerator<'a> {
                 mutability: *mutability,
                 elem: Box::new(self.preserve_meta_repr_markers(elem)),
             },
-            Ty::Named { name, args } => {
+            Ty::Named { def_id, name, args } => {
                 if let Some(borrowed) = meta_repr_marker_name(name) {
                     if args.len() == 1 {
-                        return std_meta_repr_marker_ty(borrowed, args[0].clone());
+                        return self.std_meta_repr_marker_ty(borrowed, args[0].clone());
                     }
                 }
                 if meta_schema_marker_name(name) && args.len() == 1 {
-                    return std_meta_schema_marker_ty(args[0].clone());
+                    return self.std_meta_schema_marker_ty(args[0].clone());
                 }
-                Ty::Named {
-                    name: name.clone(),
-                    args: args
-                        .iter()
+                named_ty(
+                    *def_id,
+                    name.clone(),
+                    args.iter()
                         .map(|arg| self.preserve_meta_repr_markers(arg))
                         .collect(),
-                }
+                )
             }
             Ty::DynamicInterface { def_id, name, args } => Ty::DynamicInterface {
                 def_id: *def_id,
@@ -1046,7 +1087,10 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(super) fn meta_element_schema_literal(&self, source_ty: &Ty, repr_ty: &Ty) -> String {
-        let elem_schema_ty = meta_named("ElementSchema", vec![source_ty.clone(), repr_ty.clone()]);
+        let elem_schema_ty = self.attach_std_meta_def_ids(meta_named(
+            "ElementSchema",
+            vec![source_ty.clone(), repr_ty.clone()],
+        ));
         format!(
             "({}){{ .source_ty = {}, .repr_ty = {} }}",
             self.c_type(&elem_schema_ty),
@@ -1060,15 +1104,15 @@ impl<'a> CGenerator<'a> {
         fields: &[MetaSchemaField],
     ) -> DiagResult<(Ty, String)> {
         let Some((field, rest)) = fields.split_first() else {
-            let ty = meta_named("HNil", Vec::new());
+            let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
         let (tail_ty, tail) = self.meta_schema_product_literal(rest)?;
-        let head_ty = meta_named(
+        let head_ty = self.attach_std_meta_def_ids(meta_named(
             "FieldSchema",
             vec![field.source_ty.clone(), field.repr_ty.clone()],
-        );
-        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        ));
+        let ty = self.attach_std_meta_def_ids(meta_named("HCons", vec![head_ty.clone(), tail_ty]));
         let head = format!(
             "({}){{ .name = {}, .source_ty = {}, .repr_ty = {} }}",
             self.c_type(&head_ty),
@@ -1087,15 +1131,15 @@ impl<'a> CGenerator<'a> {
         fields: &[MetaSchemaPayload],
     ) -> DiagResult<(Ty, String)> {
         let Some((field, rest)) = fields.split_first() else {
-            let ty = meta_named("HNil", Vec::new());
+            let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
         let (tail_ty, tail) = self.meta_schema_payload_literal(rest)?;
-        let head_ty = meta_named(
+        let head_ty = self.attach_std_meta_def_ids(meta_named(
             "PayloadSchema",
             vec![field.source_ty.clone(), field.repr_ty.clone()],
-        );
-        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        ));
+        let ty = self.attach_std_meta_def_ids(meta_named("HCons", vec![head_ty.clone(), tail_ty]));
         let head = format!(
             "({}){{ .index = {}, .source_ty = {}, .repr_ty = {} }}",
             self.c_type(&head_ty),
@@ -1116,7 +1160,7 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
     ) -> DiagResult<(Ty, String)> {
         let Some((variant, rest)) = variants.split_first() else {
-            let ty = meta_named("HNil", Vec::new());
+            let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
         let payloads = variant
@@ -1135,9 +1179,9 @@ impl<'a> CGenerator<'a> {
             })
             .collect::<Vec<_>>();
         let (payload_ty, payload_literal) = self.meta_schema_payload_literal(&payloads)?;
-        let head_ty = meta_named("VariantSchema", vec![payload_ty]);
+        let head_ty = self.attach_std_meta_def_ids(meta_named("VariantSchema", vec![payload_ty]));
         let (tail_ty, tail) = self.meta_schema_sum_literal(span, rest, root_ty)?;
-        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let ty = self.attach_std_meta_def_ids(meta_named("HCons", vec![head_ty.clone(), tail_ty]));
         let head = format!(
             "({}){{ .name = {}, .payload = {payload_literal} }}",
             self.c_type(&head_ty),
@@ -1155,12 +1199,12 @@ impl<'a> CGenerator<'a> {
         head_name: &str,
     ) -> DiagResult<(Ty, String)> {
         let Some((field, rest)) = fields.split_first() else {
-            let ty = meta_named("HNil", Vec::new());
+            let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
         let (tail_ty, tail) = self.meta_named_product_literal(rest, head_name)?;
-        let head_ty = meta_named(head_name, vec![field.ty.clone()]);
-        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let head_ty = self.attach_std_meta_def_ids(meta_named(head_name, vec![field.ty.clone()]));
+        let ty = self.attach_std_meta_def_ids(meta_named("HCons", vec![head_ty.clone(), tail_ty]));
         let mut head_fields = vec![format!(
             ".name = {}",
             self.meta_name_slice_literal(&field.name)
@@ -1200,12 +1244,12 @@ impl<'a> CGenerator<'a> {
         head_name: &str,
     ) -> DiagResult<(Ty, String)> {
         let Some((field, rest)) = fields.split_first() else {
-            let ty = meta_named("HNil", Vec::new());
+            let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
         let (tail_ty, tail) = self.meta_payload_product_literal(rest, head_name)?;
-        let head_ty = meta_named(head_name, vec![field.ty.clone()]);
-        let ty = meta_named("HCons", vec![head_ty.clone(), tail_ty]);
+        let head_ty = self.attach_std_meta_def_ids(meta_named(head_name, vec![field.ty.clone()]));
+        let ty = self.attach_std_meta_def_ids(meta_named("HCons", vec![head_ty.clone(), tail_ty]));
         let value = if head_name == "PayloadRef" {
             field.value_expr.clone()
         } else {
@@ -1263,16 +1307,17 @@ impl<'a> CGenerator<'a> {
                 "internal error: cannot construct meta CoNil branch",
             )]);
         };
-        let payload_ty = meta_product_ty(
+        let payload_ty = self.attach_std_meta_def_ids(meta_product_ty(
             variant.payload.iter().map(|payload| {
                 self.meta_owned_leaf_repr_ty(span, payload, root_ty)
                     .unwrap_or(Ty::Unknown)
             }),
             "Payload",
-        );
-        let head_ty = meta_named("Variant", vec![payload_ty]);
+        ));
+        let head_ty = self.attach_std_meta_def_ids(meta_named("Variant", vec![payload_ty]));
         let tail_ty = self.meta_owned_sum_ty(span, rest, root_ty)?;
-        let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
+        let ty =
+            self.attach_std_meta_def_ids(meta_named("Coproduct", vec![head_ty.clone(), tail_ty]));
         if active_idx == 0 {
             let mut payloads = Vec::new();
             for (idx, ty) in variant.payload.iter().enumerate() {
@@ -1342,13 +1387,14 @@ impl<'a> CGenerator<'a> {
         let payloads = payloads_for(variant);
         let (payload_ty, payload_literal) =
             self.meta_payload_product_literal(&payloads, payload_head)?;
-        let head_ty = meta_named(variant_head, vec![payload_ty]);
-        let tail_ty = meta_sum_ty(
+        let head_ty = self.attach_std_meta_def_ids(meta_named(variant_head, vec![payload_ty]));
+        let tail_ty = self.attach_std_meta_def_ids(meta_sum_ty(
             rest.iter()
                 .map(|variant| variant.payload.iter().cloned().collect::<Vec<_>>()),
             borrowed,
-        );
-        let ty = meta_named("Coproduct", vec![head_ty.clone(), tail_ty]);
+        ));
+        let ty =
+            self.attach_std_meta_def_ids(meta_named("Coproduct", vec![head_ty.clone(), tail_ty]));
         if active_idx == 0 {
             let head = format!(
                 "({}){{ .name = {}, .payload = {payload_literal} }}",
@@ -1392,7 +1438,7 @@ impl<'a> CGenerator<'a> {
         if let Ty::OpaqueState { base, .. } = ty {
             return self.struct_fields_for_ty(span, base);
         }
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected struct type for meta representation, got `{ty}`"),
@@ -1423,7 +1469,7 @@ impl<'a> CGenerator<'a> {
         if let Ty::OpaqueState { base, .. } = ty {
             return self.enum_variants_for_ty(span, base);
         }
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected enum type for meta representation, got `{ty}`"),

@@ -312,7 +312,11 @@ impl<'a> CGenerator<'a> {
                         capture_expr.span,
                     )?;
                     let clone_layout = self.result_layout(
-                        &std_result_ty(capture.ty.clone(), std_error_ty()),
+                        &std_result_ty(
+                            &self.program.checked.resolved,
+                            capture.ty.clone(),
+                            std_error_ty(&self.program.checked.resolved),
+                        ),
                         capture_expr.span,
                     )?;
                     self.emit_value_copy(

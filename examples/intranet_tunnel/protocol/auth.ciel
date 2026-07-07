@@ -286,7 +286,7 @@ export Result<[]u8, tunnel_error::AuthCodecError> encode_hello_ok() {
 export Result<HelloOk, tunnel_error::AuthCodecError> decode_hello_ok([]const u8 input) {
     if (input.len != ((2 as usize) + nonce_len())) {
         return Err(tunnel_error::AuthProtocol(
-            tunnel_error::MalformedPayload("bad HelloOk length")
+            tunnel_error::MalformedPayload
         ));
     }
     u16 selected_version =

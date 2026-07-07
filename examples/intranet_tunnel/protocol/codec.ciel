@@ -147,7 +147,7 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_open_result_error(
 ) {
     if (message.len > (0xffff as usize)) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("open result message too long")
+            tunnel_error::MalformedPayload
         ));
     }
     buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(
@@ -164,7 +164,7 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_open_result_error(
 export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_result([]const u8 input) {
     if (input.len == 0) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("empty open result")
+            tunnel_error::MalformedPayload
         ));
     }
     if (input[0] == (0 as u8)) {
@@ -172,17 +172,17 @@ export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_resu
             return Ok({ ok: true, code: 0 as u16, message: input[1..1] });
         }
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("success open result has trailing bytes")
+            tunnel_error::MalformedPayload
         ));
     }
     if (input[0] != (1 as u8)) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("unknown open result status")
+            tunnel_error::MalformedPayload
         ));
     }
     if (input.len < 5) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("short error open result")
+            tunnel_error::MalformedPayload
         ));
     }
     u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[1..3]))?;
@@ -190,7 +190,7 @@ export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_resu
         frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[3..5]))? as usize;
     if (input.len != ((5 as usize) + message_len)) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("open result length mismatch")
+            tunnel_error::MalformedPayload
         ));
     }
     return Ok({ ok: false, code: code, message: input[5..] });
@@ -202,7 +202,7 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_close_reason(
 ) {
     if (message.len > (0xffff as usize)) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("close message too long")
+            tunnel_error::MalformedPayload
         ));
     }
     buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(
@@ -220,7 +220,7 @@ export Result<CloseReason, tunnel_error::FrameCodecError> decode_close_reason([]
     }
     if (input.len < 4) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("short close reason")
+            tunnel_error::MalformedPayload
         ));
     }
     u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
@@ -228,7 +228,7 @@ export Result<CloseReason, tunnel_error::FrameCodecError> decode_close_reason([]
         frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[2..4]))? as usize;
     if (input.len != ((4 as usize) + message_len)) {
         return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload("close reason length mismatch")
+            tunnel_error::MalformedPayload
         ));
     }
     return Ok({ code: code, message: input[4..] });

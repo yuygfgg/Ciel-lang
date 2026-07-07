@@ -5,8 +5,8 @@ use crate::{
     resolve::DefId,
     std_id,
     types::{
-        ConstraintBounds, ConstraintRef, Ty, contains_generic, map_ty_children,
-        substitute_constraint_bounds, substitute_ty, unify_ty,
+        ConstraintBounds, ConstraintRef, Ty, contains_generic, map_ty_children, named_ty,
+        named_ty_identity_eq, substitute_constraint_bounds, substitute_ty, unify_ty,
     },
 };
 
@@ -486,11 +486,8 @@ fn ty_is_affine_readonly_inner(ctx: &TyCtx, ty: &Ty, visiting: &mut HashSet<Ty>)
         Ty::ClosureInstance { captures, .. } => captures
             .iter()
             .any(|capture| ty_is_affine_readonly_inner(ctx, capture, visiting)),
-        Ty::Named { name, args } => {
-            let named_ty = Ty::Named {
-                name: name.clone(),
-                args: args.clone(),
-            };
+        Ty::Named { def_id, name, args } => {
+            let named_ty = named_ty(*def_id, name.clone(), args.clone());
             if std_id::std_async_future_output_arg(&ctx.resolved, &named_ty).is_some() {
                 return true;
             }
@@ -609,16 +606,20 @@ fn bind_hidden_ty(
             }
             _ => None,
         },
-        Ty::Named { name, args } => match candidate {
+        Ty::Named { def_id, name, args } => match candidate {
             Ty::Named {
+                def_id: candidate_def_id,
                 name: candidate_name,
                 args: candidate_args,
-            } if name == candidate_name && args.len() == candidate_args.len() => args
-                .iter()
-                .zip(candidate_args.iter())
-                .try_for_each(|(required, candidate)| {
-                    bind_hidden_ty(required, candidate, hidden_names, solved)
-                }),
+            } if named_ty_identity_eq(*def_id, name, *candidate_def_id, candidate_name)
+                && args.len() == candidate_args.len() =>
+            {
+                args.iter()
+                    .zip(candidate_args.iter())
+                    .try_for_each(|(required, candidate)| {
+                        bind_hidden_ty(required, candidate, hidden_names, solved)
+                    })
+            }
             _ => None,
         },
         Ty::DynamicInterface { def_id, args, .. } => match candidate {
@@ -765,13 +766,14 @@ fn coherence_unify(left: &Ty, right: &Ty, subst: &mut HashMap<String, Ty>) -> bo
             },
         ) => mutability == right_mutability && coherence_unify(elem, right_elem, subst),
         (
-            Ty::Named { name, args },
+            Ty::Named { def_id, name, args },
             Ty::Named {
+                def_id: right_def_id,
                 name: right_name,
                 args: right_args,
             },
         ) => {
-            name == right_name
+            named_ty_identity_eq(*def_id, name, *right_def_id, right_name)
                 && args.len() == right_args.len()
                 && args
                     .iter()

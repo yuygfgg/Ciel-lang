@@ -8,13 +8,13 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> join_task(async::Task<usize> task) {
+async Result<usize, Error> join_task(async::Task<usize, Error> task) {
     usize value = await task?;
     return Ok(value);
 }
 
 i32 main() {
-    async::Task<usize> task = must(async::spawn<usize>(async || {
+    async::Task<usize, Error> task = must(async::spawn<usize, Error>(async || {
         await async_time::sleep_ms(50)?;
         return Ok(99);
     }));

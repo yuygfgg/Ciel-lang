@@ -426,10 +426,12 @@ impl<'a> CGenerator<'a> {
             Ty::Named {
                 name: source_name,
                 args: source_args,
+                ..
             },
             Ty::Named {
                 name: target_name,
                 args: target_args,
+                ..
             },
         ) = (source_ty, target_ty)
         else {
@@ -514,10 +516,12 @@ impl<'a> CGenerator<'a> {
             Ty::Named {
                 name: source_name,
                 args: source_args,
+                ..
             },
             Ty::Named {
                 name: target_name,
                 args: target_args,
+                ..
             },
         ) = (source_ty, target_ty)
         else {
@@ -683,7 +687,11 @@ impl<'a> CGenerator<'a> {
                     self.std_message_interface_def(STD_MESSAGE_CLONE_INTERFACE),
                 );
                 let field = self.retained_closure_witness_field_name(&capability);
-                let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
+                let clone_result_ty = std_result_ty(
+                    &self.program.checked.resolved,
+                    witness.source_ty.clone(),
+                    std_error_ty(&self.program.checked.resolved),
+                );
                 let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
                 let clone_temp = self.next_temp("retained_source_clone");
                 self.line_indent(
@@ -727,7 +735,11 @@ impl<'a> CGenerator<'a> {
                         ),
                     )]);
                 };
-                let clone_result_ty = std_result_ty(witness.source_ty.clone(), std_error_ty());
+                let clone_result_ty = std_result_ty(
+                    &self.program.checked.resolved,
+                    witness.source_ty.clone(),
+                    std_error_ty(&self.program.checked.resolved),
+                );
                 let clone_layout = self.result_layout(&clone_result_ty, witness.span)?;
                 let clone_temp = self.next_temp("retained_source_clone");
                 self.line_indent(

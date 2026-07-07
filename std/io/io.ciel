@@ -2,12 +2,11 @@
 export import /std/result;
 import /std/c as c;
 import /std/format as format;
+import /std/message;
 import /std/resource;
 import /std/resource as resource;
 
 unsafe extern "C" {
-    c::c_int ciel_errno();
-    *char ciel_cstr_from_slice(*const char ptr, usize len);
     usize ciel_f32_to_string(f32 value, *char out, usize cap);
     usize ciel_f64_to_string(f64 value, *char out, usize cap);
 }
@@ -38,6 +37,8 @@ export enum IoError {
     Runtime(i64),
     WriteZero,
 }
+
+derive Message<IoError>;
 
 // Errors produced by scoped blocking I/O helpers.
 export enum IoWithError<E> {
@@ -76,7 +77,7 @@ export interface printable = to_string;
 
 // Returns the current runtime errno/error code.
 export IoError last_error() {
-    return Runtime(unsafe { ciel_errno() } as i64);
+    return Runtime(unsafe { c::ciel_errno() } as i64);
 }
 
 IoError resource_error(resource::ResourceError error) {
@@ -143,7 +144,7 @@ export Result<void, IoError> close(File @file) {
 }
 
 Result<File, IoError> open_file([]const char path, OpenMode mode) {
-    *char c_path = unsafe { ciel_cstr_from_slice(path.ptr, path.len) };
+    *char c_path = unsafe { c::ciel_cstr_from_slice(path.ptr, path.len) };
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
@@ -412,8 +413,8 @@ impl to_string(*const f64 value) {
     return f64_to_string(*value);
 }
 
-impl to_string(*const Error value) {
-    return error_message(value);
+impl<T: ErrorTrait> to_string(*const T value) {
+    return format_error(value);
 }
 
 // Writes a printable value to a scoped File token.

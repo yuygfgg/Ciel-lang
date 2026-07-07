@@ -25,7 +25,6 @@ unsafe extern "C" {
     );
     c::c_int ciel_resource_restore_owner(u64 owner_id);
     c::c_int ciel_resource_owner_close_id(u64 owner_id);
-    c::c_int ciel_resource_close_handle(u64 owner_id, u64 resource_id, u64 generation);
     c::c_int ciel_resource_transfer_to_parent_handle(
         u64 owner_id,
         u64 resource_id,
@@ -42,6 +41,10 @@ unsafe extern "C" {
         *u64 out_resource_id,
         *u64 out_generation
     );
+}
+
+export unsafe extern "C" {
+    c::c_int ciel_resource_close_handle(u64 owner_id, u64 resource_id, u64 generation);
 }
 
 // Revocable runtime resource token.
@@ -74,6 +77,8 @@ struct OwnerScope {
 export enum ResourceError {
     Runtime(i64),
 }
+
+derive Message<ResourceError>;
 
 // Errors produced by scoped resource-owner helpers.
 export enum ScopedError<E> {

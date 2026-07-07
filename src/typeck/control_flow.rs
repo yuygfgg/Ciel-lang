@@ -577,7 +577,7 @@ impl TypeChecker {
         } else {
             expr.ty.clone()
         };
-        let Ty::Named { name, args } = &switch_ty else {
+        let Ty::Named { name, args, .. } = &switch_ty else {
             self.diagnostics.push(Diagnostic::new(
                 expr.span,
                 format!("switch requires enum value, got `{}`", expr.ty),
@@ -827,6 +827,7 @@ impl TypeChecker {
         let Ty::Named {
             name: enum_name,
             args: enum_args,
+            ..
         } = expected_base_ty
         else {
             self.diagnostics.push(Diagnostic::new(
@@ -1035,7 +1036,7 @@ impl TypeChecker {
     }
 
     pub(super) fn checked_enum_for_type(&mut self, ty: &Ty) -> Option<CheckedEnum> {
-        let Ty::Named { name, args } = ty else {
+        let Ty::Named { name, args, .. } = ty else {
             return None;
         };
         self.ensure_enum_instance(ty);

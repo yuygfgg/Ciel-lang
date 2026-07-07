@@ -9,7 +9,7 @@ import /std/panic;
 import /std/result;
 
 i32 main() {
-    async::Task<usize> task = must(async::spawn<usize>(async || {
+    async::Task<usize, Error> task = must(async::spawn<usize, Error>(async || {
         await async_time::sleep_ms(1)?;
         return Ok(31);
     }));

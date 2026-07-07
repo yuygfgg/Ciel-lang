@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     resolve::DefId,
-    types::{Ty, contains_generic, unify_ty},
+    types::{Ty, contains_generic, named_ty_identity_eq, unify_ty},
 };
 
 use super::{
@@ -222,15 +222,17 @@ fn marker_ty_patterns_overlap(left: &Ty, right: &Ty) -> bool {
         }
         (
             Ty::Named {
+                def_id: left_def_id,
                 name: left_name,
                 args: left_args,
             },
             Ty::Named {
+                def_id: right_def_id,
                 name: right_name,
                 args: right_args,
             },
         ) => {
-            left_name == right_name
+            named_ty_identity_eq(*left_def_id, left_name, *right_def_id, right_name)
                 && left_args.len() == right_args.len()
                 && left_args
                     .iter()

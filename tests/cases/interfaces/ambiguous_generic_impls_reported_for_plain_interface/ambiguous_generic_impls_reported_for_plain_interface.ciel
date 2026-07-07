@@ -1,0 +1,23 @@
+// ciel-test: error
+// expect-error: ambiguous generic impls for interface `score`
+
+interface<T> i64 score(*const T value);
+
+struct Box<T> {
+    T value;
+}
+
+impl<T> score(*const T value) {
+    value;
+    return 1;
+}
+
+impl<T> score(*const Box<T> value) {
+    value;
+    return 2;
+}
+
+i64 main() {
+    Box<i64> box = { value: 10 };
+    return score(&box);
+}

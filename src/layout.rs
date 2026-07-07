@@ -127,7 +127,7 @@ fn collect_layout_edges_from_ty(
     edges: &mut HashSet<String>,
 ) {
     match ty {
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             let instance_name = aggregate_instance_name(name, args);
             if aggregate_names.contains(&instance_name) {
                 graph.ensure_node(&instance_name);

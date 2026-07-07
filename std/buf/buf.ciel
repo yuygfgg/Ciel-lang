@@ -6,10 +6,6 @@ import /std/iter as iter;
 import /std/message;
 import /std/storage as storage;
 
-unsafe extern "C" {
-    c::c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
-}
-
 // Growable GC-backed byte buffer. Safe code must construct it with byte_buf_new.
 export unsafe struct ByteBuf {
     storage::RawStorage<u8> storage;
@@ -22,6 +18,8 @@ export enum BufError {
     DiscardOutOfBounds,
     Runtime(i64),
 }
+
+derive Message<BufError>;
 
 impl format_error(*const BufError error) {
     switch (*error) {
@@ -135,7 +133,7 @@ export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data)
     usize len = byte_buf_len(buf);
     if (data.len > 0) {
         []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
-        c::c_int rc = unsafe { ciel_u8_copy(&storage_view[len], data.ptr, data.len) };
+        c::c_int rc = unsafe { c::ciel_u8_copy(&storage_view[len], data.ptr, data.len) };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }
@@ -186,7 +184,7 @@ export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count)
     usize remaining = len - count;
     if (remaining > 0) {
         []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
-        c::c_int rc = unsafe { ciel_u8_copy(storage_view.ptr, &storage_view[count], remaining) };
+        c::c_int rc = unsafe { c::ciel_u8_copy(storage_view.ptr, &storage_view[count], remaining) };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }

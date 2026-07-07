@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: `async::spawn` task error type `BadError` does not implement `Message`
+
+import /std/async as async;
+import /std/result;
+
+enum BadError {
+    Async(async::AsyncError),
+    Borrowed([]const char),
+}
+
+async Result<void, BadError> fail_bad() {
+    return Err(Borrowed("borrowed"));
+}
+
+i32 main() {
+    _ task = async::spawn<void, BadError>(fail_bad());
+    return 0;
+}

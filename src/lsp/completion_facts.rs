@@ -9,7 +9,7 @@ use crate::{
     source::SourceMap,
     span::{FileId, Span},
     thir::{self, TExpr, TExprKind, TForInit, TPattern, TStmt, TStmtKind, ThirVisitor},
-    types::{Ty, aggregate_instance_name},
+    types::{Ty, aggregate_instance_name, named_ty_identity_eq},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -518,7 +518,7 @@ impl CompletionFacts {
                     detail: Some("slice field".to_string()),
                 })
                 .collect(),
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 let instance_name = aggregate_instance_name(name, args);
                 self.structs
                     .get(&instance_name)
@@ -1266,15 +1266,17 @@ fn ty_pattern_matches(pattern: &Ty, actual: &Ty) -> bool {
         (Ty::Generic(_), _) | (_, Ty::Unknown) => true,
         (
             Ty::Named {
+                def_id: left_def_id,
                 name: left,
                 args: left_args,
             },
             Ty::Named {
+                def_id: right_def_id,
                 name: right,
                 args: right_args,
             },
         ) => {
-            left == right
+            named_ty_identity_eq(*left_def_id, left, *right_def_id, right)
                 && left_args.len() == right_args.len()
                 && left_args
                     .iter()

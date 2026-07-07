@@ -17,7 +17,7 @@ async Result<usize, Error> delayed_send(async::Sender<usize> sender) {
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     await async::with_task_group<usize, void, Error>(async |group| {
-        async::Task<usize> task = async::spawn<usize>(delayed_send(pair.sender))?;
+        async::Task<usize, Error> task = async::spawn<usize>(delayed_send(pair.sender))?;
         async::group_add<usize>(&group, task)?;
         return Ok;
     })?;

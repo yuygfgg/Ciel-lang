@@ -5,7 +5,8 @@ use std::{
 
 use crate::{
     ast::{PrimitiveType, Type, TypeKind, ViewMutability},
-    resolve::DefId,
+    common::nominal_type_name,
+    resolve::{DefId, DefKind, ResolvedProgram},
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -100,6 +101,7 @@ pub enum Ty {
         elem: Box<Ty>,
     },
     Named {
+        def_id: Option<DefId>,
         name: String,
         args: Vec<Ty>,
     },
@@ -145,6 +147,27 @@ pub enum Ty {
     Unknown,
 }
 
+pub fn named_ty(def_id: Option<DefId>, name: impl Into<String>, args: Vec<Ty>) -> Ty {
+    Ty::Named {
+        def_id,
+        name: name.into(),
+        args,
+    }
+}
+
+pub fn named_ty_identity_eq(
+    left_def_id: Option<DefId>,
+    left_name: &str,
+    right_def_id: Option<DefId>,
+    right_name: &str,
+) -> bool {
+    match (left_def_id, right_def_id) {
+        (Some(left), Some(right)) => left == right,
+        (None, None) => left_name == right_name,
+        _ => false,
+    }
+}
+
 impl Ty {
     pub fn from_ast(ty: &Type) -> Self {
         match &ty.kind {
@@ -167,13 +190,13 @@ impl Ty {
                 PrimitiveType::F32 => Ty::F32,
                 PrimitiveType::F64 => Ty::F64,
             },
-            TypeKind::Named(path, args) => Ty::Named {
-                name: path
-                    .last()
+            TypeKind::Named(path, args) => named_ty(
+                None,
+                path.last()
                     .map(|name| name.name.clone())
                     .unwrap_or_default(),
-                args: args.iter().map(Ty::from_ast).collect(),
-            },
+                args.iter().map(Ty::from_ast).collect(),
+            ),
             TypeKind::Pointer {
                 nullable,
                 mutability,
@@ -456,15 +479,17 @@ impl Ty {
             }
             (
                 Ty::Named {
+                    def_id: left_def_id,
                     name: left_name,
                     args: left_args,
                 },
                 Ty::Named {
+                    def_id: right_def_id,
                     name: right_name,
                     args: right_args,
                 },
             ) => {
-                left_name == right_name
+                named_ty_identity_eq(*left_def_id, left_name, *right_def_id, right_name)
                     && left_args.len() == right_args.len()
                     && left_args
                         .iter()
@@ -643,10 +668,11 @@ pub fn substitute_ty(ty: &Ty, subst: &HashMap<String, Ty>) -> Ty {
             mutability: *mutability,
             elem: Box::new(substitute_ty(elem, subst)),
         },
-        Ty::Named { name, args } => Ty::Named {
-            name: name.clone(),
-            args: args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
-        },
+        Ty::Named { def_id, name, args } => named_ty(
+            *def_id,
+            name.clone(),
+            args.iter().map(|arg| substitute_ty(arg, subst)).collect(),
+        ),
         Ty::GeneratedFuture {
             name,
             output,
@@ -822,14 +848,18 @@ pub fn unify_ty(pattern: &Ty, actual: &Ty, subst: &mut HashMap<String, Ty>) -> b
             } if mutability == actual_mutability => unify_ty(pattern_elem, actual_elem, subst),
             _ => false,
         },
-        Ty::Named { name, args } => match actual {
+        Ty::Named { def_id, name, args } => match actual {
             Ty::Named {
+                def_id: actual_def_id,
                 name: actual_name,
                 args: actual_args,
-            } if name == actual_name && args.len() == actual_args.len() => args
-                .iter()
-                .zip(actual_args.iter())
-                .all(|(pattern, actual)| unify_ty(pattern, actual, subst)),
+            } if named_ty_identity_eq(*def_id, name, *actual_def_id, actual_name)
+                && args.len() == actual_args.len() =>
+            {
+                args.iter()
+                    .zip(actual_args.iter())
+                    .all(|(pattern, actual)| unify_ty(pattern, actual, subst))
+            }
             _ => false,
         },
         Ty::GeneratedFuture {
@@ -1441,11 +1471,39 @@ pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
     }
 }
 
-pub fn std_error_ty() -> Ty {
-    Ty::Named {
-        name: "Error".to_string(),
-        args: Vec::new(),
-    }
+fn std_nominal_ty(
+    resolved: &ResolvedProgram,
+    name: &str,
+    kind: DefKind,
+    exports: &[&str],
+    args: Vec<Ty>,
+) -> Ty {
+    let def_id = resolved
+        .defs
+        .iter()
+        .find(|def| {
+            def.name == name
+                && def.kind == kind
+                && resolved.modules[def.module.0]
+                    .std_export
+                    .as_deref()
+                    .is_some_and(|export| exports.contains(&export))
+        })
+        .map(|def| def.id);
+    let display = def_id
+        .map(|def_id| nominal_type_name(resolved, def_id))
+        .unwrap_or_else(|| name.to_string());
+    named_ty(def_id, display, args)
+}
+
+pub fn std_error_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Error",
+        DefKind::Struct,
+        &["/std/error", "/std/error/core"],
+        Vec::new(),
+    )
 }
 
 pub fn std_error_trait_ty(def_id: DefId) -> Ty {
@@ -1456,50 +1514,68 @@ pub fn std_error_trait_ty(def_id: DefId) -> Ty {
     }
 }
 
-pub fn std_error_code_ty() -> Ty {
-    Ty::Named {
-        name: STD_ERROR_CODE_TYPE.to_string(),
-        args: Vec::new(),
-    }
+pub fn std_error_code_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        STD_ERROR_CODE_TYPE,
+        DefKind::Struct,
+        &["/std/error/basic"],
+        Vec::new(),
+    )
 }
 
-pub fn std_async_error_ty() -> Ty {
-    Ty::Named {
-        name: "AsyncError".to_string(),
-        args: Vec::new(),
-    }
+pub fn std_async_error_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "AsyncError",
+        DefKind::Enum,
+        &["/std/async", "/std/async/core"],
+        Vec::new(),
+    )
 }
 
-pub fn std_resource_error_ty() -> Ty {
-    Ty::Named {
-        name: "ResourceError".to_string(),
-        args: Vec::new(),
-    }
+pub fn std_resource_error_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "ResourceError",
+        DefKind::Enum,
+        &["/std/resource"],
+        Vec::new(),
+    )
 }
 
-pub fn std_result_ty(ok_ty: Ty, err_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Result".to_string(),
-        args: vec![ok_ty, err_ty],
-    }
+pub fn std_result_ty(resolved: &ResolvedProgram, ok_ty: Ty, err_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Result",
+        DefKind::Enum,
+        &["/std/result", "/std/result/core"],
+        vec![ok_ty, err_ty],
+    )
 }
 
-pub fn std_message_result_ty(ok_ty: Ty) -> Ty {
-    std_result_ty(ok_ty, std_error_ty())
+pub fn std_message_result_ty(resolved: &ResolvedProgram, ok_ty: Ty) -> Ty {
+    std_result_ty(resolved, ok_ty, std_error_ty(resolved))
 }
 
-pub fn std_actor_ty(message_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Actor".to_string(),
-        args: vec![message_ty],
-    }
+pub fn std_actor_ty(resolved: &ResolvedProgram, message_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Actor",
+        DefKind::Struct,
+        &["/std/actor"],
+        vec![message_ty],
+    )
 }
 
-pub fn std_future_ty(output_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Future".to_string(),
-        args: vec![output_ty],
-    }
+pub fn std_future_ty(resolved: &ResolvedProgram, output_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Future",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![output_ty],
+    )
 }
 
 pub fn generated_future_ty(
@@ -1571,16 +1647,13 @@ pub fn opaque_state_ty(base: Ty, state: Vec<(String, Ty)>) -> Ty {
 pub const OPAQUE_FUTURE_STATE_MARKER_NAME: &str = "<opaque future state>";
 
 pub fn opaque_future_state_marker_ty() -> Ty {
-    Ty::Named {
-        name: OPAQUE_FUTURE_STATE_MARKER_NAME.to_string(),
-        args: Vec::new(),
-    }
+    named_ty(None, OPAQUE_FUTURE_STATE_MARKER_NAME, Vec::new())
 }
 
 pub fn is_opaque_future_state_marker_ty(ty: &Ty) -> bool {
     matches!(
         ty,
-        Ty::Named { name, args }
+        Ty::Named { name, args, .. }
             if name == OPAQUE_FUTURE_STATE_MARKER_NAME && args.is_empty()
     )
 }
@@ -1602,39 +1675,54 @@ pub fn generated_future_output_ty(ty: &Ty) -> Option<Ty> {
     Some((**output).clone())
 }
 
-pub fn std_task_ty(output_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Task".to_string(),
-        args: vec![output_ty],
-    }
+pub fn std_task_ty(resolved: &ResolvedProgram, output_ty: Ty, error_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Task",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![output_ty, error_ty],
+    )
 }
 
-pub fn std_sender_ty(payload_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Sender".to_string(),
-        args: vec![payload_ty],
-    }
+pub fn std_sender_ty(resolved: &ResolvedProgram, payload_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Sender",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![payload_ty],
+    )
 }
 
-pub fn std_receiver_ty(payload_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "Receiver".to_string(),
-        args: vec![payload_ty],
-    }
+pub fn std_receiver_ty(resolved: &ResolvedProgram, payload_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Receiver",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![payload_ty],
+    )
 }
 
-pub fn std_send_permit_ty(payload_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "SendPermit".to_string(),
-        args: vec![payload_ty],
-    }
+pub fn std_send_permit_ty(resolved: &ResolvedProgram, payload_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "SendPermit",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![payload_ty],
+    )
 }
 
-pub fn std_task_group_ty(payload_ty: Ty) -> Ty {
-    Ty::Named {
-        name: "TaskGroup".to_string(),
-        args: vec![payload_ty],
-    }
+pub fn std_task_group_ty(resolved: &ResolvedProgram, payload_ty: Ty, error_ty: Ty) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "TaskGroup",
+        DefKind::Struct,
+        &["/std/async", "/std/async/core"],
+        vec![payload_ty, error_ty],
+    )
 }
 
 pub const STD_META_REF_REPR_MARKER: &str = "__ciel_std_meta_RefRepr";
@@ -1644,10 +1732,7 @@ pub const META_ARRAY_CHUNK_SIZE: usize = 16;
 pub const META_ARRAY_EXPANSION_BUDGET: usize = 4096;
 
 pub fn meta_named(name: &str, args: Vec<Ty>) -> Ty {
-    Ty::Named {
-        name: name.to_string(),
-        args,
-    }
+    named_ty(None, name, args)
 }
 
 pub fn meta_product_ty<I>(fields: I, head_name: &str) -> Ty
@@ -1827,23 +1912,32 @@ pub fn meta_array_expansion_cost(len: usize, elem: &Ty) -> Option<usize> {
     element_cost.checked_add(chunks)?.checked_add(cats)
 }
 
-pub fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
-    Ty::Named {
-        name: if borrowed {
+pub fn std_meta_repr_marker_ty_with_def_id(
+    def_id: Option<DefId>,
+    borrowed: bool,
+    source_ty: Ty,
+) -> Ty {
+    named_ty(
+        def_id,
+        if borrowed {
             STD_META_REF_REPR_MARKER
         } else {
             STD_META_REPR_MARKER
-        }
-        .to_string(),
-        args: vec![source_ty],
-    }
+        },
+        vec![source_ty],
+    )
+}
+
+pub fn std_meta_repr_marker_ty(borrowed: bool, source_ty: Ty) -> Ty {
+    std_meta_repr_marker_ty_with_def_id(None, borrowed, source_ty)
+}
+
+pub fn std_meta_schema_marker_ty_with_def_id(def_id: Option<DefId>, source_ty: Ty) -> Ty {
+    named_ty(def_id, STD_META_SCHEMA_MARKER, vec![source_ty])
 }
 
 pub fn std_meta_schema_marker_ty(source_ty: Ty) -> Ty {
-    Ty::Named {
-        name: STD_META_SCHEMA_MARKER.to_string(),
-        args: vec![source_ty],
-    }
+    std_meta_schema_marker_ty_with_def_id(None, source_ty)
 }
 
 pub fn std_meta_repr_source_name(name: &str) -> Option<bool> {
@@ -1867,7 +1961,7 @@ pub fn meta_repr_marker_name(name: &str) -> Option<bool> {
 }
 
 pub fn meta_repr_marker_source(ty: &Ty) -> Option<(bool, &Ty)> {
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { name, args, .. } = ty else {
         return None;
     };
     let borrowed = meta_repr_marker_name(name)?;
@@ -1882,7 +1976,7 @@ pub fn meta_schema_marker_name(name: &str) -> bool {
 }
 
 pub fn meta_schema_marker_source(ty: &Ty) -> Option<&Ty> {
-    let Ty::Named { name, args } = ty else {
+    let Ty::Named { name, args, .. } = ty else {
         return None;
     };
     if !meta_schema_marker_name(name) || args.len() != 1 {
@@ -1893,7 +1987,7 @@ pub fn meta_schema_marker_source(ty: &Ty) -> Option<&Ty> {
 
 pub fn contains_meta_marker(ty: &Ty) -> bool {
     match ty {
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             meta_repr_marker_name(name).is_some()
                 || meta_schema_marker_name(name)
                 || args.iter().any(contains_meta_marker)
@@ -1934,7 +2028,7 @@ pub fn contains_meta_marker(ty: &Ty) -> bool {
 
 pub fn contains_meta_repr_marker(ty: &Ty) -> bool {
     match ty {
-        Ty::Named { name, args } => {
+        Ty::Named { name, args, .. } => {
             meta_repr_marker_name(name).is_some() || args.iter().any(contains_meta_repr_marker)
         }
         Ty::GeneratedFuture { output, state, .. } => {
@@ -1995,10 +2089,9 @@ where
             mutability: *mutability,
             elem: Box::new(map_child(elem)),
         },
-        Ty::Named { name, args } => Ty::Named {
-            name: name.clone(),
-            args: args.iter().map(map_child).collect(),
-        },
+        Ty::Named { def_id, name, args } => {
+            named_ty(*def_id, name.clone(), args.iter().map(map_child).collect())
+        }
         Ty::GeneratedFuture {
             name,
             output,
@@ -2179,7 +2272,7 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
             };
             format!("{prefix}_{}", mangle_ty_fragment(elem))
         }
-        Ty::Named { name, args } => aggregate_instance_name(name, args),
+        Ty::Named { name, args, .. } => aggregate_instance_name(name, args),
         Ty::GeneratedFuture {
             name,
             output,
@@ -2423,7 +2516,7 @@ impl fmt::Display for Ty {
                 ViewMutability::Writable => write!(f, "[]{elem}"),
                 ViewMutability::ReadOnly => write!(f, "[]const {elem}"),
             },
-            Ty::Named { name, args } => {
+            Ty::Named { name, args, .. } => {
                 let display_name = match name.as_str() {
                     "__ciel_std_meta_RefRepr" => "meta::RefRepr",
                     "__ciel_std_meta_Repr" => "meta::Repr",

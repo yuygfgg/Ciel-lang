@@ -1,0 +1,19 @@
+// ciel-test: error
+// expect-error: `async` task error type `RuntimeOnly` cannot represent task-boundary message-clone failures
+
+import /std/async as async;
+import /std/result;
+
+enum RuntimeOnly {
+    Runtime(i64),
+    Local,
+}
+
+async Result<void, RuntimeOnly> fail_runtime_only() {
+    return Err(Local);
+}
+
+i32 main() {
+    _ task = async::spawn<void, RuntimeOnly>(fail_runtime_only());
+    return 0;
+}

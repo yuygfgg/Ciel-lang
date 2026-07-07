@@ -13,7 +13,7 @@ async Result<usize, Error> close_file(io::File @file) {
 Result<void, Error> bad([]const char path) {
     io::File file = io::open_read(path)?;
     _ future = close_file(file);
-    async::Task<usize> task = async::spawn<usize>(future)?;
+    async::Task<usize, Error> task = async::spawn<usize>(future)?;
     usize value = async::block_on(future)?;
     if (value == 0) {
         return Err(text_error("unreachable"));

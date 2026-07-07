@@ -23,12 +23,12 @@ use crate::{
         meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
         meta_repr_marker_name, meta_repr_marker_source, meta_schema_marker_name,
         meta_schema_marker_source, meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty,
-        opaque_future_state_marker_ty, opaque_state_ty, pointer_view_can_weaken,
-        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty,
-        std_async_error_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty,
-        std_meta_schema_marker_ty, std_resource_error_ty, std_result_ty, std_task_ty,
-        substitute_constraint_bounds, substitute_ty, ty_from_primitive, ty_has_hidden_state,
-        unify_ty,
+        named_ty, named_ty_identity_eq, opaque_future_state_marker_ty, opaque_state_ty,
+        pointer_view_can_weaken, receiver_ty_from_value_ty, retained_closure_proves_capability,
+        std_actor_ty, std_async_error_ty, std_error_ty, std_future_ty,
+        std_meta_repr_marker_ty_with_def_id, std_meta_schema_marker_ty_with_def_id,
+        std_resource_error_ty, std_result_ty, std_task_ty, substitute_constraint_bounds,
+        substitute_ty, ty_from_primitive, ty_has_hidden_state, unify_ty,
     },
 };
 
@@ -132,6 +132,7 @@ struct TypeAliasTemplate {
 
 #[derive(Clone, Debug)]
 struct VariantSig {
+    enum_def_id: DefId,
     enum_name: String,
     enum_generics: Vec<String>,
     variant_index: usize,
@@ -282,6 +283,19 @@ struct CapabilityResolutionKey {
     interface_name: String,
     args: Vec<Ty>,
     receiver_ty: Ty,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct CapabilityResolutionCacheKey {
+    epoch: usize,
+    resolution: CapabilityResolutionKey,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+struct MetaReprStorageCacheKey {
+    epoch: usize,
+    in_meta_sop: bool,
+    ty: Ty,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -857,6 +871,9 @@ struct TypeChecker {
     pending_derived_template_constraint_checks: Vec<PendingDerivedTemplateConstraintCheck>,
     pending_derived_negative_checks: Vec<PendingDerivedNegativeCapabilityCheck>,
     capability_resolution_stack: HashSet<CapabilityResolutionKey>,
+    capability_resolution_cache: HashMap<CapabilityResolutionCacheKey, bool>,
+    capability_resolution_epoch: usize,
+    meta_repr_storage_cache: HashMap<MetaReprStorageCacheKey, Ty>,
     symbolic_impl_resolution_depth: usize,
     symbolic_capability_resolution_stack: HashSet<CapabilityResolutionKey>,
     symbolic_constraint_env_stack: Vec<Vec<GenericConstraintBounds>>,
@@ -911,6 +928,9 @@ impl TypeChecker {
             pending_derived_template_constraint_checks: Vec::new(),
             pending_derived_negative_checks: Vec::new(),
             capability_resolution_stack: HashSet::new(),
+            capability_resolution_cache: HashMap::new(),
+            capability_resolution_epoch: 0,
+            meta_repr_storage_cache: HashMap::new(),
             symbolic_impl_resolution_depth: 0,
             symbolic_capability_resolution_stack: HashSet::new(),
             symbolic_constraint_env_stack: Vec::new(),

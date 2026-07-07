@@ -99,6 +99,7 @@ impl TypeChecker {
             };
             let future_output_ty =
                 self.awaited_output_future_state_ty(&future.ty, future_output_ty);
+            self.check_task_await_boundary(&future.ty, arm.future.span);
             let future = self.consume_affine_expr(scopes, future, false);
             affine_state |= self.type_is_affine(&future.ty);
             future_state.push((
@@ -258,7 +259,11 @@ impl TypeChecker {
         let handler_state_ty = explicit_handle_state_ty.unwrap_or_else(|| state_ty.clone());
         let handler_message_ty = handle_message_ty.clone();
         let storage_state_ty = self.meta_repr_storage_ty(&state_ty, span);
-        let handler_ret = std_result_ty(handler_state_ty.clone(), std_error_ty());
+        let handler_ret = std_result_ty(
+            &self.ctx.resolved,
+            handler_state_ty.clone(),
+            std_error_ty(&self.ctx.resolved),
+        );
         let message_view = self.std_message_view("Message");
         let expected_handler_ty = Ty::Closure {
             ret: Box::new(handler_ret.clone()),
@@ -309,7 +314,11 @@ impl TypeChecker {
                 format!("actor message type `{message_ty}` does not implement `Message`"),
             ));
         }
-        let ret = std_result_ty(std_actor_ty(handle_message_ty.clone()), std_error_ty());
+        let ret = std_result_ty(
+            &self.ctx.resolved,
+            std_actor_ty(&self.ctx.resolved, handle_message_ty.clone()),
+            std_error_ty(&self.ctx.resolved),
+        );
         self.ensure_struct_instance(&ret);
         self.ensure_enum_instance(&ret);
         Some(TExpr {
@@ -393,7 +402,7 @@ impl TypeChecker {
                 ));
                 return None;
             };
-            if err_ty != std_error_ty() {
+            if err_ty != std_error_ty(&self.ctx.resolved) {
                 self.diagnostics.push(Diagnostic::new(
                     init.span,
                     format!("actor state initializer error type must be `Error`, got `{err_ty}`"),
@@ -432,9 +441,17 @@ impl TypeChecker {
             mutability: ViewMutability::Writable,
             inner: Box::new(handler_state_ty.clone()),
         };
-        let actor_self_ty = std_actor_ty(handle_message_ty.clone());
-        let init_ret = std_result_ty(storage_state_ty.clone(), std_error_ty());
-        let handler_ret = std_result_ty(Ty::Void, std_error_ty());
+        let actor_self_ty = std_actor_ty(&self.ctx.resolved, handle_message_ty.clone());
+        let init_ret = std_result_ty(
+            &self.ctx.resolved,
+            storage_state_ty.clone(),
+            std_error_ty(&self.ctx.resolved),
+        );
+        let handler_ret = std_result_ty(
+            &self.ctx.resolved,
+            Ty::Void,
+            std_error_ty(&self.ctx.resolved),
+        );
         let message_view = self.std_message_view("Message");
         let expected_init_ty = Ty::Closure {
             ret: Box::new(init_ret.clone()),
@@ -506,7 +523,11 @@ impl TypeChecker {
                 format!("actor message type `{message_ty}` does not implement `Message`"),
             ));
         }
-        let ret = std_result_ty(std_actor_ty(handle_message_ty.clone()), std_error_ty());
+        let ret = std_result_ty(
+            &self.ctx.resolved,
+            std_actor_ty(&self.ctx.resolved, handle_message_ty.clone()),
+            std_error_ty(&self.ctx.resolved),
+        );
         self.ensure_struct_instance(&ret);
         self.ensure_enum_instance(&ret);
         Some(TExpr {
@@ -570,7 +591,11 @@ impl TypeChecker {
                 format!("actor message type `{message_ty}` does not implement `Message`"),
             ));
         }
-        let ret = std_result_ty(Ty::Void, std_error_ty());
+        let ret = std_result_ty(
+            &self.ctx.resolved,
+            Ty::Void,
+            std_error_ty(&self.ctx.resolved),
+        );
         self.ensure_enum_instance(&ret);
         Some(TExpr {
             span,
@@ -617,7 +642,11 @@ impl TypeChecker {
         let message_ty = explicit_message_ty
             .or_else(|| self.actor_message_ty_from_pointer(&actor.ty, actor.span))
             .unwrap_or(Ty::Unknown);
-        let ret = std_result_ty(Ty::Void, std_error_ty());
+        let ret = std_result_ty(
+            &self.ctx.resolved,
+            Ty::Void,
+            std_error_ty(&self.ctx.resolved),
+        );
         self.ensure_enum_instance(&ret);
         let kind = match op {
             ActorLifecycleOp::Stop => TExprKind::ActorStop {
@@ -874,7 +903,7 @@ impl TypeChecker {
             Ty::Unknown
         };
         let repr_ty = self.meta_repr_ty(span, &target_ty, false);
-        let storage_repr_ty = std_meta_repr_marker_ty(false, target_ty.clone());
+        let storage_repr_ty = self.std_meta_repr_marker_ty(false, target_ty.clone());
         let value = self.check_expr(scopes, &args[0], Some(&storage_repr_ty))?;
         if value.ty == storage_repr_ty {
             // Source-level storage keeps `meta::Repr<T>` as the safe-envelope type,
@@ -904,7 +933,7 @@ impl TypeChecker {
         span: crate::span::Span,
         source_ty: &Ty,
     ) {
-        let Ty::Named { name, args } = source_ty else {
+        let Ty::Named { name, args, .. } = source_ty else {
             return;
         };
         let instance_name = enum_instance_name(name, args);
@@ -966,7 +995,7 @@ impl TypeChecker {
     }
 
     pub(super) fn actor_message_ty_from_actor_ty(&self, actor_ty: &Ty) -> Option<Ty> {
-        let Ty::Named { name, args } = actor_ty else {
+        let Ty::Named { name, args, .. } = actor_ty else {
             return None;
         };
         if args.len() != 1 {
@@ -2272,6 +2301,7 @@ impl TypeChecker {
             ));
         }
         let output_ty = self.awaited_output_future_state_ty(&future.ty, output_ty);
+        self.check_task_await_boundary(&future.ty, future.span);
         let future = self.consume_affine_expr(scopes, future, false);
         Some(TExpr {
             span,
@@ -2305,7 +2335,11 @@ impl TypeChecker {
         };
         let ms = self.check_expr(scopes, ms_arg, Some(&Ty::U64))?;
         self.require_assignable(&Ty::U64, &ms.ty, ms.span);
-        let output_ty = std_result_ty(Ty::Void, std_async_error_ty());
+        let output_ty = std_result_ty(
+            &self.ctx.resolved,
+            Ty::Void,
+            std_async_error_ty(&self.ctx.resolved),
+        );
         Some(TExpr {
             span,
             ty: self.async_sleep_future_ty(output_ty.clone()),
@@ -2398,9 +2432,9 @@ impl TypeChecker {
         args: &[Expr],
         expected: Option<&Ty>,
     ) -> Option<TExpr> {
-        if type_args.len() > 1 {
+        if type_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
-                type_args[1].span,
+                type_args[2].span,
                 "too many type arguments for `spawn`",
             ));
             return None;
@@ -2412,19 +2446,32 @@ impl TypeChecker {
             ));
         }
         let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
-        let expected_output = explicit_output
-            .clone()
-            .or_else(|| self.task_output_from_spawn_expected(expected));
+        let explicit_error = type_args.get(1).map(|ty| self.lower_type(ty));
+        let expected_task_tys = self.task_tys_from_spawn_expected(expected);
+        let expected_output = explicit_output.clone().or_else(|| {
+            expected_task_tys
+                .as_ref()
+                .map(|(output_ty, _)| output_ty.clone())
+        });
+        let expected_error = explicit_error.clone().or_else(|| {
+            expected_task_tys
+                .as_ref()
+                .map(|(_, error_ty)| error_ty.clone())
+        });
         let Some(arg) = args.first() else {
             return None;
         };
 
-        let expected_result = expected_output
-            .as_ref()
-            .map(|ty| std_result_ty(ty.clone(), std_error_ty()));
+        let expected_result =
+            expected_output
+                .as_ref()
+                .zip(expected_error.as_ref())
+                .map(|(output_ty, error_ty)| {
+                    std_result_ty(&self.ctx.resolved, output_ty.clone(), error_ty.clone())
+                });
         let expected_future = expected_result
             .as_ref()
-            .map(|result_ty| std_future_ty(result_ty.clone()));
+            .map(|result_ty| std_future_ty(&self.ctx.resolved, result_ty.clone()));
         let expected_closure = expected_future.as_ref().map(|future_ty| Ty::Closure {
             ret: Box::new(future_ty.clone()),
             params: Vec::new(),
@@ -2453,7 +2500,7 @@ impl TypeChecker {
                 if !*is_async {
                     self.diagnostics.push(Diagnostic::new(
                         body.span,
-                        "`async::spawn` requires a direct async closure or Awaitable<Result<T, Error>>",
+                        "`async::spawn` requires a direct async closure or Awaitable<Result<T, E>>",
                     ));
                     None
                 } else if !params.is_empty() {
@@ -2500,7 +2547,7 @@ impl TypeChecker {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
                 format!(
-                    "`async::spawn` requires `Awaitable<Result<T, Error>>`, got `{}`",
+                    "`async::spawn` requires `Awaitable<Result<T, E>>`, got `{}`",
                     body.ty
                 ),
             ));
@@ -2510,6 +2557,7 @@ impl TypeChecker {
                 kind: TExprKind::AsyncSpawn {
                     body: Box::new(body),
                     task_output_ty: Ty::Unknown,
+                    task_error_ty: Ty::Unknown,
                 },
             });
         };
@@ -2517,7 +2565,7 @@ impl TypeChecker {
             self.diagnostics.push(Diagnostic::new(
                 body.span,
                 format!(
-                    "`async::spawn` requires `Awaitable<Result<T, Error>>`, got awaitable yielding `{result_ty}`"
+                    "`async::spawn` requires `Awaitable<Result<T, E>>`, got awaitable yielding `{result_ty}`"
                 ),
             ));
             return Some(TExpr {
@@ -2526,15 +2574,10 @@ impl TypeChecker {
                 kind: TExprKind::AsyncSpawn {
                     body: Box::new(body),
                     task_output_ty: Ty::Unknown,
+                    task_error_ty: Ty::Unknown,
                 },
             });
         };
-        if !self.is_std_error_ty(&err_ty) {
-            self.diagnostics.push(Diagnostic::new(
-                body.span,
-                format!("`async::spawn` task error type must be `Error`, got `{err_ty}`"),
-            ));
-        }
         if let Some(future_ty) = &body_future_ty
             && !self.is_abortable_ty(future_ty)
         {
@@ -2547,6 +2590,9 @@ impl TypeChecker {
         }
         if let Some(expected_output) = &expected_output {
             self.require_assignable(expected_output, &task_output_ty, body.span);
+        }
+        if let Some(expected_error) = &expected_error {
+            self.require_assignable(expected_error, &err_ty, body.span);
         }
         if let Some(reason) = self.task_boundary_message_violation(
             &task_output_ty,
@@ -2561,6 +2607,16 @@ impl TypeChecker {
                 reason,
             ));
         }
+        if let Some(reason) =
+            self.task_boundary_message_violation(&err_ty, "task error", &mut HashSet::new())
+        {
+            self.diagnostics.push(self.diagnostic_with_reason_note(
+                body.span,
+                format!("`async::spawn` task error type `{err_ty}` does not implement `Message`"),
+                reason,
+            ));
+        }
+        self.check_task_error_carriers(&err_ty, body.span);
         if !matches!(body.kind, TExprKind::Closure { .. }) {
             if let Some(reason) = self.spawnable_future_state_violation(&body.ty, "future") {
                 self.diagnostics.push(self.diagnostic_with_reason_note(
@@ -2588,26 +2644,31 @@ impl TypeChecker {
         }
 
         let body = self.consume_affine_expr(scopes, body, false);
-        let task_ty = std_task_ty(task_output_ty.clone());
-        let result_ty = std_result_ty(task_ty, std_async_error_ty());
+        let task_ty = std_task_ty(&self.ctx.resolved, task_output_ty.clone(), err_ty.clone());
+        let result_ty = std_result_ty(
+            &self.ctx.resolved,
+            task_ty,
+            std_async_error_ty(&self.ctx.resolved),
+        );
         Some(TExpr {
             span,
             ty: result_ty,
             kind: TExprKind::AsyncSpawn {
                 body: Box::new(body),
                 task_output_ty,
+                task_error_ty: err_ty,
             },
         })
     }
 
-    pub(super) fn task_output_from_spawn_expected(&self, expected: Option<&Ty>) -> Option<Ty> {
+    pub(super) fn task_tys_from_spawn_expected(&self, expected: Option<&Ty>) -> Option<(Ty, Ty)> {
         let Some((ok_ty, err_ty)) = expected.and_then(|ty| self.result_ok_err_tys(ty)) else {
             return None;
         };
-        if err_ty != std_async_error_ty() {
+        if err_ty != std_async_error_ty(&self.ctx.resolved) {
             return None;
         }
-        self.task_output_ty(&ok_ty)
+        self.task_tys(&ok_ty)
     }
 
     pub(super) fn check_async_task_cancel_call(
@@ -2648,9 +2709,9 @@ impl TypeChecker {
             AsyncTaskControl::Cancel => "cancel",
             AsyncTaskControl::IsFinished => "is_finished",
         };
-        if type_args.len() > 1 {
+        if type_args.len() > 2 {
             self.diagnostics.push(Diagnostic::new(
-                type_args[1].span,
+                type_args[2].span,
                 format!("too many type arguments for `{label}`"),
             ));
             return None;
@@ -2662,9 +2723,18 @@ impl TypeChecker {
             ));
         }
         let explicit_output = type_args.first().map(|ty| self.lower_type(ty));
-        let expected_task = explicit_output
-            .as_ref()
-            .map(|ty| Ty::const_pointer_to(std_task_ty(ty.clone())));
+        let explicit_error = type_args.get(1).map(|ty| self.lower_type(ty));
+        let expected_task =
+            explicit_output
+                .as_ref()
+                .zip(explicit_error.as_ref())
+                .map(|(output_ty, error_ty)| {
+                    Ty::const_pointer_to(std_task_ty(
+                        &self.ctx.resolved,
+                        output_ty.clone(),
+                        error_ty.clone(),
+                    ))
+                });
         let Some(arg) = args.first() else {
             return None;
         };
@@ -2672,10 +2742,10 @@ impl TypeChecker {
         if let Some(expected) = expected_task.as_ref() {
             self.require_assignable(expected, &task.ty, task.span);
         }
-        let Some(task_output_ty) = self.task_output_from_pointer_ty(&task.ty) else {
+        let Some((task_output_ty, task_error_ty)) = self.task_tys_from_pointer_ty(&task.ty) else {
             self.diagnostics.push(Diagnostic::new(
                 task.span,
-                format!("`async::{label}` requires `*Task<T>`, got `{}`", task.ty),
+                format!("`async::{label}` requires `*Task<T, E>`, got `{}`", task.ty),
             ));
             return Some(TExpr {
                 span,
@@ -2684,19 +2754,31 @@ impl TypeChecker {
                     AsyncTaskControl::Cancel => TExprKind::AsyncTaskCancel {
                         task: Box::new(task),
                         task_output_ty: Ty::Unknown,
+                        task_error_ty: Ty::Unknown,
                     },
                     AsyncTaskControl::IsFinished => TExprKind::AsyncTaskIsFinished {
                         task: Box::new(task),
                         task_output_ty: Ty::Unknown,
+                        task_error_ty: Ty::Unknown,
                     },
                 },
             });
         };
+        if let Some(explicit_output) = &explicit_output {
+            self.require_assignable(explicit_output, &task_output_ty, task.span);
+        }
+        if let Some(explicit_error) = &explicit_error {
+            self.require_assignable(explicit_error, &task_error_ty, task.span);
+        }
         let ret_ok = match op {
             AsyncTaskControl::Cancel => Ty::Void,
             AsyncTaskControl::IsFinished => Ty::Bool,
         };
-        let ret_ty = std_result_ty(ret_ok, std_async_error_ty());
+        let ret_ty = std_result_ty(
+            &self.ctx.resolved,
+            ret_ok,
+            std_async_error_ty(&self.ctx.resolved),
+        );
         Some(TExpr {
             span,
             ty: ret_ty,
@@ -2704,10 +2786,12 @@ impl TypeChecker {
                 AsyncTaskControl::Cancel => TExprKind::AsyncTaskCancel {
                     task: Box::new(task),
                     task_output_ty,
+                    task_error_ty,
                 },
                 AsyncTaskControl::IsFinished => TExprKind::AsyncTaskIsFinished {
                     task: Box::new(task),
                     task_output_ty,
+                    task_error_ty,
                 },
             },
         })

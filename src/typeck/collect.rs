@@ -312,6 +312,7 @@ impl TypeChecker {
                         self.ctx.variants.insert(
                             def_id,
                             VariantSig {
+                                enum_def_id,
                                 enum_name: enum_name.clone(),
                                 enum_generics: generic_names.clone(),
                                 variant_index,
@@ -350,10 +351,9 @@ impl TypeChecker {
         templates
             .iter()
             .filter_map(|(name, template)| {
-                generics(template).is_empty().then(|| Ty::Named {
-                    name: name.clone(),
-                    args: Vec::new(),
-                })
+                generics(template)
+                    .is_empty()
+                    .then(|| named_ty(None, name.clone(), Vec::new()))
             })
             .collect()
     }

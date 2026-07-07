@@ -15,7 +15,7 @@ async Result<usize, Error> compute(usize base) {
 
 i32 main() {
     async::Future<Result<usize, Error>> future = compute(7);
-    async::Task<usize> task = must(async::spawn<usize>(future));
+    async::Task<usize, Error> task = must(async::spawn<usize>(future));
     must(print_value(must(async::block_on(task))));
     return 0;
 }

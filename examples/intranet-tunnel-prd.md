@@ -805,7 +805,8 @@ Required Ciel safety rules:
 - Safe code cannot construct a fake `TcpStream` from arbitrary integers.
 - All raw-handle adoption, pointer casts, and external C calls stay inside
   `unsafe` blocks or trusted standard-library wrappers.
-- Public APIs return `Result<T, Error>` and never expose `errno` directly.
+- Standard-library public APIs return concrete module error enums and never
+  expose `errno` directly.
 
 ## 12. Application Modules
 
@@ -875,9 +876,10 @@ behind constants. The product target still requires CLI parsing.
 
 ## 14. Error Model
 
-Application functions should return `Result<T, Error>` at public boundaries.
-Protocol and network internals may use precise enums and box them into
-`/std/error::Error` at process or actor boundaries.
+Application functions should use a demo-local `TunnelError` enum for ordinary
+business logic. Protocol, CLI, runtime, and network failures are represented as
+variants of that enum. Code should box into `/std/error::Error` only at
+standard-library boundaries that require it, such as spawned task bodies.
 
 Expected error categories:
 
@@ -892,8 +894,8 @@ Expected error categories:
 - private target dial failure.
 - unexpected EOF.
 
-Each precise error enum must implement `format_error` so `?` can box it into
-standard `Error`.
+Each precise error enum must implement `format_error` so process entry points
+can print stable diagnostics without losing the structured error type.
 
 ## 15. Logging And Diagnostics
 
@@ -1014,7 +1016,8 @@ Deliverables:
 Exit criteria:
 
 - loopback echo test passes through the tunnel.
-- errors use `Result<T, Error>`.
+- application internals use a demo-local error enum instead of boxed
+  `/std/error::Error`.
 - stream state transitions are represented as enums and exhaustively switched.
 
 ### Phase 4: Authentication And Multiplexed Demo Behavior

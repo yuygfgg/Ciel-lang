@@ -16,7 +16,7 @@ async Result<usize, Error> read_one(io::File file) {
 i32 main() {
     io::File file = must(io::open_read("unused"));
     _ future = read_one(file);
-    _ task = async::spawn<usize>(async || {
+    _ task = async::spawn<usize, Error>(async || {
         return await future;
     });
     return 0;

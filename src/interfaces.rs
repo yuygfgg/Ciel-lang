@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use crate::{
     resolve::DefId,
     thir::{CheckedImpl, CheckedInterface, CheckedInterfaceAlias, CheckedInterfaceRef},
-    types::{ConstraintBounds, ConstraintRef, Ty, receiver_ty_from_value_ty, substitute_ty},
+    types::{
+        ConstraintBounds, ConstraintRef, Ty, named_ty_identity_eq, receiver_ty_from_value_ty,
+        substitute_ty,
+    },
 };
 
 #[derive(Clone, Debug)]
@@ -227,27 +230,36 @@ fn ty_matches_ignoring_opaque_state(left: &Ty, right: &Ty) -> bool {
         }
         (
             Ty::Named {
+                def_id: left_def_id,
                 name: left_name,
                 args: left_args,
             },
             Ty::Named {
+                def_id: right_def_id,
                 name: right_name,
                 args: right_args,
             },
-        )
-        | (
+        ) => {
+            named_ty_identity_eq(*left_def_id, left_name, *right_def_id, right_name)
+                && left_args.len() == right_args.len()
+                && left_args
+                    .iter()
+                    .zip(right_args.iter())
+                    .all(|(left, right)| ty_matches_ignoring_opaque_state(left, right))
+        }
+        (
             Ty::DynamicInterface {
-                name: left_name,
+                def_id: left_def_id,
                 args: left_args,
                 ..
             },
             Ty::DynamicInterface {
-                name: right_name,
+                def_id: right_def_id,
                 args: right_args,
                 ..
             },
         ) => {
-            left_name == right_name
+            left_def_id == right_def_id
                 && left_args.len() == right_args.len()
                 && left_args
                     .iter()

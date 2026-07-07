@@ -104,7 +104,7 @@ async Result<usize, ProbeError> drive() {
         async_step("first chunk channel", async::channel<usize>(1))?;
     async::ChannelPair<usize> write_rest =
         async_step("write rest channel", async::channel<usize>(1))?;
-    async::Task<void> server = async_step(
+    async::Task<void, Error> server = async_step(
         "spawn server",
         async::spawn<void>(
             write_delayed_chunks(listener, first_chunk_written.sender, write_rest.receiver)

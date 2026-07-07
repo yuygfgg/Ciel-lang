@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use crate::types::{Ty, contains_generic, contains_type_hole, meta_repr_marker_name};
+use crate::types::{Ty, contains_generic, contains_type_hole, meta_repr_marker_name, named_ty};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum MetaReprSafetyOperation {
@@ -86,7 +86,7 @@ fn meta_structural_repr_unsafe_struct_name_rec<E: MetaReprSafetyEnv>(
                 meta_owned_leaf_unsafe_struct_name(env, elem, root, expanding)
             }
         }
-        Ty::Named { name, args } => {
+        Ty::Named { def_id, name, args } => {
             if let Some(marker_borrowed) = meta_repr_marker_name(name) {
                 if args.len() != 1 {
                     return None;
@@ -100,10 +100,7 @@ fn meta_structural_repr_unsafe_struct_name_rec<E: MetaReprSafetyEnv>(
                 );
             }
 
-            let instance_ty = Ty::Named {
-                name: name.clone(),
-                args: args.clone(),
-            };
+            let instance_ty = named_ty(*def_id, name.clone(), args.clone());
             if !borrowed && env.meta_safety_is_owned_policy_leaf(&instance_ty, root) {
                 return None;
             }

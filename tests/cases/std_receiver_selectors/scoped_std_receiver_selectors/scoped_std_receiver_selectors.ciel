@@ -60,8 +60,8 @@ Result<void, Error> use_net_path_selectors(
 }
 
 async Result<i64, Error> use_task_group_selectors(
-    async::TaskGroup<i64> group,
-    async::Task<i64> task
+    async::TaskGroup<i64, Error> group,
+    async::Task<i64, Error> task
 ) {
     group.async::add(task)?;
     group.async::cancel_all()?;

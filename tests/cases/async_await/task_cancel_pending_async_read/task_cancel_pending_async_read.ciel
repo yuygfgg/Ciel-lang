@@ -39,7 +39,7 @@ async Result<usize, Error> read_until_cancelled(aio::AsyncFd read_fd) {
 Result<usize, Error> drive() {
     c::c_int @write_fd = -1 as c::c_int;
     aio::AsyncFd read_fd = pipe_read_end(&write_fd)?;
-    async::Task<usize> task = async::spawn<usize>(read_until_cancelled(read_fd))?;
+    async::Task<usize, Error> task = async::spawn<usize>(read_until_cancelled(read_fd))?;
     async::block_on(async_time::sleep_ms(10))?;
     async::cancel<usize>(&task)?;
     if (!async::is_finished<usize>(&task)?) {

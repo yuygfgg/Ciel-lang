@@ -11,6 +11,8 @@ export enum TaskGroupError<E> {
     TaskGroupBodyCleanup(E, AsyncError),
 }
 
+derive<E: Message> Message<TaskGroupError<E>>;
+
 impl<E: ErrorTrait> format_error(*const TaskGroupError<E> error) {
     switch (*error) {
         case TaskGroupAsync(inner):
@@ -41,22 +43,22 @@ export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
     };
 }
 
-void cancel_task_group_on_exit<T>(TaskGroup<T> group) {
-    group_cancel_all<T>(&group);
+void cancel_task_group_on_exit<T, E>(TaskGroup<T, E> group) {
+    group_cancel_all<T, E>(&group);
 }
 
-void close_task_group_on_exit<T>(TaskGroup<T> group) {
-    group_close<T>(&group);
+void close_task_group_on_exit<T, E>(TaskGroup<T, E> group) {
+    group_close<T, E>(&group);
 }
 
-Result<void, AsyncError> cleanup_task_group<T>(*const TaskGroup<T> group) {
-    switch (group_cancel_all<T>(group)) {
+Result<void, AsyncError> cleanup_task_group<T, E>(*const TaskGroup<T, E> group) {
+    switch (group_cancel_all<T, E>(group)) {
         case Ok:
             {}
         case Err(error):
             return Err(error);
     }
-    switch (group_close<T>(group)) {
+    switch (group_close<T, E>(group)) {
         case Ok:
             return Ok;
         case Err(error):
@@ -65,21 +67,21 @@ Result<void, AsyncError> cleanup_task_group<T>(*const TaskGroup<T> group) {
 }
 
 // Creates a task group for body and closes it after body returns or is cancelled.
-export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait>(
-    Future<Result<R, E>> |(TaskGroup<T>)| body
+export async Result<R, TaskGroupError<E>> with_task_group<T: Message, R, E: ErrorTrait + Message>(
+    Future<Result<R, E>> |(TaskGroup<T, E>)| body
 ) = .with_task_group {
-    TaskGroup<T> @group;
-    switch (task_group<T>()) {
+    TaskGroup<T, E> @group;
+    switch (task_group<T, E>()) {
         case Ok(value):
             group = value;
         case Err(error):
             return Err(TaskGroupAsync(error));
     }
     Future<Result<R, E>> @future = body(group);
-    defer close_task_group_on_exit<T>(group);
-    defer cancel_task_group_on_exit<T>(group);
+    defer close_task_group_on_exit<T, E>(group);
+    defer cancel_task_group_on_exit<T, E>(group);
     Result<R, E> result = await future;
-    Result<void, AsyncError> cleanup = cleanup_task_group<T>(&group);
+    Result<void, AsyncError> cleanup = cleanup_task_group<T, E>(&group);
     switch (result) {
         case Ok(value):
             switch (cleanup) {

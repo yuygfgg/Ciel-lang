@@ -419,14 +419,17 @@ pub enum TExprKind {
     AsyncSpawn {
         body: Box<TExpr>,
         task_output_ty: Ty,
+        task_error_ty: Ty,
     },
     AsyncTaskCancel {
         task: Box<TExpr>,
         task_output_ty: Ty,
+        task_error_ty: Ty,
     },
     AsyncTaskIsFinished {
         task: Box<TExpr>,
         task_output_ty: Ty,
+        task_error_ty: Ty,
     },
     MetaAsRefRepr {
         value: Box<TExpr>,

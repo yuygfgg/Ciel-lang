@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::{
+    affine::{self, AffineStructInfo, AffineTypeEnv},
     checked::CheckedProgram,
     common::nominal_type_name,
     diagnostic::{DiagResult, Diagnostic},
@@ -1253,6 +1254,55 @@ struct AggregateCollector<'a> {
     diagnostics: Vec<Diagnostic>,
     deferred_meta_repr_roots: Vec<Ty>,
     unsafe_depth: usize,
+}
+
+impl AffineTypeEnv for AggregateCollector<'_> {
+    fn is_resource_handle_leaf(&self, ty: &Ty) -> bool {
+        self.type_is_resource_handle_leaf(ty)
+    }
+
+    fn named_type_is_async_future(&self, ty: &Ty) -> bool {
+        std_id::std_async_future_output_arg(&self.checked.resolved, ty).is_some()
+    }
+
+    fn named_struct_info(&mut self, ty: &Ty) -> Option<AffineStructInfo> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        self.instantiate_struct(name, args);
+        if let Some((is_resource, fields)) = self.struct_info_for_instance(&instance_name) {
+            return Some(AffineStructInfo {
+                is_resource,
+                fields: fields.into_iter().map(|(_, field_ty)| field_ty).collect(),
+            });
+        }
+        if self
+            .structs
+            .get(name)
+            .is_some_and(|template| template.is_resource)
+        {
+            return Some(AffineStructInfo {
+                is_resource: true,
+                fields: Vec::new(),
+            });
+        }
+        None
+    }
+
+    fn named_enum_payloads(&mut self, ty: &Ty) -> Option<Vec<Ty>> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        self.instantiate_enum(name, args);
+        self.enum_for_instance(&instance_name).map(|enm| {
+            enm.variants
+                .into_iter()
+                .flat_map(|variant| variant.payload)
+                .collect()
+        })
+    }
 }
 
 impl<'a> AggregateCollector<'a> {
@@ -2819,96 +2869,7 @@ impl<'a> AggregateCollector<'a> {
     }
 
     fn type_is_affine(&mut self, ty: &Ty) -> bool {
-        let mut visiting = HashSet::new();
-        self.type_is_affine_inner(ty, &mut visiting)
-    }
-
-    fn type_is_affine_inner(&mut self, ty: &Ty, visiting: &mut HashSet<Ty>) -> bool {
-        if self.type_is_resource_handle_leaf(ty) {
-            return true;
-        }
-        match ty {
-            Ty::Unknown
-            | Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Pointer { .. }
-            | Ty::Slice { .. }
-            | Ty::DynamicInterface { .. } => false,
-            Ty::OpaqueReturn { .. } => false,
-            Ty::Generic(_) => false,
-            Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
-            Ty::GeneratedFuture { .. } => true,
-            Ty::OpaqueState { base, state } => {
-                self.type_is_affine_inner(base, visiting)
-                    || state
-                        .iter()
-                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
-            }
-            Ty::ClosureInstance { captures, .. } => captures
-                .iter()
-                .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::Named { def_id, name, args } => {
-                let future_ty = named_ty(*def_id, name.clone(), args.clone());
-                if std_id::std_async_future_output_arg(&self.checked.resolved, &future_ty).is_some()
-                {
-                    return true;
-                }
-                if !visiting.insert(ty.clone()) {
-                    return false;
-                }
-                let instance_name = aggregate_instance_name(name, args);
-                self.instantiate_struct(name, args);
-                if let Some((is_resource, fields)) = self.struct_info_for_instance(&instance_name) {
-                    if is_resource {
-                        visiting.remove(ty);
-                        return true;
-                    }
-                    let affine = fields
-                        .iter()
-                        .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
-                    visiting.remove(ty);
-                    return affine;
-                }
-                if self
-                    .structs
-                    .get(name)
-                    .is_some_and(|template| template.is_resource)
-                {
-                    visiting.remove(ty);
-                    return true;
-                }
-                self.instantiate_enum(name, args);
-                if let Some(enm) = self.enum_for_instance(&instance_name) {
-                    let affine = enm.variants.iter().any(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
-                    });
-                    visiting.remove(ty);
-                    return affine;
-                }
-                visiting.remove(ty);
-                false
-            }
-        }
+        affine::type_is_affine(self, ty)
     }
 
     fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {

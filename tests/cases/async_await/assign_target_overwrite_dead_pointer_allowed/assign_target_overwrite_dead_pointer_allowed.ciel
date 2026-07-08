@@ -1,0 +1,22 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 2
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io;
+import /std/result;
+
+async Result<i64, Error> overwrite_pointer_after_await() {
+    i64 @first = 1;
+    i64 @second = 2;
+    *i64 @ptr = &first;
+    await async_time::sleep_ms(0)?;
+    ptr = &second;
+    return Ok(unsafe { *ptr });
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(overwrite_pointer_after_await()))));
+    return 0;
+}

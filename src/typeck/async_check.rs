@@ -997,10 +997,15 @@ impl AsyncLivenessAnalyzer {
             }
             TStmtKind::Assign { target, value } => {
                 let mut live = live_after;
+                if let TExprKind::Local(local_id, _) = &target.kind {
+                    live.remove(local_id);
+                }
                 self.collect_awaits_in_expr(value, &live);
                 self.collect_awaits_in_expr(target, &live);
                 live.extend(TypeChecker::async_expr_used_locals(value));
-                live.extend(TypeChecker::async_expr_used_locals(target));
+                if !matches!(target.kind, TExprKind::Local(..)) {
+                    live.extend(TypeChecker::async_expr_used_locals(target));
+                }
                 live
             }
             TStmtKind::If {
@@ -1072,10 +1077,15 @@ impl AsyncLivenessAnalyzer {
             }
             TForInit::Assign { target, value } => {
                 let mut live = live_after;
+                if let TExprKind::Local(local_id, _) = &target.kind {
+                    live.remove(local_id);
+                }
                 self.collect_awaits_in_expr(value, &live);
                 self.collect_awaits_in_expr(target, &live);
                 live.extend(TypeChecker::async_expr_used_locals(value));
-                live.extend(TypeChecker::async_expr_used_locals(target));
+                if !matches!(target.kind, TExprKind::Local(..)) {
+                    live.extend(TypeChecker::async_expr_used_locals(target));
+                }
                 live
             }
             TForInit::Expr(expr) => {

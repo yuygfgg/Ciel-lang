@@ -1,3 +1,4 @@
+pub mod affine;
 pub mod ast;
 pub mod build;
 pub mod capture;

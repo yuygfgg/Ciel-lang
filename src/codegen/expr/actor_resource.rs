@@ -929,7 +929,17 @@ impl<'a> CGenerator<'a> {
                     temp_args.push(temp);
                 }
             }
-            Ok(format!("{callee}({})", temp_args.join(", ")))
+            let call = format!("{callee}({})", temp_args.join(", "));
+            if this.type_is_affine(&expr.ty) {
+                let temp = this.next_temp("defer_return");
+                let helper = this.resource_cleanup_name(&expr.ty);
+                Ok(format!(
+                    "do {{ {} = {call}; {helper}(&{temp}); }} while (0)",
+                    this.c_decl(&expr.ty, &temp),
+                ))
+            } else {
+                Ok(call)
+            }
         })
     }
 }

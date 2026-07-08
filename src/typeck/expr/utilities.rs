@@ -1,4 +1,106 @@
 use super::*;
+use crate::affine::{self, AffineStructInfo, AffineTypeEnv};
+
+impl AffineTypeEnv for TypeChecker {
+    fn is_resource_handle_leaf(&self, ty: &Ty) -> bool {
+        self.type_is_resource_handle_leaf(ty)
+    }
+
+    fn named_type_is_async_future(&self, ty: &Ty) -> bool {
+        std_id::std_async_future_output_arg(&self.ctx.resolved, ty).is_some()
+    }
+
+    fn opaque_return_concrete(&self, ty: &Ty) -> Option<Ty> {
+        let concrete = self.lower_opaque_returns_in_ty(ty);
+        (&concrete != ty).then_some(concrete)
+    }
+
+    fn generic_is_resource_only(&self, name: &str) -> bool {
+        TypeChecker::generic_is_resource_only(self, name)
+    }
+
+    fn named_struct_info(&mut self, ty: &Ty) -> Option<AffineStructInfo> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = enum_instance_name(name, args);
+        if self.ctx.resource_structs.contains(&instance_name) {
+            return Some(AffineStructInfo {
+                is_resource: true,
+                fields: Vec::new(),
+            });
+        }
+        self.ensure_struct_instance(ty);
+        if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
+            return Some(AffineStructInfo {
+                is_resource: false,
+                fields: fields.into_iter().map(|(_, field_ty)| field_ty).collect(),
+            });
+        }
+        if args.iter().any(contains_generic)
+            && let Some(template) = self.ctx.struct_templates.get(name).cloned()
+            && args.len() == template.generics.len()
+        {
+            if template.is_resource {
+                return Some(AffineStructInfo {
+                    is_resource: true,
+                    fields: Vec::new(),
+                });
+            }
+            let subst = template
+                .generics
+                .iter()
+                .map(|generic| generic.name.clone())
+                .zip(args.iter().cloned())
+                .collect::<HashMap<_, _>>();
+            let fields = template
+                .fields
+                .iter()
+                .map(|field| self.lower_type_with_subst_no_normalize(&field.ty, &subst))
+                .collect();
+            return Some(AffineStructInfo {
+                is_resource: false,
+                fields,
+            });
+        }
+        None
+    }
+
+    fn named_enum_payloads(&mut self, ty: &Ty) -> Option<Vec<Ty>> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = enum_instance_name(name, args);
+        self.ensure_enum_instance(ty);
+        if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
+            return Some(
+                enm.variants
+                    .into_iter()
+                    .flat_map(|variant| variant.payload)
+                    .collect(),
+            );
+        }
+        if args.iter().any(contains_generic)
+            && let Some(template) = self.ctx.enum_templates.get(name).cloned()
+            && args.len() == template.generics.len()
+        {
+            let subst = template
+                .generics
+                .iter()
+                .map(|generic| generic.name.clone())
+                .zip(args.iter().cloned())
+                .collect::<HashMap<_, _>>();
+            let mut payloads = Vec::new();
+            for variant in &template.variants {
+                for payload in &variant.payload {
+                    payloads.push(self.lower_type_with_subst_no_normalize(payload, &subst));
+                }
+            }
+            return Some(payloads);
+        }
+        None
+    }
+}
 
 impl TypeChecker {
     pub(in crate::typeck) fn find_impl(
@@ -428,130 +530,7 @@ impl TypeChecker {
     }
 
     pub(in crate::typeck) fn type_is_affine(&mut self, ty: &Ty) -> bool {
-        let mut visiting = HashSet::new();
-        self.type_is_affine_inner(ty, &mut visiting)
-    }
-
-    pub(super) fn type_is_affine_inner(&mut self, ty: &Ty, visiting: &mut HashSet<Ty>) -> bool {
-        if self.type_is_resource_handle_leaf(ty) {
-            return true;
-        }
-        match ty {
-            Ty::Unknown
-            | Ty::Hole(_)
-            | Ty::Never
-            | Ty::Void
-            | Ty::Bool
-            | Ty::Char
-            | Ty::I8
-            | Ty::I16
-            | Ty::I32
-            | Ty::I64
-            | Ty::U8
-            | Ty::U16
-            | Ty::U32
-            | Ty::U64
-            | Ty::Usize
-            | Ty::F32
-            | Ty::F64
-            | Ty::CSpelling { .. }
-            | Ty::Function { .. }
-            | Ty::Closure { .. }
-            | Ty::Pointer { .. }
-            | Ty::Slice { .. }
-            | Ty::DynamicInterface { .. } => false,
-            Ty::OpaqueReturn { .. } => {
-                let concrete = self.lower_opaque_returns_in_ty(ty);
-                &concrete != ty && self.type_is_affine_inner(&concrete, visiting)
-            }
-            Ty::Generic(name) => self.generic_is_resource_only(name),
-            Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
-            Ty::GeneratedFuture { .. } => true,
-            Ty::OpaqueState { base, state } => {
-                self.type_is_affine_inner(base, visiting)
-                    || state
-                        .iter()
-                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
-            }
-            Ty::ClosureInstance { captures, .. } => captures
-                .iter()
-                .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::Named { def_id, name, args } => {
-                let named_ty = named_ty(*def_id, name.clone(), args.clone());
-                if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
-                    return true;
-                }
-                let instance_name = enum_instance_name(name, args);
-                if self.ctx.resource_structs.contains(&instance_name) {
-                    return true;
-                }
-                if !visiting.insert(ty.clone()) {
-                    return false;
-                }
-                self.ensure_struct_instance(ty);
-                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
-                    let affine = fields
-                        .iter()
-                        .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
-                    visiting.remove(ty);
-                    return affine;
-                }
-                if args.iter().any(contains_generic)
-                    && let Some(template) = self.ctx.struct_templates.get(name).cloned()
-                    && args.len() == template.generics.len()
-                {
-                    if template.is_resource {
-                        visiting.remove(ty);
-                        return true;
-                    }
-                    let subst = template
-                        .generics
-                        .iter()
-                        .map(|generic| generic.name.clone())
-                        .zip(args.iter().cloned())
-                        .collect::<HashMap<_, _>>();
-                    let affine = template.fields.iter().any(|field| {
-                        let field_ty = self.lower_type_with_subst_no_normalize(&field.ty, &subst);
-                        self.type_is_affine_inner(&field_ty, visiting)
-                    });
-                    visiting.remove(ty);
-                    return affine;
-                }
-                self.ensure_enum_instance(ty);
-                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
-                    let affine = enm.variants.iter().any(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
-                    });
-                    visiting.remove(ty);
-                    return affine;
-                }
-                if args.iter().any(contains_generic)
-                    && let Some(template) = self.ctx.enum_templates.get(name).cloned()
-                    && args.len() == template.generics.len()
-                {
-                    let subst = template
-                        .generics
-                        .iter()
-                        .map(|generic| generic.name.clone())
-                        .zip(args.iter().cloned())
-                        .collect::<HashMap<_, _>>();
-                    let affine = template.variants.iter().any(|variant| {
-                        variant.payload.iter().any(|payload| {
-                            let payload_ty =
-                                self.lower_type_with_subst_no_normalize(payload, &subst);
-                            self.type_is_affine_inner(&payload_ty, visiting)
-                        })
-                    });
-                    visiting.remove(ty);
-                    return affine;
-                }
-                visiting.remove(ty);
-                false
-            }
-        }
+        affine::type_is_affine(self, ty)
     }
 
     pub(super) fn task_boundary_message_violation(

@@ -1,4 +1,59 @@
 use super::*;
+use crate::affine::{self, AffineStructInfo, AffineTypeEnv};
+
+struct CodegenAffineEnv<'g, 'a> {
+    generator: &'g CGenerator<'a>,
+}
+
+impl AffineTypeEnv for CodegenAffineEnv<'_, '_> {
+    fn is_resource_handle_leaf(&self, ty: &Ty) -> bool {
+        self.generator.type_is_resource_handle_leaf(ty)
+    }
+
+    fn named_type_is_async_future(&self, ty: &Ty) -> bool {
+        std_id::std_async_future_output_arg(&self.generator.program.checked.resolved, ty).is_some()
+    }
+
+    fn named_struct_info(&mut self, ty: &Ty) -> Option<AffineStructInfo> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        self.generator
+            .program
+            .checked
+            .structs
+            .iter()
+            .find(|strukt| strukt.name == instance_name)
+            .map(|strukt| AffineStructInfo {
+                is_resource: strukt.is_resource,
+                fields: strukt
+                    .fields
+                    .iter()
+                    .map(|(_, field_ty)| field_ty.clone())
+                    .collect(),
+            })
+    }
+
+    fn named_enum_payloads(&mut self, ty: &Ty) -> Option<Vec<Ty>> {
+        let Ty::Named { name, args, .. } = ty else {
+            return None;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        self.generator
+            .program
+            .checked
+            .enums
+            .iter()
+            .find(|enm| enm.name == instance_name)
+            .map(|enm| {
+                enm.variants
+                    .iter()
+                    .flat_map(|variant| variant.payload.iter().cloned())
+                    .collect()
+            })
+    }
+}
 
 impl<'a> CGenerator<'a> {
     pub(in crate::codegen) fn type_is_resource_handle_leaf(&self, ty: &Ty) -> bool {
@@ -6,80 +61,8 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(in crate::codegen) fn type_is_affine(&self, ty: &Ty) -> bool {
-        let mut visiting = HashSet::new();
-        self.type_is_affine_inner(ty, &mut visiting)
-    }
-
-    pub(in crate::codegen) fn type_is_affine_inner(
-        &self,
-        ty: &Ty,
-        visiting: &mut HashSet<Ty>,
-    ) -> bool {
-        if self.type_is_resource_handle_leaf(ty) {
-            return true;
-        }
-        match ty {
-            Ty::Array { elem, .. } => self.type_is_affine_inner(elem, visiting),
-            Ty::ClosureInstance { captures, .. } => captures
-                .iter()
-                .any(|capture| self.type_is_affine_inner(capture, visiting)),
-            Ty::GeneratedFuture { .. } => true,
-            Ty::OpaqueState { base, state } => {
-                self.type_is_affine_inner(base, visiting)
-                    || state
-                        .iter()
-                        .any(|(_, ty)| self.type_is_affine_inner(ty, visiting))
-            }
-            Ty::Named { def_id, name, args } => {
-                let named_ty = named_ty(*def_id, name.clone(), args.clone());
-                if std_id::std_async_future_output_arg(&self.program.checked.resolved, &named_ty)
-                    .is_some()
-                {
-                    return true;
-                }
-                let instance_name = aggregate_instance_name(name, args);
-                if !visiting.insert(ty.clone()) {
-                    return false;
-                }
-                if let Some(strukt) = self
-                    .program
-                    .checked
-                    .structs
-                    .iter()
-                    .find(|strukt| strukt.name == instance_name)
-                {
-                    if strukt.is_resource {
-                        visiting.remove(ty);
-                        return true;
-                    }
-                    let affine = strukt
-                        .fields
-                        .iter()
-                        .any(|(_, field_ty)| self.type_is_affine_inner(field_ty, visiting));
-                    visiting.remove(ty);
-                    return affine;
-                }
-                if let Some(enm) = self
-                    .program
-                    .checked
-                    .enums
-                    .iter()
-                    .find(|enm| enm.name == instance_name)
-                {
-                    let affine = enm.variants.iter().any(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .any(|payload_ty| self.type_is_affine_inner(payload_ty, visiting))
-                    });
-                    visiting.remove(ty);
-                    return affine;
-                }
-                visiting.remove(ty);
-                false
-            }
-            _ => false,
-        }
+        let mut env = CodegenAffineEnv { generator: self };
+        affine::type_is_affine(&mut env, ty)
     }
 
     pub(in crate::codegen) fn resource_cleanup_name(&self, ty: &Ty) -> String {

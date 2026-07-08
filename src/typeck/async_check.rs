@@ -147,8 +147,8 @@ impl TypeChecker {
             );
         }
         self.async_collect_local_infos_block(block, &mut infos);
-        let live_after = HashSet::new();
-        self.async_live_before_block(block, live_after, &infos);
+        let liveness = self.async_liveness_for_block(block);
+        self.async_check_liveness_frame_safety(&liveness, &infos);
         self.async_check_defer_arg_frame_safety_block(block);
     }
 
@@ -182,13 +182,13 @@ impl TypeChecker {
         match body {
             TClosureBody::Block(block) => {
                 self.async_collect_local_infos_block(block, &mut infos);
-                let live_after = HashSet::new();
-                self.async_live_before_block(block, live_after, &infos);
+                let liveness = self.async_liveness_for_block(block);
+                self.async_check_liveness_frame_safety(&liveness, &infos);
                 self.async_check_defer_arg_frame_safety_block(block);
             }
             TClosureBody::Expr(expr) => {
-                let live_after = HashSet::new();
-                self.async_validate_awaits_in_expr(expr, &live_after, &infos);
+                let liveness = self.async_liveness_for_expr(expr);
+                self.async_check_liveness_frame_safety(&liveness, &infos);
             }
         }
     }
@@ -196,9 +196,9 @@ impl TypeChecker {
     pub(super) fn async_facts_for_block(&mut self, block: &TBlock) -> AsyncFacts {
         let mut locals = Vec::<(LocalId, Ty)>::new();
         let mut seen = HashSet::<LocalId>::new();
-        let mut live_across_await = HashSet::<LocalId>::new();
+        let liveness = self.async_liveness_for_block(block);
+        let live_across_await = liveness.live_across_await;
         self.collect_async_frame_locals_block(block, &mut locals, &mut seen);
-        self.async_live_frame_locals_before_block(block, HashSet::new(), &mut live_across_await);
         let frame_locals = locals
             .into_iter()
             .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
@@ -235,13 +235,9 @@ impl TypeChecker {
             TClosureBody::Expr(expr) => {
                 let mut locals = Vec::<(LocalId, Ty)>::new();
                 let mut seen = HashSet::<LocalId>::new();
-                let mut live_across_await = HashSet::<LocalId>::new();
+                let liveness = self.async_liveness_for_expr(expr);
+                let live_across_await = liveness.live_across_await;
                 self.collect_async_frame_locals_expr(expr, &mut locals, &mut seen);
-                self.async_collect_live_awaits_in_expr(
-                    expr,
-                    &HashSet::new(),
-                    &mut live_across_await,
-                );
                 let frame_locals = locals
                     .into_iter()
                     .filter(|(id, ty)| live_across_await.contains(id) || self.type_is_affine(ty))
@@ -294,267 +290,12 @@ impl TypeChecker {
         visitor.visit_expr(expr);
     }
 
-    pub(super) fn async_live_frame_locals_before_block(
-        &self,
-        block: &TBlock,
-        mut live: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        for stmt in block.statements.iter().rev() {
-            live = self.async_live_frame_locals_before_stmt(stmt, live, out);
-        }
-        live
+    fn async_liveness_for_block(&self, block: &TBlock) -> AsyncLiveness {
+        AsyncLivenessAnalyzer::new().analyze_block(block)
     }
 
-    pub(super) fn async_live_frame_locals_before_stmt(
-        &self,
-        stmt: &TStmt,
-        live_after: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        match &stmt.kind {
-            TStmtKind::Block(block) => {
-                self.async_live_frame_locals_before_block(block, live_after, out)
-            }
-            TStmtKind::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_collect_live_awaits_in_expr(init, &live, out);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TStmtKind::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(value, &live, out);
-                self.async_collect_live_awaits_in_expr(target, &live, out);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                let then_live =
-                    self.async_live_frame_locals_before_block(then_block, live_after.clone(), out);
-                let else_live = else_branch
-                    .as_ref()
-                    .map(|stmt| {
-                        self.async_live_frame_locals_before_stmt(stmt, live_after.clone(), out)
-                    })
-                    .unwrap_or_else(|| live_after.clone());
-                let mut live = then_live;
-                live.extend(else_live);
-                self.async_collect_live_awaits_in_expr(cond, &live, out);
-                live.extend(Self::async_expr_used_locals(cond));
-                live
-            }
-            TStmtKind::While { cond, body } => {
-                let mut loop_live = live_after.clone();
-                loop_live.extend(Self::async_expr_used_locals(cond));
-                for _ in 0..2 {
-                    let body_live =
-                        self.async_live_frame_locals_before_block(body, loop_live.clone(), out);
-                    let old_len = loop_live.len();
-                    loop_live.extend(body_live);
-                    loop_live.extend(Self::async_expr_used_locals(cond));
-                    if loop_live.len() == old_len {
-                        break;
-                    }
-                }
-                self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
-                loop_live
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                let loop_live = self.async_live_frame_locals_before_for_loop(
-                    cond.as_ref(),
-                    step.as_ref(),
-                    body,
-                    live_after,
-                    out,
-                );
-                if let Some(cond) = cond {
-                    self.async_collect_live_awaits_in_expr(cond, &loop_live, out);
-                }
-                if let Some(init) = init {
-                    self.async_live_frame_locals_before_for_init(init, loop_live, out)
-                } else {
-                    loop_live
-                }
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                let mut live = HashSet::new();
-                for case in cases {
-                    let mut case_live = live_after.clone();
-                    for stmt in case.statements.iter().rev() {
-                        case_live = self.async_live_frame_locals_before_stmt(stmt, case_live, out);
-                    }
-                    let mut bindings = Vec::new();
-                    case.pattern.collect_bindings(&mut bindings);
-                    for (local_id, _, _, _) in bindings {
-                        case_live.remove(local_id);
-                    }
-                    live.extend(case_live);
-                }
-                let mut default_live = live_after;
-                for stmt in default.iter().rev() {
-                    default_live =
-                        self.async_live_frame_locals_before_stmt(stmt, default_live, out);
-                }
-                live.extend(default_live);
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Return(Some(expr)) => {
-                let live = HashSet::new();
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                Self::async_expr_used_locals(expr)
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => HashSet::new(),
-        }
-    }
-
-    pub(super) fn async_live_frame_locals_before_for_init(
-        &self,
-        init: &TForInit,
-        live_after: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        match init {
-            TForInit::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_collect_live_awaits_in_expr(init, &live, out);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TForInit::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(value, &live, out);
-                self.async_collect_live_awaits_in_expr(target, &live, out);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TForInit::Expr(expr) => {
-                let mut live = live_after;
-                self.async_collect_live_awaits_in_expr(expr, &live, out);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-        }
-    }
-
-    pub(super) fn async_live_frame_locals_before_for_loop(
-        &self,
-        cond: Option<&TExpr>,
-        step: Option<&TForInit>,
-        body: &TBlock,
-        live_after: HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) -> HashSet<LocalId> {
-        let cond_uses = cond.map(Self::async_expr_used_locals).unwrap_or_default();
-        let mut loop_live = live_after.clone();
-        loop_live.extend(cond_uses.iter().copied());
-
-        loop {
-            let mut live_before_step = loop_live.clone();
-            if let Some(step) = step {
-                live_before_step =
-                    self.async_live_frame_locals_before_for_init(step, live_before_step, out);
-            }
-            let body_live = self.async_live_frame_locals_before_block(body, live_before_step, out);
-
-            let mut next_loop_live = live_after.clone();
-            next_loop_live.extend(cond_uses.iter().copied());
-            next_loop_live.extend(body_live);
-            if next_loop_live == loop_live {
-                break;
-            }
-            loop_live = next_loop_live;
-        }
-
-        loop_live
-    }
-
-    pub(super) fn async_collect_live_awaits_in_expr(
-        &self,
-        expr: &TExpr,
-        live_after: &HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) {
-        let mut live_after = live_after.clone();
-        live_after.extend(Self::async_expr_used_locals(expr));
-        self.async_collect_live_awaits_in_expr_inner(expr, &live_after, out);
-    }
-
-    pub(super) fn async_collect_live_awaits_in_expr_inner(
-        &self,
-        expr: &TExpr,
-        live_after: &HashSet<LocalId>,
-        out: &mut HashSet<LocalId>,
-    ) {
-        match &expr.kind {
-            TExprKind::Await { future } => {
-                let mut live = live_after.clone();
-                live.extend(Self::async_expr_used_locals(future));
-                out.extend(live);
-                self.async_collect_live_awaits_in_expr_inner(future, live_after, out);
-            }
-            TExprKind::AsyncSelect { arms, .. } => {
-                let mut live = live_after.clone();
-                for arm in arms {
-                    live.extend(Self::async_expr_used_locals(&arm.future));
-                    let mut body_live = Self::async_expr_used_locals(&arm.body);
-                    body_live.remove(&arm.binding_local);
-                    live.extend(body_live);
-                }
-                out.extend(live);
-                for arm in arms {
-                    self.async_collect_live_awaits_in_expr_inner(&arm.future, live_after, out);
-                    self.async_collect_live_awaits_in_expr_inner(&arm.body, live_after, out);
-                }
-            }
-            TExprKind::Closure { .. } => {}
-            TExprKind::UnsafeBlock { statements, value } => {
-                let mut live = live_after.clone();
-                if let Some(value) = value {
-                    self.async_collect_live_awaits_in_expr_inner(value, &live, out);
-                    live.extend(Self::async_expr_used_locals(value));
-                }
-                for stmt in statements.iter().rev() {
-                    live = self.async_live_frame_locals_before_stmt(stmt, live, out);
-                }
-            }
-            _ => walk_expr_children(expr, &mut |child| {
-                self.async_collect_live_awaits_in_expr_inner(child, live_after, out);
-            }),
-        }
+    fn async_liveness_for_expr(&self, expr: &TExpr) -> AsyncLiveness {
+        AsyncLivenessAnalyzer::new().analyze_expr(expr)
     }
 
     pub(super) fn collect_async_defer_args_block(&self, block: &TBlock, out: &mut Vec<Ty>) {
@@ -613,196 +354,14 @@ impl TypeChecker {
         }
     }
 
-    pub(super) fn async_live_before_block(
+    fn async_check_liveness_frame_safety(
         &mut self,
-        block: &TBlock,
-        mut live: HashSet<LocalId>,
-        infos: &HashMap<LocalId, AsyncLocalInfo>,
-    ) -> HashSet<LocalId> {
-        for stmt in block.statements.iter().rev() {
-            live = self.async_live_before_stmt(stmt, live, infos);
-        }
-        live
-    }
-
-    pub(super) fn async_live_before_stmt(
-        &mut self,
-        stmt: &TStmt,
-        live_after: HashSet<LocalId>,
-        infos: &HashMap<LocalId, AsyncLocalInfo>,
-    ) -> HashSet<LocalId> {
-        match &stmt.kind {
-            TStmtKind::Block(block) => self.async_live_before_block(block, live_after, infos),
-            TStmtKind::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_validate_awaits_in_expr(init, &live, infos);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TStmtKind::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_validate_awaits_in_expr(value, &live, infos);
-                self.async_validate_awaits_in_expr(target, &live, infos);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TStmtKind::If {
-                cond,
-                then_block,
-                else_branch,
-            } => {
-                let then_live = self.async_live_before_block(then_block, live_after.clone(), infos);
-                let else_live = else_branch
-                    .as_ref()
-                    .map(|stmt| self.async_live_before_stmt(stmt, live_after.clone(), infos))
-                    .unwrap_or_else(|| live_after.clone());
-                let mut live = then_live;
-                live.extend(else_live);
-                self.async_validate_awaits_in_expr(cond, &live, infos);
-                live.extend(Self::async_expr_used_locals(cond));
-                live
-            }
-            TStmtKind::While { cond, body } => {
-                let mut loop_live = live_after.clone();
-                loop_live.extend(Self::async_expr_used_locals(cond));
-                for _ in 0..2 {
-                    let body_live = self.async_live_before_block(body, loop_live.clone(), infos);
-                    let old_len = loop_live.len();
-                    loop_live.extend(body_live);
-                    loop_live.extend(Self::async_expr_used_locals(cond));
-                    if loop_live.len() == old_len {
-                        break;
-                    }
-                }
-                self.async_validate_awaits_in_expr(cond, &loop_live, infos);
-                loop_live
-            }
-            TStmtKind::For {
-                init,
-                cond,
-                step,
-                body,
-            } => {
-                let mut scratch = HashSet::new();
-                let loop_live = self.async_live_frame_locals_before_for_loop(
-                    cond.as_ref(),
-                    step.as_ref(),
-                    body,
-                    live_after,
-                    &mut scratch,
-                );
-                if let Some(cond) = cond {
-                    self.async_validate_awaits_in_expr(cond, &loop_live, infos);
-                }
-                let mut live_before_step = loop_live.clone();
-                if let Some(step) = step {
-                    live_before_step =
-                        self.async_live_before_for_init(step, live_before_step, infos);
-                }
-                self.async_live_before_block(body, live_before_step, infos);
-                if let Some(init) = init {
-                    self.async_live_before_for_init(init, loop_live, infos)
-                } else {
-                    loop_live
-                }
-            }
-            TStmtKind::Switch {
-                expr,
-                cases,
-                default,
-                ..
-            } => {
-                let mut live = HashSet::new();
-                for case in cases {
-                    let mut case_live = live_after.clone();
-                    for stmt in case.statements.iter().rev() {
-                        case_live = self.async_live_before_stmt(stmt, case_live, infos);
-                    }
-                    let mut bindings = Vec::new();
-                    case.pattern.collect_bindings(&mut bindings);
-                    for (local_id, _, _, _) in bindings {
-                        case_live.remove(local_id);
-                    }
-                    live.extend(case_live);
-                }
-                let mut default_live = live_after;
-                for stmt in default.iter().rev() {
-                    default_live = self.async_live_before_stmt(stmt, default_live, infos);
-                }
-                live.extend(default_live);
-                self.async_validate_awaits_in_expr(expr, &live, infos);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
-                let mut live = live_after;
-                self.async_validate_awaits_in_expr(expr, &live, infos);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-            TStmtKind::Return(Some(expr)) => {
-                let live = HashSet::new();
-                self.async_validate_awaits_in_expr(expr, &live, infos);
-                Self::async_expr_used_locals(expr)
-            }
-            TStmtKind::Return(None)
-            | TStmtKind::Break
-            | TStmtKind::Continue
-            | TStmtKind::Unsupported => HashSet::new(),
-        }
-    }
-
-    pub(super) fn async_live_before_for_init(
-        &mut self,
-        init: &TForInit,
-        live_after: HashSet<LocalId>,
-        infos: &HashMap<LocalId, AsyncLocalInfo>,
-    ) -> HashSet<LocalId> {
-        match init {
-            TForInit::VarDecl { local_id, init, .. } => {
-                let mut live = live_after;
-                live.remove(local_id);
-                if let Some(init) = init {
-                    self.async_validate_awaits_in_expr(init, &live, infos);
-                    live.extend(Self::async_expr_used_locals(init));
-                }
-                live
-            }
-            TForInit::Assign { target, value } => {
-                let mut live = live_after;
-                self.async_validate_awaits_in_expr(value, &live, infos);
-                self.async_validate_awaits_in_expr(target, &live, infos);
-                live.extend(Self::async_expr_used_locals(value));
-                live.extend(Self::async_expr_used_locals(target));
-                live
-            }
-            TForInit::Expr(expr) => {
-                let mut live = live_after;
-                self.async_validate_awaits_in_expr(expr, &live, infos);
-                live.extend(Self::async_expr_used_locals(expr));
-                live
-            }
-        }
-    }
-
-    pub(super) fn async_validate_awaits_in_expr(
-        &mut self,
-        expr: &TExpr,
-        live_after: &HashSet<LocalId>,
+        liveness: &AsyncLiveness,
         infos: &HashMap<LocalId, AsyncLocalInfo>,
     ) {
-        let mut live_after = live_after.clone();
-        live_after.extend(Self::async_expr_used_locals(expr));
-        let mut validator = AsyncAwaitValidator {
-            checker: self,
-            infos,
-            live_after: &live_after,
-        };
-        validator.visit_expr(expr);
+        for site in &liveness.await_sites {
+            self.async_check_live_locals_at_await(site.span, &site.live, infos);
+        }
     }
 
     pub(super) fn async_check_defer_arg_frame_safety_arg(&mut self, arg: &TExpr) {
@@ -1323,6 +882,406 @@ fn grouped_cases_by_variant<'a>(cases: &'a [TCase]) -> BTreeMap<usize, Vec<&'a T
         grouped.entry(case.variant_index).or_default().push(case);
     }
     grouped
+}
+
+#[derive(Clone, Debug, Default)]
+struct AsyncLiveness {
+    live_across_await: HashSet<LocalId>,
+    await_sites: Vec<AsyncAwaitSite>,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncAwaitSite {
+    span: crate::span::Span,
+    live: HashSet<LocalId>,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncControlFrame {
+    break_live: HashSet<LocalId>,
+    continue_live: Option<HashSet<LocalId>>,
+}
+
+#[derive(Clone, Debug)]
+struct AsyncLivenessAnalyzer {
+    liveness: AsyncLiveness,
+    control_stack: Vec<AsyncControlFrame>,
+    record_awaits: bool,
+}
+
+impl AsyncLivenessAnalyzer {
+    fn new() -> Self {
+        Self {
+            liveness: AsyncLiveness::default(),
+            control_stack: Vec::new(),
+            record_awaits: true,
+        }
+    }
+
+    fn analyze_block(mut self, block: &TBlock) -> AsyncLiveness {
+        self.live_before_block(block, HashSet::new());
+        self.liveness
+    }
+
+    fn analyze_expr(mut self, expr: &TExpr) -> AsyncLiveness {
+        self.collect_awaits_in_expr(expr, &HashSet::new());
+        self.liveness
+    }
+
+    fn without_recording<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        let old_record_awaits = self.record_awaits;
+        self.record_awaits = false;
+        let result = f(self);
+        self.record_awaits = old_record_awaits;
+        result
+    }
+
+    fn with_control_frame<T>(
+        &mut self,
+        frame: AsyncControlFrame,
+        f: impl FnOnce(&mut Self) -> T,
+    ) -> T {
+        self.control_stack.push(frame);
+        let result = f(self);
+        self.control_stack.pop();
+        result
+    }
+
+    fn current_break_live(&self) -> HashSet<LocalId> {
+        self.control_stack
+            .last()
+            .map(|frame| frame.break_live.clone())
+            .unwrap_or_default()
+    }
+
+    fn current_continue_live(&self) -> HashSet<LocalId> {
+        self.control_stack
+            .iter()
+            .rev()
+            .find_map(|frame| frame.continue_live.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_await(&mut self, span: crate::span::Span, live: HashSet<LocalId>) {
+        if !self.record_awaits {
+            return;
+        }
+        self.liveness.live_across_await.extend(live.iter().copied());
+        self.liveness
+            .await_sites
+            .push(AsyncAwaitSite { span, live });
+    }
+
+    fn live_before_block(
+        &mut self,
+        block: &TBlock,
+        mut live: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        for stmt in block.statements.iter().rev() {
+            live = self.live_before_stmt(stmt, live);
+        }
+        live
+    }
+
+    fn live_before_stmt(&mut self, stmt: &TStmt, live_after: HashSet<LocalId>) -> HashSet<LocalId> {
+        match &stmt.kind {
+            TStmtKind::Block(block) => self.live_before_block(block, live_after),
+            TStmtKind::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.collect_awaits_in_expr(init, &live);
+                    live.extend(TypeChecker::async_expr_used_locals(init));
+                }
+                live
+            }
+            TStmtKind::Assign { target, value } => {
+                let mut live = live_after;
+                self.collect_awaits_in_expr(value, &live);
+                self.collect_awaits_in_expr(target, &live);
+                live.extend(TypeChecker::async_expr_used_locals(value));
+                live.extend(TypeChecker::async_expr_used_locals(target));
+                live
+            }
+            TStmtKind::If {
+                cond,
+                then_block,
+                else_branch,
+            } => {
+                let then_live = self.live_before_block(then_block, live_after.clone());
+                let else_live = else_branch
+                    .as_ref()
+                    .map(|stmt| self.live_before_stmt(stmt, live_after.clone()))
+                    .unwrap_or_else(|| live_after.clone());
+                let mut live = then_live;
+                live.extend(else_live);
+                self.collect_awaits_in_expr(cond, &live);
+                live.extend(TypeChecker::async_expr_used_locals(cond));
+                live
+            }
+            TStmtKind::While { cond, body } => self.live_before_while(cond, body, live_after),
+            TStmtKind::For {
+                init,
+                cond,
+                step,
+                body,
+            } => self.live_before_for(
+                init.as_ref(),
+                cond.as_ref(),
+                step.as_ref(),
+                body,
+                live_after,
+            ),
+            TStmtKind::Switch {
+                expr,
+                cases,
+                default,
+                ..
+            } => self.live_before_switch(expr, cases, default, live_after),
+            TStmtKind::Defer(expr) | TStmtKind::ResourceCleanup(expr) | TStmtKind::Expr(expr) => {
+                let mut live = live_after;
+                self.collect_awaits_in_expr(expr, &live);
+                live.extend(TypeChecker::async_expr_used_locals(expr));
+                live
+            }
+            TStmtKind::Return(Some(expr)) => {
+                let live = HashSet::new();
+                self.collect_awaits_in_expr(expr, &live);
+                TypeChecker::async_expr_used_locals(expr)
+            }
+            TStmtKind::Break => self.current_break_live(),
+            TStmtKind::Continue => self.current_continue_live(),
+            TStmtKind::Return(None) | TStmtKind::Unsupported => HashSet::new(),
+        }
+    }
+
+    fn live_before_for_init(
+        &mut self,
+        init: &TForInit,
+        live_after: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        match init {
+            TForInit::VarDecl { local_id, init, .. } => {
+                let mut live = live_after;
+                live.remove(local_id);
+                if let Some(init) = init {
+                    self.collect_awaits_in_expr(init, &live);
+                    live.extend(TypeChecker::async_expr_used_locals(init));
+                }
+                live
+            }
+            TForInit::Assign { target, value } => {
+                let mut live = live_after;
+                self.collect_awaits_in_expr(value, &live);
+                self.collect_awaits_in_expr(target, &live);
+                live.extend(TypeChecker::async_expr_used_locals(value));
+                live.extend(TypeChecker::async_expr_used_locals(target));
+                live
+            }
+            TForInit::Expr(expr) => {
+                let mut live = live_after;
+                self.collect_awaits_in_expr(expr, &live);
+                live.extend(TypeChecker::async_expr_used_locals(expr));
+                live
+            }
+        }
+    }
+
+    fn live_before_while(
+        &mut self,
+        cond: &TExpr,
+        body: &TBlock,
+        live_after: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        let cond_uses = TypeChecker::async_expr_used_locals(cond);
+        let mut loop_live = live_after.clone();
+        loop_live.extend(cond_uses.iter().copied());
+
+        loop {
+            let frame = AsyncControlFrame {
+                break_live: live_after.clone(),
+                continue_live: Some(loop_live.clone()),
+            };
+            let body_live = self.without_recording(|this| {
+                this.with_control_frame(frame, |this| {
+                    this.live_before_block(body, loop_live.clone())
+                })
+            });
+            let mut next_loop_live = live_after.clone();
+            next_loop_live.extend(cond_uses.iter().copied());
+            next_loop_live.extend(body_live);
+            if next_loop_live == loop_live {
+                break;
+            }
+            loop_live = next_loop_live;
+        }
+
+        let frame = AsyncControlFrame {
+            break_live: live_after,
+            continue_live: Some(loop_live.clone()),
+        };
+        self.with_control_frame(frame, |this| {
+            this.live_before_block(body, loop_live.clone());
+        });
+        self.collect_awaits_in_expr(cond, &loop_live);
+        loop_live
+    }
+
+    fn live_before_for(
+        &mut self,
+        init: Option<&TForInit>,
+        cond: Option<&TExpr>,
+        step: Option<&TForInit>,
+        body: &TBlock,
+        live_after: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        let loop_live = self.live_before_for_loop(cond, step, body, live_after);
+        if let Some(cond) = cond {
+            self.collect_awaits_in_expr(cond, &loop_live);
+        }
+        if let Some(init) = init {
+            self.live_before_for_init(init, loop_live)
+        } else {
+            loop_live
+        }
+    }
+
+    fn live_before_for_loop(
+        &mut self,
+        cond: Option<&TExpr>,
+        step: Option<&TForInit>,
+        body: &TBlock,
+        live_after: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        let cond_uses = cond
+            .map(TypeChecker::async_expr_used_locals)
+            .unwrap_or_default();
+        let mut loop_live = live_after.clone();
+        loop_live.extend(cond_uses.iter().copied());
+
+        loop {
+            let live_before_step = self.without_recording(|this| {
+                let mut live_before_step = loop_live.clone();
+                if let Some(step) = step {
+                    live_before_step = this.live_before_for_init(step, live_before_step);
+                }
+                live_before_step
+            });
+            let frame = AsyncControlFrame {
+                break_live: live_after.clone(),
+                continue_live: Some(live_before_step.clone()),
+            };
+            let body_live = self.without_recording(|this| {
+                this.with_control_frame(frame, |this| {
+                    this.live_before_block(body, live_before_step)
+                })
+            });
+
+            let mut next_loop_live = live_after.clone();
+            next_loop_live.extend(cond_uses.iter().copied());
+            next_loop_live.extend(body_live);
+            if next_loop_live == loop_live {
+                break;
+            }
+            loop_live = next_loop_live;
+        }
+
+        let mut live_before_step = loop_live.clone();
+        if let Some(step) = step {
+            live_before_step = self.live_before_for_init(step, live_before_step);
+        }
+        let frame = AsyncControlFrame {
+            break_live: live_after,
+            continue_live: Some(live_before_step.clone()),
+        };
+        self.with_control_frame(frame, |this| {
+            this.live_before_block(body, live_before_step);
+        });
+
+        loop_live
+    }
+
+    fn live_before_switch(
+        &mut self,
+        expr: &TExpr,
+        cases: &[TCase],
+        default: &[TStmt],
+        live_after: HashSet<LocalId>,
+    ) -> HashSet<LocalId> {
+        let frame = AsyncControlFrame {
+            break_live: live_after.clone(),
+            continue_live: None,
+        };
+        let mut live = self.with_control_frame(frame, |this| {
+            let mut live = HashSet::new();
+            for case in cases {
+                let mut case_live = live_after.clone();
+                for stmt in case.statements.iter().rev() {
+                    case_live = this.live_before_stmt(stmt, case_live);
+                }
+                let mut bindings = Vec::new();
+                case.pattern.collect_bindings(&mut bindings);
+                for (local_id, _, _, _) in bindings {
+                    case_live.remove(local_id);
+                }
+                live.extend(case_live);
+            }
+            let mut default_live = live_after;
+            for stmt in default.iter().rev() {
+                default_live = this.live_before_stmt(stmt, default_live);
+            }
+            live.extend(default_live);
+            live
+        });
+        self.collect_awaits_in_expr(expr, &live);
+        live.extend(TypeChecker::async_expr_used_locals(expr));
+        live
+    }
+
+    fn collect_awaits_in_expr(&mut self, expr: &TExpr, live_after: &HashSet<LocalId>) {
+        let mut live_after = live_after.clone();
+        live_after.extend(TypeChecker::async_expr_used_locals(expr));
+        self.collect_awaits_in_expr_inner(expr, &live_after);
+    }
+
+    fn collect_awaits_in_expr_inner(&mut self, expr: &TExpr, live_after: &HashSet<LocalId>) {
+        match &expr.kind {
+            TExprKind::Await { future } => {
+                let mut live = live_after.clone();
+                live.extend(TypeChecker::async_expr_used_locals(future));
+                self.record_await(expr.span, live);
+                self.collect_awaits_in_expr_inner(future, live_after);
+            }
+            TExprKind::AsyncSelect { arms, .. } => {
+                let mut live = live_after.clone();
+                for arm in arms {
+                    live.extend(TypeChecker::async_expr_used_locals(&arm.future));
+                    let mut body_live = TypeChecker::async_expr_used_locals(&arm.body);
+                    body_live.remove(&arm.binding_local);
+                    live.extend(body_live);
+                }
+                self.record_await(expr.span, live);
+                for arm in arms {
+                    self.collect_awaits_in_expr_inner(&arm.future, live_after);
+                    self.collect_awaits_in_expr_inner(&arm.body, live_after);
+                }
+            }
+            TExprKind::Closure { .. } => {}
+            TExprKind::UnsafeBlock { statements, value } => {
+                let mut live = live_after.clone();
+                if let Some(value) = value {
+                    self.collect_awaits_in_expr_inner(value, &live);
+                    live.extend(TypeChecker::async_expr_used_locals(value));
+                }
+                for stmt in statements.iter().rev() {
+                    live = self.live_before_stmt(stmt, live);
+                }
+            }
+            _ => walk_expr_children(expr, &mut |child| {
+                self.collect_awaits_in_expr_inner(child, live_after);
+            }),
+        }
+    }
 }
 
 struct AsyncFrameLocalCollector<'a> {

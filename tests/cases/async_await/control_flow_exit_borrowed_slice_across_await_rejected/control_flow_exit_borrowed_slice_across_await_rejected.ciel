@@ -1,0 +1,52 @@
+// ciel-test: error
+// expect-error: `break_view` is not async-frame-safe across `await`
+// expect-error: `continue_view` is not async-frame-safe across `await`
+// expect-error: `switch_view` is not async-frame-safe across `await`
+// expect-error: non-static borrowed read-only slice type `[]const usize`
+
+import /std/async_time as async_time;
+import /std/result;
+
+enum Choice {
+    A,
+    B,
+}
+
+async Result<usize, Error> break_after_await() {
+    [3]usize values = [10, 20, 30];
+    []const usize break_view = values[..];
+    while (true) {
+        await async_time::sleep_ms(0)?;
+        break;
+    }
+    return Ok(break_view[0]);
+}
+
+async Result<usize, Error> continue_after_await() {
+    [3]usize values = [10, 20, 30];
+    []const usize continue_view = values[..];
+    usize @count = 0;
+    while (count < 1) {
+        await async_time::sleep_ms(0)?;
+        count = count + 1;
+        continue;
+    }
+    return Ok(continue_view[0]);
+}
+
+async Result<usize, Error> switch_break_after_await(Choice choice) {
+    [3]usize values = [10, 20, 30];
+    []const usize switch_view = values[..];
+    switch (choice) {
+        case A:
+            await async_time::sleep_ms(0)?;
+            break;
+        case B:
+            return Ok(0);
+    }
+    return Ok(switch_view[0]);
+}
+
+i32 main() {
+    return 0;
+}

@@ -367,43 +367,6 @@ impl ThirVisitor for AsyncLocalUseCollector {
     }
 }
 
-struct AsyncAwaitValidator<'a, 'b> {
-    checker: &'a mut TypeChecker,
-    infos: &'b HashMap<LocalId, AsyncLocalInfo>,
-    live_after: &'b HashSet<LocalId>,
-}
-
-impl ThirVisitor for AsyncAwaitValidator<'_, '_> {
-    fn visit_expr(&mut self, expr: &TExpr) {
-        match &expr.kind {
-            TExprKind::Await { future } => {
-                let mut live = self.live_after.clone();
-                live.extend(TypeChecker::async_expr_used_locals(future));
-                self.checker
-                    .async_check_live_locals_at_await(expr.span, &live, self.infos);
-                self.visit_expr(future);
-            }
-            TExprKind::AsyncSelect { arms, .. } => {
-                let mut live = self.live_after.clone();
-                for arm in arms {
-                    live.extend(TypeChecker::async_expr_used_locals(&arm.future));
-                    let mut body_live = TypeChecker::async_expr_used_locals(&arm.body);
-                    body_live.remove(&arm.binding_local);
-                    live.extend(body_live);
-                }
-                self.checker
-                    .async_check_live_locals_at_await(expr.span, &live, self.infos);
-                for arm in arms {
-                    self.visit_expr(&arm.future);
-                    self.visit_expr(&arm.body);
-                }
-            }
-            TExprKind::Closure { .. } => {}
-            _ => walk_expr(self, expr),
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InitState {
     Unassigned,

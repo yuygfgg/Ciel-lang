@@ -79,6 +79,14 @@ impl TypeChecker {
             let ty = self.normalize_meta_repr_markers(&substituted, span);
             self.resolve_type_holes(&ty)
         };
+        let diagnostic_count = self.diagnostics.len();
+        for param in &params {
+            self.reject_concrete_owned_meta_marker_affine_uses(span, param);
+        }
+        self.reject_concrete_owned_meta_marker_affine_uses(span, &ret);
+        if self.diagnostics.len() != diagnostic_count {
+            return None;
+        }
         self.ensure_generic_opaque_return_solution(sig, &instance_args, &ret);
         Some((
             FunctionSig {
@@ -255,6 +263,14 @@ impl TypeChecker {
             let ty = self.normalize_meta_repr_markers(&substituted, span);
             self.resolve_type_holes(&ty)
         };
+        let diagnostic_count = self.diagnostics.len();
+        for param in &params {
+            self.reject_concrete_owned_meta_marker_affine_uses(span, param);
+        }
+        self.reject_concrete_owned_meta_marker_affine_uses(span, &ret);
+        if self.diagnostics.len() != diagnostic_count {
+            return None;
+        }
         self.ensure_generic_opaque_return_solution(sig, &instance_args, &ret);
         Some((
             FunctionSig {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::typeck::meta_repr_safety::owned_meta_repr_affine_message;
 
 impl<'a> CGenerator<'a> {
     fn std_meta_repr_marker_ty(&self, borrowed: bool, source_ty: Ty) -> Ty {
@@ -204,6 +205,12 @@ impl<'a> CGenerator<'a> {
         ty: &Ty,
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
+        if self.type_is_affine(ty) {
+            return Err(vec![Diagnostic::new(
+                span,
+                owned_meta_repr_affine_message(ty),
+            )]);
+        }
         if let Ty::Named { name, args, .. } = ty
             && matches!(meta_repr_marker_name(name), Some(false))
             && args.len() == 1
@@ -217,16 +224,11 @@ impl<'a> CGenerator<'a> {
             Ty::Array { len, elem } => self.meta_owned_array_repr_ty(span, *len, elem, root_ty),
             Ty::Named { .. } => {
                 if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
-                    return Ok(meta_product_ty(
-                        fields
-                            .iter()
-                            .map(|(_, field_ty)| {
-                                self.meta_owned_leaf_repr_ty(span, field_ty, root_ty)
-                                    .unwrap_or(Ty::Unknown)
-                            })
-                            .collect::<Vec<_>>(),
-                        "Field",
-                    ));
+                    let mut field_tys = Vec::new();
+                    for (_, field_ty) in &fields {
+                        field_tys.push(self.meta_owned_leaf_repr_ty(span, field_ty, root_ty)?);
+                    }
+                    return Ok(meta_product_ty(field_tys, "Field"));
                 }
                 if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
                     return self.meta_owned_sum_ty(span, &variants, root_ty);
@@ -276,19 +278,14 @@ impl<'a> CGenerator<'a> {
         if variants.is_empty() {
             return Ok(meta_named("CoNil", Vec::new()));
         }
-        let variant_tys = variants
-            .iter()
-            .map(|variant| {
-                variant
-                    .payload
-                    .iter()
-                    .map(|payload| {
-                        self.meta_owned_leaf_repr_ty(span, payload, root_ty)
-                            .unwrap_or(Ty::Unknown)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .collect::<Vec<_>>();
+        let mut variant_tys = Vec::new();
+        for variant in variants {
+            let mut payload_tys = Vec::new();
+            for payload in &variant.payload {
+                payload_tys.push(self.meta_owned_leaf_repr_ty(span, payload, root_ty)?);
+            }
+            variant_tys.push(payload_tys);
+        }
         Ok(meta_sum_ty(variant_tys, false))
     }
 
@@ -299,16 +296,11 @@ impl<'a> CGenerator<'a> {
         root_ty: &Ty,
     ) -> DiagResult<Ty> {
         let captures = self.meta_capture_fields_for_ty(span, ty)?;
-        Ok(meta_product_ty(
-            captures
-                .iter()
-                .map(|capture| {
-                    self.meta_owned_leaf_repr_ty(span, &capture.ty, root_ty)
-                        .unwrap_or(Ty::Unknown)
-                })
-                .collect::<Vec<_>>(),
-            "Field",
-        ))
+        let mut capture_tys = Vec::new();
+        for capture in &captures {
+            capture_tys.push(self.meta_owned_leaf_repr_ty(span, &capture.ty, root_ty)?);
+        }
+        Ok(meta_product_ty(capture_tys, "Field"))
     }
 
     pub(in crate::codegen) fn meta_borrowed_repr_ty(
@@ -380,33 +372,28 @@ impl<'a> CGenerator<'a> {
             }
             Ty::Named { .. } => {
                 if let Ok(fields) = self.struct_fields_for_ty(span, ty) {
-                    return Ok(meta_schema_product_ty(
-                        fields
-                            .iter()
-                            .map(|(_, field_ty)| {
-                                (
-                                    field_ty.clone(),
-                                    self.meta_owned_leaf_repr_ty(span, field_ty, ty)
-                                        .unwrap_or(Ty::Unknown),
-                                )
-                            })
-                            .collect::<Vec<_>>(),
-                    ));
+                    let mut schema_fields = Vec::new();
+                    for (_, field_ty) in &fields {
+                        schema_fields.push((
+                            field_ty.clone(),
+                            self.meta_owned_leaf_repr_ty(span, field_ty, ty)?,
+                        ));
+                    }
+                    return Ok(meta_schema_product_ty(schema_fields));
                 }
                 if let Ok(variants) = self.enum_variants_for_ty(span, ty) {
-                    return Ok(meta_schema_sum_ty(variants.iter().map(|variant| {
-                        variant
-                            .payload
-                            .iter()
-                            .map(|payload| {
-                                (
-                                    payload.clone(),
-                                    self.meta_owned_leaf_repr_ty(span, payload, ty)
-                                        .unwrap_or(Ty::Unknown),
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                    })));
+                    let mut variant_tys = Vec::new();
+                    for variant in &variants {
+                        let mut payload_tys = Vec::new();
+                        for payload in &variant.payload {
+                            payload_tys.push((
+                                payload.clone(),
+                                self.meta_owned_leaf_repr_ty(span, payload, ty)?,
+                            ));
+                        }
+                        variant_tys.push(payload_tys);
+                    }
+                    return Ok(meta_schema_sum_ty(variant_tys.into_iter()));
                 }
                 Err(vec![Diagnostic::new(
                     span,
@@ -415,18 +402,14 @@ impl<'a> CGenerator<'a> {
             }
             Ty::ClosureInstance { .. } => {
                 let captures = self.meta_capture_fields_for_ty(span, ty)?;
-                Ok(meta_schema_product_ty(
-                    captures
-                        .iter()
-                        .map(|capture| {
-                            (
-                                capture.ty.clone(),
-                                self.meta_owned_leaf_repr_ty(span, &capture.ty, ty)
-                                    .unwrap_or(Ty::Unknown),
-                            )
-                        })
-                        .collect::<Vec<_>>(),
-                ))
+                let mut capture_tys = Vec::new();
+                for capture in &captures {
+                    capture_tys.push((
+                        capture.ty.clone(),
+                        self.meta_owned_leaf_repr_ty(span, &capture.ty, ty)?,
+                    ));
+                }
+                Ok(meta_schema_product_ty(capture_tys))
             }
             other => Err(vec![Diagnostic::new(
                 span,
@@ -571,6 +554,9 @@ impl<'a> CGenerator<'a> {
     }
 
     pub(super) fn is_owned_meta_policy_leaf(&self, ty: &Ty, root_ty: &Ty) -> bool {
+        if self.type_is_affine(ty) {
+            return false;
+        }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty);
         let is_thread_local = self.type_matches_thread_local_template(&leaf_ty)
             || self.thread_local_impl(&leaf_ty).is_some();
@@ -1025,19 +1011,15 @@ impl<'a> CGenerator<'a> {
         source_ty: &Ty,
     ) -> DiagResult<String> {
         let captures = self.meta_capture_fields_for_ty(expr.span, source_ty)?;
-        let fields = captures
-            .into_iter()
-            .map(|capture| {
-                let repr_ty = self
-                    .meta_owned_leaf_repr_ty(expr.span, &capture.ty, source_ty)
-                    .unwrap_or(Ty::Unknown);
-                MetaSchemaField {
-                    name: format!("capture#{}", capture.index),
-                    source_ty: capture.ty,
-                    repr_ty,
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut fields = Vec::new();
+        for capture in captures {
+            let repr_ty = self.meta_owned_leaf_repr_ty(expr.span, &capture.ty, source_ty)?;
+            fields.push(MetaSchemaField {
+                name: format!("capture#{}", capture.index),
+                source_ty: capture.ty,
+                repr_ty,
+            });
+        }
         let (_, literal) = self.meta_schema_product_literal(&fields)?;
         Ok(literal)
     }
@@ -1163,21 +1145,15 @@ impl<'a> CGenerator<'a> {
             let ty = self.attach_std_meta_def_ids(meta_named("HNil", Vec::new()));
             return Ok((ty.clone(), format!("({}){{0}}", self.c_type(&ty))));
         };
-        let payloads = variant
-            .payload
-            .iter()
-            .enumerate()
-            .map(|(index, payload)| {
-                let repr_ty = self
-                    .meta_owned_leaf_repr_ty(span, payload, root_ty)
-                    .unwrap_or(Ty::Unknown);
-                MetaSchemaPayload {
-                    index,
-                    source_ty: payload.clone(),
-                    repr_ty,
-                }
-            })
-            .collect::<Vec<_>>();
+        let mut payloads = Vec::new();
+        for (index, payload) in variant.payload.iter().enumerate() {
+            let repr_ty = self.meta_owned_leaf_repr_ty(span, payload, root_ty)?;
+            payloads.push(MetaSchemaPayload {
+                index,
+                source_ty: payload.clone(),
+                repr_ty,
+            });
+        }
         let (payload_ty, payload_literal) = self.meta_schema_payload_literal(&payloads)?;
         let head_ty = self.attach_std_meta_def_ids(meta_named("VariantSchema", vec![payload_ty]));
         let (tail_ty, tail) = self.meta_schema_sum_literal(span, rest, root_ty)?;
@@ -1307,13 +1283,12 @@ impl<'a> CGenerator<'a> {
                 "internal error: cannot construct meta CoNil branch",
             )]);
         };
-        let payload_ty = self.attach_std_meta_def_ids(meta_product_ty(
-            variant.payload.iter().map(|payload| {
-                self.meta_owned_leaf_repr_ty(span, payload, root_ty)
-                    .unwrap_or(Ty::Unknown)
-            }),
-            "Payload",
-        ));
+        let mut payload_fields = Vec::new();
+        for payload in &variant.payload {
+            payload_fields.push(self.meta_owned_leaf_repr_ty(span, payload, root_ty)?);
+        }
+        let payload_ty =
+            self.attach_std_meta_def_ids(meta_product_ty(payload_fields.into_iter(), "Payload"));
         let head_ty = self.attach_std_meta_def_ids(meta_named("Variant", vec![payload_ty]));
         let tail_ty = self.meta_owned_sum_ty(span, rest, root_ty)?;
         let ty =

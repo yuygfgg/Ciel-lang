@@ -917,20 +917,23 @@ impl TypeChecker {
         if ty.is_erased_value() || self.type_is_resource_handle_leaf(ty) {
             return true;
         }
+        if self.type_implements_async_frame_opt_in(ty) {
+            return true;
+        }
         match ty {
             Ty::Array { elem, .. } => self.task_boundary_affine_move_allowed(elem, visiting),
             Ty::OpaqueState { base, state } => {
-                self.task_boundary_affine_move_allowed(base, visiting)
-                    && state.iter().all(|(_, ty)| {
-                        !self.type_is_affine(ty)
-                            || self.task_boundary_affine_move_allowed(ty, visiting)
-                    })
+                (!self.type_is_affine(base)
+                    || self.task_boundary_affine_move_allowed(base, visiting))
+                    && state
+                        .iter()
+                        .all(|(_, ty)| self.task_boundary_component_move_allowed(ty, visiting))
             }
             Ty::OpaqueReturn { .. } => {
                 let concrete = self.lower_opaque_returns_in_ty(ty);
                 &concrete != ty && self.task_boundary_affine_move_allowed(&concrete, visiting)
             }
-            Ty::Generic(name) => self.generic_is_resource_only(name),
+            Ty::Generic(_) => false,
             Ty::Named { def_id, name, args } => {
                 let named_ty = named_ty(*def_id, name.clone(), args.clone());
                 if std_id::std_async_future_output_arg(&self.ctx.resolved, &named_ty).is_some() {
@@ -938,18 +941,6 @@ impl TypeChecker {
                 }
                 self.ensure_struct_instance(&named_ty);
                 let instance_name = enum_instance_name(name, args);
-                if self.ctx.resource_structs.contains(&instance_name) {
-                    return true;
-                }
-                if args.iter().any(contains_generic)
-                    && self
-                        .ctx
-                        .struct_templates
-                        .get(name)
-                        .is_some_and(|template| template.is_resource)
-                {
-                    return true;
-                }
                 if !visiting.insert(ty.clone()) {
                     return false;
                 }
@@ -960,14 +951,102 @@ impl TypeChecker {
                     .cloned()
                     .is_some_and(|fields| {
                         fields.iter().all(|(_, field_ty)| {
-                            !self.type_is_affine(field_ty)
-                                || self.task_boundary_affine_move_allowed(field_ty, visiting)
+                            self.task_boundary_component_move_allowed(field_ty, visiting)
                         })
                     });
+                if allowed {
+                    visiting.remove(ty);
+                    return true;
+                }
+                let allowed = args.iter().any(contains_generic)
+                    && self
+                        .ctx
+                        .struct_templates
+                        .get(name)
+                        .cloned()
+                        .is_some_and(|template| {
+                            if args.len() != template.generics.len() {
+                                return false;
+                            }
+                            let subst = template
+                                .generics
+                                .iter()
+                                .map(|generic| generic.name.clone())
+                                .zip(args.iter().cloned())
+                                .collect::<HashMap<_, _>>();
+                            template.fields.iter().all(|field| {
+                                let field_ty =
+                                    self.lower_type_with_subst_no_normalize(&field.ty, &subst);
+                                self.task_boundary_component_move_allowed(&field_ty, visiting)
+                            })
+                        });
+                if allowed {
+                    visiting.remove(ty);
+                    return true;
+                }
+                self.ensure_enum_instance(&named_ty);
+                let allowed = self
+                    .ctx
+                    .checked_enums
+                    .get(&instance_name)
+                    .cloned()
+                    .is_some_and(|enm| {
+                        enm.variants.iter().all(|variant| {
+                            variant.payload.iter().all(|payload_ty| {
+                                self.task_boundary_component_move_allowed(payload_ty, visiting)
+                            })
+                        })
+                    });
+                if allowed {
+                    visiting.remove(ty);
+                    return true;
+                }
+                let allowed = args.iter().any(contains_generic)
+                    && self
+                        .ctx
+                        .enum_templates
+                        .get(name)
+                        .cloned()
+                        .is_some_and(|template| {
+                            if args.len() != template.generics.len() {
+                                return false;
+                            }
+                            let subst = template
+                                .generics
+                                .iter()
+                                .map(|generic| generic.name.clone())
+                                .zip(args.iter().cloned())
+                                .collect::<HashMap<_, _>>();
+                            template.variants.iter().all(|variant| {
+                                variant.payload.iter().all(|payload| {
+                                    let payload_ty =
+                                        self.lower_type_with_subst_no_normalize(payload, &subst);
+                                    self.task_boundary_component_move_allowed(&payload_ty, visiting)
+                                })
+                            })
+                        });
                 visiting.remove(ty);
                 allowed
             }
             _ => false,
+        }
+    }
+
+    fn task_boundary_component_move_allowed(
+        &mut self,
+        ty: &Ty,
+        visiting: &mut HashSet<Ty>,
+    ) -> bool {
+        if self.type_is_affine(ty) {
+            self.task_boundary_affine_move_allowed(ty, visiting)
+        } else {
+            self.task_boundary_message_violation_inner(
+                ty,
+                "future state",
+                &mut HashSet::new(),
+                false,
+            )
+            .is_none()
         }
     }
 

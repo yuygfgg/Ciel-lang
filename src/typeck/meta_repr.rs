@@ -97,6 +97,7 @@ impl TypeChecker {
             if let Ty::Array { len, elem } = &source_ty {
                 self.check_meta_schema_array_budget(Some(span), &source_ty, *len, elem, true);
             }
+            self.reject_owned_meta_repr_affine_source(span, &source_ty);
             return Some(self.std_meta_schema_marker_ty(source_ty));
         }
 
@@ -1587,6 +1588,13 @@ impl TypeChecker {
         root: Option<&Ty>,
         expanding: &mut HashSet<Ty>,
     ) -> Option<Ty> {
+        if owned_meta_repr_contains_affine(self, ty) {
+            if emit_diagnostics {
+                self.diagnostics
+                    .push(Diagnostic::new(span, owned_meta_repr_affine_message(ty)));
+            }
+            return None;
+        }
         if self.is_owned_meta_policy_leaf(ty, root) {
             return Some(self.meta_repr_policy_leaf_ty(ty, root));
         }
@@ -1629,6 +1637,15 @@ impl TypeChecker {
         source_ty: &Ty,
         emit_diagnostics: bool,
     ) -> Option<Ty> {
+        if owned_meta_repr_contains_affine(self, source_ty) {
+            if emit_diagnostics {
+                self.diagnostics.push(Diagnostic::new(
+                    span,
+                    owned_meta_repr_affine_message(source_ty),
+                ));
+            }
+            return None;
+        }
         let root = source_ty.clone();
         let mut expanding = HashSet::new();
         self.meta_schema_ty_inner_rec(
@@ -1847,6 +1864,31 @@ impl TypeChecker {
                 owned_meta_repr_affine_message(source_ty),
             ));
         }
+    }
+
+    pub(super) fn reject_concrete_owned_meta_marker_affine_uses(
+        &mut self,
+        span: crate::span::Span,
+        ty: &Ty,
+    ) {
+        if let Some((borrowed, source_ty)) = meta_repr_marker_source(ty) {
+            if !borrowed && !contains_generic(source_ty) && !contains_type_hole(source_ty) {
+                self.reject_owned_meta_repr_affine_source(span, source_ty);
+            }
+            self.reject_concrete_owned_meta_marker_affine_uses(span, source_ty);
+            return;
+        }
+        if let Some(source_ty) = meta_schema_marker_source(ty) {
+            if !contains_generic(source_ty) && !contains_type_hole(source_ty) {
+                self.reject_owned_meta_repr_affine_source(span, source_ty);
+            }
+            self.reject_concrete_owned_meta_marker_affine_uses(span, source_ty);
+            return;
+        }
+        let _ = map_ty_children(ty, |child| {
+            self.reject_concrete_owned_meta_marker_affine_uses(span, child);
+            child.clone()
+        });
     }
 
     pub(super) fn meta_structural_repr_unsafe_struct_name(

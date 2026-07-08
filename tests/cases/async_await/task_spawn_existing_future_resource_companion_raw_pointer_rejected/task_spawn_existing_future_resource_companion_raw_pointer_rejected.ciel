@@ -1,0 +1,27 @@
+// ciel-test: error
+// expect-error: `async::spawn` future state does not implement `Message`
+// expect-error: future state `bad` has resource-affine type `Bad` without an ownership-transfer policy
+
+import /std/async as async;
+import /std/resource as resource;
+import /std/result;
+
+resource struct Bad {
+    resource::Handle handle;
+    *const i64 ptr;
+}
+
+async Result<void, Error> later(Bad bad) {
+    return Ok;
+}
+
+i32 main() {
+    i64 local = 7;
+    resource::Handle handle = unsafe {
+        { owner_id: 0, resource_id: 0, generation: 0 }
+    };
+    Bad bad = { handle: handle, ptr: &local };
+    async::Future<Result<void, Error>> future = later(bad);
+    async::spawn<void>(future);
+    return 0;
+}

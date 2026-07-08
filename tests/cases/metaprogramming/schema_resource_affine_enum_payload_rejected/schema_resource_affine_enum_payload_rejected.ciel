@@ -1,0 +1,14 @@
+// ciel-test: error
+// expect-error: owned meta representation cannot copy resource-affine type `Holder`
+
+import /std/io as io;
+import /std/meta as meta;
+
+enum Holder {
+    File(io::File),
+}
+
+i32 main() {
+    meta::schema<Holder>();
+    return 0;
+}

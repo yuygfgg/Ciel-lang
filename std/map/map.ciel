@@ -657,65 +657,86 @@ impl key_eq(*const meta::HNil left, *const meta::HNil right) {
 }
 
 impl<Head: map_key, Tail: map_key> hash_key(*const meta::HCons<Head, Tail> value, u64 seed) {
-    u64 head_hash = hash_key(&value->head, mix_u64(1, seed));
-    return hash_key(&value->tail, head_hash);
+    meta::HConsView<Head, Tail> view = meta::hcons_view(value);
+    u64 head_hash = hash_key(view.head, mix_u64(1, seed));
+    return hash_key(view.tail, head_hash);
 }
 
 impl<Head: map_key, Tail: map_key> key_eq(
     *const meta::HCons<Head, Tail> left,
     *const meta::HCons<Head, Tail> right
 ) {
-    return key_eq(&left->head, &right->head) && key_eq(&left->tail, &right->tail);
+    meta::HConsView<Head, Tail> left_view = meta::hcons_view(left);
+    meta::HConsView<Head, Tail> right_view = meta::hcons_view(right);
+    return key_eq(left_view.head, right_view.head) && key_eq(left_view.tail, right_view.tail);
 }
 
 impl<T: map_key> hash_key(*const meta::FieldRef<T> value, u64 seed) {
-    return hash_key(value->value, seed);
+    meta::FieldRefView<T> view = meta::field_ref_view(value);
+    return hash_key(view.value, seed);
 }
 
 impl<T: map_key> key_eq(*const meta::FieldRef<T> left, *const meta::FieldRef<T> right) {
-    return key_eq(left->value, right->value);
+    meta::FieldRefView<T> left_view = meta::field_ref_view(left);
+    meta::FieldRefView<T> right_view = meta::field_ref_view(right);
+    return key_eq(left_view.value, right_view.value);
 }
 
 impl<T: map_key> hash_key(*const meta::Field<T> value, u64 seed) {
-    return hash_key(&value->value, seed);
+    meta::FieldView<T> view = meta::field_view(value);
+    return hash_key(view.value, seed);
 }
 
 impl<T: map_key> key_eq(*const meta::Field<T> left, *const meta::Field<T> right) {
-    return key_eq(&left->value, &right->value);
+    meta::FieldView<T> left_view = meta::field_view(left);
+    meta::FieldView<T> right_view = meta::field_view(right);
+    return key_eq(left_view.value, right_view.value);
 }
 
 impl<T: map_key> hash_key(*const meta::PayloadRef<T> value, u64 seed) {
-    u64 index_hash = hash_key(&value->index, seed);
-    return hash_key(value->value, index_hash);
+    meta::PayloadRefView<T> view = meta::payload_ref_view(value);
+    u64 index_hash = hash_key(&view.index, seed);
+    return hash_key(view.value, index_hash);
 }
 
 impl<T: map_key> key_eq(*const meta::PayloadRef<T> left, *const meta::PayloadRef<T> right) {
-    return left->index == right->index && key_eq(left->value, right->value);
+    meta::PayloadRefView<T> left_view = meta::payload_ref_view(left);
+    meta::PayloadRefView<T> right_view = meta::payload_ref_view(right);
+    return left_view.index == right_view.index && key_eq(left_view.value, right_view.value);
 }
 
 impl<T: map_key> hash_key(*const meta::Payload<T> value, u64 seed) {
-    u64 index_hash = hash_key(&value->index, seed);
-    return hash_key(&value->value, index_hash);
+    meta::PayloadView<T> view = meta::payload_view(value);
+    u64 index_hash = hash_key(&view.index, seed);
+    return hash_key(view.value, index_hash);
 }
 
 impl<T: map_key> key_eq(*const meta::Payload<T> left, *const meta::Payload<T> right) {
-    return left->index == right->index && key_eq(&left->value, &right->value);
+    meta::PayloadView<T> left_view = meta::payload_view(left);
+    meta::PayloadView<T> right_view = meta::payload_view(right);
+    return left_view.index == right_view.index && key_eq(left_view.value, right_view.value);
 }
 
 impl<P: map_key> hash_key(*const meta::VariantRef<P> value, u64 seed) {
-    return hash_key(&value->payload, mix_u64(2, seed));
+    meta::VariantRefView<P> view = meta::variant_ref_view(value);
+    return hash_key(view.payload, mix_u64(2, seed));
 }
 
 impl<P: map_key> key_eq(*const meta::VariantRef<P> left, *const meta::VariantRef<P> right) {
-    return key_eq(&left->payload, &right->payload);
+    meta::VariantRefView<P> left_view = meta::variant_ref_view(left);
+    meta::VariantRefView<P> right_view = meta::variant_ref_view(right);
+    return key_eq(left_view.payload, right_view.payload);
 }
 
 impl<P: map_key> hash_key(*const meta::Variant<P> value, u64 seed) {
-    return hash_key(&value->payload, mix_u64(2, seed));
+    meta::VariantView<P> view = meta::variant_view(value);
+    return hash_key(view.payload, mix_u64(2, seed));
 }
 
 impl<P: map_key> key_eq(*const meta::Variant<P> left, *const meta::Variant<P> right) {
-    return key_eq(&left->payload, &right->payload);
+    meta::VariantView<P> left_view = meta::variant_view(left);
+    meta::VariantView<P> right_view = meta::variant_view(right);
+    return key_eq(left_view.payload, right_view.payload);
 }
 
 impl hash_key(*const meta::CoNil value, u64 seed) {

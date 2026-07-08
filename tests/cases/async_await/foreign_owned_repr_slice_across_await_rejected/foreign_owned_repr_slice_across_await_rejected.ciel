@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: is not async-frame-safe across `await`
+// expect-error: non-static borrowed read-only slice type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/meta as meta;
+import /std/result;
+import ./repr_inner as inner;
+
+async Result<usize, Error> broken() {
+    inner::Packet packet = { data: "abc" };
+    meta::Repr<inner::Packet> repr = meta::into_repr(&packet);
+    await async_time::sleep_ms(0)?;
+    return Ok(inner::len(repr));
+}
+
+i32 main() {
+    usize n = must(async::block_on(broken()));
+    return (n - 3) as i32;
+}

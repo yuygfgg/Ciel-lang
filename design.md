@@ -1826,6 +1826,17 @@ available only for non-resource-affine values. A resource-affine `T`, including
 arrays, closures, structs, or enums that contain resource-affine values, cannot
 be represented by `meta::Repr<T>`.
 
+The compiler-owned marker structs `RefRepr<T>`, `Repr<T>`, and `Schema<T>`, and
+the structural nodes that carry provenance, metadata, payload, or array slots,
+are `unsafe struct`s. Safe code cannot forge those values with struct literals.
+Safe reads use the explicit view functions such as `hcons_view`,
+`field_ref_view`, `field_view`, `field_schema_view`, `payload_ref_view`,
+`payload_view`, `payload_schema_view`, `variant_ref_view`, `variant_view`,
+`variant_schema_view`, `element_schema_view`, `array_chunkN_view`, and
+`array_cat_view`. These functions return ordinary read-only view structs whose
+fields are `*const` pointers into the trusted meta node or copied static
+metadata. Empty nodes `HNil` and `ArrayNil` remain safe values.
+
 For a visible enum it normalizes to a `Coproduct` list in variant declaration
 order. Each branch is a `VariantRef<PayloadProduct>` for `RefRepr<T>` and a
 `Variant<PayloadProduct>` for `Repr<T>`. Positional payloads use
@@ -1852,7 +1863,8 @@ expanded recursively in owned leaves, including struct fields, enum payloads,
 and closure captures. Borrowed representation leaves arrays as borrowed array
 leaves such as `FieldRef<[N]T>` inside named products and sums. A root
 `RefRepr<[N]T>` has no field or payload wrapper, so it normalizes to the same
-bounded `ArrayChunk` / `ArrayCat` shape with non-null element pointer leaves.
+bounded `ArrayChunk` / `ArrayCat` shape with non-null `*const T` element pointer
+leaves.
 
 Array representation expansion is budgeted. Very large static arrays are bulk
 storage rather than record-shaped structural data; using `meta::Repr<[N]T>` past
@@ -2488,12 +2500,19 @@ async-frame opt-in implementation.
 
 Safe code rejects the following values across `await`: raw pointers, nullable
 raw pointers, mutable slices, borrowed read-only slices whose owner is not
-syntactically static, thread-local handles, closures that capture forbidden
-locals, and compound values whose transitive fields may contain those rejected
-views or handles. In the first implementation, compound values containing slice
-or reference-view fields are rejected across await unless the compiler has an
-explicit canonical marker proof that the representation is owned and
-frame-safe.
+syntactically static, thread-local handles, borrowed structural meta
+representations such as `meta::RefRepr<T>` or canonical `FieldRef`/`PayloadRef`
+/`VariantRef` nodes, closures that capture forbidden locals, and compound values
+whose transitive fields may contain those rejected views or handles. In the
+first implementation, compound values containing slice or reference-view fields
+are rejected across await unless the compiler has an explicit canonical marker
+proof that the representation is owned and frame-safe.
+
+Owned `meta::Repr<T>` locals are checked by expanding the canonical structural
+representation and recursively applying async-frame safety to every owned slot.
+`meta::Schema<T>` locals are instance-free static metadata and are frame-safe
+for concrete source types; generic holes are rejected until a concrete policy is
+known.
 
 ```ciel
 []const u8 view = buffer[0..n];
@@ -2512,7 +2531,10 @@ use_bytes(magic); // ok: the string literal is static byte storage
 The compiler recognizes the canonical
 `/std/message.async_frame_opt_in_marker` capability as an unsafe opt-in for
 owned values whose structural fields are not directly visible to the
-frame-safety walk. This marker is only a manual unsafe opt-in, not a public
+frame-safety walk. A resource-affine local that instead implements the canonical
+`/std/async.abort_future` interface may be stored in an async frame as an
+abortable future or operation wrapper, but its visible fields are still checked
+recursively. This marker is only a manual unsafe opt-in, not a public
 async-frame predicate.
 Implementing it asserts that storing the value in a suspended async frame is
 valid, but it does not imply cross-thread shared mutation safety. Ordinary
@@ -4283,9 +4305,9 @@ export struct Type<T> {}
 
 export Type<T> type_tag<T>();
 
-export struct RefRepr<T> {}
-export struct Repr<T> {}
-export struct Schema<T> {}
+export unsafe struct RefRepr<T> {}
+export unsafe struct Repr<T> {}
+export unsafe struct Schema<T> {}
 
 export interface<T> bool ciel_fn_value_marker(*const T value);
 export interface CielFnValue = ciel_fn_value_marker;
@@ -4295,38 +4317,75 @@ export interface ClosureValue = closure_value_marker;
 
 export struct HNil {}
 
-export struct HCons<H, T> {
+export unsafe struct HCons<H, T> {
     H head;
     T tail;
 }
 
-export struct FieldRef<T> {
+export struct HConsView<H, T> {
+    *const H head;
+    *const T tail;
+}
+
+export unsafe struct FieldRef<T> {
     []const char name;
     *const T value;
 }
 
-export struct Field<T> {
+export struct FieldRefView<T> {
+    []const char name;
+    *const T value;
+}
+
+export unsafe struct Field<T> {
     []const char name;
     T value;
 }
 
-export struct FieldSchema<T, R> {
+export struct FieldView<T> {
+    []const char name;
+    *const T value;
+}
+
+export unsafe struct FieldSchema<T, R> {
     []const char name;
     Type<T> source_ty;
     Type<R> repr_ty;
 }
 
-export struct PayloadRef<T> {
+export struct FieldSchemaView<T, R> {
+    []const char name;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+export unsafe struct PayloadRef<T> {
     usize index;
     *const T value;
 }
 
-export struct Payload<T> {
+export struct PayloadRefView<T> {
+    usize index;
+    *const T value;
+}
+
+export unsafe struct Payload<T> {
     usize index;
     T value;
 }
 
-export struct PayloadSchema<T, R> {
+export struct PayloadView<T> {
+    usize index;
+    *const T value;
+}
+
+export unsafe struct PayloadSchema<T, R> {
+    usize index;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+export struct PayloadSchemaView<T, R> {
     usize index;
     Type<T> source_ty;
     Type<R> repr_ty;
@@ -4339,49 +4398,92 @@ export enum Coproduct<H, T> {
     Next(T),
 }
 
-export struct VariantRef<P> {
+export unsafe struct VariantRef<P> {
     []const char name;
     P payload;
 }
 
-export struct Variant<P> {
+export struct VariantRefView<P> {
+    []const char name;
+    *const P payload;
+}
+
+export unsafe struct Variant<P> {
     []const char name;
     P payload;
 }
 
-export struct ElementSchema<T, R> {
+export struct VariantView<P> {
+    []const char name;
+    *const P payload;
+}
+
+export unsafe struct ElementSchema<T, R> {
     Type<T> source_ty;
     Type<R> repr_ty;
 }
 
-export struct VariantSchema<P> {
+export struct ElementSchemaView<T, R> {
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+export unsafe struct VariantSchema<P> {
     []const char name;
     P payload;
 }
 
+export struct VariantSchemaView<P> {
+    []const char name;
+    *const P payload;
+}
+
 export struct ArrayNil {}
 
-export struct ArrayChunk1<T> { T item0; }
-export struct ArrayChunk2<T> { T item0; T item1; }
-export struct ArrayChunk3<T> { T item0; T item1; T item2; }
-export struct ArrayChunk4<T> { T item0; T item1; T item2; T item3; }
-export struct ArrayChunk5<T> { T item0; T item1; T item2; T item3; T item4; }
-export struct ArrayChunk6<T> { T item0; T item1; T item2; T item3; T item4; T item5; }
-export struct ArrayChunk7<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; }
-export struct ArrayChunk8<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; }
-export struct ArrayChunk9<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; }
-export struct ArrayChunk10<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; }
-export struct ArrayChunk11<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; }
-export struct ArrayChunk12<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; }
-export struct ArrayChunk13<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; }
-export struct ArrayChunk14<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; }
-export struct ArrayChunk15<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; }
-export struct ArrayChunk16<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; T item15; }
+export unsafe struct ArrayChunk1<T> { T item0; }
+export unsafe struct ArrayChunk2<T> { T item0; T item1; }
+export unsafe struct ArrayChunk3<T> { T item0; T item1; T item2; }
+export unsafe struct ArrayChunk4<T> { T item0; T item1; T item2; T item3; }
+export unsafe struct ArrayChunk5<T> { T item0; T item1; T item2; T item3; T item4; }
+export unsafe struct ArrayChunk6<T> { T item0; T item1; T item2; T item3; T item4; T item5; }
+export unsafe struct ArrayChunk7<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; }
+export unsafe struct ArrayChunk8<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; }
+export unsafe struct ArrayChunk9<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; }
+export unsafe struct ArrayChunk10<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; }
+export unsafe struct ArrayChunk11<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; }
+export unsafe struct ArrayChunk12<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; }
+export unsafe struct ArrayChunk13<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; }
+export unsafe struct ArrayChunk14<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; }
+export unsafe struct ArrayChunk15<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; }
+export unsafe struct ArrayChunk16<T> { T item0; T item1; T item2; T item3; T item4; T item5; T item6; T item7; T item8; T item9; T item10; T item11; T item12; T item13; T item14; T item15; }
 
-export struct ArrayCat<L, R> {
+export unsafe struct ArrayCat<L, R> {
     L left;
     R right;
 }
+
+export struct ArrayChunk1View<T> { *const T item0; }
+export struct ArrayChunk2View<T> { *const T item0; *const T item1; }
+export struct ArrayChunk3View<T> { *const T item0; *const T item1; *const T item2; }
+// ArrayChunk4View<T> through ArrayChunk16View<T> expose item0 through itemN-1.
+export struct ArrayCatView<L, R> { *const L left; *const R right; }
+
+export HConsView<H, T> hcons_view<H, T>(*const HCons<H, T> value);
+export HNil hnil();
+export FieldRefView<T> field_ref_view<T>(*const FieldRef<T> value);
+export FieldView<T> field_view<T>(*const Field<T> value);
+export FieldSchemaView<T, R> field_schema_view<T, R>(*const FieldSchema<T, R> value);
+export PayloadRefView<T> payload_ref_view<T>(*const PayloadRef<T> value);
+export PayloadView<T> payload_view<T>(*const Payload<T> value);
+export PayloadSchemaView<T, R> payload_schema_view<T, R>(*const PayloadSchema<T, R> value);
+export VariantRefView<P> variant_ref_view<P>(*const VariantRef<P> value);
+export VariantView<P> variant_view<P>(*const Variant<P> value);
+export ElementSchemaView<T, R> element_schema_view<T, R>(*const ElementSchema<T, R> value);
+export VariantSchemaView<P> variant_schema_view<P>(*const VariantSchema<P> value);
+export ArrayChunk1View<T> array_chunk1_view<T>(*const ArrayChunk1<T> value);
+// array_chunk2_view<T> through array_chunk16_view<T> follow the same pattern.
+export ArrayCatView<L, R> array_cat_view<L, R>(*const ArrayCat<L, R> value);
+export ArrayNil array_nil();
 
 export RefRepr<T> as_ref_repr<T>(*const T value);
 export Repr<T> into_repr<T>(*const T value);

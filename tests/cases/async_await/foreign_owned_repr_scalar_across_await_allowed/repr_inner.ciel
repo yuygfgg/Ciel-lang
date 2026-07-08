@@ -1,0 +1,15 @@
+// ciel-test: dependency
+
+import /std/meta as meta;
+
+export struct Packet {
+    i64 id;
+    bool ok;
+}
+
+export i64 read_id(meta::Repr<Packet> repr) {
+    meta::HConsView<meta::Field<i64>, meta::HCons<meta::Field<bool>, meta::HNil>> repr_view =
+        meta::hcons_view(&repr);
+    meta::FieldView<i64> id_field = meta::field_view(repr_view.head);
+    return *id_field.value;
+}

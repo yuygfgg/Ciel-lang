@@ -3,15 +3,16 @@
 // run-arg: @tmp/std_resource_erased_future_passthrough_cleanup.txt
 
 import /std/async as async;
+import /std/async_io as aio;
 import /std/async_time as async_time;
 import /std/env as env;
 import /std/io as io;
 import /std/resource as resource;
 import /std/result;
 
-async Result<void, Error> hold_file(io::File @file) {
+async Result<void, Error> hold_file(aio::AsyncFd @file) {
     await async_time::sleep_ms(10000)?;
-    io::close(file)?;
+    aio::close_async(file)?;
     return Ok;
 }
 
@@ -34,11 +35,11 @@ i32 main() {
     };
     must(resource::scoped_with_limits<void>(limits, || {
         {
-            io::File file = io::open_read(path)?;
+            aio::AsyncFd file = aio::open_async_read(path)?;
             _ future = pass(hold_file(file));
         }
-        io::File again = io::open_read(path)?;
-        io::close(again)?;
+        aio::AsyncFd again = aio::open_async_read(path)?;
+        aio::close_async(again)?;
         return Ok;
     }));
     return 0;

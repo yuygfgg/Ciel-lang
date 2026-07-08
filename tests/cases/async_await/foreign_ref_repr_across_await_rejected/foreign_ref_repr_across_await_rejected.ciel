@@ -1,0 +1,21 @@
+// ciel-test: error
+// expect-error: is not async-frame-safe across `await`
+// expect-error: borrowed structural meta representation
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/meta as meta;
+import /std/result;
+import ./repr_inner as inner;
+
+async Result<i64, Error> broken() {
+    inner::Packet packet = { id: 1234 };
+    meta::RefRepr<inner::Packet> repr = meta::as_ref_repr(&packet);
+    await async_time::sleep_ms(0)?;
+    return Ok(inner::read_id(repr));
+}
+
+i32 main() {
+    i64 n = must(async::block_on(broken()));
+    return (n - 1234) as i32;
+}

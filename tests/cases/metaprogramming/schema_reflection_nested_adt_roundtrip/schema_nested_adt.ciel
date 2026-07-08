@@ -285,31 +285,37 @@ impl<Head: write_repr, Tail: write_repr> write_repr(
     *const meta::HCons<Head, Tail> value,
     *Tape tape
 ) {
-    write_repr(&value->head, tape);
-    write_repr(&value->tail, tape);
+    meta::HConsView<Head, Tail> view = meta::hcons_view(value);
+    write_repr(view.head, tape);
+    write_repr(view.tail, tape);
 }
 
 impl<T: write_repr> write_repr(*const meta::Field<T> value, *Tape tape) {
-    write_repr(&value->value, tape);
+    meta::FieldView<T> view = meta::field_view(value);
+    write_repr(view.value, tape);
 }
 
 impl<T: write_repr> write_repr(*const meta::Payload<T> value, *Tape tape) {
-    write_repr(&value->value, tape);
+    meta::PayloadView<T> view = meta::payload_view(value);
+    write_repr(view.value, tape);
 }
 
 impl<P: write_repr> write_repr(*const meta::Variant<P> value, *Tape tape) {
-    write_repr(&value->payload, tape);
+    meta::VariantView<P> view = meta::variant_view(value);
+    write_repr(view.payload, tape);
 }
 
 impl<T: write_repr> write_repr(*const meta::ArrayChunk2<T> value, *Tape tape) {
-    write_repr(&value->item0, tape);
-    write_repr(&value->item1, tape);
+    meta::ArrayChunk2View<T> view = meta::array_chunk2_view(value);
+    write_repr(view.item0, tape);
+    write_repr(view.item1, tape);
 }
 
 impl<T: write_repr> write_repr(*const meta::ArrayChunk3<T> value, *Tape tape) {
-    write_repr(&value->item0, tape);
-    write_repr(&value->item1, tape);
-    write_repr(&value->item2, tape);
+    meta::ArrayChunk3View<T> view = meta::array_chunk3_view(value);
+    write_repr(view.item0, tape);
+    write_repr(view.item1, tape);
+    write_repr(view.item2, tape);
 }
 
 impl write_coproduct(*const meta::CoNil value, *Tape tape, usize index) {
@@ -408,13 +414,15 @@ impl<V: read_typed<Slot>, Slot, STail: decode_schema<RTail>, RTail> decode_schem
     meta::Type<meta::HCons<meta::Field<Slot>, RTail>> repr,
     *Tape tape
 ) {
-    Slot value = read_typed(schema->head.source_ty, schema->head.repr_ty, tape);
-    RTail tail = decode_schema(&schema->tail, meta::type_tag<RTail>(), tape);
-    meta::Field<Slot> field = {
-        name: schema->head.name,
+    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(schema_view.head);
+    Slot value = read_typed(field_schema.source_ty, field_schema.repr_ty, tape);
+    RTail tail = decode_schema(schema_view.tail, meta::type_tag<RTail>(), tape);
+    meta::Field<Slot> field = unsafe { {
+        name: field_schema.name,
         value: value,
-    };
-    return { head: field, tail: tail };
+    } };
+    return unsafe { { head: field, tail: tail } };
 }
 
 impl<V: read_typed<Slot>, Slot, STail: decode_schema<RTail>, RTail> decode_schema(
@@ -422,13 +430,15 @@ impl<V: read_typed<Slot>, Slot, STail: decode_schema<RTail>, RTail> decode_schem
     meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
     *Tape tape
 ) {
-    Slot value = read_typed(schema->head.source_ty, schema->head.repr_ty, tape);
-    RTail tail = decode_schema(&schema->tail, meta::type_tag<RTail>(), tape);
-    meta::Payload<Slot> payload = {
-        index: schema->head.index,
+    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
+    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(schema_view.head);
+    Slot value = read_typed(payload_schema.source_ty, payload_schema.repr_ty, tape);
+    RTail tail = decode_schema(schema_view.tail, meta::type_tag<RTail>(), tape);
+    meta::Payload<Slot> payload = unsafe { {
+        index: payload_schema.index,
         value: value,
-    };
-    return { head: payload, tail: tail };
+    } };
+    return unsafe { { head: payload, tail: tail } };
 }
 
 impl<T: read_typed<R>, R> decode_schema(
@@ -436,9 +446,12 @@ impl<T: read_typed<R>, R> decode_schema(
     meta::Type<meta::ArrayChunk2<R>> repr,
     *Tape tape
 ) {
-    R item0 = read_typed(schema->item0.source_ty, schema->item0.repr_ty, tape);
-    R item1 = read_typed(schema->item1.source_ty, schema->item1.repr_ty, tape);
-    return { item0: item0, item1: item1 };
+    meta::ArrayChunk2View<meta::ElementSchema<T, R>> schema_view = meta::array_chunk2_view(schema);
+    meta::ElementSchemaView<T, R> item0_schema = meta::element_schema_view(schema_view.item0);
+    meta::ElementSchemaView<T, R> item1_schema = meta::element_schema_view(schema_view.item1);
+    R item0 = read_typed(item0_schema.source_ty, item0_schema.repr_ty, tape);
+    R item1 = read_typed(item1_schema.source_ty, item1_schema.repr_ty, tape);
+    return unsafe { { item0: item0, item1: item1 } };
 }
 
 impl<T: read_typed<R>, R> decode_schema(
@@ -446,10 +459,14 @@ impl<T: read_typed<R>, R> decode_schema(
     meta::Type<meta::ArrayChunk3<R>> repr,
     *Tape tape
 ) {
-    R item0 = read_typed(schema->item0.source_ty, schema->item0.repr_ty, tape);
-    R item1 = read_typed(schema->item1.source_ty, schema->item1.repr_ty, tape);
-    R item2 = read_typed(schema->item2.source_ty, schema->item2.repr_ty, tape);
-    return { item0: item0, item1: item1, item2: item2 };
+    meta::ArrayChunk3View<meta::ElementSchema<T, R>> schema_view = meta::array_chunk3_view(schema);
+    meta::ElementSchemaView<T, R> item0_schema = meta::element_schema_view(schema_view.item0);
+    meta::ElementSchemaView<T, R> item1_schema = meta::element_schema_view(schema_view.item1);
+    meta::ElementSchemaView<T, R> item2_schema = meta::element_schema_view(schema_view.item2);
+    R item0 = read_typed(item0_schema.source_ty, item0_schema.repr_ty, tape);
+    R item1 = read_typed(item1_schema.source_ty, item1_schema.repr_ty, tape);
+    R item2 = read_typed(item2_schema.source_ty, item2_schema.repr_ty, tape);
+    return unsafe { { item0: item0, item1: item1, item2: item2 } };
 }
 
 impl<SP: decode_schema<RP>, RP, STail: decode_variant_tail<RTail>, RTail> decode_schema(
@@ -457,17 +474,19 @@ impl<SP: decode_schema<RP>, RP, STail: decode_variant_tail<RTail>, RTail> decode
     meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> repr,
     *Tape tape
 ) {
+    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
+    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(schema_view.head);
     usize target = read_variant(tape);
     if (target == (0 as usize)) {
-        RP payload = decode_schema(&schema->head.payload, meta::type_tag<RP>(), tape);
-        meta::Variant<RP> variant = {
-            name: schema->head.name,
+        RP payload = decode_schema(variant_schema.payload, meta::type_tag<RP>(), tape);
+        meta::Variant<RP> variant = unsafe { {
+            name: variant_schema.name,
             payload: payload,
-        };
+        } };
         return meta::This(variant);
     }
     RTail tail = decode_variant_tail(
-        &schema->tail,
+        schema_view.tail,
         meta::type_tag<RTail>(),
         tape,
         target - 1
@@ -491,15 +510,18 @@ impl<SP: decode_schema<RP>, RP, STail: decode_variant_tail<RTail>, RTail> decode
     usize target
 ) {
     if (target == (0 as usize)) {
-        RP payload = decode_schema(&schema->head.payload, meta::type_tag<RP>(), tape);
-        meta::Variant<RP> variant = {
-            name: schema->head.name,
+        meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
+        meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(schema_view.head);
+        RP payload = decode_schema(variant_schema.payload, meta::type_tag<RP>(), tape);
+        meta::Variant<RP> variant = unsafe { {
+            name: variant_schema.name,
             payload: payload,
-        };
+        } };
         return meta::This(variant);
     }
+    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
     RTail tail = decode_variant_tail(
-        &schema->tail,
+        schema_view.tail,
         meta::type_tag<RTail>(),
         tape,
         target - 1

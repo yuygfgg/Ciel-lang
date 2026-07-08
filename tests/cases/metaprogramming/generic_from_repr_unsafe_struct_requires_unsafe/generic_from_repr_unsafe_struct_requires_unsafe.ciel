@@ -14,10 +14,10 @@ T rebuild<T>(meta::Repr<T> repr) {
 }
 
 i64 main() {
-    SecretRepr repr = {
-        head: { name: "token", value: 42 },
+    SecretRepr repr = unsafe { {
+        head: unsafe { { name: "token", value: 42 } },
         tail: {},
-    };
+    } };
     Secret value = rebuild<Secret>(repr);
     return unsafe { value.token };
 }

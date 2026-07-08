@@ -896,6 +896,32 @@ impl TypeChecker {
                 );
             }
         }
+        if let Some(source_ty) = meta_schema_marker_source(ty) {
+            if contains_type_hole(source_ty) {
+                return Some(format!(
+                    "{path} has generic type `{ty}` without a proven async-frame-safety policy"
+                ));
+            }
+            return None;
+        }
+        if let Some((borrowed, source_ty)) = meta_repr_marker_source(ty) {
+            if borrowed {
+                return Some(format!(
+                    "{path} has borrowed structural meta representation type `{ty}`"
+                ));
+            }
+            if contains_generic(source_ty) || contains_type_hole(source_ty) {
+                return Some(format!(
+                    "{path} has generic type `{ty}` without a proven async-frame-safety policy"
+                ));
+            }
+            let Some(sop_ty) = self.meta_repr_marker_sop_ty(ty) else {
+                return Some(format!(
+                    "{path} has owned structural meta representation type `{ty}` without a proven async-frame-safety policy"
+                ));
+            };
+            return self.async_frame_safety_violation(&sop_ty, false, path, visiting);
+        }
         if contains_generic(ty) || contains_type_hole(ty) {
             return Some(format!(
                 "{path} has generic type `{ty}` without a proven async-frame-safety policy"
@@ -955,6 +981,11 @@ impl TypeChecker {
                 None
             }
             _ if self.type_implements_async_frame_opt_in(ty) => None,
+            _ if self.type_is_nominal_resource_frame_boundary(ty) && !self.is_abortable_ty(ty) => {
+                Some(format!(
+                    "{path} has resource-affine type `{ty}` without an async-frame-safety policy"
+                ))
+            }
             Ty::Pointer { nullable, .. } => {
                 if *nullable {
                     Some(format!("{path} has nullable raw pointer type `{ty}`"))
@@ -978,6 +1009,9 @@ impl TypeChecker {
                 self.async_frame_safety_violation(elem, false, &format!("{path} element"), visiting)
             }
             Ty::Named { name, args, .. } => {
+                if self.is_canonical_std_meta_sop_node_ty(ty) {
+                    return self.async_meta_sop_frame_safety_violation(ty, path, visiting);
+                }
                 if !visiting.insert(ty.clone()) {
                     return None;
                 }
@@ -1058,6 +1092,149 @@ impl TypeChecker {
             | Ty::F64
             | Ty::CSpelling { .. }
             | Ty::Unknown => None,
+        }
+    }
+
+    fn type_is_nominal_resource_frame_boundary(&mut self, ty: &Ty) -> bool {
+        if std_id::is_std_resource_handle_ty(&self.ctx.resolved, ty) {
+            return true;
+        }
+        let Ty::Named { name, args, .. } = ty else {
+            return false;
+        };
+        let instance_name = aggregate_instance_name(name, args);
+        if self.ctx.resource_structs.contains(&instance_name) {
+            return true;
+        }
+        self.ensure_struct_instance(ty);
+        self.ctx.resource_structs.contains(&instance_name)
+    }
+
+    fn is_canonical_std_meta_sop_node_ty(&self, ty: &Ty) -> bool {
+        let Ty::Named { def_id, name, .. } = ty else {
+            return false;
+        };
+        self.is_std_meta_frame_sop_node_name(name)
+            && def_id.is_some_and(|id| {
+                std_id::std_meta_named_def_id(&self.ctx.resolved, name) == Some(id)
+            })
+    }
+
+    fn is_std_meta_frame_sop_node_name(&self, name: &str) -> bool {
+        matches!(
+            name,
+            "HNil"
+                | "HCons"
+                | "FieldRef"
+                | "Field"
+                | "FieldSchema"
+                | "PayloadRef"
+                | "Payload"
+                | "PayloadSchema"
+                | "CoNil"
+                | "Coproduct"
+                | "VariantRef"
+                | "Variant"
+                | "VariantSchema"
+                | "ArrayNil"
+                | "ElementSchema"
+                | "ArrayCat"
+        ) || name
+            .strip_prefix("ArrayChunk")
+            .and_then(|suffix| suffix.parse::<usize>().ok())
+            .is_some_and(|len| (1..=crate::types::META_ARRAY_CHUNK_SIZE).contains(&len))
+    }
+
+    fn async_meta_sop_frame_safety_violation(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        if !visiting.insert(ty.clone()) {
+            return None;
+        }
+        let result = self.async_meta_sop_frame_safety_violation_inner(ty, path, visiting);
+        visiting.remove(ty);
+        result
+    }
+
+    fn async_meta_sop_frame_safety_violation_inner(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        let Ty::Named { name, args, .. } = ty else {
+            return Some(format!(
+                "{path} has malformed /std/meta structural representation type `{ty}`"
+            ));
+        };
+        match name.as_str() {
+            "HNil" | "CoNil" | "ArrayNil" if args.is_empty() => None,
+            "HCons" if args.len() == 2 => self
+                .async_frame_safety_violation(&args[0], false, &format!("{path}.head"), visiting)
+                .or_else(|| {
+                    self.async_frame_safety_violation(
+                        &args[1],
+                        false,
+                        &format!("{path}.tail"),
+                        visiting,
+                    )
+                }),
+            "Coproduct" if args.len() == 2 => self
+                .async_frame_safety_violation(&args[0], false, &format!("{path}.This"), visiting)
+                .or_else(|| {
+                    self.async_frame_safety_violation(
+                        &args[1],
+                        false,
+                        &format!("{path}.Next"),
+                        visiting,
+                    )
+                }),
+            "FieldRef" | "PayloadRef" | "VariantRef" => Some(format!(
+                "{path} has borrowed structural meta representation type `{ty}`"
+            )),
+            "Field" | "Payload" if args.len() == 1 => self.async_frame_safety_violation(
+                &args[0],
+                false,
+                &format!("{path}.value"),
+                visiting,
+            ),
+            "Variant" if args.len() == 1 => self.async_frame_safety_violation(
+                &args[0],
+                false,
+                &format!("{path}.payload"),
+                visiting,
+            ),
+            "FieldSchema" | "PayloadSchema" | "ElementSchema" if args.len() == 2 => None,
+            "VariantSchema" if args.len() == 1 => None,
+            "ArrayCat" if args.len() == 2 => self
+                .async_frame_safety_violation(&args[0], false, &format!("{path}.left"), visiting)
+                .or_else(|| {
+                    self.async_frame_safety_violation(
+                        &args[1],
+                        false,
+                        &format!("{path}.right"),
+                        visiting,
+                    )
+                }),
+            name if name
+                .strip_prefix("ArrayChunk")
+                .and_then(|suffix| suffix.parse::<usize>().ok())
+                .is_some_and(|len| (1..=crate::types::META_ARRAY_CHUNK_SIZE).contains(&len))
+                && args.len() == 1 =>
+            {
+                self.async_frame_safety_violation(
+                    &args[0],
+                    false,
+                    &format!("{path}.item"),
+                    visiting,
+                )
+            }
+            _ => Some(format!(
+                "{path} has malformed /std/meta structural representation type `{ty}`"
+            )),
         }
     }
 

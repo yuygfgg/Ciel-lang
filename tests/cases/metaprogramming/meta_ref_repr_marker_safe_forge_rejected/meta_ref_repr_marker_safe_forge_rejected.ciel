@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: `meta::RefRepr<i64>` is not a known struct
+
+import /std/meta as meta;
+
+i32 main() {
+    meta::RefRepr<i64> repr = {};
+    return 0;
+}

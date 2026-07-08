@@ -1829,7 +1829,7 @@ pub fn meta_repr_borrowed_array_leaf_ty(ty: &Ty) -> Ty {
 }
 
 pub fn meta_repr_borrowed_array_item_ty(ty: &Ty) -> Ty {
-    Ty::pointer_to(ty.clone())
+    Ty::const_pointer_to(ty.clone())
 }
 
 pub fn meta_ref_array_repr_ty(len: usize, elem: &Ty) -> Ty {

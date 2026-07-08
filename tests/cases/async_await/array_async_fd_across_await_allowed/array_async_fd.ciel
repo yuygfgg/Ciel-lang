@@ -1,0 +1,17 @@
+// ciel-test: compile
+
+import /std/async_time as async_time;
+import /std/async_io as aio;
+import /std/result;
+
+async Result<void, Error> keep_array([]const char path) {
+    [1]aio::AsyncFd fds = [aio::open_async_read(path)?];
+    await async_time::sleep_ms(0)?;
+    aio::AsyncRead op = aio::read_bytes_async(&fds[0], 16)?;
+    aio::cancel_read(op)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

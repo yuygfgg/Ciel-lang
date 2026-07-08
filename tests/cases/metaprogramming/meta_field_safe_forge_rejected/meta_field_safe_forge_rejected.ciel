@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: constructing unsafe struct `Field` requires unsafe block
+
+import /std/meta as meta;
+
+i32 main() {
+    meta::Field<i64> field = {
+        name: "id",
+        value: 42,
+    };
+    return field.value as i32;
+}

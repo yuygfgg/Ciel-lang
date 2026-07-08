@@ -23,15 +23,15 @@ export Type<T> type_tag<T>() {
 
 // Read-only structural representation marker for a visible type.
 // Type checking normalizes this marker to the ordinary SOP types below.
-export struct RefRepr<T> {}
+export unsafe struct RefRepr<T> {}
 
 // Owned structural representation marker for a visible type.
 // Type checking normalizes this marker to the ordinary SOP types below.
-export struct Repr<T> {}
+export unsafe struct Repr<T> {}
 
 // Instance-free structural schema marker for a visible type.
 // Type checking normalizes this marker to the ordinary schema node types below.
-export struct Schema<T> {}
+export unsafe struct Schema<T> {}
 
 // Compiler-provided marker fact for Ciel ABI function-pointer values.
 // User code cannot implement this interface directly.
@@ -51,44 +51,88 @@ export interface ClosureValue = closure_value_marker;
 export struct HNil {}
 
 // Product-list cons node used in structural representations.
-export struct HCons<H, T> {
+export unsafe struct HCons<H, T> {
     H head;
     T tail;
 }
 
+// Safe read-only view of a product-list cons node.
+export struct HConsView<H, T> {
+    *const H head;
+    *const T tail;
+}
+
 // Borrowed named struct field in a RefRepr product.
-export struct FieldRef<T> {
+export unsafe struct FieldRef<T> {
+    []const char name;
+    *const T value;
+}
+
+// Safe read-only view of a borrowed named struct field.
+export struct FieldRefView<T> {
     []const char name;
     *const T value;
 }
 
 // Owned named struct field in a Repr product.
-export struct Field<T> {
+export unsafe struct Field<T> {
     []const char name;
     T value;
 }
 
+// Safe read-only view of an owned named struct field.
+export struct FieldView<T> {
+    []const char name;
+    *const T value;
+}
+
 // Instance-free named struct field schema.
-export struct FieldSchema<T, R> {
+export unsafe struct FieldSchema<T, R> {
+    []const char name;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+// Safe read-only view of a named struct field schema.
+export struct FieldSchemaView<T, R> {
     []const char name;
     Type<T> source_ty;
     Type<R> repr_ty;
 }
 
 // Borrowed positional enum payload in a RefRepr sum variant.
-export struct PayloadRef<T> {
+export unsafe struct PayloadRef<T> {
+    usize index;
+    *const T value;
+}
+
+// Safe read-only view of a borrowed positional enum payload.
+export struct PayloadRefView<T> {
     usize index;
     *const T value;
 }
 
 // Owned positional enum payload in a Repr sum variant.
-export struct Payload<T> {
+export unsafe struct Payload<T> {
     usize index;
     T value;
 }
 
+// Safe read-only view of an owned positional enum payload.
+export struct PayloadView<T> {
+    usize index;
+    *const T value;
+}
+
 // Instance-free positional enum payload schema.
-export struct PayloadSchema<T, R> {
+export unsafe struct PayloadSchema<T, R> {
+    usize index;
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+// Safe read-only view of a positional enum payload schema.
+export struct PayloadSchemaView<T, R> {
     usize index;
     Type<T> source_ty;
     Type<R> repr_ty;
@@ -104,52 +148,76 @@ export enum Coproduct<H, T> {
 }
 
 // Borrowed named enum variant in a RefRepr sum.
-export struct VariantRef<P> {
+export unsafe struct VariantRef<P> {
     []const char name;
     P payload;
+}
+
+// Safe read-only view of a borrowed named enum variant.
+export struct VariantRefView<P> {
+    []const char name;
+    *const P payload;
 }
 
 // Owned named enum variant in a Repr sum.
-export struct Variant<P> {
+export unsafe struct Variant<P> {
     []const char name;
     P payload;
 }
 
+// Safe read-only view of an owned named enum variant.
+export struct VariantView<P> {
+    []const char name;
+    *const P payload;
+}
+
 // Instance-free fixed-size array element schema.
-export struct ElementSchema<T, R> {
+export unsafe struct ElementSchema<T, R> {
+    Type<T> source_ty;
+    Type<R> repr_ty;
+}
+
+// Safe read-only view of a fixed-size array element schema.
+export struct ElementSchemaView<T, R> {
     Type<T> source_ty;
     Type<R> repr_ty;
 }
 
 // Instance-free named enum variant schema.
-export struct VariantSchema<P> {
+export unsafe struct VariantSchema<P> {
     []const char name;
     P payload;
+}
+
+// Safe read-only view of a named enum variant schema.
+export struct VariantSchemaView<P> {
+    []const char name;
+    *const P payload;
 }
 
 // Empty fixed-size array representation node.
 export struct ArrayNil {}
 
 // Fixed-size array representation node for one element.
-export struct ArrayChunk1<T> {
+export unsafe struct ArrayChunk1<T> {
     T item0;
 }
 
 // Fixed-size array representation node for two elements.
-export struct ArrayChunk2<T> {
+export unsafe struct ArrayChunk2<T> {
     T item0;
     T item1;
 }
 
 // Fixed-size array representation node for three elements.
-export struct ArrayChunk3<T> {
+export unsafe struct ArrayChunk3<T> {
     T item0;
     T item1;
     T item2;
 }
 
 // Fixed-size array representation node for four elements.
-export struct ArrayChunk4<T> {
+export unsafe struct ArrayChunk4<T> {
     T item0;
     T item1;
     T item2;
@@ -157,7 +225,7 @@ export struct ArrayChunk4<T> {
 }
 
 // Fixed-size array representation node for five elements.
-export struct ArrayChunk5<T> {
+export unsafe struct ArrayChunk5<T> {
     T item0;
     T item1;
     T item2;
@@ -166,7 +234,7 @@ export struct ArrayChunk5<T> {
 }
 
 // Fixed-size array representation node for six elements.
-export struct ArrayChunk6<T> {
+export unsafe struct ArrayChunk6<T> {
     T item0;
     T item1;
     T item2;
@@ -176,7 +244,7 @@ export struct ArrayChunk6<T> {
 }
 
 // Fixed-size array representation node for seven elements.
-export struct ArrayChunk7<T> {
+export unsafe struct ArrayChunk7<T> {
     T item0;
     T item1;
     T item2;
@@ -187,7 +255,7 @@ export struct ArrayChunk7<T> {
 }
 
 // Fixed-size array representation node for eight elements.
-export struct ArrayChunk8<T> {
+export unsafe struct ArrayChunk8<T> {
     T item0;
     T item1;
     T item2;
@@ -199,7 +267,7 @@ export struct ArrayChunk8<T> {
 }
 
 // Fixed-size array representation node for nine elements.
-export struct ArrayChunk9<T> {
+export unsafe struct ArrayChunk9<T> {
     T item0;
     T item1;
     T item2;
@@ -212,7 +280,7 @@ export struct ArrayChunk9<T> {
 }
 
 // Fixed-size array representation node for ten elements.
-export struct ArrayChunk10<T> {
+export unsafe struct ArrayChunk10<T> {
     T item0;
     T item1;
     T item2;
@@ -226,7 +294,7 @@ export struct ArrayChunk10<T> {
 }
 
 // Fixed-size array representation node for eleven elements.
-export struct ArrayChunk11<T> {
+export unsafe struct ArrayChunk11<T> {
     T item0;
     T item1;
     T item2;
@@ -241,7 +309,7 @@ export struct ArrayChunk11<T> {
 }
 
 // Fixed-size array representation node for twelve elements.
-export struct ArrayChunk12<T> {
+export unsafe struct ArrayChunk12<T> {
     T item0;
     T item1;
     T item2;
@@ -257,7 +325,7 @@ export struct ArrayChunk12<T> {
 }
 
 // Fixed-size array representation node for thirteen elements.
-export struct ArrayChunk13<T> {
+export unsafe struct ArrayChunk13<T> {
     T item0;
     T item1;
     T item2;
@@ -274,7 +342,7 @@ export struct ArrayChunk13<T> {
 }
 
 // Fixed-size array representation node for fourteen elements.
-export struct ArrayChunk14<T> {
+export unsafe struct ArrayChunk14<T> {
     T item0;
     T item1;
     T item2;
@@ -292,7 +360,7 @@ export struct ArrayChunk14<T> {
 }
 
 // Fixed-size array representation node for fifteen elements.
-export struct ArrayChunk15<T> {
+export unsafe struct ArrayChunk15<T> {
     T item0;
     T item1;
     T item2;
@@ -311,7 +379,7 @@ export struct ArrayChunk15<T> {
 }
 
 // Fixed-size array representation node for sixteen elements.
-export struct ArrayChunk16<T> {
+export unsafe struct ArrayChunk16<T> {
     T item0;
     T item1;
     T item2;
@@ -331,9 +399,318 @@ export struct ArrayChunk16<T> {
 }
 
 // Concatenates two fixed-size array representation subtrees.
-export struct ArrayCat<L, R> {
+export unsafe struct ArrayCat<L, R> {
     L left;
     R right;
+}
+
+export struct ArrayChunk1View<T> {
+    *const T item0;
+}
+
+export struct ArrayChunk2View<T> {
+    *const T item0;
+    *const T item1;
+}
+
+export struct ArrayChunk3View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+}
+
+export struct ArrayChunk4View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+}
+
+export struct ArrayChunk5View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+}
+
+export struct ArrayChunk6View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+}
+
+export struct ArrayChunk7View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+}
+
+export struct ArrayChunk8View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+}
+
+export struct ArrayChunk9View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+}
+
+export struct ArrayChunk10View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+}
+
+export struct ArrayChunk11View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+}
+
+export struct ArrayChunk12View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+    *const T item11;
+}
+
+export struct ArrayChunk13View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+    *const T item11;
+    *const T item12;
+}
+
+export struct ArrayChunk14View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+    *const T item11;
+    *const T item12;
+    *const T item13;
+}
+
+export struct ArrayChunk15View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+    *const T item11;
+    *const T item12;
+    *const T item13;
+    *const T item14;
+}
+
+export struct ArrayChunk16View<T> {
+    *const T item0;
+    *const T item1;
+    *const T item2;
+    *const T item3;
+    *const T item4;
+    *const T item5;
+    *const T item6;
+    *const T item7;
+    *const T item8;
+    *const T item9;
+    *const T item10;
+    *const T item11;
+    *const T item12;
+    *const T item13;
+    *const T item14;
+    *const T item15;
+}
+
+export struct ArrayCatView<L, R> {
+    *const L left;
+    *const R right;
+}
+
+export HConsView<H, T> hcons_view<H, T>(*const HCons<H, T> value) {
+    return unsafe { { head: &value->head, tail: &value->tail } };
+}
+
+export HNil hnil() {
+    return {};
+}
+
+export FieldRefView<T> field_ref_view<T>(*const FieldRef<T> value) {
+    return unsafe { { name: value->name, value: value->value } };
+}
+
+export FieldView<T> field_view<T>(*const Field<T> value) {
+    return unsafe { { name: value->name, value: &value->value } };
+}
+
+export FieldSchemaView<T, R> field_schema_view<T, R>(*const FieldSchema<T, R> value) {
+    return unsafe { { name: value->name, source_ty: value->source_ty, repr_ty: value->repr_ty } };
+}
+
+export PayloadRefView<T> payload_ref_view<T>(*const PayloadRef<T> value) {
+    return unsafe { { index: value->index, value: value->value } };
+}
+
+export PayloadView<T> payload_view<T>(*const Payload<T> value) {
+    return unsafe { { index: value->index, value: &value->value } };
+}
+
+export PayloadSchemaView<T, R> payload_schema_view<T, R>(*const PayloadSchema<T, R> value) {
+    return unsafe { { index: value->index, source_ty: value->source_ty, repr_ty: value->repr_ty } };
+}
+
+export VariantRefView<P> variant_ref_view<P>(*const VariantRef<P> value) {
+    return unsafe { { name: value->name, payload: &value->payload } };
+}
+
+export VariantView<P> variant_view<P>(*const Variant<P> value) {
+    return unsafe { { name: value->name, payload: &value->payload } };
+}
+
+export ElementSchemaView<T, R> element_schema_view<T, R>(*const ElementSchema<T, R> value) {
+    return unsafe { { source_ty: value->source_ty, repr_ty: value->repr_ty } };
+}
+
+export VariantSchemaView<P> variant_schema_view<P>(*const VariantSchema<P> value) {
+    return unsafe { { name: value->name, payload: &value->payload } };
+}
+
+export ArrayChunk1View<T> array_chunk1_view<T>(*const ArrayChunk1<T> value) {
+    return unsafe { { item0: &value->item0 } };
+}
+
+export ArrayChunk2View<T> array_chunk2_view<T>(*const ArrayChunk2<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1 } };
+}
+
+export ArrayChunk3View<T> array_chunk3_view<T>(*const ArrayChunk3<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2 } };
+}
+
+export ArrayChunk4View<T> array_chunk4_view<T>(*const ArrayChunk4<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3 } };
+}
+
+export ArrayChunk5View<T> array_chunk5_view<T>(*const ArrayChunk5<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4 } };
+}
+
+export ArrayChunk6View<T> array_chunk6_view<T>(*const ArrayChunk6<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5 } };
+}
+
+export ArrayChunk7View<T> array_chunk7_view<T>(*const ArrayChunk7<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6 } };
+}
+
+export ArrayChunk8View<T> array_chunk8_view<T>(*const ArrayChunk8<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7 } };
+}
+
+export ArrayChunk9View<T> array_chunk9_view<T>(*const ArrayChunk9<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8 } };
+}
+
+export ArrayChunk10View<T> array_chunk10_view<T>(*const ArrayChunk10<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9 } };
+}
+
+export ArrayChunk11View<T> array_chunk11_view<T>(*const ArrayChunk11<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10 } };
+}
+
+export ArrayChunk12View<T> array_chunk12_view<T>(*const ArrayChunk12<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11 } };
+}
+
+export ArrayChunk13View<T> array_chunk13_view<T>(*const ArrayChunk13<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12 } };
+}
+
+export ArrayChunk14View<T> array_chunk14_view<T>(*const ArrayChunk14<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13 } };
+}
+
+export ArrayChunk15View<T> array_chunk15_view<T>(*const ArrayChunk15<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13, item14: &value->item14 } };
+}
+
+export ArrayChunk16View<T> array_chunk16_view<T>(*const ArrayChunk16<T> value) {
+    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13, item14: &value->item14, item15: &value->item15 } };
+}
+
+export ArrayCatView<L, R> array_cat_view<L, R>(*const ArrayCat<L, R> value) {
+    return unsafe { { left: &value->left, right: &value->right } };
+}
+
+export ArrayNil array_nil() {
+    return {};
 }
 
 // Compiler-recognized intrinsic building a borrowed structural representation

@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+struct Packet {
+    i64 id;
+}
+
+i32 main() {
+    Packet packet = { id: 42 };
+    meta::Repr<Packet> repr = meta::into_repr(&packet);
+    meta::HConsView<meta::Field<i64>, meta::HNil> repr_view = meta::hcons_view(&repr);
+    meta::FieldView<i64> field = meta::field_view(repr_view.head);
+    return (*field.value - 42) as i32;
+}

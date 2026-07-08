@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: is not async-frame-safe across `await`
+// expect-error: resource-affine type
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/io as io;
+import /std/result;
+
+async Result<usize, Error> broken() {
+    io::File file = io::open_read("unused")?;
+    await async_time::sleep_ms(0)?;
+    [1]u8 @buffer = [0;];
+    usize n = io::read(&file, buffer[..])?;
+    io::close(file)?;
+    return Ok(n);
+}
+
+i32 main() {
+    usize n = must(async::block_on(broken()));
+    return n as i32;
+}

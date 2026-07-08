@@ -17,11 +17,13 @@ impl count_payloads(*const meta::HNil value) {
 }
 
 impl<V, Tail: count_payloads> count_payloads(*const meta::HCons<meta::PayloadRef<V>, Tail> value) {
-    return 1 + count_payloads(&value->tail);
+    meta::HConsView<meta::PayloadRef<V>, Tail> view = meta::hcons_view(value);
+    return 1 + count_payloads(view.tail);
 }
 
 impl<P: count_payloads> active_payloads(*const meta::VariantRef<P> value) {
-    return count_payloads(&value->payload);
+    meta::VariantRefView<P> view = meta::variant_ref_view(value);
+    return count_payloads(view.payload);
 }
 
 impl active_payloads(*const meta::CoNil value) {

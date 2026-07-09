@@ -25,5 +25,6 @@ i64 pick(Outer value) {
 }
 
 i64 main() {
-    return pick(Wrap(A(5), B)) + pick(Wrap(B, A(2))) + pick(Wrap(B, B)) + pick(Empty);
+    return pick(Wrap(A(5), B)) + pick(Wrap(B, A(2))) +
+        pick(Wrap(B, B)) + pick(Empty);
 }

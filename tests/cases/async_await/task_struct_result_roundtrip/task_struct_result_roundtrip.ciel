@@ -13,17 +13,22 @@ struct Config {
     usize extra;
 }
 
-async Result<usize, Error> collect(async::Task<Config, Error> task) {
+async Result<usize, Error> collect(
+    async::Task<Config, Error> task
+) {
     Config first = await task?;
     Config second = await task?;
     return Ok(first.base + second.extra);
 }
 
 i32 main() {
-    async::Task<Config, Error> task = must(async::spawn<Config, Error>(async || {
-        await async_time::sleep_ms(1)?;
-        return Ok({ base: 5, extra: 7 });
-    }));
+    async::Task<Config, Error> task = must(
+        async::spawn<Config, Error>
+        (async || {
+            await async_time::sleep_ms(1)?;
+            return Ok({ base: 5, extra: 7 });
+        })
+    );
     must(print_value(must(async::block_on(collect(task)))));
     return 0;
 }

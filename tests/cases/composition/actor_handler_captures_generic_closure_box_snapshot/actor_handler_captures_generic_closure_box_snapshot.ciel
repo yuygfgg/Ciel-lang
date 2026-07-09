@@ -12,10 +12,14 @@ struct Tool<T> {
 i64 main() {
     i64 offset = 4;
     Tool<i64 |(i64)|> tool = { callback: |i64 value| value + offset };
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 value| {
-        tool.tag;
-        return Ok(state + tool.callback(value));
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 value| {
+                tool.tag;
+                return Ok(state + tool.callback(value));
+            }
+        )
+    );
     must(join(&actor));
     return 0;
 }

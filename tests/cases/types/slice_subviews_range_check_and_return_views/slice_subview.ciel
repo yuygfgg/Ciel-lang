@@ -8,5 +8,6 @@ usize main() {
     []i64 mid = values[1..4];
     []i64 prefix = values[..2];
     []i64 all = values[..];
-    return tail[0] as usize + mid.len + mid[2] as usize + prefix[1] as usize + all.len;
+    return tail[0] as usize + mid.len + mid[2] as usize +
+        prefix[1] as usize + all.len;
 }

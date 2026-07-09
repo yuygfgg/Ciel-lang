@@ -15,7 +15,9 @@ async Result<usize, Error> broken() {
     await async_time::sleep_ms(0)?;
     meta::HConsView<meta::FieldSchema<i64, i64>, meta::HNil> schema_view =
         meta::hcons_view(&schema);
-    meta::FieldSchemaView<i64, i64> field = meta::field_schema_view(schema_view.head);
+    meta::FieldSchemaView<i64, i64> field = meta::field_schema_view(
+        schema_view.head
+    );
     return Ok(field.name.len);
 }
 

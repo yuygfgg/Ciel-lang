@@ -37,7 +37,6 @@ enum ServerHelloResult {
     ServerHelloRejected(bytes::Bytes),
 }
 
-
 u32 next_server_stream_id(u32 stream_id) {
     u32 next = stream_id + (1 as u32);
     if (next == (0 as u32)) {
@@ -90,19 +89,27 @@ Result<ServerHelloResult, app_error::TunnelError> prepare_server_hello(
     switch (auth::verify_hello(hello, route, psk)) {
         case Ok:
             []u8 ok_payload = app_error::tunnel(auth::encode_hello_ok())?;
-            bytes::Bytes encoded =
-                rt::encode_frame_from_slice(frame::HelloOk, 0 as u32, ok_payload)?;
-            app_error::tunnel(io::eprintln(
-                "tunnel-server: agent authenticated for route {}",
-                [route]
-            ))?;
+            bytes::Bytes encoded = rt::encode_frame_from_slice(
+                frame::HelloOk, 0 as u32, ok_payload
+            )?;
+            app_error::tunnel(
+                io::eprintln(
+                    "tunnel-server: agent authenticated for route {}",
+                    [route]
+                )
+            )?;
             return Ok(ServerHelloAccepted(encoded));
         case Err(error):
             []const char message = io::to_string(&error);
-            app_error::tunnel(io::eprintln("tunnel-server: rejecting agent: {}", [message]))?;
-            []u8 error_payload = app_error::tunnel(tunnel_codec::encode_error_message(message))?;
-            bytes::Bytes encoded =
-                rt::encode_frame_from_slice(frame::ErrorFrame, 0 as u32, error_payload)?;
+            app_error::tunnel(
+                io::eprintln("tunnel-server: rejecting agent: {}", [message])
+            )?;
+            []u8 error_payload = app_error::tunnel(
+                tunnel_codec::encode_error_message(message)
+            )?;
+            bytes::Bytes encoded = rt::encode_frame_from_slice(
+                frame::ErrorFrame, 0 as u32, error_payload
+            )?;
             return Ok(ServerHelloRejected(encoded));
     }
 }
@@ -133,16 +140,19 @@ async Result<void, app_error::TunnelError> server_control_reader_inner(
 ) {
     while (true) {
         Result<bytes::Bytes, app_error::TunnelError> header_read =
-            rt::map_exact_frame_read(await reader.anet::read_exact(frame::header_len()));
+            rt::map_exact_frame_read(
+                await reader.anet::read_exact(frame::header_len())
+            );
         switch (header_read) {
             case Ok(header_exact):
                 []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
                 frame::FrameHeader header = app_error::tunnel(
                     tunnel_codec::decode_header(header_bytes)
                 )?;
-                Result<bytes::Bytes, app_error::TunnelError> payload_read = rt::map_exact_frame_read(
-                    await reader.anet::read_exact(header.length as usize)
-                );
+                Result<bytes::Bytes, app_error::TunnelError> payload_read =
+                    rt::map_exact_frame_read(
+                        await reader.anet::read_exact(header.length as usize)
+                    );
                 bytes::Bytes payload;
                 switch (payload_read) {
                     case Ok(value):
@@ -154,9 +164,13 @@ async Result<void, app_error::TunnelError> server_control_reader_inner(
                                 [error]
                             )
                         )?;
-                        app_error::tunnel(async::close<bytes::Bytes>(control.writer))?;
                         app_error::tunnel(
-                            await async::send<u32>(control_closed, control.epoch)
+                            async::close<bytes::Bytes>(control.writer)
+                        )?;
+                        app_error::tunnel(
+                            await async::send<u32>(
+                                control_closed, control.epoch
+                            )
                         )?;
                         return Ok;
                 }
@@ -165,29 +179,36 @@ async Result<void, app_error::TunnelError> server_control_reader_inner(
                     stream_id: header.stream_id,
                     payload: payload
                 };
-                if (
-                    rt::kind_is(incoming.kind, frame::OpenResult) ||
-                    rt::kind_is(incoming.kind, frame::Data) ||
-                    rt::kind_is(incoming.kind, frame::CloseWrite) ||
-                    rt::kind_is(incoming.kind, frame::CloseStream)
-                ) {
-                    rt::StreamRegistryGet found =
-                        rt::stream_registry_get(control.streams, incoming.stream_id)?;
+                if (rt::kind_is(incoming.kind, frame::OpenResult) ||
+                rt::kind_is(incoming.kind, frame::Data) ||
+                rt::kind_is(incoming.kind, frame::CloseWrite) ||
+                rt::kind_is(incoming.kind, frame::CloseStream)) {
+                    rt::StreamRegistryGet found = rt::stream_registry_get(
+                        control.streams, incoming.stream_id
+                    )?;
                     switch (found) {
                         case rt::StreamRegistryFound(sender):
-                            await rt::send_stream_event(sender, rt::StreamFrame(incoming))?;
+                            await rt::send_stream_event(
+                                sender, rt::StreamFrame(incoming)
+                            )?;
                         case rt::StreamRegistryMissing:
                             {}
                     }
                 } else if (rt::kind_is(incoming.kind, frame::Ping)) {
-                    await rt::send_control_empty(control.writer, frame::Pong, 0 as u32)?;
+                    await rt::send_control_empty(
+                        control.writer, frame::Pong, 0 as u32
+                    )?;
                 } else if (rt::kind_is(incoming.kind, frame::Pong)) {
                     {}
                 } else {
-                    app_error::tunnel(io::eprintln_value(
-                        "tunnel-server: protocol error: illegal control frame"
-                    ))?;
-                    app_error::tunnel(async::close<bytes::Bytes>(control.writer))?;
+                    app_error::tunnel(
+                        io::eprintln_value(
+                            "tunnel-server: protocol error: illegal control frame"
+                        )
+                    )?;
+                    app_error::tunnel(
+                        async::close<bytes::Bytes>(control.writer)
+                    )?;
                     app_error::tunnel(
                         await async::send<u32>(control_closed, control.epoch)
                     )?;
@@ -201,7 +222,9 @@ async Result<void, app_error::TunnelError> server_control_reader_inner(
                     )
                 )?;
                 app_error::tunnel(async::close<bytes::Bytes>(control.writer))?;
-                app_error::tunnel(await async::send<u32>(control_closed, control.epoch))?;
+                app_error::tunnel(
+                    await async::send<u32>(control_closed, control.epoch)
+                )?;
                 return Ok;
         }
     }
@@ -232,17 +255,22 @@ async Result<ServerControlState, app_error::TunnelError> accept_server_control(
     anet::AsyncTcpWriteHalf write = app_error::tunnel(
         anet::take_buffered_split_write(&split)
     )?;
-    async::ChannelPair<bytes::Bytes> writer_channel =
-        app_error::tunnel(async::channel<bytes::Bytes>(128))?;
+    async::ChannelPair<bytes::Bytes> writer_channel = app_error::tunnel(
+        async::channel<bytes::Bytes>(128)
+    )?;
     _ control_writer = app_error::tunnel(
-        async::spawn<void>(server_control_writer(write, writer_channel.receiver))
+        async::spawn<void>(
+            server_control_writer(write, writer_channel.receiver)
+        )
     )?;
 
     bytes::Bytes header_exact = rt::map_exact_frame_read(
         await reader.anet::read_exact(frame::header_len())
     )?;
     []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
-    frame::FrameHeader header = app_error::tunnel(tunnel_codec::decode_header(header_bytes))?;
+    frame::FrameHeader header = app_error::tunnel(
+        tunnel_codec::decode_header(header_bytes)
+    )?;
     bytes::Bytes payload = rt::map_exact_frame_read(
         await reader.anet::read_exact(header.length as usize)
     )?;
@@ -260,7 +288,9 @@ async Result<ServerControlState, app_error::TunnelError> accept_server_control(
         case Ok:
             {}
         case Err(error):
-            app_error::tunnel(async::close<bytes::Bytes>(writer_channel.sender))?;
+            app_error::tunnel(
+                async::close<bytes::Bytes>(writer_channel.sender)
+            )?;
             return Err(error);
     }
 
@@ -270,7 +300,9 @@ async Result<ServerControlState, app_error::TunnelError> accept_server_control(
         streams: rt::stream_registry_new()?
     };
     _ control_reader = app_error::tunnel(
-        async::spawn<void>(server_control_reader(reader, control, control_closed))
+        async::spawn<void>(
+            server_control_reader(reader, control, control_closed)
+        )
     )?;
     return Ok(control);
 }
@@ -309,10 +341,12 @@ async Result<void, app_error::TunnelError> server_stream_worker(
                         case Ok(value):
                             payload = value;
                         case Err(error):
-                            app_error::tunnel(io::eprintln(
-                                "tunnel-server: stream {} open result copy failed: {}",
-                                [stream_id, error]
-                            ))?;
+                            app_error::tunnel(
+                                io::eprintln(
+                                    "tunnel-server: stream {} open result copy failed: {}",
+                                    [stream_id, error]
+                                )
+                            )?;
                             return Ok;
                     }
                     _ decoded = tunnel_codec::decode_open_result(payload);
@@ -321,10 +355,12 @@ async Result<void, app_error::TunnelError> server_stream_worker(
                         case Ok(value):
                             result = value;
                         case Err(error):
-                            app_error::tunnel(io::eprintln(
-                                "tunnel-server: stream {} open result decode failed: {}",
-                                [stream_id, error]
-                            ))?;
+                            app_error::tunnel(
+                                io::eprintln(
+                                    "tunnel-server: stream {} open result decode failed: {}",
+                                    [stream_id, error]
+                                )
+                            )?;
                             return Ok;
                     }
                     if (!result.ok) {
@@ -361,13 +397,17 @@ async Result<void, app_error::TunnelError> server_stream_worker(
                         return Ok;
                     case rt::StreamLocalClosed:
                         local_write_closed = true;
-                        await rt::send_control_empty(control.writer, frame::CloseWrite, stream_id)?;
+                        await rt::send_control_empty(
+                            control.writer, frame::CloseWrite, stream_id
+                        )?;
                         if (remote_write_closed) {
                             return Ok;
                         }
                     case rt::StreamFrame(incoming):
                         if (rt::kind_is(incoming.kind, frame::Data)) {
-                            _ wrote = await anet::write_half(&write, incoming.payload);
+                            _ wrote = await anet::write_half(
+                                &write, incoming.payload
+                            );
                             switch (wrote) {
                                 case Ok(written):
                                     if (written == 0) {
@@ -388,13 +428,17 @@ async Result<void, app_error::TunnelError> server_stream_worker(
                                     )?;
                                     return Ok;
                             }
-                        } else if (rt::kind_is(incoming.kind, frame::CloseWrite)) {
+                        } else if (rt::kind_is(
+                            incoming.kind, frame::CloseWrite
+                        )) {
                             remote_write_closed = true;
                             write.anet::shutdown_write();
                             if (local_write_closed) {
                                 return Ok;
                             }
-                        } else if (rt::kind_is(incoming.kind, frame::CloseStream)) {
+                        } else if (rt::kind_is(
+                            incoming.kind, frame::CloseStream
+                        )) {
                             return Ok;
                         } else {
                             return Ok;
@@ -415,16 +459,21 @@ async Result<void, app_error::TunnelError> start_server_stream_inner(
     anet::AsyncTcpStream owned_client = app_error::tunnel(
         resource::transfer_to_current(&client)
     )?;
-    anet::AsyncTcpBufferedSplit @split =
-        app_error::tunnel(owned_client.anet::buffered_split(frame::max_payload_len()))?;
-    anet::BufferedStreamReader reader =
-        app_error::tunnel(anet::take_buffered_split_reader(&split))?;
-    anet::AsyncTcpWriteHalf write =
-        app_error::tunnel(anet::take_buffered_split_write(&split))?;
+    anet::AsyncTcpBufferedSplit @split = app_error::tunnel(
+        owned_client.anet::buffered_split(frame::max_payload_len())
+    )?;
+    anet::BufferedStreamReader reader = app_error::tunnel(
+        anet::take_buffered_split_reader(&split)
+    )?;
+    anet::AsyncTcpWriteHalf write = app_error::tunnel(
+        anet::take_buffered_split_write(&split)
+    )?;
     _ events = app_error::tunnel(async::channel<rt::StreamEvent>(64))?;
     rt::stream_registry_insert(control.streams, stream_id, events.sender)?;
 
-    _ opened = await rt::send_control_empty(control.writer, frame::OpenStream, stream_id);
+    _ opened = await rt::send_control_empty(
+        control.writer, frame::OpenStream, stream_id
+    );
     switch (opened) {
         case Ok:
             {}
@@ -452,7 +501,9 @@ async Result<void, Error> start_server_stream(
     return Ok;
 }
 
-Result<void, app_error::TunnelError> close_active_control(*ServerActiveControl active, u32 epoch) {
+Result<void, app_error::TunnelError> close_active_control(
+    *ServerActiveControl active, u32 epoch
+) {
     switch (*active) {
         case ServerNoControl:
             return Ok;
@@ -463,7 +514,9 @@ Result<void, app_error::TunnelError> close_active_control(*ServerActiveControl a
             rt::stream_registry_close_all(control.streams)?;
             app_error::tunnel(async::close<bytes::Bytes>(control.writer))?;
             *active = ServerNoControl;
-            app_error::tunnel(io::eprintln_value("tunnel-server: closing control connection"))?;
+            app_error::tunnel(
+                io::eprintln_value("tunnel-server: closing control connection")
+            )?;
             return Ok;
     }
 }
@@ -488,15 +541,18 @@ async Result<void, app_error::TunnelError> run_server_async(
     app_error::tunnel(io::eprintln_value("tunnel-server: ready"))?;
     while (true) {
         Result<ServerEvent, app_error::TunnelError> selected = await select {
-            case accepted = anet::accept(&control_listener): Ok(ServerControlAccepted(
-                app_error::tunnel(accepted)?
-            ));
-            case accepted = anet::accept(&public_listener): Ok(ServerPublicAccepted(
-                app_error::tunnel(accepted)?
-            ));
-            case closed = async::recv<u32>(control_closed.receiver): Ok(ServerControlClosed(
-                app_error::tunnel(closed)?
-            ));
+            case accepted = anet::accept(&control_listener):
+                Ok(ServerControlAccepted(
+                    app_error::tunnel(accepted)?
+                ));
+            case accepted = anet::accept(&public_listener):
+                Ok(ServerPublicAccepted(
+                    app_error::tunnel(accepted)?
+                ));
+            case closed = async::recv<u32>(control_closed.receiver):
+                Ok(ServerControlClosed(
+                    app_error::tunnel(closed)?
+                ));
         };
         ServerEvent event = selected?;
         switch (event) {
@@ -515,9 +571,11 @@ async Result<void, app_error::TunnelError> run_server_async(
                         switch (accepted) {
                             case Ok(control):
                                 active = ServerHasControl(control);
-                                app_error::tunnel(io::eprintln_value(
-                                    "tunnel-server: control connection accepted"
-                                ))?;
+                                app_error::tunnel(
+                                    io::eprintln_value(
+                                        "tunnel-server: control connection accepted"
+                                    )
+                                )?;
                             case Err(_):
                                 {}
                         }
@@ -531,9 +589,11 @@ async Result<void, app_error::TunnelError> run_server_async(
                     case ServerHasControl(control):
                         u32 stream_id = next_stream_id_value;
                         next_stream_id_value = next_server_stream_id(stream_id);
-                        _ starter = app_error::tunnel(async::spawn<void>(
-                            start_server_stream(control, stream_id, client)
-                        ))?;
+                        _ starter = app_error::tunnel(
+                            async::spawn<void>(
+                                start_server_stream(control, stream_id, client)
+                            )
+                        )?;
                 }
             case ServerControlClosed(epoch):
                 close_active_control(&active, epoch)?;
@@ -545,9 +605,11 @@ async Result<void, app_error::TunnelError> run_server_async(
 export Result<void, app_error::TunnelError> run_server() {
     cli::ServerConfig config = cli::parse_server_args()?;
     rt::AuthConfig auth_config = rt::auth_config_new(config.route, config.psk)?;
-    return async::block_on(run_server_async(
-        config.control_addr,
-        config.public_addr,
-        auth_config
-    ));
+    return async::block_on(
+        run_server_async(
+            config.control_addr,
+            config.public_addr,
+            auth_config
+        )
+    );
 }

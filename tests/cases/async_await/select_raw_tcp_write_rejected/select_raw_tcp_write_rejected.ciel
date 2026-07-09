@@ -6,10 +6,13 @@ import /std/async_net as anet;
 import /std/bytes as bytes;
 import /std/result;
 
-async Result<usize, Error> bad_select(anet::AsyncTcpStream stream, bytes::Bytes data) {
+async Result<usize, Error> bad_select(
+    anet::AsyncTcpStream stream, bytes::Bytes data
+) {
     anet::AsyncTcpWrite op = anet::write_bytes(stream, data)?;
     return await select {
-        case written = async::future_from_op(op): written;
+        case written = async::future_from_op(op):
+            written;
     };
 }
 

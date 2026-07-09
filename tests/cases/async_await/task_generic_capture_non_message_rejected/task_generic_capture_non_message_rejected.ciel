@@ -4,7 +4,9 @@
 import /std/async as async;
 import /std/result;
 
-Result<async::Task<T, Error>, Error> spawn_identity<T>(T value) {
+Result<async::Task<T, Error>, Error> spawn_identity<T>(
+    T value
+) {
     return async::spawn<T, Error>(async || {
         return Ok(value);
     });
@@ -12,6 +14,7 @@ Result<async::Task<T, Error>, Error> spawn_identity<T>(T value) {
 
 i32 main() {
     usize local = 3;
-    Result<async::Task<*const usize, Error>, Error> task = spawn_identity<*const usize>(&local);
+    Result<async::Task<*const usize, Error>, Error> task =
+        spawn_identity<*const usize>(&local);
     return 0;
 }

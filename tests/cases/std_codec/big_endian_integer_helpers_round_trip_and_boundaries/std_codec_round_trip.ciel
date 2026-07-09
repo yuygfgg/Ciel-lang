@@ -48,12 +48,10 @@ i64 main() {
     }
 
     must(codec::put_be(buf[..4], 0x89abcdef as u32));
-    if (
-        buf[0] != (0x89 as u8) ||
+    if (buf[0] != (0x89 as u8) ||
         buf[1] != (0xab as u8) ||
         buf[2] != (0xcd as u8) ||
-        buf[3] != (0xef as u8)
-    ) {
+        buf[3] != (0xef as u8)) {
         return 10;
     }
     if (must(codec::get_be(u32_tag, buf[..4])) != (0x89abcdef as u32)) {
@@ -61,12 +59,10 @@ i64 main() {
     }
 
     must(codec::put_le(buf[..4], 0x89abcdef as u32));
-    if (
-        buf[0] != (0xef as u8) ||
+    if (buf[0] != (0xef as u8) ||
         buf[1] != (0xcd as u8) ||
         buf[2] != (0xab as u8) ||
-        buf[3] != (0x89 as u8)
-    ) {
+        buf[3] != (0x89 as u8)) {
         return 12;
     }
     if (must(codec::get_le(u32_tag, buf[..4])) != (0x89abcdef as u32)) {

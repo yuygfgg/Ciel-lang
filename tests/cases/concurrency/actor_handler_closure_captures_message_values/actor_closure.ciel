@@ -6,10 +6,14 @@ import /std/lib;
 
 i64 main() {
     i64 base = 10;
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 msg| {
-        print_value(base + msg)?;
-        return Ok(state + msg);
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 msg| {
+                print_value(base + msg)?;
+                return Ok(state + msg);
+            }
+        )
+    );
     must(send(&actor, 5));
     must(join(&actor));
     return 0;

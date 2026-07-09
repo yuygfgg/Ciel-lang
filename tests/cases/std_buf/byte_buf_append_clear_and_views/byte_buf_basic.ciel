@@ -33,7 +33,8 @@ i64 main() {
     }
 
     []const u8 readonly = bytes.buf::slice();
-    if (readonly.len != 3 || readonly[0] != (1 as u8) || readonly[2] != (3 as u8)) {
+    if (readonly.len != 3 || readonly[0] != (1 as u8) ||
+        readonly[2] != (3 as u8)) {
         return 3;
     }
 
@@ -64,7 +65,8 @@ i64 main() {
 
     must(bytes.buf::discard_prefix(2));
     []const u8 discarded = bytes.buf::slice();
-    if (discarded.len != 2 || discarded[0] != (9 as u8) || discarded[1] != (10 as u8)) {
+    if (discarded.len != 2 || discarded[0] != (9 as u8) ||
+        discarded[1] != (10 as u8)) {
         return 9;
     }
 
@@ -82,7 +84,9 @@ i64 main() {
         return 12;
     }
 
-    buf::ByteBuf @from_slice = must(buf::byte_buf_from_slice([11 as u8, 12 as u8]));
+    buf::ByteBuf @from_slice = must(
+        buf::byte_buf_from_slice([11 as u8, 12 as u8])
+    );
     if (from_slice.buf::len() != 2 || from_slice.buf::capacity() != 2) {
         return 13;
     }
@@ -97,13 +101,15 @@ i64 main() {
     must(from_slice.buf::commit_tail(3));
 
     []const u8 committed = from_slice.buf::slice();
-    if (committed.len != 5 || committed[0] != (11 as u8) || committed[4] != (15 as u8)) {
+    if (committed.len != 5 || committed[0] != (11 as u8) ||
+        committed[4] != (15 as u8)) {
         return 15;
     }
 
     bytes::Bytes copied = must(from_slice.buf::to_bytes());
     []u8 copied_slice = must(bytes::bytes_to_slice(copied));
-    if (copied_slice.len != 5 || copied_slice[1] != (12 as u8) || copied_slice[3] != (14 as u8)) {
+    if (copied_slice.len != 5 || copied_slice[1] != (12 as u8) ||
+        copied_slice[3] != (14 as u8)) {
         return 16;
     }
 
@@ -112,14 +118,16 @@ i64 main() {
         return 17;
     }
     []u8 frozen_slice = must(bytes::bytes_to_slice(frozen));
-    if (frozen_slice.len != 5 || frozen_slice[2] != (13 as u8) || frozen_slice[4] != (15 as u8)) {
+    if (frozen_slice.len != 5 || frozen_slice[2] != (13 as u8) ||
+        frozen_slice[4] != (15 as u8)) {
         return 18;
     }
 
     spare[0] = 99 as u8;
     spare[2] = 88 as u8;
     []u8 frozen_after_alias_write = must(bytes::bytes_to_slice(frozen));
-    if (frozen_after_alias_write[2] != (13 as u8) || frozen_after_alias_write[4] != (15 as u8)) {
+    if (frozen_after_alias_write[2] != (13 as u8) ||
+        frozen_after_alias_write[4] != (15 as u8)) {
         return 19;
     }
 

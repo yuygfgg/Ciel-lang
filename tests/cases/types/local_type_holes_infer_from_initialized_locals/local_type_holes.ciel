@@ -26,5 +26,6 @@ i64 main() {
         total = total + values[i as usize];
     }
 
-    return add(fixed[0]) + values[1] + box.value + wrapped.value + total + stable;
+    return add(fixed[0]) + values[1] + box.value +
+        wrapped.value + total + stable;
 }

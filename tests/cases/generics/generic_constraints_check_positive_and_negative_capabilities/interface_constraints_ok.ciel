@@ -12,7 +12,9 @@ impl measure(*Box value) {
     return value->value;
 }
 
-i64 read_measure<T: measure + !seek>(*T value) {
+i64 read_measure<T: measure + !seek>(
+    *T value
+) {
     return measure(value);
 }
 

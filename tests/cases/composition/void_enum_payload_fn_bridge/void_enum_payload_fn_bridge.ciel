@@ -26,10 +26,10 @@ i64 main() {
     switch (event) {
         case Ready(marker, current):
             i64 fn(i64) |()| get_op = || {
-                marker;
-                current.tag;
-                return current.op;
-            };
+                    marker;
+                    current.tag;
+                    return current.op;
+                };
             i64 fn(i64) op = get_op();
             return op(8);
         case Empty:

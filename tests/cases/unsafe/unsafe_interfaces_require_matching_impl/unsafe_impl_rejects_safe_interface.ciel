@@ -1,7 +1,7 @@
 // ciel-test: error
 // expect-error: `unsafe impl` cannot implement safe interface `format_value`
 
-interface<T> []const char format_value(*const T value);
+interface<T>[]const char format_value(*const T value);
 
 struct Event {
     i64 value;

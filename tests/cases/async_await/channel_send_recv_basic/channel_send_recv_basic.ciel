@@ -7,12 +7,16 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> producer(async::Sender<usize> sender) {
+async Result<usize, Error> producer(
+    async::Sender<usize> sender
+) {
     await async::send<usize>(sender, 42)?;
     return Ok(0);
 }
 
-async Result<usize, Error> consumer(async::Receiver<usize> receiver) {
+async Result<usize, Error> consumer(
+    async::Receiver<usize> receiver
+) {
     usize value = await async::recv<usize>(receiver)?;
     return Ok(value);
 }

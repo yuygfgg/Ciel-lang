@@ -19,7 +19,9 @@ resource struct TransferResult {
     io::File moved_file;
 }
 
-HandleParts parts_from_handle(*const resource::Handle handle) {
+HandleParts parts_from_handle(
+    *const resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle->owner_id },
         resource_id: unsafe { handle->resource_id },
@@ -40,20 +42,28 @@ io::File file_from_parts(HandleParts parts) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "move")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "move")?;
+                return Ok;
+            }
+        )
+    );
 
-    TransferResult transfer = must(resource::scoped<TransferResult, Error>(|| {
-        io::File file = io::open_read(path)?;
-        HandleParts old_file = parts_from_handle(unsafe { &file.handle });
-        io::File moved = transfer_to_parent(&file)?;
-        return Ok({
-            old_file: old_file,
-            moved_file: moved,
-        });
-    }));
+    TransferResult transfer = must(
+        resource::scoped<TransferResult, Error>
+        (|| {
+            io::File file = io::open_read(path)?;
+            HandleParts old_file = parts_from_handle(unsafe { &file.handle });
+            io::File moved = transfer_to_parent(&file)?;
+            return Ok({
+                old_file: old_file,
+                moved_file: moved,
+            }
+            );
+        })
+    );
     io::File old_file = file_from_parts(transfer.old_file);
     io::File moved_file = unsafe { transfer.moved_file };
 

@@ -4,7 +4,7 @@
 
 import /std/lib;
 
-interface<T> []const char render(*const T value);
+interface<T>[]const char render(*const T value);
 
 impl render(*const i64 value) {
     // Copy the pointed value into a named local first so the call shape is

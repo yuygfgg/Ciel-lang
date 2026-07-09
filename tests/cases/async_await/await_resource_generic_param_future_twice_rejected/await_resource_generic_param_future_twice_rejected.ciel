@@ -4,7 +4,9 @@
 import /std/io as io;
 import /std/result;
 
-async Result<void, Error> consume_later<resource T>(T value) {
+async Result<void, Error> consume_later<resource T>(
+    T value
+) {
     return Ok;
 }
 

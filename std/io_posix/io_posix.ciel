@@ -5,9 +5,13 @@ import /std/c as c;
 // POSIX read/write/close declarations for low-level interop modules.
 export unsafe extern "C" {
     // POSIX read(2).
-    c::c_ssize_t read(c::c_int fd, *void buf, c::c_size_t count);
+    c::c_ssize_t read(
+        c::c_int fd, *void buf, c::c_size_t count
+    );
     // POSIX write(2).
-    c::c_ssize_t write(c::c_int fd, *const void buf, c::c_size_t count);
+    c::c_ssize_t write(
+        c::c_int fd, *const void buf, c::c_size_t count
+    );
     // POSIX close(2).
     c::c_int close(c::c_int fd);
 }

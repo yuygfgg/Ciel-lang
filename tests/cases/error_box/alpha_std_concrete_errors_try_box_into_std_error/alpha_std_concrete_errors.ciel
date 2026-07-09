@@ -616,49 +616,137 @@ bool matches_env() {
 }
 
 i32 main() {
-    if (!is_error(box_vec())) { return 1; }
-    if (!is_error(box_buf())) { return 2; }
-    if (!is_error(box_bytes())) { return 3; }
-    if (!is_error(box_text())) { return 4; }
-    if (!is_error(box_codec())) { return 5; }
-    if (!is_error(box_map())) { return 6; }
-    if (!is_error(box_map_with())) { return 61; }
-    if (!is_error(box_resource())) { return 7; }
-    if (!is_error(box_io())) { return 8; }
-    if (!is_error(box_net())) { return 9; }
-    if (!is_error(box_async())) { return 10; }
-    if (!is_error(box_async_io())) { return 11; }
-    if (!is_error(box_async_net())) { return 12; }
-    if (!is_error(box_time())) { return 13; }
-    if (!is_error(box_async_time())) { return 14; }
-    if (!is_error(box_channel())) { return 15; }
-    if (!is_error(box_sync())) { return 16; }
-    if (!is_error(box_sync_with())) { return 161; }
-    if (!is_error(box_atomic())) { return 17; }
-    if (!is_error(box_shared_map())) { return 18; }
-    if (!is_error(box_crypto())) { return 19; }
-    if (!is_error(box_env())) { return 20; }
-    if (!matches_vec()) { return 21; }
-    if (!matches_buf()) { return 22; }
-    if (!matches_bytes()) { return 23; }
-    if (!matches_text()) { return 24; }
-    if (!matches_codec()) { return 25; }
-    if (!matches_map()) { return 26; }
-    if (!matches_map_with()) { return 261; }
-    if (!matches_resource()) { return 27; }
-    if (!matches_io()) { return 28; }
-    if (!matches_net()) { return 29; }
-    if (!matches_async()) { return 30; }
-    if (!matches_async_io()) { return 31; }
-    if (!matches_async_net()) { return 32; }
-    if (!matches_time()) { return 33; }
-    if (!matches_async_time()) { return 34; }
-    if (!matches_channel()) { return 35; }
-    if (!matches_sync()) { return 36; }
-    if (!matches_sync_with()) { return 361; }
-    if (!matches_atomic()) { return 37; }
-    if (!matches_shared_map()) { return 38; }
-    if (!matches_crypto()) { return 39; }
-    if (!matches_env()) { return 40; }
+    if (!is_error(box_vec())) {
+        return 1;
+    }
+    if (!is_error(box_buf())) {
+        return 2;
+    }
+    if (!is_error(box_bytes())) {
+        return 3;
+    }
+    if (!is_error(box_text())) {
+        return 4;
+    }
+    if (!is_error(box_codec())) {
+        return 5;
+    }
+    if (!is_error(box_map())) {
+        return 6;
+    }
+    if (!is_error(box_map_with())) {
+        return 61;
+    }
+    if (!is_error(box_resource())) {
+        return 7;
+    }
+    if (!is_error(box_io())) {
+        return 8;
+    }
+    if (!is_error(box_net())) {
+        return 9;
+    }
+    if (!is_error(box_async())) {
+        return 10;
+    }
+    if (!is_error(box_async_io())) {
+        return 11;
+    }
+    if (!is_error(box_async_net())) {
+        return 12;
+    }
+    if (!is_error(box_time())) {
+        return 13;
+    }
+    if (!is_error(box_async_time())) {
+        return 14;
+    }
+    if (!is_error(box_channel())) {
+        return 15;
+    }
+    if (!is_error(box_sync())) {
+        return 16;
+    }
+    if (!is_error(box_sync_with())) {
+        return 161;
+    }
+    if (!is_error(box_atomic())) {
+        return 17;
+    }
+    if (!is_error(box_shared_map())) {
+        return 18;
+    }
+    if (!is_error(box_crypto())) {
+        return 19;
+    }
+    if (!is_error(box_env())) {
+        return 20;
+    }
+    if (!matches_vec()) {
+        return 21;
+    }
+    if (!matches_buf()) {
+        return 22;
+    }
+    if (!matches_bytes()) {
+        return 23;
+    }
+    if (!matches_text()) {
+        return 24;
+    }
+    if (!matches_codec()) {
+        return 25;
+    }
+    if (!matches_map()) {
+        return 26;
+    }
+    if (!matches_map_with()) {
+        return 261;
+    }
+    if (!matches_resource()) {
+        return 27;
+    }
+    if (!matches_io()) {
+        return 28;
+    }
+    if (!matches_net()) {
+        return 29;
+    }
+    if (!matches_async()) {
+        return 30;
+    }
+    if (!matches_async_io()) {
+        return 31;
+    }
+    if (!matches_async_net()) {
+        return 32;
+    }
+    if (!matches_time()) {
+        return 33;
+    }
+    if (!matches_async_time()) {
+        return 34;
+    }
+    if (!matches_channel()) {
+        return 35;
+    }
+    if (!matches_sync()) {
+        return 36;
+    }
+    if (!matches_sync_with()) {
+        return 361;
+    }
+    if (!matches_atomic()) {
+        return 37;
+    }
+    if (!matches_shared_map()) {
+        return 38;
+    }
+    if (!matches_crypto()) {
+        return 39;
+    }
+    if (!matches_env()) {
+        return 40;
+    }
     return 0;
 }

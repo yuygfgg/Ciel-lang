@@ -16,7 +16,9 @@ impl count_payloads(*const meta::HNil value) {
     return 0;
 }
 
-impl<V, Tail: count_payloads> count_payloads(*const meta::HCons<meta::PayloadRef<V>, Tail> value) {
+impl<V, Tail: count_payloads> count_payloads(
+    *const meta::HCons<meta::PayloadRef<V>, Tail> value
+) {
     meta::HConsView<meta::PayloadRef<V>, Tail> view = meta::hcons_view(value);
     return 1 + count_payloads(view.tail);
 }
@@ -27,11 +29,12 @@ impl<P: count_payloads> active_payloads(*const meta::VariantRef<P> value) {
 }
 
 impl active_payloads(*const meta::CoNil value) {
-    switch (*value) {
-    }
+    switch (*value) {}
 }
 
-impl<H: active_payloads, Tail: active_payloads> active_payloads(*const meta::Coproduct<H, Tail> value) {
+impl<H: active_payloads, Tail: active_payloads> active_payloads(
+    *const meta::Coproduct<H, Tail> value
+) {
     switch (*value) {
         case meta::This(head):
             H local = head;

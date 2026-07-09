@@ -24,10 +24,10 @@ _: Iterator<i64> make_range(i64 value) {
 
 i64 read_dyn(Iterator<i64> iter) {
     switch (next<i64>(iter)) {
-    case Item(value):
-        return value;
-    case Done:
-        return 0;
+        case Item(value):
+            return value;
+        case Done:
+            return 0;
     }
 }
 

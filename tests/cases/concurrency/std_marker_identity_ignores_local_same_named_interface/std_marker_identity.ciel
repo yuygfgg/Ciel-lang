@@ -5,9 +5,13 @@ import /std/lib;
 interface<T> bool clone_message(*const T value);
 
 i64 main() {
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 msg| {
-        return Ok(state + msg);
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 msg| {
+                return Ok(state + msg);
+            }
+        )
+    );
     must(stop(&actor));
     must(join(&actor));
     return 0;

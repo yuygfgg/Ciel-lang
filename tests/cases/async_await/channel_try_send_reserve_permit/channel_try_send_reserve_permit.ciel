@@ -20,7 +20,9 @@ async Result<usize, Error> drive() {
     async::SendPermit<usize> permit = await pair.sender.async::reserve<usize>()?;
     async::permit_send<usize>(permit, 7)?;
     usize second = await async::recv<usize>(pair.receiver)?;
-    async::SendPermit<usize> selector_permit = await async::reserve<usize>(pair.sender)?;
+    async::SendPermit<usize> selector_permit = await async::reserve<usize>(
+        pair.sender
+    )?;
     selector_permit.async::send<usize>(11)?;
     usize third = await pair.receiver.async::recv<usize>()?;
     return Ok(first + second + third);

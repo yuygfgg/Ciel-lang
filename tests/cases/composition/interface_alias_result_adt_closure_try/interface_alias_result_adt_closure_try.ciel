@@ -32,7 +32,9 @@ impl reset(*Device device) {
     return;
 }
 
-Result<i64, Error> visit(Slot<readable_seekable> slot, Result<i64, Error> |(readable_seekable)| callback) {
+Result<i64, Error> visit(
+    Slot<readable_seekable> slot, Result<i64, Error> |(readable_seekable)| callback
+) {
     switch (slot) {
         case Full(item):
             return callback(item);
@@ -45,7 +47,9 @@ i64 main() {
     Device device = { value: 30, offset: 5 };
     Slot<readable_seekable> slot = Full(&device);
     i64 bias = 7;
-    return must(visit(slot, |item| {
-        return Ok(read(item) + seek(item) + bias);
-    }));
+    return must(
+        visit(slot, |item| {
+            return Ok(read(item) + seek(item) + bias);
+        })
+    );
 }

@@ -9,6 +9,7 @@ pub mod common;
 pub mod diagnostic;
 pub mod driver;
 pub mod escape;
+pub mod formatter;
 pub mod hir;
 pub mod interfaces;
 pub mod layout;

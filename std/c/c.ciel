@@ -65,7 +65,11 @@ export type const_c_string = *const char;
 // extern declarations for the same runtime symbol.
 export unsafe extern "C" {
     c_int ciel_errno();
-    *char ciel_cstr_from_slice(*const char ptr, usize len);
+    *char ciel_cstr_from_slice(
+        *const char ptr, usize len
+    );
     c_int ciel_u8_copy(*u8 dst, *const u8 src, usize len);
-    ?*void ciel_actor_box_copy(usize size, usize align, *const void source);
+    ?*void ciel_actor_box_copy(
+        usize size, usize align, *const void source
+    );
 }

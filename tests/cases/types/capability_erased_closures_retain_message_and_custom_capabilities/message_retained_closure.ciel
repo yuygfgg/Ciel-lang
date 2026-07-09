@@ -12,7 +12,7 @@ i64 main() {
     i64 @base = 4;
     i64 |(i64): Message| first = |i64 value| value + base;
     i64 |(i64): Message| second = clone_value(first);
-    [2](i64 |(i64): Message|) handlers = [first, second];
+    [2]( i64 | ( i64 ): Message | ) handlers = [first, second];
     base = 100;
     return handlers[0](5) + handlers[1](5);
 }

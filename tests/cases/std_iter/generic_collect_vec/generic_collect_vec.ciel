@@ -59,7 +59,9 @@ impl iter::next<iter::Once<i64>>(*TwoOnce iter) {
     return iter::Done;
 }
 
-impl iter::collect_new<i64, SinkError>(meta::Type<LimitSink> sink, usize capacity) {
+impl iter::collect_new<i64, SinkError>(
+    meta::Type<LimitSink> sink, usize capacity
+) {
     return Ok({ len: 0, limit: 2, total: 0 });
 }
 
@@ -72,7 +74,9 @@ impl iter::collect_push<i64, SinkError>(*LimitSink sink, i64 value) {
     return Ok;
 }
 
-bool is_vec_new_overflow(Result<vec::Vec<u64>, vec::VecError> result) {
+bool is_vec_new_overflow(
+    Result<vec::Vec<u64>, vec::VecError> result
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -126,7 +130,9 @@ i64 sum_pair_vec(*const vec::Vec<iter::Pair<i64, i64>> values) {
     return total;
 }
 
-i64 sum_enumerated_vec(*const vec::Vec<iter::Enumerated<i64>> values) {
+i64 sum_enumerated_vec(
+    *const vec::Vec<iter::Enumerated<i64>> values
+) {
     []const iter::Enumerated<i64> items = values.vec::slice();
     i64 @total = 0;
     usize @i = 0;
@@ -176,8 +182,9 @@ i64 main() {
         return 3;
     }
 
-    Result<vec::Vec<i64>, vec::VecError> filtered_result =
-        iter::filter(iter::range(0, 8), even).iter::collect();
+    Result<vec::Vec<i64>, vec::VecError> filtered_result = iter::filter(
+        iter::range(0, 8), even
+    ).iter::collect();
     vec::Vec<i64> @filtered;
     switch (filtered_result) {
         case Ok(value):
@@ -197,7 +204,9 @@ i64 main() {
             return 105;
     }
     vec::Vec<i64> @first_three;
-    switch (iter::collect<vec::Vec<i64>>(iter::take(iter::slice_iter(taken.vec::slice()), 3))) {
+    switch (iter::collect<vec::Vec<i64>>(
+        iter::take(iter::slice_iter(taken.vec::slice()), 3)
+    )) {
         case Ok(value):
             first_three = value;
         case Err(_):
@@ -208,7 +217,9 @@ i64 main() {
     }
 
     vec::Vec<i64> @chained;
-    switch (iter::collect<vec::Vec<i64>>(iter::chain(iter::range(0, 2), iter::once(5)))) {
+    switch (iter::collect<vec::Vec<i64>>(
+        iter::chain(iter::range(0, 2), iter::once(5))
+    )) {
         case Ok(value):
             chained = value;
         case Err(_):
@@ -285,10 +296,12 @@ i64 main() {
     }
 
     meta::Type<vec::Vec<u64>> vec_u64 = {};
-    if (!is_vec_new_overflow(iter::collect_new<u64, vec::VecError>(
-        vec_u64,
-        ~(0 as usize)
-    ))) {
+    if (!is_vec_new_overflow(
+        iter::collect_new<u64, vec::VecError>(
+            vec_u64,
+            ~(0 as usize)
+        )
+    )) {
         return 13;
     }
 

@@ -49,7 +49,9 @@ Result<T, tunnel_error::FrameCodecError> frame_buf_result<T>(
     }
 }
 
-Result<void, tunnel_error::FrameCodecError> frame_buf_void(Result<void, buf::BufError> result) {
+Result<void, tunnel_error::FrameCodecError> frame_buf_void(
+    Result<void, buf::BufError> result
+) {
     switch (result) {
         case Ok:
             return Ok;
@@ -80,14 +82,18 @@ Result<frame::FrameKind, tunnel_error::FrameCodecError> frame_kind_result(
     }
 }
 
-Result<void, tunnel_error::FrameCodecError> push_u16(*buf::ByteBuf out, u16 value) {
+Result<void, tunnel_error::FrameCodecError> push_u16(
+    *buf::ByteBuf out, u16 value
+) {
     [2]u8 @part = [0;];
     frame_codec_void(binary::put_be(part[..], value))?;
     frame_buf_void(out.buf::push_slice(part[..]))?;
     return Ok;
 }
 
-Result<void, tunnel_error::FrameCodecError> push_chars(*buf::ByteBuf out, []const char text) {
+Result<void, tunnel_error::FrameCodecError> push_chars(
+    *buf::ByteBuf out, []const char text
+) {
     [1]u8 @one = [0;];
     usize @i = 0;
     while (i < text.len) {
@@ -98,38 +104,62 @@ Result<void, tunnel_error::FrameCodecError> push_chars(*buf::ByteBuf out, []cons
     return Ok;
 }
 
-export Result<[]u8, tunnel_error::FrameCodecError> encode_header(frame::FrameHeader header) {
-    frame_protocol_void(frame::validate_stream_id(header.kind, header.stream_id))?;
+export Result<[]u8, tunnel_error::FrameCodecError> encode_header(
+    frame::FrameHeader header
+) {
+    frame_protocol_void(
+        frame::validate_stream_id(header.kind, header.stream_id)
+    )?;
     frame_protocol_void(frame::validate_payload_len(header.length as usize))?;
 
     [16]u8 @out = [0;];
     frame_codec_void(binary::put_be(out[..4], frame::magic()))?;
     frame_codec_void(binary::put_be(out[4..6], frame::protocol_version()))?;
-    frame_codec_void(binary::put_be(out[6..8], frame::frame_kind_code(header.kind)))?;
+    frame_codec_void(
+        binary::put_be(out[6..8], frame::frame_kind_code(header.kind))
+    )?;
     frame_codec_void(binary::put_be(out[8..12], header.stream_id))?;
     frame_codec_void(binary::put_be(out[12..16], header.length))?;
     return Ok(out[..]);
 }
 
-export Result<frame::FrameHeader, tunnel_error::FrameCodecError> decode_header([]const u8 input) {
+export Result<frame::FrameHeader, tunnel_error::FrameCodecError> decode_header(
+    []const u8 input
+) {
     if (input.len < frame::header_len()) {
         return Err(tunnel_error::FrameProtocol(tunnel_error::UnexpectedEof));
     }
 
-    u32 magic = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[..4]))?;
+    u32 magic = frame_codec_result<u32>(
+        binary::get_be(meta::type_tag<u32>(), input[..4])
+    )?;
     if (magic != frame::magic()) {
         return Err(tunnel_error::FrameProtocol(tunnel_error::BadMagic(magic)));
     }
 
-    u16 version = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[4..6]))?;
+    u16 version = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[4..6])
+    )?;
     if (version != frame::protocol_version()) {
-        return Err(tunnel_error::FrameProtocol(tunnel_error::UnsupportedVersion(version)));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::UnsupportedVersion(version)
+            )
+        );
     }
 
-    u16 kind_code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[6..8]))?;
-    frame::FrameKind kind = frame_kind_result(frame::frame_kind_from_code(kind_code))?;
-    u32 stream_id = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[8..12]))?;
-    u32 length = frame_codec_result<u32>(binary::get_be(meta::type_tag<u32>(), input[12..16]))?;
+    u16 kind_code = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[6..8])
+    )?;
+    frame::FrameKind kind = frame_kind_result(
+        frame::frame_kind_from_code(kind_code)
+    )?;
+    u32 stream_id = frame_codec_result<u32>(
+        binary::get_be(meta::type_tag<u32>(), input[8..12])
+    )?;
+    u32 length = frame_codec_result<u32>(
+        binary::get_be(meta::type_tag<u32>(), input[12..16])
+    )?;
 
     frame_protocol_void(frame::validate_payload_len(length as usize))?;
     frame_protocol_void(frame::validate_stream_id(kind, stream_id))?;
@@ -146,9 +176,11 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_open_result_error(
     []const char message
 ) {
     if (message.len > (0xffff as usize)) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(
         buf::byte_buf_new((5 as usize) + message.len)
@@ -161,37 +193,52 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_open_result_error(
     return Ok(out.buf::mut_slice());
 }
 
-export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_result([]const u8 input) {
+export Result<OpenResultPayload, tunnel_error::FrameCodecError> decode_open_result(
+    []const u8 input
+) {
     if (input.len == 0) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     if (input[0] == (0 as u8)) {
         if (input.len == 1) {
             return Ok({ ok: true, code: 0 as u16, message: input[1..1] });
         }
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     if (input[0] != (1 as u8)) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     if (input.len < 5) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
-    u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[1..3]))?;
-    usize message_len =
-        frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[3..5]))? as usize;
+    u16 code = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[1..3])
+    )?;
+    usize message_len = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[3..5])
+    )? as usize;
     if (input.len != ((5 as usize) + message_len)) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     return Ok({ ok: false, code: code, message: input[5..] });
 }
@@ -201,9 +248,11 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_close_reason(
     []const char message
 ) {
     if (message.len > (0xffff as usize)) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(
         buf::byte_buf_new((4 as usize) + message.len)
@@ -214,29 +263,42 @@ export Result<[]u8, tunnel_error::FrameCodecError> encode_close_reason(
     return Ok(out.buf::mut_slice());
 }
 
-export Result<CloseReason, tunnel_error::FrameCodecError> decode_close_reason([]const u8 input) {
+export Result<CloseReason, tunnel_error::FrameCodecError> decode_close_reason(
+    []const u8 input
+) {
     if (input.len == 0) {
         return Ok({ code: 0 as u16, message: input });
     }
     if (input.len < 4) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
-    u16 code = frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
-    usize message_len =
-        frame_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[2..4]))? as usize;
+    u16 code = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[..2])
+    )?;
+    usize message_len = frame_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[2..4])
+    )? as usize;
     if (input.len != ((4 as usize) + message_len)) {
-        return Err(tunnel_error::FrameProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::FrameProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
     return Ok({ code: code, message: input[4..] });
 }
 
-export Result<[]u8, tunnel_error::FrameCodecError> encode_error_message([]const char message) {
+export Result<[]u8, tunnel_error::FrameCodecError> encode_error_message(
+    []const char message
+) {
     frame_protocol_void(frame::validate_payload_len(message.len))?;
-    buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(buf::byte_buf_new(message.len))?;
+    buf::ByteBuf @out = frame_buf_result<buf::ByteBuf>(
+        buf::byte_buf_new(message.len)
+    )?;
     push_chars(&out, message)?;
     return Ok(out.buf::mut_slice());
 }

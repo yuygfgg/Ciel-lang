@@ -7,9 +7,13 @@ import /std/lib;
 i64 main() {
     [2]i64 backing = [1, 2];
     []i64 view = backing;
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 msg| {
-        return Ok(state + msg + view[0]);
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 msg| {
+                return Ok(state + msg + view[0]);
+            }
+        )
+    );
     must(join(&actor));
     return 0;
 }

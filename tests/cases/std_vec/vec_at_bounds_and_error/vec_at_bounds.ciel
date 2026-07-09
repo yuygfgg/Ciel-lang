@@ -4,7 +4,11 @@
 import /std/result;
 import /std/vec as vec;
 
-bool is_index_error(Result<*const i64, vec::VecError> value, usize expected_index, usize expected_len) {
+bool is_index_error(
+    Result<*const i64, vec::VecError> value,
+    usize expected_index,
+    usize expected_len
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -24,7 +28,9 @@ bool is_index_error(Result<*const i64, vec::VecError> value, usize expected_inde
     }
 }
 
-bool is_mut_index_error(Result<*i64, vec::VecError> value, usize expected_index, usize expected_len) {
+bool is_mut_index_error(
+    Result<*i64, vec::VecError> value, usize expected_index, usize expected_len
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -58,7 +64,9 @@ bool same_text([]const char left, []const char right) {
     return true;
 }
 
-Result<i64, Error> read_missing(*const vec::Vec<i64> values) {
+Result<i64, Error> read_missing(
+    *const vec::Vec<i64> values
+) {
     *const i64 item = values.vec::at(4)?;
     return Ok(*item);
 }

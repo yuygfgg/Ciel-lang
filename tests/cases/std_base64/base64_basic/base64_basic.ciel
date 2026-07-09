@@ -6,7 +6,9 @@ import /std/bytes as bytes;
 import /std/result;
 import /std/text as text;
 
-bool bytes_equal_text(bytes::Bytes value, []const char expected) {
+bool bytes_equal_text(
+    bytes::Bytes value, []const char expected
+) {
     []const u8 data = bytes::bytes_const_slice(value);
     if (data.len != expected.len) {
         return false;
@@ -23,7 +25,9 @@ bool bytes_equal_text(bytes::Bytes value, []const char expected) {
 
 i64 main() {
     bytes::Bytes payload = must(bytes::bytes_from_text("hello"));
-    text::Text encoded = must(base64::encode(bytes::bytes_const_slice(payload)));
+    text::Text encoded = must(
+        base64::encode(bytes::bytes_const_slice(payload))
+    );
     if (!text::text_equal_slice(encoded, "aGVsbG8=")) {
         return 1;
     }

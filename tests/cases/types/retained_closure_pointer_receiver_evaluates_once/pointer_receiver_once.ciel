@@ -14,7 +14,7 @@ struct PickState {
 }
 
 *const (i64 |(i64): Message + score|) pick(
-    *const [2](i64 |(i64): Message + score|) handlers,
+    *const [2]( i64 | ( i64 ): Message + score | ) handlers,
     *PickState state,
 ) {
     usize idx = state->idx;
@@ -27,7 +27,7 @@ i64 main() {
     i64 right_base = 100;
     i64 |(i64): Message + score| left = |i64 value| value + left_base;
     i64 |(i64): Message + score| right = |i64 value| value + right_base;
-    [2](i64 |(i64): Message + score|) handlers = [left, right];
+    [2]( i64 | ( i64 ): Message + score | ) handlers = [left, right];
     PickState @state = { idx: 0 };
     return score(pick(&handlers, &state)) + (state.idx as i64) + handlers[1](1);
 }

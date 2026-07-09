@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-interface<T> Result<T, Error> duplicate_result(*T value);
+interface<T> Result<T, Error> duplicate_result(
+    *T value
+);
 
 impl<T: Message> duplicate_result(*T value) {
     return Ok(*value);

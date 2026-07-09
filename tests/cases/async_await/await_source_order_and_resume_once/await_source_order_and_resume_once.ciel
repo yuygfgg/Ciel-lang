@@ -17,7 +17,9 @@ void mark(i32 ch) {
     unsafe { putchar(ch) };
 }
 
-async Result<usize, Error> marked_delay(i32 ch, usize value) {
+async Result<usize, Error> marked_delay(
+    i32 ch, usize value
+) {
     mark(ch);
     await async_time::sleep_ms(0)?;
     return Ok(value);

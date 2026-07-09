@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-Result<void, Error> accept<T: FrameSafe>(T value) {
+Result<void, Error> accept<T: FrameSafe>(
+    T value
+) {
     return Ok;
 }
 

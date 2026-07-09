@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-interface<T, U, V> Result<V, Error> build(*T value, U left, V right);
+interface<T, U, V> Result<V, Error> build(
+    *T value, U left, V right
+);
 interface i64_builder = build<i64, i64>;
 
 enum Slot<T> {
@@ -19,7 +21,9 @@ impl build<i64, i64>(*Builder builder, i64 left, i64 right) {
     return Ok(builder->base + left + right);
 }
 
-Result<i64, Error> visit(Slot<i64_builder> slot, Result<i64, Error> |(i64_builder)| callback) {
+Result<i64, Error> visit(
+    Slot<i64_builder> slot, Result<i64, Error> |(i64_builder)| callback
+) {
     switch (slot) {
         case Full(item):
             return callback(item);

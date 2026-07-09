@@ -29,10 +29,12 @@ i64 apply(Check check, i64 |(same_i64, i64)| callback) {
 i64 main() {
     Box<i64> box = { value: 42 };
     Check check = Item(&box, 42);
-    return apply(check, |item, expected| {
-        if (same(item, expected)) {
-            return expected;
+    return apply(
+        check, |item, expected| {
+            if (same(item, expected)) {
+                return expected;
+            }
+            return 0;
         }
-        return 0;
-    });
+    );
 }

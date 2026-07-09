@@ -10,10 +10,10 @@ enum Status {
 i64 main() {
     Status status = Success;
     switch (status) {
-    case Succes:
-        return 1;
-    case Failure:
-        return 2;
+        case Succes:
+            return 1;
+        case Failure:
+            return 2;
     }
     return 0;
 }

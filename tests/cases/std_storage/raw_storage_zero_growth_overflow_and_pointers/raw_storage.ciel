@@ -8,7 +8,9 @@ struct Cell {
     i64 value;
 }
 
-bool storage_is_err<T>(Result<storage::RawStorage<T>, Error> value) {
+bool storage_is_err<T>(
+    Result<storage::RawStorage<T>, Error> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -18,32 +20,41 @@ bool storage_is_err<T>(Result<storage::RawStorage<T>, Error> value) {
 }
 
 i64 main() {
-    storage::RawStorage<u8> @empty = must(unsafe { storage::raw_zeroed<u8>(0) });
+    storage::RawStorage<u8> @empty = must(
+        unsafe { storage::raw_zeroed<u8>(0) });
     []u8 empty_view = unsafe { storage::raw_slice<u8>(&empty) };
     if (empty_view.len != 0 || empty_view.ptr == null) {
         return 1;
     }
 
-    storage::RawStorage<u8> @bytes = must(unsafe { storage::raw_zeroed<u8>(2) });
+    storage::RawStorage<u8> @bytes = must(
+        unsafe { storage::raw_zeroed<u8>(2) });
     []u8 @byte_view = unsafe { storage::raw_slice<u8>(&bytes) };
-    if (byte_view.len != 2 || byte_view[0] != (0 as u8) || byte_view[1] != (0 as u8)) {
+    if (byte_view.len != 2 || byte_view[0] != (0 as u8) ||
+        byte_view[1] != (0 as u8)) {
         return 2;
     }
     byte_view[0] = 7 as u8;
     byte_view[1] = 9 as u8;
 
-    bytes = must(unsafe { storage::raw_realloc_zeroed<u8>(bytes, 2, 5) });
+    bytes = must(unsafe {
+        storage::raw_realloc_zeroed<u8>(bytes, 2, 5)
+    }
+    );
     byte_view = unsafe { storage::raw_slice<u8>(&bytes) };
-    if (byte_view.len != 5 || byte_view[0] != (7 as u8) || byte_view[1] != (9 as u8)) {
+    if (byte_view.len != 5 || byte_view[0] != (7 as u8) ||
+        byte_view[1] != (9 as u8)) {
         return 3;
     }
-    if (byte_view[2] != (0 as u8) || byte_view[3] != (0 as u8) || byte_view[4] != (0 as u8)) {
+    if (byte_view[2] != (0 as u8) || byte_view[3] != (0 as u8) ||
+        byte_view[4] != (0 as u8)) {
         return 4;
     }
 
     Cell @first = { value: 11 };
     Cell @second = { value: 22 };
-    storage::RawStorage<?*Cell> @ptrs = must(unsafe { storage::raw_zeroed<?*Cell>(2) });
+    storage::RawStorage<?*Cell> @ptrs = must(
+        unsafe { storage::raw_zeroed<?*Cell>(2) });
     []?*Cell @ptr_view = unsafe { storage::raw_slice<?*Cell>(&ptrs) };
     if (ptr_view.len != 2 || ptr_view[0] != null || ptr_view[1] != null) {
         return 5;
@@ -51,7 +62,10 @@ i64 main() {
     ptr_view[0] = &first;
     ptr_view[1] = &second;
 
-    ptrs = must(unsafe { storage::raw_realloc_zeroed<?*Cell>(ptrs, 2, 4) });
+    ptrs = must(unsafe {
+        storage::raw_realloc_zeroed<?*Cell>(ptrs, 2, 4)
+    }
+    );
     ptr_view = unsafe { storage::raw_slice<?*Cell>(&ptrs) };
     if (ptr_view.len != 4 || ptr_view[0] == null || ptr_view[1] == null) {
         return 6;
@@ -71,10 +85,15 @@ i64 main() {
         return 8;
     }
 
-    if (!storage_is_err<u64>(unsafe { storage::raw_zeroed<u64>(~(0 as usize)) })) {
+    if (!storage_is_err<u64>(
+        unsafe { storage::raw_zeroed<u64>(~(0 as usize)) })) {
         return 9;
     }
-    if (!storage_is_err<u8>(unsafe { storage::raw_realloc_zeroed<u8>(bytes, 4, 3) })) {
+    if (!storage_is_err<u8>(
+        unsafe {
+            storage::raw_realloc_zeroed<u8>(bytes, 4, 3)
+        }
+    )) {
         return 10;
     }
 

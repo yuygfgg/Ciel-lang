@@ -21,7 +21,9 @@ unsafe impl clone_message(*const HandleParts value) {
     return Ok(*value);
 }
 
-HandleParts parts_from_handle(*const resource::Handle handle) {
+HandleParts parts_from_handle(
+    *const resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle->owner_id },
         resource_id: unsafe { handle->resource_id },
@@ -29,15 +31,21 @@ HandleParts parts_from_handle(*const resource::Handle handle) {
     };
 }
 
-HandleParts parts_from_connect(*const anet::AsyncConnect op) {
+HandleParts parts_from_connect(
+    *const anet::AsyncConnect op
+) {
     return parts_from_handle(unsafe { &op->handle });
 }
 
-HandleParts parts_from_stream(*const anet::AsyncTcpStream stream) {
+HandleParts parts_from_stream(
+    *const anet::AsyncTcpStream stream
+) {
     return parts_from_handle(unsafe { &stream->handle });
 }
 
-resource::Handle handle_from_parts(HandleParts parts) {
+resource::Handle handle_from_parts(
+    HandleParts parts
+) {
     return unsafe {
         {
             owner_id: parts.owner_id,
@@ -47,15 +55,21 @@ resource::Handle handle_from_parts(HandleParts parts) {
     };
 }
 
-anet::AsyncConnect connect_from_parts(HandleParts parts) {
+anet::AsyncConnect connect_from_parts(
+    HandleParts parts
+) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-anet::AsyncTcpStream stream_from_parts(HandleParts parts) {
+anet::AsyncTcpStream stream_from_parts(
+    HandleParts parts
+) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-bool connect_finish_is_err(Result<anet::AsyncTcpStream, anet::AsyncNetError> value) {
+bool connect_finish_is_err(
+    Result<anet::AsyncTcpStream, anet::AsyncNetError> value
+) {
     switch (value) {
         case Ok(stream):
             _ close_stream_result = anet::close_stream(stream);
@@ -65,7 +79,9 @@ bool connect_finish_is_err(Result<anet::AsyncTcpStream, anet::AsyncNetError> val
     }
 }
 
-bool addr_is_err(Result<net::SocketAddr, anet::AsyncNetError> value) {
+bool addr_is_err(
+    Result<net::SocketAddr, anet::AsyncNetError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -74,15 +90,18 @@ bool addr_is_err(Result<net::SocketAddr, anet::AsyncNetError> value) {
     }
 }
 
-async Result<void, Error> accept_once(anet::AsyncTcpListener listener) {
+async Result<void, Error> accept_once(
+    anet::AsyncTcpListener listener
+) {
     anet::AsyncTcpStream server = await anet::accept(&listener)?;
     anet::close_stream(server)?;
     return Ok;
 }
 
 async Result<usize, Error> drive() {
-    anet::AsyncTcpListener listener =
-        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    anet::AsyncTcpListener listener = anet::listen_async(
+        net::parse_addr("127.0.0.1:0")?
+    )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::Task<void, Error> server = async::spawn<void>(accept_once(listener))?;
 

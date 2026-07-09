@@ -8,7 +8,9 @@ struct BadPayload {
     *const usize ptr;
 }
 
-async Result<void, Error> send_bad(async::Sender<BadPayload> sender, BadPayload value) {
+async Result<void, Error> send_bad(
+    async::Sender<BadPayload> sender, BadPayload value
+) {
     await async::send<BadPayload>(sender, value)?;
     return Ok;
 }

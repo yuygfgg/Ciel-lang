@@ -7,9 +7,11 @@ import /std/io;
 
 i32 main() {
     []const char path = must(env::arg(1));
-    Result<void, IoWithError<IoError>> result = with_open_read<void, IoError>(path, |file| {
-        return Ok;
-    });
+    Result<void, IoWithError<IoError>> result = with_open_read<void, IoError>(
+        path, |file| {
+            return Ok;
+        }
+    );
     switch (result) {
         case Ok(_):
             return 1;

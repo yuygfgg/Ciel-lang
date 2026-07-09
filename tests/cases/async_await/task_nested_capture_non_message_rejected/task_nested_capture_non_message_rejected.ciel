@@ -16,8 +16,10 @@ struct OuterConfig {
 i32 main() {
     usize value = 5;
     OuterConfig config = { inner: { ptr: &value } };
-    Result<async::Task<usize, Error>, Error> task = async::spawn<usize, Error>(async || {
-        return Ok(unsafe { *config.inner.ptr });
-    });
+    Result<async::Task<usize, Error>, Error> task = async::spawn<usize, Error>(
+        async || {
+            return Ok(unsafe { *config.inner.ptr });
+        }
+    );
     return 0;
 }

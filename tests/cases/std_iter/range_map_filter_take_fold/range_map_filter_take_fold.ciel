@@ -26,5 +26,6 @@ i64 main() {
     _ filtered = iter::filter(mapped, even);
     _ first_three = iter::take(filtered, 3);
     Cache<iter::Range> cached = { value: 12 };
-    return iter::fold(first_three, 0, |i64 acc, i64 value| acc + value) + cached.value - 12;
+    return iter::fold(first_three, 0, |i64 acc, i64 value| acc + value) +
+        cached.value - 12;
 }

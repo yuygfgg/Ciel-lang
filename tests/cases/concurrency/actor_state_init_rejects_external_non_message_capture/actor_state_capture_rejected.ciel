@@ -26,10 +26,12 @@ Result<void, Error> handle(
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
     map::HashMap<u32, i64> table = must(map::hash_map_new<u32, i64>());
-    Actor<meta::Repr<Command>> actor = must(spawn_actor_state<OwnedState, meta::Repr<Command>>(
-        || Ok({ table: table, out: out }),
-        handle
-    ));
+    Actor<meta::Repr<Command>> actor = must(
+        spawn_actor_state<OwnedState, meta::Repr<Command>>(
+            || Ok({ table: table, out: out }),
+            handle
+        )
+    );
     stop(&actor);
     join(&actor);
     return 0;

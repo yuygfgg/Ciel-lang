@@ -10,10 +10,10 @@ i64 main() {
     switch (signal) {
         case Done(marker):
             i64 |()| callback = || {
-                *void ptr = &marker;
-                ptr;
-                return 0;
-            };
+                    *void ptr = &marker;
+                    ptr;
+                    return 0;
+                };
             return callback();
     }
 }

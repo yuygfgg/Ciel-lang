@@ -15,7 +15,9 @@ async Result<usize, Error> slow_value() {
 
 i32 main() {
     async::Task<usize, Error> task = must(async::spawn<usize>(slow_value()));
-    Result<Result<usize, Error>, async::AsyncError> early = async::block_on(async::timeout(task, 1));
+    Result<Result<usize, Error>, async::AsyncError> early = async::block_on(
+        async::timeout(task, 1)
+    );
     switch (early) {
         case Err(_):
             {}

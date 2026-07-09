@@ -27,7 +27,9 @@ void finish() {
     ciel_test_putchar(66);
 }
 
-Result<void, LocalError> run_task<T>(T value, Result<void, LocalError> |(T)| task) {
+Result<void, LocalError> run_task<T>(
+    T value, Result<void, LocalError> |(T)| task
+) {
     defer finish();
     return task(value);
 }

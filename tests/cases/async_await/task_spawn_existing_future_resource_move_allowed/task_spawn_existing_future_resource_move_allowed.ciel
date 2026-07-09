@@ -18,10 +18,14 @@ async Result<usize, Error> read_one(io::File file) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "x")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "x")?;
+                return Ok;
+            }
+        )
+    );
 
     text::Text owned_path = must(text::text_copy(path));
     io::File file = must(io::open_read(must(text::text_to_slice(owned_path))));

@@ -23,8 +23,9 @@ async Result<usize, Error> wait_closed(
 async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::ChannelPair<usize> ready = async::channel<usize>(1)?;
-    async::Task<usize, Error> waiter =
-        async::spawn<usize>(wait_closed(pair.receiver, ready.sender))?;
+    async::Task<usize, Error> waiter = async::spawn<usize>(
+        wait_closed(pair.receiver, ready.sender)
+    )?;
     _ waiter_ready = await async::recv<usize>(ready.receiver)?;
     async::close<usize>(pair.sender)?;
     return await waiter;

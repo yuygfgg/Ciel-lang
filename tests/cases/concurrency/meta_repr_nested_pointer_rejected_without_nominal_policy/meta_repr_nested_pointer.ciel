@@ -13,6 +13,8 @@ struct Outer {
 }
 
 i64 main() {
-    Channel<meta::Repr<Outer>> channel = must(make_channel<meta::Repr<Outer>>());
+    Channel<meta::Repr<Outer>> channel = must(
+        make_channel<meta::Repr<Outer>>()
+    );
     return 0;
 }

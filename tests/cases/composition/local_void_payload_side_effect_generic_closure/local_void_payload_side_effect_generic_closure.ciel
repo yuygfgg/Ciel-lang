@@ -27,7 +27,9 @@ void mark() {
     ciel_test_putchar(86);
 }
 
-Result<void, LocalError> handle<T>(Signal<T> signal, Result<void, LocalError> |(T)| on_hit) {
+Result<void, LocalError> handle<T>(
+    Signal<T> signal, Result<void, LocalError> |(T)| on_hit
+) {
     switch (signal) {
         case Hit(value):
             return on_hit(value);

@@ -13,7 +13,9 @@ impl measure(*Box value) {
     return value->value;
 }
 
-i64 generic_read<T: readable + !seek>(*T value) {
+i64 generic_read<T: readable + !seek>(
+    *T value
+) {
     return measure(value);
 }
 

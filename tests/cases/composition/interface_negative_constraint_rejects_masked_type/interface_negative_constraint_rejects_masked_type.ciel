@@ -18,7 +18,9 @@ impl reset(*Source value) {
     return;
 }
 
-i64 guarded<T: readable_view + !reset>(*T value, i64 |(*T)| callback) {
+i64 guarded<T: readable_view + !reset>(
+    *T value, i64 |(*T)| callback
+) {
     return callback(value);
 }
 

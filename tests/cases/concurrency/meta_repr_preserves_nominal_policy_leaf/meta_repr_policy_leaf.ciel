@@ -24,7 +24,9 @@ i64 main() {
         handle: { ptr: &backing, tag: 5 },
         extra: 6,
     };
-    Channel<meta::Repr<Outer>> channel = must(make_channel<meta::Repr<Outer>>());
+    Channel<meta::Repr<Outer>> channel = must(
+        make_channel<meta::Repr<Outer>>()
+    );
     must(channel_send(&channel, meta::into_repr(&outer)));
     Outer copied = meta::from_repr<Outer>(must(channel_recv(&channel)));
     must(channel_close(&channel));

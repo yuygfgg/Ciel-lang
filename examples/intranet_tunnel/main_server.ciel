@@ -5,7 +5,8 @@ import ./error as app_error;
 import ./server as server;
 
 i32 main() {
-    Result<cli::ServerConfig, app_error::TunnelError> parsed = cli::parse_server_args();
+    Result<cli::ServerConfig, app_error::TunnelError> parsed =
+        cli::parse_server_args();
     switch (parsed) {
         case Ok(_):
             Result<void, app_error::TunnelError> run = server::run_server();

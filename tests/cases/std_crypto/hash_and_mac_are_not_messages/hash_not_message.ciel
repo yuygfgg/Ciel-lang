@@ -4,6 +4,8 @@
 import /std/crypto as crypto;
 import /std/message;
 
-Result<crypto::Hash, Error> copy_hash(crypto::Hash hash) {
+Result<crypto::Hash, Error> copy_hash(
+    crypto::Hash hash
+) {
     return clone_message(&hash);
 }

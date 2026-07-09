@@ -21,7 +21,9 @@ unsafe impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> post<T: Message>(*const Channel<Event<T>> channel, T value) {
+Result<void, Error> post<T: Message>(
+    *const Channel<Event<T>> channel, T value
+) {
     channel_send(channel, Item(value))?;
     return Ok;
 }

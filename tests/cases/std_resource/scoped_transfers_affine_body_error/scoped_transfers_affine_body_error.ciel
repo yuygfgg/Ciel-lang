@@ -15,7 +15,9 @@ impl format_error(*const FileError error) {
     return "file error";
 }
 
-Result<void, FileError> fail_with_file([]const char path) {
+Result<void, FileError> fail_with_file(
+    []const char path
+) {
     switch (io::open_read(path)) {
         case Ok(file):
             return Err({ file: file });
@@ -26,10 +28,14 @@ Result<void, FileError> fail_with_file([]const char path) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "body-error")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "body-error")?;
+                return Ok;
+            }
+        )
+    );
 
     Result<void, resource::ScopedError<FileError>> result =
         resource::scoped<void, FileError>(|| {

@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-Result<void, Error> accept_shared<T: ShareHandle>(T value) {
+Result<void, Error> accept_shared<T: ShareHandle>(
+    T value
+) {
     return Ok;
 }
 

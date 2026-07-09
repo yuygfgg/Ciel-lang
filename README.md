@@ -116,6 +116,27 @@ To inspect the generated C translation unit:
 cargo run -- --emit-c path/to/file.ciel -o /tmp/app.c
 ```
 
+### Format Ciel Source
+
+The compiler includes a source formatter:
+
+```sh
+# Print formatted source to stdout
+cargo run -- fmt path/to/file.ciel
+
+# Rewrite a file in place
+cargo run -- fmt --write path/to/file.ciel
+
+# Check whether a file is already formatted
+cargo run -- fmt --check path/to/file.ciel
+```
+
+Formatter options are read from `.ciel-format` TOML files found by walking up
+from the input file. The default line width is 80 columns. Supported options
+by the formatter (both in `.ciel-format` and command-line) include `line_width`, 
+`indent_width`, and `chain_call_break_threshold`; Use `// ciel-format off` and 
+`// ciel-format on` comments to preserve a source region exactly.
+
 > [!Note]
 > See `cargo run -- --help` for all compiler options.
 
@@ -131,19 +152,23 @@ npx @vscode/vsce package
 code --install-extension vscode-ciel-0.1.0.vsix
 ```
 
-2. Build `ciel-lsp`:
+2. Build `ciel-lsp` and `cielc`:
 
 ```sh
-cargo build --release --bin ciel-lsp
+cargo build --release --bin ciel-lsp --bin cielc
 ```
 
-3. Either put `ciel-lsp` in your PATH, or configure the extension
-  by setting `ciel.languageServer.path` to the executable path.
+3. Either put `ciel-lsp` and `cielc` in your PATH, or configure the extension
+  by setting `ciel.languageServer.path` and `ciel.formatter.path` to the
+  executable paths.
+
+The extension provides document formatting through `cielc fmt`, using the same
+`.ciel-format` options as the command-line formatter.
 
 ### Development
 
 ```sh
-cargo build --bin ciel-lsp
+cargo build --bin ciel-lsp --bin cielc
 cd editors/vscode-ciel
 npm install
 npm run build        # generate Tree-sitter wasm and check the extension entry point

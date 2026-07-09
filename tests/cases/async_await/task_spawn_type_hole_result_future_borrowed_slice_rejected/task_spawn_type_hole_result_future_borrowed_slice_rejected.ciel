@@ -5,13 +5,17 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later([]const i64 view) {
+async Result<usize, Error> len_later(
+    []const i64 view
+) {
     return Ok(view.len);
 }
 
 i32 main() {
     [3]i64 values = [1, 2, 3];
-    Result<async::Future<Result<_, Error>>, Error> result = Ok(len_later(values[..]));
+    Result<async::Future<Result<_, Error>>, Error> result = Ok(
+        len_later(values[..])
+    );
     switch (result) {
         case Ok(future):
             _ task = must(async::spawn<usize>(future));

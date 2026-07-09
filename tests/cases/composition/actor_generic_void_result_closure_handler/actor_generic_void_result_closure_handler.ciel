@@ -13,23 +13,29 @@ unsafe impl<T: Message> clone_message(*const Task<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> send_task<T: Message>(*const Actor<Task<T>> actor, Task<T> task) {
+Result<void, Error> send_task<T: Message>(
+    *const Actor<Task<T>> actor, Task<T> task
+) {
     return send(actor, task);
 }
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Task<i64>> actor = must(spawn_actor_cloned<i64, Task<i64>>(0, |i64 state, Task<i64> task| {
-        Channel<i64> local_out = out;
-        switch (task) {
-            case Add(value):
-                return Ok(state + value);
-            case Flush(marker):
-                marker;
-                channel_send(&local_out, state)?;
-                return Ok(state);
-        }
-    }));
+    Actor<Task<i64>> actor = must(
+        spawn_actor_cloned<i64, Task<i64>>(
+            0, |i64 state, Task<i64> task| {
+                Channel<i64> local_out = out;
+                switch (task) {
+                    case Add(value):
+                        return Ok(state + value);
+                    case Flush(marker):
+                        marker;
+                        channel_send(&local_out, state)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     must(send_task(&actor, Add(6)));
     must(send_task(&actor, Add(8)));

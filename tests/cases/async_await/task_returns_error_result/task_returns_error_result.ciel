@@ -9,9 +9,13 @@ import /std/panic;
 import /std/result;
 
 i32 main() {
-    async::Task<usize, Error> task = must(async::spawn<usize, Error>(async || {
-        return Err(basic::code_error(77));
-    }));
+    async::Task<usize, Error> task = must(
+        async::spawn<usize, Error>(
+            async || {
+                return Err(basic::code_error(77));
+            }
+        )
+    );
     switch (async::block_on(task)) {
         case Err(_):
             must(print_value(1));

@@ -10,10 +10,12 @@ unsafe struct Secret {
 type SecretRepr = meta::HCons<meta::Field<i64>, meta::HNil>;
 
 i64 main() {
-    SecretRepr repr = unsafe { {
-        head: unsafe { { name: "token", value: 42 } },
-        tail: {},
-    } };
+    SecretRepr repr = unsafe {
+        {
+            head: unsafe { { name: "token", value: 42 } },
+            tail: {},
+        }
+    };
     Secret value = unsafe { meta::from_repr<Secret>(repr) };
     return unsafe { value.token } - 42;
 }

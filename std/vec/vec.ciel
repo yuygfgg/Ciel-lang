@@ -55,7 +55,9 @@ bool capacity_overflows<T>(usize capacity) {
     return capacity > ((~(0 as usize)) / elem_size);
 }
 
-Result<storage::RawStorage<T>, VecError> vec_raw_zeroed<T>(usize capacity) {
+Result<storage::RawStorage<T>, VecError> vec_raw_zeroed<T>(
+    usize capacity
+) {
     if (capacity_overflows<T>(capacity)) {
         return Err(CapacityOverflow);
     }
@@ -75,7 +77,10 @@ Result<storage::RawStorage<T>, VecError> vec_raw_realloc_zeroed<T>(
     if (capacity_overflows<T>(next_capacity)) {
         return Err(CapacityOverflow);
     }
-    switch (unsafe { storage::raw_realloc_zeroed<T>(old, initialized, next_capacity) }) {
+    switch (unsafe {
+        storage::raw_realloc_zeroed<T>(old, initialized, next_capacity)
+    }
+) {
         case Ok(raw):
             return Ok(raw);
         case Err(_):
@@ -84,7 +89,9 @@ Result<storage::RawStorage<T>, VecError> vec_raw_realloc_zeroed<T>(
 }
 
 // Creates an empty Vec with at least the requested initial capacity.
-export Result<Vec<T>, VecError> vec_new<T>(usize capacity) {
+export Result<Vec<T>, VecError> vec_new<T>(
+    usize capacity
+) {
     storage::RawStorage<T> raw = vec_raw_zeroed<T>(capacity)?;
     return Ok(unsafe { { storage: raw, len: 0 } });
 }
@@ -115,7 +122,9 @@ usize grown_capacity(usize current, usize needed) {
 }
 
 // Ensures room for additional initialized items after the current tail.
-export Result<void, VecError> vec_reserve<T>(*Vec<T> vec, usize additional) = .reserve {
+export Result<void, VecError> vec_reserve<T>(
+    *Vec<T> vec, usize additional
+) = .reserve {
     usize len = vec_len(vec);
     usize cap = vec_capacity(vec);
     if (additional > ((~(0 as usize)) - len)) {
@@ -140,7 +149,9 @@ export Result<void, VecError> vec_reserve<T>(*Vec<T> vec, usize additional) = .r
 }
 
 // Appends one item to the initialized prefix, growing as needed.
-export Result<void, VecError> vec_push<T>(*Vec<T> vec, T value) = .push {
+export Result<void, VecError> vec_push<T>(
+    *Vec<T> vec, T value
+) = .push {
     vec_reserve<T>(vec, 1)?;
     usize len = vec_len(vec);
     []T storage_view = unsafe { storage::raw_slice<T>(&vec->storage) };
@@ -152,7 +163,9 @@ export Result<void, VecError> vec_push<T>(*Vec<T> vec, T value) = .push {
 }
 
 // Returns a read-only pointer to an initialized item by index.
-export Result<*const T, VecError> vec_at<T>(*const Vec<T> vec, usize index) = .at {
+export Result<*const T, VecError> vec_at<T>(
+    *const Vec<T> vec, usize index
+) = .at {
     usize len = vec_len(vec);
     if (index >= len) {
         return Err(IndexOutOfBounds(index, len));
@@ -162,7 +175,9 @@ export Result<*const T, VecError> vec_at<T>(*const Vec<T> vec, usize index) = .a
 }
 
 // Returns a mutable pointer to an initialized item by index.
-export Result<*T, VecError> vec_mut_at<T>(*Vec<T> vec, usize index) = .mut_at {
+export Result<*T, VecError> vec_mut_at<T>(
+    *Vec<T> vec, usize index
+) = .mut_at {
     usize len = vec_len(vec);
     if (index >= len) {
         return Err(IndexOutOfBounds(index, len));
@@ -175,7 +190,11 @@ export Result<*T, VecError> vec_mut_at<T>(*Vec<T> vec, usize index) = .mut_at {
 export void vec_clear<T>(*Vec<T> vec) = .clear {
     usize cap = vec_capacity(vec);
     storage::RawStorage<T> old = unsafe { vec->storage };
-    storage::RawStorage<T> next = must(unsafe { storage::raw_realloc_zeroed<T>(old, 0, cap) });
+    storage::RawStorage<T> next = must(
+        unsafe {
+            storage::raw_realloc_zeroed<T>(old, 0, cap)
+        }
+    );
     unsafe {
         vec->storage = next;
         vec->len = 0;
@@ -189,7 +208,9 @@ export []const T vec_slice<T>(*const Vec<T> vec) = .slice {
 }
 
 // Creates a read-only iterator over the initialized item prefix.
-export _: iter::Iterator<T> vec_iter<T>(*const Vec<T> vec) = .iter {
+export _: iter::Iterator<T> vec_iter<T>(
+    *const Vec<T> vec
+) = .iter {
     iter::SliceIter<T> out = { items: vec_slice<T>(vec), index: 0 };
     return out;
 }
@@ -201,7 +222,9 @@ export []T vec_mut_slice<T>(*Vec<T> vec) = .mut_slice {
 }
 
 // Copies a slice into a new Vec.
-export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source) {
+export Result<Vec<T>, VecError> vec_from_slice<T>(
+    []const T source
+) {
     Vec<T> @out = vec_new<T>(source.len)?;
     usize @i = 0;
     while (i < source.len) {
@@ -212,7 +235,9 @@ export Result<Vec<T>, VecError> vec_from_slice<T>([]const T source) {
 }
 
 // Removes and returns the last initialized item.
-export Result<T, VecError> vec_pop<T>(*Vec<T> vec) = .pop {
+export Result<T, VecError> vec_pop<T>(
+    *Vec<T> vec
+) = .pop {
     usize len = vec_len(vec);
     if (len == 0) {
         return Err(Empty);
@@ -238,7 +263,9 @@ export void vec_truncate<T>(*Vec<T> vec, usize len) = .truncate {
     }
     usize cap = vec_capacity(vec);
     storage::RawStorage<T> old = unsafe { vec->storage };
-    storage::RawStorage<T> next = must(vec_raw_realloc_zeroed<T>(old, len, cap));
+    storage::RawStorage<T> next = must(
+        vec_raw_realloc_zeroed<T>(old, len, cap)
+    );
     unsafe {
         vec->storage = next;
         vec->len = len;
@@ -246,7 +273,9 @@ export void vec_truncate<T>(*Vec<T> vec, usize len) = .truncate {
 }
 
 // Appends all items in source.
-export Result<void, VecError> vec_extend<T>(*Vec<T> vec, []const T source) = .extend {
+export Result<void, VecError> vec_extend<T>(
+    *Vec<T> vec, []const T source
+) = .extend {
     vec_reserve<T>(vec, source.len)?;
     usize @i = 0;
     while (i < source.len) {
@@ -257,7 +286,9 @@ export Result<void, VecError> vec_extend<T>(*Vec<T> vec, []const T source) = .ex
 }
 
 // Inserts value at index, shifting initialized items after it.
-export Result<void, VecError> vec_insert<T>(*Vec<T> vec, usize index, T value) = .insert {
+export Result<void, VecError> vec_insert<T>(
+    *Vec<T> vec, usize index, T value
+) = .insert {
     usize len = vec_len(vec);
     if (index > len) {
         return Err(IndexOutOfBounds(index, len));
@@ -277,7 +308,9 @@ export Result<void, VecError> vec_insert<T>(*Vec<T> vec, usize index, T value) =
 }
 
 // Removes and returns the item at index, shifting later items backward.
-export Result<T, VecError> vec_remove<T>(*Vec<T> vec, usize index) = .remove {
+export Result<T, VecError> vec_remove<T>(
+    *Vec<T> vec, usize index
+) = .remove {
     usize len = vec_len(vec);
     if (index >= len) {
         return Err(IndexOutOfBounds(index, len));
@@ -344,11 +377,15 @@ export Result<usize, VecError> vec_binary_search<T: ord::ordered>(
 }
 
 // Compares two vectors by initialized length and element equality.
-export bool vec_equal<T: ord::eq>(*const Vec<T> left, *const Vec<T> right) {
+export bool vec_equal<T: ord::eq>(
+    *const Vec<T> left, *const Vec<T> right
+) {
     return slice::slice_equal<T>(vec_slice<T>(left), vec_slice<T>(right));
 }
 
-impl<T> iter::collect_new<T, VecError>(meta::Type<Vec<T>> collection, usize capacity) {
+impl<T> iter::collect_new<T, VecError>(
+    meta::Type<Vec<T>> collection, usize capacity
+) {
     return vec_new<T>(capacity);
 }
 

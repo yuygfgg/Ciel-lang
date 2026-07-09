@@ -18,7 +18,9 @@ enum OwnedChoice {
     Skip,
 }
 
-async Result<usize, Error> nested_value(usize seed) {
+async Result<usize, Error> nested_value(
+    usize seed
+) {
     await async_time::sleep_ms(0)?;
     return Ok(seed + 5);
 }

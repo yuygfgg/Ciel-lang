@@ -17,7 +17,9 @@ struct StoredToken {
     HandleParts file;
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(
+    resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle.owner_id },
         resource_id: unsafe { handle.resource_id },
@@ -38,15 +40,22 @@ io::File file_from_parts(HandleParts parts) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "token")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "token")?;
+                return Ok;
+            }
+        )
+    );
 
-    StoredToken stored = must(resource::scoped<StoredToken>(|| {
-        io::File file = io::open_read(path)?;
-        return Ok({ file: parts_from_handle(unsafe { file.handle }) });
-    }));
+    StoredToken stored = must(
+        resource::scoped<StoredToken>
+        (|| {
+            io::File file = io::open_read(path)?;
+            return Ok({ file: parts_from_handle(unsafe { file.handle }) });
+        })
+    );
     io::File stale = file_from_parts(stored.file);
 
     [8]u8 @buffer = [0;];

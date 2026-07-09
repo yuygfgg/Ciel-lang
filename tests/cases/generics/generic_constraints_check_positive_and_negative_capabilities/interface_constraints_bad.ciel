@@ -16,7 +16,9 @@ impl seek(*Box value) {
     return;
 }
 
-i64 read_measure<T: measure + !seek>(*T value) {
+i64 read_measure<T: measure + !seek>(
+    *T value
+) {
     return measure(value);
 }
 

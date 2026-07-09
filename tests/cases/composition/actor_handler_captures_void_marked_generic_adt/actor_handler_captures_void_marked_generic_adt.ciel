@@ -37,17 +37,21 @@ i64 main() {
         bias: { value: 4 },
     };
 
-    Actor<Command<i64>> actor = must(spawn_actor_cloned<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
-        Capture<i64> local = capture;
-        switch (command) {
-            case Add(value):
-                return Ok(state + value + local.bias.value);
-            case Emit(marker):
-                marker;
-                channel_send(&local.out, state)?;
-                return Ok(state);
-        }
-    }));
+    Actor<Command<i64>> actor = must(
+        spawn_actor_cloned<i64, Command<i64>>(
+            0, |i64 state, Command<i64> command| {
+                Capture<i64> local = capture;
+                switch (command) {
+                    case Add(value):
+                        return Ok(state + value + local.bias.value);
+                    case Emit(marker):
+                        marker;
+                        channel_send(&local.out, state)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     must(send(&actor, Add(6)));
     must(send(&actor, Add(5)));

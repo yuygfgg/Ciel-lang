@@ -12,7 +12,9 @@ unsafe impl<T: Message> clone_message(*const Event<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> send_event<T: Message>(*const Channel<Event<T>> channel, Event<T> event) {
+Result<void, Error> send_event<T: Message>(
+    *const Channel<Event<T>> channel, Event<T> event
+) {
     channel_send(channel, event)?;
     return Ok;
 }

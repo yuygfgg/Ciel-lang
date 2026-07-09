@@ -26,12 +26,16 @@ bool same_bytes([]u8 got, []const u8 want) {
     return true;
 }
 
-Result<usize, Error> sleep_winner(Result<void, async::AsyncError> value) {
+Result<usize, Error> sleep_winner(
+    Result<void, async::AsyncError> value
+) {
     value?;
     return Ok(1);
 }
 
-Result<usize, Error> read_loser(Result<bytes::Bytes, anet::AsyncNetError> value) {
+Result<usize, Error> read_loser(
+    Result<bytes::Bytes, anet::AsyncNetError> value
+) {
     value?;
     return Ok(2);
 }
@@ -50,20 +54,26 @@ async Result<void, Error> write_once(
 }
 
 async Result<usize, Error> drive() {
-    anet::AsyncTcpListener listener =
-        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    anet::AsyncTcpListener listener = anet::listen_async(
+        net::parse_addr("127.0.0.1:0")?
+    )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::ChannelPair<usize> write_done = async::channel<usize>(1)?;
-    async::Task<void, Error> server =
-        async::spawn<void>(write_once(listener, write_done.sender))?;
+    async::Task<void, Error> server = async::spawn<void>(
+        write_once(listener, write_done.sender)
+    )?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(client, 6)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_stream(
+        client, 6
+    )?;
     _ ready = await async::recv<usize>(write_done.receiver)?;
 
     Result<usize, Error> picked = await biased select {
-        case slept = async_time::sleep_ms(0): sleep_winner(slept);
-        case bytes = anet::read_exact_buffered(&reader, 6): read_loser(bytes);
+        case slept = async_time::sleep_ms(0):
+            sleep_winner(slept);
+        case bytes = anet::read_exact_buffered(&reader, 6):
+            read_loser(bytes);
     };
     if (picked? != 1) {
         return Err(code_error(90));

@@ -14,7 +14,9 @@ impl count_fields(*const meta::HNil value) {
     return 0;
 }
 
-impl<V, Tail: count_fields> count_fields(*const meta::HCons<meta::FieldRef<V>, Tail> value) {
+impl<V, Tail: count_fields> count_fields(
+    *const meta::HCons<meta::FieldRef<V>, Tail> value
+) {
     meta::HConsView<meta::FieldRef<V>, Tail> view = meta::hcons_view(value);
     return 1 + count_fields(view.tail);
 }

@@ -5,7 +5,9 @@ import /std/async as aio;
 import /std/async_time as time;
 import /std/lib;
 
-Out drive<A: aio::Awaitable<Out = _> + aio::Abortable>(A future) {
+Out drive<A: aio::Awaitable<Out = _> + aio::Abortable>(
+    A future
+) {
     return aio::block_on(future);
 }
 

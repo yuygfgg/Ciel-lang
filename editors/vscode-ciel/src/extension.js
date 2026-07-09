@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const childProcess = require('child_process');
 const vscode = require('vscode');
 const MarkdownIt = require('markdown-it');
 
@@ -8,7 +9,10 @@ let languageClientStartPromise;
 let semanticTokensProvider;
 let warnedMissingLanguageClient = false;
 let warnedMissingLanguageServer = false;
+let warnedMissingFormatter = false;
+let warnedFormatterExtraArgs = false;
 const markdownParser = new MarkdownIt();
+const FORMATTER_EXTRA_ARGS_WITH_SIDE_EFFECTS = new Set(['--write', '-w', '--check']);
 
 const TOKEN_TYPES = [
     'namespace',
@@ -82,6 +86,13 @@ function activate(context) {
         treeSitterProvider,
     );
     treeSitterProvider.prewarm();
+
+    context.subscriptions.push(
+        vscode.languages.registerDocumentFormattingEditProvider(
+            { language: 'ciel', scheme: 'file' },
+            new CielDocumentFormattingProvider(context),
+        ),
+    );
 
     context.subscriptions.push({ dispose: () => stopLanguageServer() });
 
@@ -310,6 +321,36 @@ function resolveLanguageServerCommand(context) {
     return undefined;
 }
 
+function resolveFormatterCommand(context, resource) {
+    if (process.platform === 'win32') {
+        return undefined;
+    }
+
+    const config = vscode.workspace.getConfiguration('ciel.formatter', resource);
+    const configuredPath = config.get('path', '').trim();
+    if (configuredPath) {
+        return { command: configuredPath, args: [] };
+    }
+
+    const binaryName = 'cielc';
+    const candidates = [
+        context.asAbsolutePath(path.join('server', binaryName)),
+        path.resolve(context.extensionPath, '..', '..', 'target', 'release', binaryName),
+        path.resolve(context.extensionPath, '..', '..', 'target', 'debug', binaryName),
+    ];
+    for (const candidate of candidates) {
+        if (isExecutableFile(candidate)) {
+            return { command: candidate, args: [] };
+        }
+    }
+
+    const pathCommand = findExecutableOnPath(binaryName);
+    if (pathCommand) {
+        return { command: pathCommand, args: [] };
+    }
+    return undefined;
+}
+
 function firstWorkspaceFolder() {
     const folders = vscode.workspace.workspaceFolders;
     return folders && folders.length > 0 ? folders[0] : undefined;
@@ -336,6 +377,142 @@ function findExecutableOnPath(binaryName) {
         }
     }
     return undefined;
+}
+
+class CielDocumentFormattingProvider {
+    constructor(context) {
+        this.context = context;
+    }
+
+    async provideDocumentFormattingEdits(document, _options, cancellationToken) {
+        const config = vscode.workspace.getConfiguration('ciel.formatter', document.uri);
+        if (!config.get('enabled', true)) {
+            return [];
+        }
+
+        const formatterCommand = resolveFormatterCommand(this.context, document.uri);
+        if (!formatterCommand) {
+            if (!warnedMissingFormatter) {
+                warnedMissingFormatter = true;
+                vscode.window.showWarningMessage(
+                    'Ciel formatter was not found. Build it with `cargo build --release --bin cielc` or set `ciel.formatter.path`.',
+                );
+            }
+            return [];
+        }
+
+        const source = document.getText();
+        const formatted = await formatDocumentWithCommand(
+            this.context,
+            document,
+            formatterCommand,
+            formatterExtraArgs(document.uri),
+            source,
+            cancellationToken,
+        );
+        if (cancellationToken.isCancellationRequested || formatted === source) {
+            return [];
+        }
+
+        return [
+            vscode.TextEdit.replace(
+                fullDocumentRange(document),
+                formatted,
+            ),
+        ];
+    }
+}
+
+function formatterExtraArgs(resource) {
+    const config = vscode.workspace.getConfiguration('ciel.formatter', resource);
+    const extraArgs = config.get('extraArgs', []);
+    if (!Array.isArray(extraArgs)) {
+        return [];
+    }
+
+    const safeArgs = [];
+    const blockedArgs = [];
+    for (const arg of extraArgs) {
+        if (typeof arg !== 'string' || arg.length === 0) {
+            continue;
+        }
+        if (FORMATTER_EXTRA_ARGS_WITH_SIDE_EFFECTS.has(arg)) {
+            blockedArgs.push(arg);
+            continue;
+        }
+        safeArgs.push(arg);
+    }
+    if (blockedArgs.length > 0 && !warnedFormatterExtraArgs) {
+        warnedFormatterExtraArgs = true;
+        vscode.window.showWarningMessage(
+            `Ignoring unsupported Ciel formatter arguments in VS Code: ${blockedArgs.join(', ')}`,
+        );
+    }
+    return safeArgs;
+}
+
+function formatDocumentWithCommand(
+    context,
+    document,
+    formatterCommand,
+    extraArgs,
+    source,
+    cancellationToken,
+) {
+    const args = formatterCommand.args.concat(['fmt'], extraArgs);
+    const options = {
+        cwd: formatterWorkingDirectory(context, document),
+        env: process.env,
+        maxBuffer: 64 * 1024 * 1024,
+    };
+
+    return new Promise((resolve, reject) => {
+        let cancellationDisposable = new vscode.Disposable(() => { });
+        const child = childProcess.execFile(
+            formatterCommand.command,
+            args,
+            options,
+            (error, stdout, stderr) => {
+                cancellationDisposable.dispose();
+                if (cancellationToken.isCancellationRequested) {
+                    resolve(source);
+                    return;
+                }
+                if (error) {
+                    const message = (stderr || error.message || '').trim();
+                    reject(new Error(message || 'Ciel formatter failed.'));
+                    return;
+                }
+                resolve(stdout);
+            },
+        );
+        cancellationDisposable = cancellationToken.onCancellationRequested(() => {
+            child.kill();
+        });
+        child.stdin.on('error', () => { });
+        child.stdin.end(source, 'utf8');
+    });
+}
+
+function fullDocumentRange(document) {
+    return new vscode.Range(
+        document.positionAt(0),
+        document.positionAt(document.getText().length),
+    );
+}
+
+function formatterWorkingDirectory(context, document) {
+    const documentDirectory = path.dirname(document.uri.fsPath);
+    if (documentDirectory) {
+        return documentDirectory;
+    }
+
+    const workspaceFolder = firstWorkspaceFolder();
+    if (workspaceFolder) {
+        return workspaceFolder.uri.fsPath;
+    }
+
+    return path.dirname(document.uri.fsPath) || context.extensionPath;
 }
 
 class CielTreeSitterSemanticTokensProvider {
@@ -951,7 +1128,9 @@ module.exports = {
     deactivate,
     _test: {
         resolveLanguageServerCommand,
+        resolveFormatterCommand,
         findExecutableOnPath,
+        CielDocumentFormattingProvider,
         CielTreeSitterSemanticTokensProvider,
         cielMarkdownCodeBlocks,
         isCielFenceInfo,

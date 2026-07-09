@@ -25,7 +25,9 @@ async Result<void, Error> dispatch_after_yield(
     switch (found) {
         case shared_map::SharedMapGet::Found(sender):
             Event event = Value(value);
-            await async::send<meta::Repr<Event>>(sender, meta::into_repr(&event))?;
+            await async::send<meta::Repr<Event>>(
+                sender, meta::into_repr(&event)
+            )?;
         case shared_map::SharedMapGet::Missing:
             return Err(text_error("missing shared map entry"));
     }
@@ -46,8 +48,9 @@ async Result<usize, Error> drive() {
     }
 
     _ task = async::spawn<void>(dispatch_after_yield(registry, 7, 23))?;
-    meta::Repr<Event> message =
-        await async::recv<meta::Repr<Event>>(pair.receiver)?;
+    meta::Repr<Event> message = await async::recv<meta::Repr<Event>>(
+        pair.receiver
+    )?;
     await task?;
 
     Event event = meta::from_repr<Event>(message);

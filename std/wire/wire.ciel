@@ -29,7 +29,9 @@ impl format_error(*const WireError error) {
 }
 
 // Builds an error without a source byte offset.
-export WireError wire_error(WireErrorKind kind, []const char message) {
+export WireError wire_error(
+    WireErrorKind kind, []const char message
+) {
     return {
         kind: kind,
         path: "$",
@@ -40,7 +42,9 @@ export WireError wire_error(WireErrorKind kind, []const char message) {
 }
 
 // Builds an error with a source byte offset.
-export WireError wire_error_at(WireErrorKind kind, usize byte_offset, []const char message) {
+export WireError wire_error_at(
+    WireErrorKind kind, usize byte_offset, []const char message
+) {
     return {
         kind: kind,
         path: "$",

@@ -5,11 +5,15 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> read_later(*const usize ptr) {
+async Result<usize, Error> read_later(
+    *const usize ptr
+) {
     return Ok(unsafe { *ptr });
 }
 
-async::Future<Result<usize, Error>> make(*const usize ptr) {
+async::Future<Result<usize, Error>> make(
+    *const usize ptr
+) {
     return read_later(ptr);
 }
 

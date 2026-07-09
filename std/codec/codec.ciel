@@ -23,19 +23,29 @@ impl format_error(*const CodecError error) {
 export interface<T> usize encoded_len(T value);
 
 // Writes a value in big-endian byte order into an existing output slice.
-export interface<T> Result<void, CodecError> put_be([]u8 out, T value);
+export interface<T> Result<void, CodecError> put_be(
+    []u8 out, T value
+);
 
 // Writes a value in little-endian byte order into an existing output slice.
-export interface<T> Result<void, CodecError> put_le([]u8 out, T value);
+export interface<T> Result<void, CodecError> put_le(
+    []u8 out, T value
+);
 
 // Reads a value of T from big-endian bytes using a type witness.
-export interface<T> Result<T, CodecError> get_be(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, CodecError> get_be(
+    meta::Type<T> tag, []const u8 data
+);
 
 // Reads a value of T from little-endian bytes using a type witness.
-export interface<T> Result<T, CodecError> get_le(meta::Type<T> tag, []const u8 data);
+export interface<T> Result<T, CodecError> get_le(
+    meta::Type<T> tag, []const u8 data
+);
 
 // Allocates the fixed-width big-endian encoding for value.
-export Result<[]u8, CodecError> encode_be<T: encoded_len + put_be>(T value) {
+export Result<[]u8, CodecError> encode_be<T: encoded_len + put_be>(
+    T value
+) {
     usize len = encoded_len(value);
     if (len == 1) {
         [1]u8 @out = [0;];
@@ -61,7 +71,9 @@ export Result<[]u8, CodecError> encode_be<T: encoded_len + put_be>(T value) {
 }
 
 // Allocates the fixed-width little-endian encoding for value.
-export Result<[]u8, CodecError> encode_le<T: encoded_len + put_le>(T value) {
+export Result<[]u8, CodecError> encode_le<T: encoded_len + put_le>(
+    T value
+) {
     usize len = encoded_len(value);
     if (len == 1) {
         [1]u8 @out = [0;];

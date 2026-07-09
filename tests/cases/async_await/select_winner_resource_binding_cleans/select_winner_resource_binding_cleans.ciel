@@ -16,18 +16,24 @@ async Result<io::File, Error> open_file() {
 
 async Result<usize, Error> choose_without_consuming() {
     Result<usize, Error> picked = await biased select {
-        case file = open_file(): Ok(0);
-        case slept = async_time::sleep_ms(10000): Ok(1);
+        case file = open_file():
+            Ok(0);
+        case slept = async_time::sleep_ms(10000):
+            Ok(1);
     };
     return picked;
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "select-cleanup")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "select-cleanup")?;
+                return Ok;
+            }
+        )
+    );
 
     resource::Limits limits = {
         max_resources: 8,
@@ -35,13 +41,17 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void, Error>(limits, || {
-        if (must(async::block_on(choose_without_consuming())) != 0) {
-            return Err(text_error("unexpected selected arm"));
-        }
-        io::File again = io::open_read(path)?;
-        io::close(again)?;
-        return Ok;
-    }));
+    must(
+        resource::scoped_with_limits<void, Error>(
+            limits, || {
+                if (must(async::block_on(choose_without_consuming())) != 0) {
+                    return Err(text_error("unexpected selected arm"));
+                }
+                io::File again = io::open_read(path)?;
+                io::close(again)?;
+                return Ok;
+            }
+        )
+    );
     return 0;
 }

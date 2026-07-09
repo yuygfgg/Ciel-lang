@@ -77,7 +77,9 @@ i32 test_parse_and_resolve() {
         return 8;
     }
 
-    net::SocketAddr resolved = must(net::resolve_tcp("localhost", 12345 as u16));
+    net::SocketAddr resolved = must(
+        net::resolve_tcp("localhost", 12345 as u16)
+    );
     if (must(net::addr_port(resolved)) != (12345 as u16)) {
         return 9;
     }
@@ -85,7 +87,9 @@ i32 test_parse_and_resolve() {
 }
 
 i32 test_tcp_io() {
-    net::TcpListener listener = must(net::tcp_listen(must(net::parse_addr("127.0.0.1:0"))));
+    net::TcpListener listener = must(
+        net::tcp_listen(must(net::parse_addr("127.0.0.1:0")))
+    );
     net::SocketAddr bound = must(net::listener_addr(&listener));
     if (must(net::addr_port(bound)) == (0 as u16)) {
         return 10;
@@ -101,7 +105,9 @@ i32 test_tcp_io() {
     if (n != 5) {
         return 11;
     }
-    if (buffer[0] != payload[0] || buffer[1] != payload[1] || buffer[2] != payload[2] || buffer[3] != payload[3] || buffer[4] != payload[4]) {
+    if (buffer[0] != payload[0] || buffer[1] != payload[1] ||
+        buffer[2] != payload[2] ||
+        buffer[3] != payload[3] || buffer[4] != payload[4]) {
         return 12;
     }
 
@@ -109,7 +115,8 @@ i32 test_tcp_io() {
     must(net::tcp_write_all(&server, reply[..]));
     [4]u8 @reply_in = [0;];
     n = must(net::tcp_read(&client, reply_in[..]));
-    if (n != 4 || reply_in[0] != reply[0] || reply_in[1] != reply[1] || reply_in[2] != reply[2] || reply_in[3] != reply[3]) {
+    if (n != 4 || reply_in[0] != reply[0] || reply_in[1] != reply[1] ||
+        reply_in[2] != reply[2] || reply_in[3] != reply[3]) {
         return 13;
     }
 
@@ -125,7 +132,9 @@ i32 test_tcp_io() {
     return 0;
 }
 
-Result<i32, Error> with_api_body(net::TcpListener listener) {
+Result<i32, Error> with_api_body(
+    net::TcpListener listener
+) {
     u16 port = net::addr_port(net::listener_addr(&listener)?)?;
     net::TcpStream client = net::tcp_connect_host("127.0.0.1", port)?;
     net::TcpStream server = net::tcp_accept(&listener)?;
@@ -142,7 +151,11 @@ Result<i32, Error> with_api_body(net::TcpListener listener) {
 }
 
 i32 test_with_apis() {
-    i32 result = must(net::with_tcp_listen<i32, Error>(must(net::parse_addr("127.0.0.1:0")), with_api_body));
+    i32 result = must(
+        net::with_tcp_listen<i32, Error>(
+            must(net::parse_addr("127.0.0.1:0")), with_api_body
+        )
+    );
     if (result != 0) {
         return result;
     }

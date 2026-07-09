@@ -44,7 +44,9 @@ impl count_fields(*const meta::HNil schema) {
 impl<V, R, Tail: count_fields> count_fields(
     *const meta::HCons<meta::FieldSchema<V, R>, Tail> schema
 ) {
-    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::hcons_view(schema);
+    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::hcons_view(
+        schema
+    );
     return 1 + count_fields(view.tail);
 }
 
@@ -63,8 +65,12 @@ i64 main() {
     meta::Schema<[3]u8> bytes = meta::schema<[3]u8>();
     meta::ArrayChunk3View<meta::ElementSchema<u8, u8>> bytes_view =
         meta::array_chunk3_view(&bytes);
-    meta::ElementSchemaView<u8, u8> bytes0 = meta::element_schema_view(bytes_view.item0);
-    meta::ElementSchemaView<u8, u8> bytes1 = meta::element_schema_view(bytes_view.item1);
+    meta::ElementSchemaView<u8, u8> bytes0 = meta::element_schema_view(
+        bytes_view.item0
+    );
+    meta::ElementSchemaView<u8, u8> bytes1 = meta::element_schema_view(
+        bytes_view.item1
+    );
     if (source_code(bytes0.source_ty) != 1) {
         return 1;
     }
@@ -95,10 +101,14 @@ i64 main() {
     }
     meta::HConsView<meta::FieldSchema<i64, i64>, meta::HCons<meta::FieldSchema<bool, bool>, meta::HNil>> closure_view =
         meta::hcons_view(&closure_schema);
-    meta::FieldSchemaView<i64, i64> capture0 = meta::field_schema_view(closure_view.head);
+    meta::FieldSchemaView<i64, i64> capture0 = meta::field_schema_view(
+        closure_view.head
+    );
     meta::HConsView<meta::FieldSchema<bool, bool>, meta::HNil> closure_tail =
         meta::hcons_view(closure_view.tail);
-    meta::FieldSchemaView<bool, bool> capture1 = meta::field_schema_view(closure_tail.head);
+    meta::FieldSchemaView<bool, bool> capture1 = meta::field_schema_view(
+        closure_tail.head
+    );
     if (!chars_eq(capture0.name, "capture#0")) {
         return 6;
     }

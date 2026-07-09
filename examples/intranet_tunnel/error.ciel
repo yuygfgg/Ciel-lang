@@ -104,7 +104,9 @@ impl format_error(*const TunnelError error) {
     }
 }
 
-export interface<E> TunnelError to_tunnel_error(E error);
+export interface<E> TunnelError to_tunnel_error(
+    E error
+);
 
 impl to_tunnel_error(protocol::ProtocolError error) {
     return Protocol(error);
@@ -162,7 +164,9 @@ impl to_tunnel_error(text::TextError error) {
     return StdText(error);
 }
 
-export Result<T, TunnelError> tunnel<T, E: to_tunnel_error>(Result<T, E> result) {
+export Result<T, TunnelError> tunnel<T, E: to_tunnel_error>(
+    Result<T, E> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);

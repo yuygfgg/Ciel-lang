@@ -3,7 +3,9 @@
 
 import /std/result;
 
-Result<void, Error> consume_resource<resource T>(T value) {
+Result<void, Error> consume_resource<resource T>(
+    T value
+) {
     return Ok;
 }
 

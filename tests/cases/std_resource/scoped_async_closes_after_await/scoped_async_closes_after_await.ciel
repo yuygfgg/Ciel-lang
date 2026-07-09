@@ -15,7 +15,9 @@ struct HandleParts {
     u64 generation;
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(
+    resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle.owner_id },
         resource_id: unsafe { handle.resource_id },
@@ -36,16 +38,25 @@ io::File file_from_parts(HandleParts parts) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "async-scope")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "async-scope")?;
+                return Ok;
+            }
+        )
+    );
 
-    HandleParts parts = must(async::block_on(resource::scoped_async<HandleParts, Error>(async || {
-        await async_time::sleep_ms(0)?;
-        io::File file = io::open_read(env::arg(1)?)?;
-        return Ok(parts_from_handle(unsafe { file.handle }));
-    })));
+    HandleParts parts = must(
+        async::block_on(
+            resource::scoped_async<HandleParts, Error>
+            (async || {
+                await async_time::sleep_ms(0)?;
+                io::File file = io::open_read(env::arg(1)?)?;
+                return Ok(parts_from_handle(unsafe { file.handle }));
+            })
+        )
+    );
 
     io::File stale = file_from_parts(parts);
     [1]u8 @buffer = [0;];

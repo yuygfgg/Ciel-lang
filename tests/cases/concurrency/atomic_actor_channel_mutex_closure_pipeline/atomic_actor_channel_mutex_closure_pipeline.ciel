@@ -24,8 +24,7 @@ struct SetLast {
     i64 value;
 }
 
-struct ReadLast {
-}
+struct ReadLast {}
 
 unsafe impl clone_message(*const Metrics value) {
     return Ok(*value);
@@ -43,14 +42,16 @@ impl update_value<i64, i64, SyncError>(*const SetLast updater, i64 value) {
     return Ok({
         value: updater->value,
         result: value,
-    });
+    }
+    );
 }
 
 impl update_value<i64, i64, SyncError>(*const ReadLast updater, i64 value) {
     return Ok({
         value: value,
         result: value,
-    });
+    }
+    );
 }
 
 Result<void, Error> send_envelope<T: Message>(
@@ -68,24 +69,30 @@ i64 main() {
         out: must(make_channel<i64>()),
     };
 
-    Actor<Envelope<Step<i64>>> actor = must(spawn_actor_cloned<i64, Envelope<Step<i64>>>(0, |i64 state, Envelope<Step<i64>> msg| {
-        Atomic<i64> total = metrics.total;
-        Mutex<i64> last = metrics.last;
-        Channel<i64> out = metrics.out;
+    Actor<Envelope<Step<i64>>> actor = must(
+        spawn_actor_cloned<i64, Envelope<Step<i64>>>(
+            0, |i64 state, Envelope<Step<i64>> msg| {
+                Atomic<i64> total =
+                    metrics.total;
+                Mutex<i64> last = metrics.last;
+                Channel<i64> out = metrics.out;
 
-        switch (msg.item) {
-            case Add(value):
-                i64 amount = value * msg.scale;
-                atomic_fetch_add(&total, amount, AcqRel)?;
-                SetLast set = { value: amount };
-                mutex_update<i64, SetLast>(&last, &set)?;
-                return Ok(state + amount);
-            case Emit(value):
-                i64 total_value = atomic_load(&total, Acquire)?;
-                channel_send(&out, total_value + value)?;
-                return Ok(state);
-        }
-    }));
+                switch (msg.item) {
+                    case Add(value):
+                        i64 amount =
+                            value * msg.scale;
+                        atomic_fetch_add(&total, amount, AcqRel)?;
+                        SetLast set = { value: amount };
+                        mutex_update<i64, SetLast>(&last, &set)?;
+                        return Ok(state + amount);
+                    case Emit(value):
+                        i64 total_value = atomic_load(&total, Acquire)?;
+                        channel_send(&out, total_value + value)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     must(send_envelope(&actor, Add(10), 2));
     must(send_envelope(&actor, Add(3), 5));

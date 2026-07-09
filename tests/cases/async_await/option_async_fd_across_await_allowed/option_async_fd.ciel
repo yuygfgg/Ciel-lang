@@ -5,8 +5,12 @@ import /std/async_io as aio;
 import /std/option as option;
 import /std/result;
 
-async Result<void, Error> keep_option([]const char path) {
-    option::Option<aio::AsyncFd> maybe = option::Some(aio::open_async_read(path)?);
+async Result<void, Error> keep_option(
+    []const char path
+) {
+    option::Option<aio::AsyncFd> maybe = option::Some(
+        aio::open_async_read(path)?
+    );
     await async_time::sleep_ms(0)?;
     switch (maybe) {
         case option::Some(fd):

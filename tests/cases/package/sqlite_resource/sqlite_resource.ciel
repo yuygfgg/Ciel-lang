@@ -19,7 +19,9 @@ unsafe impl clone_message(*const HandleParts value) {
     return Ok(*value);
 }
 
-HandleParts parts_from_handle(*const resource::Handle handle) {
+HandleParts parts_from_handle(
+    *const resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle->owner_id },
         resource_id: unsafe { handle->resource_id },
@@ -27,15 +29,21 @@ HandleParts parts_from_handle(*const resource::Handle handle) {
     };
 }
 
-HandleParts parts_from_connection(*const sqlite::Connection connection) {
+HandleParts parts_from_connection(
+    *const sqlite::Connection connection
+) {
     return parts_from_handle(unsafe { &connection->handle });
 }
 
-HandleParts parts_from_statement(*const sqlite::Statement statement) {
+HandleParts parts_from_statement(
+    *const sqlite::Statement statement
+) {
     return parts_from_handle(unsafe { &statement->handle });
 }
 
-resource::Handle handle_from_parts(HandleParts parts) {
+resource::Handle handle_from_parts(
+    HandleParts parts
+) {
     return unsafe {
         {
             owner_id: parts.owner_id,
@@ -45,15 +53,21 @@ resource::Handle handle_from_parts(HandleParts parts) {
     };
 }
 
-sqlite::Connection connection_from_parts(HandleParts parts) {
+sqlite::Connection connection_from_parts(
+    HandleParts parts
+) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-sqlite::Statement statement_from_parts(HandleParts parts) {
+sqlite::Statement statement_from_parts(
+    HandleParts parts
+) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 
-Result<void, Error> expect_void_error(Result<void, sqlite::SqliteError> result) {
+Result<void, Error> expect_void_error(
+    Result<void, sqlite::SqliteError> result
+) {
     switch (result) {
         case Ok:
             return Err(text_error("expected sqlite resource error"));
@@ -63,7 +77,9 @@ Result<void, Error> expect_void_error(Result<void, sqlite::SqliteError> result) 
     return Err(text_error("bad sqlite result"));
 }
 
-Result<void, Error> expect_step_error(Result<sqlite::Step, sqlite::SqliteError> result) {
+Result<void, Error> expect_step_error(
+    Result<sqlite::Step, sqlite::SqliteError> result
+) {
     switch (result) {
         case Ok(_):
             return Err(text_error("expected sqlite statement error"));
@@ -77,16 +93,22 @@ i32 main() {
     sqlite::Connection scoped_db = must(sqlite::open_memory());
     must(sqlite::exec(&scoped_db, "CREATE TABLE t (id INTEGER)"));
     HandleParts connection_parts = parts_from_connection(&scoped_db);
-    sqlite::Connection scoped_db_to_close = connection_from_parts(connection_parts);
+    sqlite::Connection scoped_db_to_close = connection_from_parts(
+        connection_parts
+    );
     must(sqlite::close(scoped_db_to_close));
-    sqlite::Connection stale_connection = connection_from_parts(connection_parts);
+    sqlite::Connection stale_connection = connection_from_parts(
+        connection_parts
+    );
     must(expect_void_error(sqlite::exec(&stale_connection, "SELECT 1")));
 
     sqlite::Connection db = must(sqlite::open_memory());
     must(sqlite::exec(&db, "CREATE TABLE t (id INTEGER)"));
     sqlite::Statement statement = must(sqlite::prepare(&db, "SELECT 1"));
     HandleParts statement_parts = parts_from_statement(&statement);
-    sqlite::Statement statement_to_finalize = statement_from_parts(statement_parts);
+    sqlite::Statement statement_to_finalize = statement_from_parts(
+        statement_parts
+    );
     must(sqlite::finalize(statement_to_finalize));
     sqlite::Statement stale_statement = statement_from_parts(statement_parts);
     must(expect_step_error(sqlite::step(&stale_statement)));

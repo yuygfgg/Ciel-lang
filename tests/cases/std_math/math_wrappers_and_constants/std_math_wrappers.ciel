@@ -31,7 +31,8 @@ i64 main() {
     if (math::ln2(meta::type_tag<f64>()) != math::log_f64(2.0)) {
         return 8;
     }
-    if (math::log2_e(meta::type_tag<f64>()) != math::log2_f64(math::e(meta::type_tag<f64>()))) {
+    if (math::log2_e(meta::type_tag<f64>()) !=
+        math::log2_f64(math::e(meta::type_tag<f64>()))) {
         return 9;
     }
     if (math::log10_e(meta::type_tag<f32>()) != math::log10_f32(e)) {

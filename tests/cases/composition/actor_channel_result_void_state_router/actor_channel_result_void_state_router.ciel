@@ -32,24 +32,33 @@ unsafe impl<T: Message> clone_message(*const State<T> value) {
 }
 
 i64 main() {
-    Channel<Result<Event<i64>, Error>> out = must(make_channel<Result<Event<i64>, Error>>());
+    Channel<Result<Event<i64>, Error>> out = must(
+        make_channel<Result<Event<i64>, Error>>()
+    );
     State<i64> initial = { out: out, total: 0 };
 
-    Actor<Command<i64>> actor = must(spawn_actor_cloned<State<i64>, Command<i64>>(initial, |State<i64> state, Command<i64> command| {
-        State<i64> @next = state;
-        switch (command) {
-            case Add(value):
-                next.total = next.total + value;
-                return Ok(next);
-            case Flush(marker):
-                marker;
-                Result<Event<i64>, Error> total_event = Ok(Total(next.total));
-                Result<Event<i64>, Error> closed_event = Ok(Closed);
-                channel_send(&next.out, total_event)?;
-                channel_send(&next.out, closed_event)?;
-                return Ok(next);
-        }
-    }));
+    Actor<Command<i64>> actor = must(
+        spawn_actor_cloned<State<i64>, Command<i64>>(
+            initial, |State<i64> state, Command<i64> command| {
+                State<i64> @next = state;
+                switch (command) {
+                    case Add(value):
+                        next.total =
+                            next.total + value;
+                        return Ok(next);
+                    case Flush(marker):
+                        marker;
+                        Result<Event<i64>, Error> total_event = Ok(
+                            Total(next.total)
+                        );
+                        Result<Event<i64>, Error> closed_event = Ok(Closed);
+                        channel_send(&next.out, total_event)?;
+                        channel_send(&next.out, closed_event)?;
+                        return Ok(next);
+                }
+            }
+        )
+    );
 
     must(send(&actor, Add(9)));
     must(send(&actor, Add(6)));

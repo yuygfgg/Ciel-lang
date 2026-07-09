@@ -64,7 +64,9 @@ Result<void, Error> use_async_net_tokens(
     return Ok;
 }
 
-async Result<void, Error> use_async_fd(AsyncFd fd, Bytes data) {
+async Result<void, Error> use_async_fd(
+    AsyncFd fd, Bytes data
+) {
     AsyncRead read_op = fd.read_async(64)?;
     read_op.cancel()?;
     AsyncWrite write_op = fd.write_async(data)?;
@@ -108,7 +110,9 @@ async Result<void, Error> use_async_tcp(
     BufferedStreamReader owned_reader = split.buffered_reader(4096)?;
     AsyncTcpRead read_op = stream.read_async(64)?;
     read_op.cancel()?;
-    AsyncTcpReadInto read_into_op = stream.read_into_async(read_into_async_buffer)?;
+    AsyncTcpReadInto read_into_op = stream.read_into_async(
+        read_into_async_buffer
+    )?;
     read_into_op.cancel()?;
     AsyncTcpWrite write_op = stream.write_async(data)?;
     write_op.cancel()?;
@@ -127,7 +131,9 @@ async Result<void, Error> use_async_tcp(
     buffered.cancel()?;
     AsyncBufferedRead exact = owned_reader.read_exact_async(4)?;
     exact.cancel()?;
-    BufferedStreamReader owned_reader2 = read_half_for_buffer.buffered_reader(4096)?;
+    BufferedStreamReader owned_reader2 = read_half_for_buffer.buffered_reader(
+        4096
+    )?;
     owned_reader2.into_read_half()?;
     Bytes buffered_bytes = await reader.read(64)?;
     Bytes exact_bytes = await reader.read_exact(4)?;

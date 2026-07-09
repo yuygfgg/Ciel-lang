@@ -29,10 +29,12 @@ i64 apply(Check check, i64 |(same_i64, i64)| predicate) {
 i64 main() {
     Box box = { value: 13 };
     Check check = Item(&box, 13);
-    return apply(check, |item, expected| {
-        if (same(item, expected)) {
-            return 7;
+    return apply(
+        check, |item, expected| {
+            if (same(item, expected)) {
+                return 7;
+            }
+            return 0;
         }
-        return 0;
-    });
+    );
 }

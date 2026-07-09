@@ -6,7 +6,9 @@ import /std/lib;
 import /std/async as async;
 import /std/result;
 
-Result<Channel<usize>, Error> handle(Channel<usize> out, usize value) {
+Result<Channel<usize>, Error> handle(
+    Channel<usize> out, usize value
+) {
     channel_send(&out, value + 1)?;
     return Ok(out);
 }
@@ -22,7 +24,9 @@ async Result<usize, Error> send_over_async_channel() {
 
 i32 main() {
     Channel<usize> out = must(make_channel<usize>());
-    Actor<usize> actor = must(spawn_actor_cloned<Channel<usize>, usize>(out, handle));
+    Actor<usize> actor = must(
+        spawn_actor_cloned<Channel<usize>, usize>(out, handle)
+    );
     must(send(&actor, 1));
     usize actor_value = must(channel_recv(&out));
     usize async_value = must(async::block_on(send_over_async_channel()));

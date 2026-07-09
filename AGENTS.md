@@ -42,6 +42,8 @@ Use these commands from the repository root unless noted:
 cargo build
 cargo run -- path/to/file.ciel -o /tmp/app
 cargo run -- --emit-c path/to/file.ciel -o /tmp/app.c
+cargo run -- fmt --check path/to/file.ciel
+cargo run -- fmt --write path/to/file.ciel
 cargo run -- --manifest-path examples/intranet_tunnel/ciel.toml --std-path "$PWD" --entry frame_test -o /tmp/frame_test
 ```
 
@@ -51,6 +53,19 @@ Native package builds require CMake. For project-style builds, pass
 use this checkout's standard library. Third-party native package targets require
 `--allow-native-build`; do not add that flag unless the test or task is meant to
 exercise native build policy.
+
+For bulk Ciel formatting or format checks, prefer the release compiler binary
+once it exists:
+
+```sh
+target/release/cielc fmt --check path/to/file.ciel
+target/release/cielc fmt --write path/to/file.ciel
+```
+
+The formatter reads `.ciel-format` TOML files, defaults to an 80-column line
+width, and supports `line_width`, `indent_width`, and
+`chain_call_break_threshold`. Use `// ciel-format off` and
+`// ciel-format on` around regions that must remain byte-for-byte unchanged.
 
 ## Test Commands
 Run the smallest relevant test first, then broaden coverage when the change
@@ -112,6 +127,10 @@ diagnostic behavior, and runtime assertions for observable semantics. Update
 `tests/KNOWN_FAILURES.md` only when a failure is intentional and tracked outside
 the self-describing `known-fail-*` fixture metadata.
 
+Some error fixtures are intentionally invalid at the Tree-sitter level. Do not
+force-format parse-error fixtures; the formatter should report them and leave
+their source unchanged.
+
 ## Standard Library, Runtime, And Native Code
 Standard-library packages live in `std/<package>/` and are described by
 `std/<package>/ciel.toml`. Keep package exports, native requirements, and import
@@ -143,8 +162,10 @@ npm test
 ```
 
 `npm run build` and `npm test` generate the VS Code Tree-sitter wasm and check
-the extension entry point. Parser and highlighting regression coverage is run
-from Rust with `cargo test`.
+the extension entry point. The extension also registers document formatting via
+`cielc fmt`; build `cielc` locally or set `ciel.formatter.path` when validating
+formatting in VS Code. Parser and highlighting regression coverage is run from
+Rust with `cargo test`.
 
 When language syntax changes, update `tree-sitter-ciel/grammar.js` and
 `tree-sitter-ciel/highlights.scm`, extend Rust Tree-sitter tests as needed, and
@@ -157,6 +178,7 @@ Only include screenshots for actual editor UI changes.
 Package the extension after checking it:
 
 ```sh
+cargo build --release --bin ciel-lsp --bin cielc
 npm run build
 npx @vscode/vsce package
 code --install-extension vscode-ciel-0.1.0.vsix
@@ -193,6 +215,9 @@ Ciel fixture code should be small and direct. Prefer stable output and exact
 diagnostic substrings over broad assertions. Generated C assertions should be
 specific enough to catch the intended lowering change without depending on
 irrelevant temporary names.
+
+Format valid `.ciel` source with `cielc fmt`; keep formatter churn out of
+unrelated compiler changes unless the task explicitly asks for it.
 
 Native C and headers follow `.clang-format`. Keep unsafe C ABI assumptions
 visible in names, comments, or tests when the compiler cannot prove them.

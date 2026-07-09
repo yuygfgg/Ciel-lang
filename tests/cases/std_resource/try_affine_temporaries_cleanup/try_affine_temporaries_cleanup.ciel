@@ -12,32 +12,44 @@ resource struct Pair {
     io::File second;
 }
 
-Result<Pair, Error> open_pair_literal([]const char path) {
+Result<Pair, Error> open_pair_literal(
+    []const char path
+) {
     return Ok({
         first: io::open_read(path)?,
         second: io::open_read(path)?,
-    });
+    }
+    );
 }
 
-Result<Pair, Error> open_pair_move_literal([]const char path) {
+Result<Pair, Error> open_pair_move_literal(
+    []const char path
+) {
     io::File file = io::open_read(path)?;
     return Ok({
         first: file,
         second: io::open_read(path)?,
-    });
+    }
+    );
 }
 
-Result<void, Error> consume_two(io::File @first, io::File @second) {
+Result<void, Error> consume_two(
+    io::File @first, io::File @second
+) {
     io::close(first)?;
     io::close(second)?;
     return Ok;
 }
 
-Result<void, Error> open_call_args([]const char path) {
+Result<void, Error> open_call_args(
+    []const char path
+) {
     return consume_two(io::open_read(path)?, io::open_read(path)?);
 }
 
-Result<void, Error> expect_pair_failure_released(Result<Pair, Error> result, []const char path) {
+Result<void, Error> expect_pair_failure_released(
+    Result<Pair, Error> result, []const char path
+) {
     switch (result) {
         case Ok(_):
             return Err(text_error("quota accepted pair"));
@@ -48,7 +60,9 @@ Result<void, Error> expect_pair_failure_released(Result<Pair, Error> result, []c
     }
 }
 
-Result<void, Error> expect_void_failure_released(Result<void, Error> result, []const char path) {
+Result<void, Error> expect_void_failure_released(
+    Result<void, Error> result, []const char path
+) {
     switch (result) {
         case Ok:
             return Err(text_error("quota accepted call args"));
@@ -61,10 +75,14 @@ Result<void, Error> expect_void_failure_released(Result<void, Error> result, []c
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "cleanup")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "cleanup")?;
+                return Ok;
+            }
+        )
+    );
 
     resource::Limits limits = {
         max_resources: 1,
@@ -72,11 +90,17 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void>(limits, || {
-        expect_pair_failure_released(open_pair_literal(path), path)?;
-        expect_pair_failure_released(open_pair_move_literal(path), path)?;
-        expect_void_failure_released(open_call_args(path), path)?;
-        return Ok;
-    }));
+    must(
+        resource::scoped_with_limits<void>(
+            limits, || {
+                expect_pair_failure_released(open_pair_literal(path), path)?;
+                expect_pair_failure_released(
+                    open_pair_move_literal(path), path
+                )?;
+                expect_void_failure_released(open_call_args(path), path)?;
+                return Ok;
+            }
+        )
+    );
     return 0;
 }

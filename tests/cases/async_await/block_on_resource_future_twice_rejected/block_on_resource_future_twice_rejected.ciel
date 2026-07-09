@@ -5,7 +5,9 @@ import /std/async as async;
 import /std/io as io;
 import /std/result;
 
-async Result<io::File, Error> open_file([]const char path) {
+async Result<io::File, Error> open_file(
+    []const char path
+) {
     return io::open_read(path);
 }
 

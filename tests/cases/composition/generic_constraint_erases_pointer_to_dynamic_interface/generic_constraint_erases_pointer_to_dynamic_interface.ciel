@@ -11,7 +11,9 @@ impl measure(*const Box box) {
     return box->value;
 }
 
-measure |()| make_reader<T: measure>(*const T value) {
+measure |()| make_reader<T: measure>(
+    *const T value
+) {
     return || value;
 }
 

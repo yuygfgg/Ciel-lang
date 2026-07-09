@@ -15,23 +15,31 @@ struct Packet {
 
 derive Message<Packet>;
 
-Result<usize, Error> packet_value(Result<Packet, async::AsyncError> result) {
+Result<usize, Error> packet_value(
+    Result<Packet, async::AsyncError> result
+) {
     Packet packet = result?;
     return Ok(packet.value);
 }
 
-async Result<Packet, Error> build_packet(usize seed) {
+async Result<Packet, Error> build_packet(
+    usize seed
+) {
     await async_time::sleep_ms(0)?;
     return Ok({ value: seed + 1 });
 }
 
-async Result<usize, Error> produce(async::Sender<Packet> sender, usize seed) {
+async Result<usize, Error> produce(
+    async::Sender<Packet> sender, usize seed
+) {
     Packet packet = await build_packet(seed)?;
     await async::send<Packet>(sender, packet)?;
     return Ok(packet.value + 10);
 }
 
-async Result<usize, Error> delayed(usize value, u64 ms) {
+async Result<usize, Error> delayed(
+    usize value, u64 ms
+) {
     await async_time::sleep_ms(ms)?;
     return Ok(value);
 }
@@ -48,15 +56,19 @@ async Result<usize, Error> controlled(
 
 async Result<usize, Error> drive() {
     async::ChannelPair<Packet> pair = async::channel<Packet>(1)?;
-    async::Task<usize, Error> producer = async::spawn<usize>(produce(pair.sender, 5))?;
+    async::Task<usize, Error> producer = async::spawn<usize>(
+        produce(pair.sender, 5)
+    )?;
 
     Packet first = await async::recv<Packet>(pair.receiver)?;
     usize producer_value = await producer?;
 
     async::Task<usize, Error> fast = async::spawn<usize>(delayed(7, 1))?;
     Result<usize, Error> picked = await select {
-        case packet = async::recv<Packet>(pair.receiver): packet_value(packet);
-        case done = fast: done;
+        case packet = async::recv<Packet>(pair.receiver):
+            packet_value(packet);
+        case done = fast:
+            done;
     };
     usize selected = picked?;
 
@@ -88,8 +100,9 @@ async Result<usize, Error> drive() {
     usize second_group = await async::group_next<usize>(&group)?;
     async::group_close<usize>(&group)?;
 
-    Result<Result<void, async::AsyncError>, async::AsyncError> timed =
-        await async::timeout(async_time::sleep_ms(0), 100);
+    Result<Result<void, async::AsyncError>, async::AsyncError> timed = await async::timeout(
+        async_time::sleep_ms(0), 100
+    );
     Result<void, async::AsyncError> inner = timed?;
     inner?;
 

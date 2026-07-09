@@ -20,12 +20,20 @@ void use_ptrs(storage::RawStorage<?*Cell> value) {
 }
 
 i64 main() {
-    storage::RawStorage<u8> @bytes = must(unsafe { storage::raw_zeroed<u8>(4) });
-    bytes = must(unsafe { storage::raw_realloc_zeroed<u8>(bytes, 0, 8) });
+    storage::RawStorage<u8> @bytes = must(
+        unsafe { storage::raw_zeroed<u8>(4) });
+    bytes = must(unsafe {
+        storage::raw_realloc_zeroed<u8>(bytes, 0, 8)
+    }
+    );
     use_bytes(bytes);
 
-    storage::RawStorage<?*Cell> @ptrs = must(unsafe { storage::raw_zeroed<?*Cell>(4) });
-    ptrs = must(unsafe { storage::raw_realloc_zeroed<?*Cell>(ptrs, 0, 8) });
+    storage::RawStorage<?*Cell> @ptrs = must(
+        unsafe { storage::raw_zeroed<?*Cell>(4) });
+    ptrs = must(unsafe {
+        storage::raw_realloc_zeroed<?*Cell>(ptrs, 0, 8)
+    }
+    );
     use_ptrs(ptrs);
     return 0;
 }

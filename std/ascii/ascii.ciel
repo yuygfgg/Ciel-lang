@@ -28,7 +28,8 @@ export bool char_is_alnum(char c) {
 
 export bool char_is_whitespace(char c) {
     u8 code = c as u8;
-    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || code == 11 || code == 12;
+    return c == ' ' || c == '\t' || c == '\n' ||
+        c == '\r' || code == 11 || code == 12;
 }
 
 export bool char_is_upper(char c) {
@@ -57,14 +58,18 @@ export char char_to_lower(char c) {
     return c;
 }
 
-export Result<u8, AsciiError> char_to_decimal_digit_value(char c) {
+export Result<u8, AsciiError> char_to_decimal_digit_value(
+    char c
+) {
     if (char_is_digit(c)) {
         return Ok((c as u8) - ('0' as u8));
     }
     return Err(InvalidChar);
 }
 
-export Result<u8, AsciiError> char_to_hex_digit_value(char c) {
+export Result<u8, AsciiError> char_to_hex_digit_value(
+    char c
+) {
     if (char_is_digit(c)) {
         return Ok((c as u8) - ('0' as u8));
     }
@@ -77,14 +82,18 @@ export Result<u8, AsciiError> char_to_hex_digit_value(char c) {
     return Err(InvalidChar);
 }
 
-export Result<char, AsciiError> decimal_digit_value_to_char(u8 value) {
+export Result<char, AsciiError> decimal_digit_value_to_char(
+    u8 value
+) {
     if (value <= 9) {
         return Ok((value + ('0' as u8)) as char);
     }
     return Err(InvalidDigitValue);
 }
 
-export Result<char, AsciiError> hex_digit_value_to_char(u8 value) {
+export Result<char, AsciiError> hex_digit_value_to_char(
+    u8 value
+) {
     if (value <= 9) {
         return Ok((value + ('0' as u8)) as char);
     }

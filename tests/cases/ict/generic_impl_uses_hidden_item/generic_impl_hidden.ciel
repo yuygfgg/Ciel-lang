@@ -30,9 +30,9 @@ i64 main() {
     Range range = { value: 13 };
     Peekable<Range> peekable = { inner: range, cached: 34 };
     switch (next(&peekable)) {
-    case Item(value):
-        return value;
-    case Done:
-        return 0;
+        case Item(value):
+            return value;
+        case Done:
+            return 0;
     }
 }

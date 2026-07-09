@@ -68,16 +68,22 @@ export Result<AuthConfig, app_error::TunnelError> auth_config_new(
     usize route_len = route.text::len();
     usize psk_len = psk.bytes::len();
     if (route_len > frame::max_payload_len()) {
-        return Err(app_error::Protocol(tunnel_error::OversizedPayload(route_len)));
+        return Err(
+            app_error::Protocol(tunnel_error::OversizedPayload(route_len))
+        );
     }
     if (psk_len > frame::max_payload_len()) {
-        return Err(app_error::Protocol(tunnel_error::OversizedPayload(psk_len)));
+        return Err(
+            app_error::Protocol(tunnel_error::OversizedPayload(psk_len))
+        );
     }
     return Ok({ route: route, psk: psk });
 }
 
 export Result<StreamRegistry, app_error::TunnelError> stream_registry_new() {
-    _ streams = app_error::tunnel(shared_map::shared_map_new<u32, async::Sender<StreamEvent>>())?;
+    _ streams = app_error::tunnel(
+        shared_map::shared_map_new<u32, async::Sender<StreamEvent>>()
+    )?;
     return Ok({ streams: streams });
 }
 
@@ -86,7 +92,9 @@ export Result<void, app_error::TunnelError> stream_registry_insert(
     u32 stream_id,
     async::Sender<StreamEvent> sender
 ) {
-    _ inserted = app_error::tunnel(registry.streams.shared_map::insert(stream_id, sender))?;
+    _ inserted = app_error::tunnel(
+        registry.streams.shared_map::insert(stream_id, sender)
+    )?;
     switch (inserted) {
         case map::InsertResult::Inserted:
             {}
@@ -113,7 +121,9 @@ export Result<void, app_error::TunnelError> stream_registry_remove_close(
     StreamRegistry registry,
     u32 stream_id
 ) {
-    _ removed = app_error::tunnel(registry.streams.shared_map::remove(stream_id))?;
+    _ removed = app_error::tunnel(
+        registry.streams.shared_map::remove(stream_id)
+    )?;
     switch (removed) {
         case shared_map::SharedMapGet::Found(sender):
             app_error::tunnel(sender.async::close())?;
@@ -123,7 +133,9 @@ export Result<void, app_error::TunnelError> stream_registry_remove_close(
     return Ok;
 }
 
-export Result<void, app_error::TunnelError> stream_registry_close_all(StreamRegistry registry) {
+export Result<void, app_error::TunnelError> stream_registry_close_all(
+    StreamRegistry registry
+) {
     while (true) {
         _ popped = app_error::tunnel(registry.streams.shared_map::pop_any())?;
         switch (popped) {
@@ -136,15 +148,21 @@ export Result<void, app_error::TunnelError> stream_registry_close_all(StreamRegi
     return Ok;
 }
 
-export Result<[]const char, app_error::TunnelError> auth_config_route(*const AuthConfig config) {
+export Result<[]const char, app_error::TunnelError> auth_config_route(
+    *const AuthConfig config
+) {
     return Ok(app_error::tunnel(config->route.text::slice())?);
 }
 
-export Result<[]u8, app_error::TunnelError> auth_config_psk(*const AuthConfig config) {
+export Result<[]u8, app_error::TunnelError> auth_config_psk(
+    *const AuthConfig config
+) {
     return Ok(app_error::tunnel(config->psk.bytes::to_slice())?);
 }
 
-export Result<[]u8, app_error::TunnelError> bytes_to_slice(bytes::Bytes bytes) {
+export Result<[]u8, app_error::TunnelError> bytes_to_slice(
+    bytes::Bytes bytes
+) {
     usize len = bytes.bytes::len();
     if (len > frame::max_payload_len()) {
         return Err(app_error::Protocol(tunnel_error::OversizedPayload(len)));
@@ -180,7 +198,9 @@ export Result<void, app_error::TunnelError> frame_reader_push(
     return Ok;
 }
 
-export Result<FrameReadResult, app_error::TunnelError> frame_reader_next(*FrameReader reader) {
+export Result<FrameReadResult, app_error::TunnelError> frame_reader_next(
+    *FrameReader reader
+) {
     []const u8 input = reader->buffer.buf::slice();
     if (input.len < frame::header_len()) {
         return Ok(NeedMore);
@@ -199,7 +219,10 @@ export Result<FrameReadResult, app_error::TunnelError> frame_reader_next(*FrameR
         bytes::bytes_copy(input[frame::header_len()..total_len])
     )?;
     app_error::tunnel(reader->buffer.buf::discard_prefix(total_len))?;
-    return Ok(FrameReady({ kind: header.kind, stream_id: header.stream_id, payload: payload }));
+    return Ok(
+        FrameReady(
+            { kind: header.kind, stream_id: header.stream_id, payload: payload })
+    );
 }
 
 export Result<bytes::Bytes, app_error::TunnelError> empty_bytes() {
@@ -207,7 +230,9 @@ export Result<bytes::Bytes, app_error::TunnelError> empty_bytes() {
     return Ok(app_error::tunnel(bytes::bytes_copy(empty[..0]))?);
 }
 
-export void close_stream_silent(anet::AsyncTcpStream stream) {
+export void close_stream_silent(
+    anet::AsyncTcpStream stream
+) {
     stream.anet::shutdown_read();
     stream.anet::shutdown_write();
     stream.anet::close();
@@ -225,7 +250,9 @@ export Result<bytes::Bytes, app_error::TunnelError> encode_frame_from_slice(
         stream_id: stream_id,
         length: payload.len as u32
     };
-    []u8 encoded_header = app_error::tunnel(tunnel_codec::encode_header(header))?;
+    []u8 encoded_header = app_error::tunnel(
+        tunnel_codec::encode_header(header)
+    )?;
     return Ok(app_error::tunnel(bytes::bytes_concat(encoded_header, payload))?);
 }
 
@@ -242,7 +269,9 @@ export Result<bytes::Bytes, app_error::TunnelError> encode_frame_from_bytes(
         stream_id: stream_id,
         length: len as u32
     };
-    []u8 encoded_header = app_error::tunnel(tunnel_codec::encode_header(header))?;
+    []u8 encoded_header = app_error::tunnel(
+        tunnel_codec::encode_header(header)
+    )?;
     return Ok(app_error::tunnel(payload.bytes::prepend(encoded_header))?);
 }
 
@@ -279,8 +308,12 @@ export async Result<void, app_error::TunnelError> send_close_stream(
     u16 code,
     []const char message
 ) {
-    []u8 payload = app_error::tunnel(tunnel_codec::encode_close_reason(code, message))?;
-    bytes::Bytes encoded = encode_frame_from_slice(frame::CloseStream, stream_id, payload)?;
+    []u8 payload = app_error::tunnel(
+        tunnel_codec::encode_close_reason(code, message)
+    )?;
+    bytes::Bytes encoded = encode_frame_from_slice(
+        frame::CloseStream, stream_id, payload
+    )?;
     return await send_control_bytes(control, encoded);
 }
 
@@ -290,7 +323,9 @@ Result<bytes::Bytes, app_error::TunnelError> encode_close_stream_text(
     text::Text message
 ) {
     []const char message_text = app_error::tunnel(text::text_to_slice(message))?;
-    []u8 payload = app_error::tunnel(tunnel_codec::encode_close_reason(code, message_text))?;
+    []u8 payload = app_error::tunnel(
+        tunnel_codec::encode_close_reason(code, message_text)
+    )?;
     return encode_frame_from_slice(frame::CloseStream, stream_id, payload);
 }
 
@@ -303,7 +338,6 @@ export async Result<void, app_error::TunnelError> send_close_stream_text(
     bytes::Bytes encoded = encode_close_stream_text(stream_id, code, message)?;
     return await send_control_bytes(control, encoded);
 }
-
 
 export async Result<void, app_error::TunnelError> send_stream_event(
     async::Sender<StreamEvent> events,
@@ -366,12 +400,16 @@ async Result<void, app_error::TunnelError> local_stream_reader_inner(
                     notify_stream_local_closed(events)?;
                     return Ok;
                 }
-                _ sent = await send_control_frame_bytes(control, frame::Data, stream_id, bytes);
+                _ sent = await send_control_frame_bytes(
+                    control, frame::Data, stream_id, bytes
+                );
                 switch (sent) {
                     case Ok:
                         {}
                     case Err(error):
-                        notify_stream_local_failed(events, io::to_string(&error))?;
+                        notify_stream_local_failed(
+                            events, io::to_string(&error)
+                        )?;
                         return Ok;
                 }
             case Err(error):
@@ -388,9 +426,13 @@ export Result<async::Task<void, app_error::TunnelError>, app_error::TunnelError>
     async::Sender<bytes::Bytes> control,
     async::Sender<StreamEvent> events
 ) {
-    return Ok(app_error::tunnel(
-        async::spawn<void>(local_stream_reader_inner(stream_id, reader, control, events))
-    )?);
+    return Ok(
+        app_error::tunnel(
+            async::spawn<void>(
+                local_stream_reader_inner(stream_id, reader, control, events)
+            )
+        )?
+    );
 }
 
 export bool kind_is(frame::FrameKind left, frame::FrameKind right) {

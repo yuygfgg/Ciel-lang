@@ -19,7 +19,9 @@ unsafe extern "C" {
     c::c_int close(c::c_int fd);
 }
 
-Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
+Result<aio::AsyncFd, Error> pipe_read_end(
+    *c::c_int write_fd_out
+) {
     [2]c::c_int @fds = [0 as c::c_int;];
     c::c_int rc = unsafe { pipe(&fds[0]) };
     if ((rc as i64) != 0) {
@@ -30,7 +32,9 @@ Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
     return Ok(unsafe { aio::async_from_raw_fd(raw)? });
 }
 
-async Result<usize, Error> read_until_cancelled(aio::AsyncFd read_fd) {
+async Result<usize, Error> read_until_cancelled(
+    aio::AsyncFd read_fd
+) {
     bytes::Bytes inbound = await aio::read_bytes(&read_fd, 8)?;
     aio::close_async(read_fd)?;
     return Ok(bytes::bytes_len(inbound));
@@ -39,7 +43,9 @@ async Result<usize, Error> read_until_cancelled(aio::AsyncFd read_fd) {
 Result<usize, Error> drive() {
     c::c_int @write_fd = -1 as c::c_int;
     aio::AsyncFd read_fd = pipe_read_end(&write_fd)?;
-    async::Task<usize, Error> task = async::spawn<usize>(read_until_cancelled(read_fd))?;
+    async::Task<usize, Error> task = async::spawn<usize>(
+        read_until_cancelled(read_fd)
+    )?;
     async::block_on(async_time::sleep_ms(10))?;
     async::cancel<usize>(&task)?;
     if (!async::is_finished<usize>(&task)?) {

@@ -21,7 +21,9 @@ unsafe impl clone_message(*const Audit value) {
     return Ok(*value);
 }
 
-Result<void, Error> publish<T: Message>(*const Channel<T> channel, T value) {
+Result<void, Error> publish<T: Message>(
+    *const Channel<T> channel, T value
+) {
     channel_send(channel, value)?;
     return Ok;
 }
@@ -29,21 +31,25 @@ Result<void, Error> publish<T: Message>(*const Channel<T> channel, T value) {
 i64 main() {
     Audit audit = { out: must(make_channel<i64>()) };
 
-    Actor<Command<i64>> actor = must(spawn_actor_cloned<i64, Command<i64>>(0, |i64 state, Command<i64> command| {
-        Audit local_audit = audit;
-        switch (command) {
-            case Store(value):
-                i64 next = state + value;
-                if (next > 10) {
-                    publish(&local_audit.out, next)?;
+    Actor<Command<i64>> actor = must(
+        spawn_actor_cloned<i64, Command<i64>>(
+            0, |i64 state, Command<i64> command| {
+                Audit local_audit = audit;
+                switch (command) {
+                    case Store(value):
+                        i64 next = state + value;
+                        if (next > 10) {
+                            publish(&local_audit.out, next)?;
+                            }
+                        return Ok(next);
+                    case Flush(marker):
+                        marker;
+                        publish(&local_audit.out, state)?;
+                        return Ok(state);
                 }
-                return Ok(next);
-            case Flush(marker):
-                marker;
-                publish(&local_audit.out, state)?;
-                return Ok(state);
-        }
-    }));
+            }
+        )
+    );
 
     must(send(&actor, Store(4)));
     must(send(&actor, Store(7)));

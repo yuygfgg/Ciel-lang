@@ -8,13 +8,17 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> add_after_two_awaits(usize value) {
+async Result<usize, Error> add_after_two_awaits(
+    usize value
+) {
     await async_time::sleep_ms(0)?;
     await async_time::sleep_ms(1)?;
     return Ok(value + 3);
 }
 
-async Result<usize, Error> nested_loop_branch_sum(usize limit) {
+async Result<usize, Error> nested_loop_branch_sum(
+    usize limit
+) {
     usize @i = 0;
     usize @sum = 0;
     while (i < limit) {

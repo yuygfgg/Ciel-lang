@@ -4,7 +4,9 @@
 import /std/lib;
 
 i32 main() {
-    AsyncTcpListener listener = must(listen_async(must(parse_addr("127.0.0.1:0"))));
+    AsyncTcpListener listener = must(
+        listen_async(must(parse_addr("127.0.0.1:0")))
+    );
     must(close_listener(listener));
     return 0;
 }

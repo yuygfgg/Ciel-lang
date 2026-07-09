@@ -18,7 +18,9 @@ async Result<usize, Error> outer(usize value) {
     return Ok(inner_value + 1);
 }
 
-async Result<usize, Error> drive(async::Future<Result<usize, Error>> future) {
+async Result<usize, Error> drive(
+    async::Future<Result<usize, Error>> future
+) {
     return await future;
 }
 

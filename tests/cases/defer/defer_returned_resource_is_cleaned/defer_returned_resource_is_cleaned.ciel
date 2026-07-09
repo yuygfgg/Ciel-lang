@@ -11,17 +11,23 @@ io::File deferred_open([]const char path) {
     return must(io::open_read(path));
 }
 
-Result<void, Error> register_defer([]const char path) {
+Result<void, Error> register_defer(
+    []const char path
+) {
     defer deferred_open(path);
     return Ok;
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "defer-resource")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "defer-resource")?;
+                return Ok;
+            }
+        )
+    );
 
     resource::Limits limits = {
         max_resources: 8,
@@ -29,11 +35,15 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void, Error>(limits, || {
-        register_defer(path)?;
-        io::File again = io::open_read(path)?;
-        io::close(again)?;
-        return Ok;
-    }));
+    must(
+        resource::scoped_with_limits<void, Error>(
+            limits, || {
+                register_defer(path)?;
+                io::File again = io::open_read(path)?;
+                io::close(again)?;
+                return Ok;
+            }
+        )
+    );
     return 0;
 }

@@ -24,11 +24,15 @@ unsafe extern "C" {
     *const A future
 ) {
     return unsafe {
-        async::awaitable_future<Result<bytes::Bytes, async::AsyncError>>(future) as *CielFuture
+        async::awaitable_future<Result<bytes::Bytes, async::AsyncError>>(
+            future
+        ) as *CielFuture
     };
 }
 
-Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
+Result<aio::AsyncFd, Error> pipe_read_end(
+    *c::c_int write_fd_out
+) {
     [2]c::c_int @fds = [0 as c::c_int;];
     c::c_int rc = unsafe { pipe(&fds[0]) };
     if ((rc as i64) != 0) {
@@ -50,7 +54,9 @@ Result<usize, Error> drive() {
     *CielAsyncOp raw_op = unsafe { raw_op_void as *CielAsyncOp };
     _ future = async::future_from_op(read);
     Result<bytes::Bytes, async::AsyncError> @out = Err(async::Runtime(0));
-    c::c_int start = unsafe { ciel_future_poll_trampoline(raw_future(&future), &out as *void) };
+    c::c_int start = unsafe {
+        ciel_future_poll_trampoline(raw_future(&future), &out as *void)
+    };
     if (start != unsafe { ciel_async_again_errno() }) {
         return Err(code_error(81));
     }
@@ -59,7 +65,9 @@ Result<usize, Error> drive() {
     ?*u8 @raw = null;
     usize @len = 0;
     usize @cap = 0;
-    c::c_int finish_rc = unsafe { ciel_async_finish_read(raw_op, &raw, &len, &cap) };
+    c::c_int finish_rc = unsafe {
+        ciel_async_finish_read(raw_op, &raw, &len, &cap)
+    };
     aio::close_async(read_fd)?;
     _ close_writer = unsafe { close(write_fd) };
     if (finish_rc == unsafe { ciel_async_again_errno() }) {

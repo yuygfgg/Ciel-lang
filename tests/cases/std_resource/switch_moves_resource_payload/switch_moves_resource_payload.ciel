@@ -6,7 +6,9 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-Result<io::File, io::IoError> pass_through(Result<io::File, io::IoError> input) {
+Result<io::File, io::IoError> pass_through(
+    Result<io::File, io::IoError> input
+) {
     switch (input) {
         case Ok(file):
             return Ok(file);
@@ -17,10 +19,14 @@ Result<io::File, io::IoError> pass_through(Result<io::File, io::IoError> input) 
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "switch")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "switch")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(pass_through(io::open_read(path)));
     [8]u8 @buffer = [0;];

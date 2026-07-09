@@ -5,7 +5,9 @@ import /std/async as async;
 import /std/io as io;
 import /std/result;
 
-async Result<usize, Error> close_file(io::File @file) {
+async Result<usize, Error> close_file(
+    io::File @file
+) {
     io::close(file)?;
     return Ok(1);
 }

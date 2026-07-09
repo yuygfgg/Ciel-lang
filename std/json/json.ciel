@@ -25,8 +25,7 @@ export enum Value {
     Bool(bool),
     Number(JsonNumber),
     String(text::Text),
-    Array(vec::Vec<Value>),
-    // Object entries are stored as alternating String(name), value items.
+    Array(vec::Vec<Value>), // Object entries are stored as alternating String(name), value items.
     Object(vec::Vec<Value>),
 }
 
@@ -47,7 +46,9 @@ export struct Writer {
     buf::ByteBuf out;
 }
 
-wire::WireError error_at(wire::WireErrorKind kind, usize offset, []const char message) {
+wire::WireError error_at(
+    wire::WireErrorKind kind, usize offset, []const char message
+) {
     return wire::wire_error_at(kind, offset, message);
 }
 
@@ -55,7 +56,9 @@ wire::WireError storage_error(usize offset) {
     return wire::wire_error_at(wire::Storage, offset, "json storage error");
 }
 
-Result<void, wire::WireError> push_byte(*buf::ByteBuf out, u8 value, usize offset) {
+Result<void, wire::WireError> push_byte(
+    *buf::ByteBuf out, u8 value, usize offset
+) {
     []u8 @spare;
     switch (buf::byte_buf_spare_mut_slice(out, 1)) {
         case Ok(slice):
@@ -72,7 +75,9 @@ Result<void, wire::WireError> push_byte(*buf::ByteBuf out, u8 value, usize offse
     }
 }
 
-Result<void, wire::WireError> push_chars(*buf::ByteBuf out, []const char data, usize offset) {
+Result<void, wire::WireError> push_chars(
+    *buf::ByteBuf out, []const char data, usize offset
+) {
     if (data.len == 0) {
         return Ok;
     }
@@ -96,7 +101,9 @@ Result<void, wire::WireError> push_chars(*buf::ByteBuf out, []const char data, u
     }
 }
 
-Result<text::Text, wire::WireError> text_from_buf(buf::ByteBuf @out, usize offset) {
+Result<text::Text, wire::WireError> text_from_buf(
+    buf::ByteBuf @out, usize offset
+) {
     bytes::Bytes @frozen;
     switch (out.buf::freeze()) {
         case Ok(value):
@@ -122,7 +129,9 @@ export Result<Writer, wire::WireError> writer_new() {
     return Ok({ out: out });
 }
 
-export Result<text::Text, wire::WireError> writer_finish(Writer @writer) {
+export Result<text::Text, wire::WireError> writer_finish(
+    Writer @writer
+) {
     buf::ByteBuf @out = writer.out;
     return text_from_buf(out, 0);
 }
@@ -154,7 +163,9 @@ void skip_ws(*Reader reader) {
     }
 }
 
-Result<void, wire::WireError> expect_char(*Reader reader, char expected, []const char message) {
+Result<void, wire::WireError> expect_char(
+    *Reader reader, char expected, []const char message
+) {
     if (at_end(reader)) {
         return Err(error_at(wire::Eof, unsafe { reader->offset }, message));
     }
@@ -165,14 +176,24 @@ Result<void, wire::WireError> expect_char(*Reader reader, char expected, []const
     return Ok;
 }
 
-Result<void, wire::WireError> consume_literal(*Reader reader, []const char literal) {
+Result<void, wire::WireError> consume_literal(
+    *Reader reader, []const char literal
+) {
     usize @i = 0;
     while (i < literal.len) {
         if (at_end(reader)) {
-            return Err(error_at(wire::Eof, unsafe { reader->offset }, "unexpected end of input"));
+            return Err(
+                error_at(
+                    wire::Eof, unsafe { reader->offset }, "unexpected end of input"
+                )
+            );
         }
         if (peek(reader) != literal[i]) {
-            return Err(error_at(wire::Syntax, unsafe { reader->offset }, "invalid literal"));
+            return Err(
+                error_at(
+                    wire::Syntax, unsafe { reader->offset }, "invalid literal"
+                )
+            );
         }
         advance(reader);
         i = i + 1;
@@ -189,7 +210,9 @@ bool is_number_tail(char c) {
         c == 'E';
 }
 
-Result<void, wire::WireError> consume_digits(*Reader reader, []const char message) {
+Result<void, wire::WireError> consume_digits(
+    *Reader reader, []const char message
+) {
     if (at_end(reader) || !ascii::char_is_digit(peek(reader))) {
         return Err(error_at(wire::Syntax, unsafe { reader->offset }, message));
     }
@@ -199,19 +222,27 @@ Result<void, wire::WireError> consume_digits(*Reader reader, []const char messag
     return Ok;
 }
 
-Result<JsonNumber, wire::WireError> parse_number(*Reader reader) {
+Result<JsonNumber, wire::WireError> parse_number(
+    *Reader reader
+) {
     usize start = unsafe { reader->offset };
     if (peek(reader) == '-') {
         advance(reader);
     }
     if (at_end(reader)) {
-        return Err(error_at(wire::Eof, unsafe { reader->offset }, "incomplete number"));
+        return Err(
+            error_at(wire::Eof, unsafe { reader->offset }, "incomplete number")
+        );
     }
 
     if (peek(reader) == '0') {
         advance(reader);
         if (!at_end(reader) && ascii::char_is_digit(peek(reader))) {
-            return Err(error_at(wire::Syntax, unsafe { reader->offset }, "leading zero in number"));
+            return Err(
+                error_at(
+                    wire::Syntax, unsafe { reader->offset }, "leading zero in number"
+                )
+            );
         }
     } else {
         consume_digits(reader, "expected number digit")?;
@@ -231,7 +262,9 @@ Result<JsonNumber, wire::WireError> parse_number(*Reader reader) {
     }
 
     if (!at_end(reader) && is_number_tail(peek(reader))) {
-        return Err(error_at(wire::Syntax, unsafe { reader->offset }, "invalid number"));
+        return Err(
+            error_at(wire::Syntax, unsafe { reader->offset }, "invalid number")
+        );
     }
 
     []const char raw = unsafe { reader->input[start..reader->offset] };
@@ -245,19 +278,29 @@ Result<JsonNumber, wire::WireError> parse_number(*Reader reader) {
     return Ok({ raw: text_value });
 }
 
-Result<u32, wire::WireError> parse_hex4(*Reader reader) {
+Result<u32, wire::WireError> parse_hex4(
+    *Reader reader
+) {
     u32 @value = 0 as u32;
     usize @i = 0;
     while (i < 4) {
         if (at_end(reader)) {
-            return Err(error_at(wire::Eof, unsafe { reader->offset }, "incomplete unicode escape"));
+            return Err(
+                error_at(
+                    wire::Eof, unsafe { reader->offset }, "incomplete unicode escape"
+                )
+            );
         }
         u8 @digit;
         switch (ascii::char_to_hex_digit_value(peek(reader))) {
             case Ok(v):
                 digit = v;
             case Err(_):
-                return Err(error_at(wire::Syntax, unsafe { reader->offset }, "invalid unicode escape"));
+                return Err(
+                    error_at(
+                        wire::Syntax, unsafe { reader->offset }, "invalid unicode escape"
+                    )
+                );
         }
         value = (value << (4 as u8)) | (digit as u32);
         advance(reader);
@@ -266,57 +309,104 @@ Result<u32, wire::WireError> parse_hex4(*Reader reader) {
     return Ok(value);
 }
 
-Result<void, wire::WireError> append_utf8(*buf::ByteBuf out, u32 codepoint, usize offset) {
+Result<void, wire::WireError> append_utf8(
+    *buf::ByteBuf out, u32 codepoint, usize offset
+) {
     if (codepoint <= (0x7f as u32)) {
         return push_byte(out, codepoint as u8, offset);
     }
     if (codepoint <= (0x7ff as u32)) {
-        push_byte(out, ((0xc0 as u8) | ((codepoint >> (6 as u8)) as u8)), offset)?;
-        return push_byte(out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset);
+        push_byte(
+            out, ((0xc0 as u8) | ((codepoint >> (6 as u8)) as u8)), offset
+        )?;
+        return push_byte(
+            out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset
+        );
     }
     if (codepoint <= (0xffff as u32)) {
-        push_byte(out, ((0xe0 as u8) | ((codepoint >> (12 as u8)) as u8)), offset)?;
-        push_byte(out, ((0x80 as u8) | (((codepoint >> (6 as u8)) & (0x3f as u32)) as u8)), offset)?;
-        return push_byte(out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset);
+        push_byte(
+            out, ((0xe0 as u8) | ((codepoint >> (12 as u8)) as u8)), offset
+        )?;
+        push_byte(
+            out, ((0x80 as u8) |
+            (((codepoint >> (6 as u8)) & (0x3f as u32)) as u8)), offset
+        )?;
+        return push_byte(
+            out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset
+        );
     }
     if (codepoint <= (0x10ffff as u32)) {
-        push_byte(out, ((0xf0 as u8) | ((codepoint >> (18 as u8)) as u8)), offset)?;
-        push_byte(out, ((0x80 as u8) | (((codepoint >> (12 as u8)) & (0x3f as u32)) as u8)), offset)?;
-        push_byte(out, ((0x80 as u8) | (((codepoint >> (6 as u8)) & (0x3f as u32)) as u8)), offset)?;
-        return push_byte(out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset);
+        push_byte(
+            out, ((0xf0 as u8) | ((codepoint >> (18 as u8)) as u8)), offset
+        )?;
+        push_byte(
+            out,
+            ((0x80 as u8) | (((codepoint >> (12 as u8)) & (0x3f as u32)) as u8)),
+            offset
+        )?;
+        push_byte(
+            out, ((0x80 as u8) |
+            (((codepoint >> (6 as u8)) & (0x3f as u32)) as u8)), offset
+        )?;
+        return push_byte(
+            out, ((0x80 as u8) | ((codepoint & (0x3f as u32)) as u8)), offset
+        );
     }
-    return Err(error_at(wire::InvalidValue, offset, "unicode codepoint out of range"));
+    return Err(
+        error_at(wire::InvalidValue, offset, "unicode codepoint out of range")
+    );
 }
 
-Result<void, wire::WireError> parse_unicode_escape(*Reader reader, *buf::ByteBuf out) {
+Result<void, wire::WireError> parse_unicode_escape(
+    *Reader reader, *buf::ByteBuf out
+) {
     usize escape_offset = unsafe { reader->offset };
     u32 @codepoint = parse_hex4(reader)?;
     if (codepoint >= (0xd800 as u32) && codepoint <= (0xdbff as u32)) {
         if ((unsafe { reader->offset } + 1) >= unsafe { reader->input.len }) {
-            return Err(error_at(wire::Eof, unsafe { reader->offset }, "missing low surrogate"));
+            return Err(
+                error_at(
+                    wire::Eof, unsafe { reader->offset }, "missing low surrogate"
+                )
+            );
         }
         if (unsafe { reader->input[reader->offset] } != '\\' ||
             unsafe { reader->input[reader->offset + 1] } != 'u') {
-            return Err(error_at(wire::InvalidValue, unsafe { reader->offset }, "missing low surrogate"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, unsafe { reader->offset }, "missing low surrogate"
+                )
+            );
         }
         unsafe {
             reader->offset = reader->offset + 2;
         };
         u32 low = parse_hex4(reader)?;
-        if (low < (0xdc00 as u32) || low > (0xdfff as u32)) {
-            return Err(error_at(wire::InvalidValue, unsafe { reader->offset }, "invalid low surrogate"));
+        if (low<(0xdc00 as u32) || low>(0xdfff as u32)) {
+            return Err(
+                error_at(
+                    wire::InvalidValue, unsafe { reader->offset }, "invalid low surrogate"
+                )
+            );
         }
         codepoint = (0x10000 as u32) +
-            (((codepoint - (0xd800 as u32)) << (10 as u8)) | (low - (0xdc00 as u32)));
+            (((codepoint - (0xd800 as u32)) << (10 as u8)) |
+            (low - (0xdc00 as u32)));
     } else {
         if (codepoint >= (0xdc00 as u32) && codepoint <= (0xdfff as u32)) {
-            return Err(error_at(wire::InvalidValue, escape_offset, "unexpected low surrogate"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, escape_offset, "unexpected low surrogate"
+                )
+            );
         }
     }
     return append_utf8(out, codepoint, escape_offset);
 }
 
-Result<text::Text, wire::WireError> parse_string_text(*Reader reader) {
+Result<text::Text, wire::WireError> parse_string_text(
+    *Reader reader
+) {
     usize start = unsafe { reader->offset };
     expect_char(reader, '"', "expected string")?;
     buf::ByteBuf @out;
@@ -329,7 +419,11 @@ Result<text::Text, wire::WireError> parse_string_text(*Reader reader) {
 
     while (true) {
         if (at_end(reader)) {
-            return Err(error_at(wire::Eof, unsafe { reader->offset }, "unterminated string"));
+            return Err(
+                error_at(
+                    wire::Eof, unsafe { reader->offset }, "unterminated string"
+                )
+            );
         }
         char c = peek(reader);
         advance(reader);
@@ -337,13 +431,21 @@ Result<text::Text, wire::WireError> parse_string_text(*Reader reader) {
             return text_from_buf(out, start);
         }
         if ((c as u8) < (0x20 as u8)) {
-            return Err(error_at(wire::Syntax, unsafe { reader->offset - 1 }, "control character in string"));
+            return Err(
+                error_at(
+                    wire::Syntax, unsafe { reader->offset - 1 }, "control character in string"
+                )
+            );
         }
         if (c != '\\') {
             push_byte(&out, c as u8, unsafe { reader->offset - 1 })?;
         } else {
             if (at_end(reader)) {
-                return Err(error_at(wire::Eof, unsafe { reader->offset }, "unterminated escape"));
+                return Err(
+                    error_at(
+                        wire::Eof, unsafe { reader->offset }, "unterminated escape"
+                    )
+                );
             }
             char esc = peek(reader);
             advance(reader);
@@ -366,17 +468,25 @@ Result<text::Text, wire::WireError> parse_string_text(*Reader reader) {
             } else if (esc == 'u') {
                 parse_unicode_escape(reader, &out)?;
             } else {
-                return Err(error_at(wire::Syntax, unsafe { reader->offset - 1 }, "invalid string escape"));
+                return Err(
+                    error_at(
+                        wire::Syntax, unsafe { reader->offset - 1 }, "invalid string escape"
+                    )
+                );
             }
         }
     }
 }
 
 // Reads one JSON value from reader.
-export Result<Value, wire::WireError> read_value(*Reader reader) {
+export Result<Value, wire::WireError> read_value(
+    *Reader reader
+) {
     skip_ws(reader);
     if (at_end(reader)) {
-        return Err(error_at(wire::Eof, unsafe { reader->offset }, "expected value"));
+        return Err(
+            error_at(wire::Eof, unsafe { reader->offset }, "expected value")
+        );
     }
     char c = peek(reader);
     if (c == 'n') {
@@ -419,7 +529,11 @@ export Result<Value, wire::WireError> read_value(*Reader reader) {
             }
             skip_ws(reader);
             if (at_end(reader)) {
-                return Err(error_at(wire::Eof, unsafe { reader->offset }, "unterminated array"));
+                return Err(
+                    error_at(
+                        wire::Eof, unsafe { reader->offset }, "unterminated array"
+                    )
+                );
             }
             if (peek(reader) == ',') {
                 advance(reader);
@@ -428,7 +542,11 @@ export Result<Value, wire::WireError> read_value(*Reader reader) {
                 advance(reader);
                 return Ok(Array(items));
             } else {
-                return Err(error_at(wire::Syntax, unsafe { reader->offset }, "expected array separator"));
+                return Err(
+                    error_at(
+                        wire::Syntax, unsafe { reader->offset }, "expected array separator"
+                    )
+                );
             }
         }
     }
@@ -467,7 +585,11 @@ export Result<Value, wire::WireError> read_value(*Reader reader) {
             }
             skip_ws(reader);
             if (at_end(reader)) {
-                return Err(error_at(wire::Eof, unsafe { reader->offset }, "unterminated object"));
+                return Err(
+                    error_at(
+                        wire::Eof, unsafe { reader->offset }, "unterminated object"
+                    )
+                );
             }
             if (peek(reader) == ',') {
                 advance(reader);
@@ -476,7 +598,11 @@ export Result<Value, wire::WireError> read_value(*Reader reader) {
                 advance(reader);
                 return Ok(Object(members));
             } else {
-                return Err(error_at(wire::Syntax, unsafe { reader->offset }, "expected object separator"));
+                return Err(
+                    error_at(
+                        wire::Syntax, unsafe { reader->offset }, "expected object separator"
+                    )
+                );
             }
         }
     }
@@ -484,11 +610,15 @@ export Result<Value, wire::WireError> read_value(*Reader reader) {
         JsonNumber number = parse_number(reader)?;
         return Ok(Number(number));
     }
-    return Err(error_at(wire::Syntax, unsafe { reader->offset }, "expected value"));
+    return Err(
+        error_at(wire::Syntax, unsafe { reader->offset }, "expected value")
+    );
 }
 
 // Parses one complete JSON value and rejects trailing non-whitespace input.
-export Result<Value, wire::WireError> parse([]const char input) {
+export Result<Value, wire::WireError> parse(
+    []const char input
+) {
     Reader @r = reader(input);
     Value value = read_value(&r)?;
     skip_ws(&r);
@@ -498,7 +628,9 @@ export Result<Value, wire::WireError> parse([]const char input) {
     return Ok(value);
 }
 
-Result<[]const char, wire::WireError> number_raw_chars(JsonNumber number) {
+Result<[]const char, wire::WireError> number_raw_chars(
+    JsonNumber number
+) {
     switch (text::text_to_slice(number.raw)) {
         case Ok(raw):
             return Ok(raw);
@@ -520,18 +652,32 @@ Result<T, wire::WireError> decode_number<T: parse::parse_number>(
                 case Ok(out):
                     return Ok(out);
                 case Err(_):
-                    return Err(error_at(wire::InvalidValue, start, "invalid JSON number for target type"));
+                    return Err(
+                        error_at(
+                            wire::InvalidValue, start, "invalid JSON number for target type"
+                        )
+                    );
             }
         case Null:
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON number"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON number")
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON number"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON number")
+            );
         case String(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON number"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON number")
+            );
         case Array(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON number"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON number")
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON number"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON number")
+            );
     }
 }
 
@@ -562,7 +708,9 @@ bool f64_is_finite(f64 value) {
 }
 
 // Encodes one value to JSON text through the wire interface.
-export Result<text::Text, wire::WireError> encode<T: wire::encode_value<Writer>>(*const T value) {
+export Result<text::Text, wire::WireError> encode<T: wire::encode_value<Writer>>(
+    *const T value
+) {
     Writer @writer = writer_new()?;
     wire::encode_value(value, &writer)?;
     return writer_finish(writer);
@@ -586,7 +734,9 @@ export interface Encode = wire::encode_value<Writer>;
 export interface Decode = wire::decode_value<Reader>;
 export interface Wire = Encode + Decode;
 
-Result<void, wire::WireError> write_text_value(*buf::ByteBuf out, text::Text value) {
+Result<void, wire::WireError> write_text_value(
+    *buf::ByteBuf out, text::Text value
+) {
     bytes::Bytes @raw;
     switch (text::text_to_bytes(value)) {
         case Ok(bytes_value):
@@ -603,7 +753,9 @@ Result<void, wire::WireError> write_text_value(*buf::ByteBuf out, text::Text val
     return Ok;
 }
 
-Result<void, wire::WireError> write_string_text(*buf::ByteBuf out, text::Text value) {
+Result<void, wire::WireError> write_string_text(
+    *buf::ByteBuf out, text::Text value
+) {
     push_byte(out, '"' as u8, 0)?;
     bytes::Bytes @raw;
     switch (text::text_to_bytes(value)) {
@@ -641,7 +793,9 @@ Result<void, wire::WireError> write_string_text(*buf::ByteBuf out, text::Text va
     return push_byte(out, '"' as u8, 0);
 }
 
-Result<void, wire::WireError> write_value_to_buf(*const Value value, *buf::ByteBuf out) {
+Result<void, wire::WireError> write_value_to_buf(
+    *const Value value, *buf::ByteBuf out
+) {
     switch (*value) {
         case Null:
             return push_chars(out, "null", 0);
@@ -676,21 +830,45 @@ Result<void, wire::WireError> write_value_to_buf(*const Value value, *buf::ByteB
                     push_byte(out, ',' as u8, 0)?;
                 }
                 if ((i + 1) >= values.len) {
-                    return Err(error_at(wire::InvalidValue, 0, "invalid json object value"));
+                    return Err(
+                        error_at(
+                            wire::InvalidValue, 0, "invalid json object value"
+                        )
+                    );
                 }
                 switch (values[i]) {
                     case String(name):
                         write_string_text(out, name)?;
                     case Null:
-                        return Err(error_at(wire::InvalidValue, 0, "invalid json object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid json object key"
+                            )
+                        );
                     case Bool(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid json object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid json object key"
+                            )
+                        );
                     case Number(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid json object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid json object key"
+                            )
+                        );
                     case Array(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid json object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid json object key"
+                            )
+                        );
                     case Object(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid json object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid json object key"
+                            )
+                        );
                 }
                 push_byte(out, ':' as u8, 0)?;
                 Value member_value = values[i + 1];
@@ -702,18 +880,24 @@ Result<void, wire::WireError> write_value_to_buf(*const Value value, *buf::ByteB
 }
 
 // Writes one JSON value into writer.
-export Result<void, wire::WireError> write_value(*const Value value, *Writer writer) {
+export Result<void, wire::WireError> write_value(
+    *const Value value, *Writer writer
+) {
     return write_value_to_buf(value, unsafe { &writer->out });
 }
 
 // Serializes a JSON value tree into owned text.
-export Result<text::Text, wire::WireError> stringify(*const Value value) {
+export Result<text::Text, wire::WireError> stringify(
+    *const Value value
+) {
     Writer @writer = writer_new()?;
     write_value(value, &writer)?;
     return writer_finish(writer);
 }
 
-Result<void, wire::WireError> write_string_chars(*buf::ByteBuf out, []const char value) {
+Result<void, wire::WireError> write_string_chars(
+    *buf::ByteBuf out, []const char value
+) {
     text::Text @text_value;
     switch (text::text_copy(value)) {
         case Ok(copied):
@@ -724,7 +908,9 @@ Result<void, wire::WireError> write_string_chars(*buf::ByteBuf out, []const char
     return write_string_text(out, text_value);
 }
 
-Result<[]const char, wire::WireError> text_slice_or_storage(text::Text value) {
+Result<[]const char, wire::WireError> text_slice_or_storage(
+    text::Text value
+) {
     switch (text::text_to_slice(value)) {
         case Ok(slice):
             return Ok(slice);
@@ -733,7 +919,9 @@ Result<[]const char, wire::WireError> text_slice_or_storage(text::Text value) {
     }
 }
 
-Result<text::Text, wire::WireError> text_copy_or_storage([]const char value) {
+Result<text::Text, wire::WireError> text_copy_or_storage(
+    []const char value
+) {
     switch (text::text_copy(value)) {
         case Ok(copied):
             return Ok(copied);
@@ -742,7 +930,9 @@ Result<text::Text, wire::WireError> text_copy_or_storage([]const char value) {
     }
 }
 
-Result<text::Text, wire::WireError> text_concat_or_storage(text::Text left, text::Text right) {
+Result<text::Text, wire::WireError> text_concat_or_storage(
+    text::Text left, text::Text right
+) {
     switch (text::text_concat(left, right)) {
         case Ok(value):
             return Ok(value);
@@ -764,17 +954,23 @@ Result<[]const char, wire::WireError> path_concat3(
     return text_slice_or_storage(out);
 }
 
-Result<[]const char, wire::WireError> path_field([]const char parent, []const char field) {
+Result<[]const char, wire::WireError> path_field(
+    []const char parent, []const char field
+) {
     return path_concat3(parent, ".", field);
 }
 
-Result<[]const char, wire::WireError> path_index([]const char parent, usize index) {
+Result<[]const char, wire::WireError> path_index(
+    []const char parent, usize index
+) {
     []const char digits = format::usize_to_string(index);
     []const char prefix = path_concat3(parent, "[", digits)?;
     return path_concat3(prefix, "", "]");
 }
 
-wire::WireError replace_error_path(wire::WireError error, []const char path) {
+wire::WireError replace_error_path(
+    wire::WireError error, []const char path
+) {
     return {
         kind: error.kind,
         path: path,
@@ -821,26 +1017,52 @@ Result<option::Option<Value>, wire::WireError> object_lookup(
             usize @i = 0;
             while (i < values.len) {
                 if ((i + 1) >= values.len) {
-                    return Err(error_at(wire::InvalidValue, 0, "invalid JSON object"));
+                    return Err(
+                        error_at(wire::InvalidValue, 0, "invalid JSON object")
+                    );
                 }
                 switch (values[i]) {
                     case String(key):
                         if (text::text_equal_slice(key, name)) {
                             if (found != values.len) {
-                                return Err(error_at(wire::DuplicateField, 0, "duplicate JSON object field"));
+                                return Err(
+                                    error_at(
+                                        wire::DuplicateField, 0, "duplicate JSON object field"
+                                    )
+                                );
                             }
                             found = i + 1;
                         }
                     case Null:
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Bool(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Number(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Array(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Object(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                 }
                 i = i + 2;
             }
@@ -869,7 +1091,9 @@ Result<[]const Value, wire::WireError> array_values_exact(
         case Array(items):
             []const Value values = vec::vec_slice<Value>(&items);
             if (values.len != expected) {
-                return Err(error_at(wire::InvalidValue, 0, "wrong JSON array length"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "wrong JSON array length")
+                );
             }
             return Ok(values);
         case Null:
@@ -885,12 +1109,16 @@ Result<[]const Value, wire::WireError> array_values_exact(
     }
 }
 
-Result<[]const Value, wire::WireError> object_members(*const Value value) {
+Result<[]const Value, wire::WireError> object_members(
+    *const Value value
+) {
     switch (*value) {
         case Object(entries):
             []const Value values = vec::vec_slice<Value>(&entries);
             if ((values.len % 2) != 0) {
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object")
+                );
             }
             return Ok(values);
         case Null:
@@ -942,7 +1170,9 @@ interface<T, R> Result<R, wire::WireError> decode_json_slot(
     *const Value value
 );
 
-export interface<K> Result<text::Text, wire::WireError> encode_object_key(*const K key);
+export interface<K> Result<text::Text, wire::WireError> encode_object_key(
+    *const K key
+);
 
 export interface<K> Result<K, wire::WireError> decode_object_key(
     meta::Type<K> target,
@@ -1003,7 +1233,9 @@ interface<S, R> Result<R, wire::WireError> decode_enum_payload_value(
     *const Value value
 );
 
-interface<S> bool schema_has_field(*const S schema, text::Text name);
+interface<S> bool schema_has_field(
+    *const S schema, text::Text name
+);
 
 impl schema_has_field(*const meta::HNil schema, text::Text name) {
     return false;
@@ -1013,8 +1245,11 @@ impl<V, Slot, Tail: schema_has_field> schema_has_field(
     *const meta::HCons<meta::FieldSchema<V, Slot>, Tail> schema,
     text::Text name
 ) {
-    meta::HConsView<meta::FieldSchema<V, Slot>, Tail> schema_view = meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(schema_view.head);
+    meta::HConsView<meta::FieldSchema<V, Slot>, Tail> schema_view =
+        meta::hcons_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        schema_view.head
+    );
     if (text::text_equal_slice(name, field_schema.name)) {
         return true;
     }
@@ -1038,23 +1273,49 @@ Result<void, wire::WireError> check_unknown_fields<S: schema_has_field>(
             usize @i = 0;
             while (i < values.len) {
                 if ((i + 1) >= values.len) {
-                    return Err(error_at(wire::InvalidValue, 0, "invalid JSON object"));
+                    return Err(
+                        error_at(wire::InvalidValue, 0, "invalid JSON object")
+                    );
                 }
                 switch (values[i]) {
                     case String(key):
                         if (!schema_has_field(schema, key)) {
-                            return Err(error_at(wire::UnknownField, 0, "unknown JSON object field"));
+                            return Err(
+                                error_at(
+                                    wire::UnknownField, 0, "unknown JSON object field"
+                                )
+                            );
                         }
                     case Null:
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Bool(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Number(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Array(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                     case Object(_):
-                        return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                        return Err(
+                            error_at(
+                                wire::InvalidValue, 0, "invalid JSON object key"
+                            )
+                        );
                 }
                 i = i + 2;
             }
@@ -1081,25 +1342,31 @@ impl encode_struct_fields(
     return Ok;
 }
 
-impl<V: wire::encode_value<Writer>, Slot, STail: encode_struct_fields<RTail>, RTail>
-    encode_struct_fields(
-        *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
-        *const meta::HCons<meta::FieldRef<V>, RTail> repr,
-        *Writer writer,
-        *bool first
-    ) {
+impl<V: wire::encode_value<Writer>, Slot, STail: encode_struct_fields<RTail>, RTail> encode_struct_fields(
+    *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
+    *const meta::HCons<meta::FieldRef<V>, RTail> repr,
+    *Writer writer,
+    *bool first
+) {
     if (!unsafe { *first }) {
         push_byte(unsafe { &writer->out }, ',' as u8, 0)?;
     }
     unsafe { *first = false; };
-    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(schema_view.head);
-    meta::HConsView<meta::FieldRef<V>, RTail> repr_view = meta::hcons_view(repr);
+    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        schema_view.head
+    );
+    meta::HConsView<meta::FieldRef<V>, RTail> repr_view = meta::hcons_view(
+        repr
+    );
     meta::FieldRefView<V> field_ref = meta::field_ref_view(repr_view.head);
     write_string_chars(unsafe { &writer->out }, field_schema.name)?;
     push_byte(unsafe { &writer->out }, ':' as u8, 0)?;
     wire::encode_value(field_ref.value, writer)?;
-    return encode_struct_fields(schema_view.tail, repr_view.tail, writer, first);
+    return encode_struct_fields(
+        schema_view.tail, repr_view.tail, writer, first
+    );
 }
 
 impl decode_struct_fields(
@@ -1110,33 +1377,43 @@ impl decode_struct_fields(
     return Ok({});
 }
 
-impl<V: decode_json_slot<Slot>, Slot, STail: decode_struct_fields<RTail>, RTail>
-    decode_struct_fields(
-        *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
-        meta::Type<meta::HCons<meta::Field<Slot>, RTail>> repr,
-        *const Value object
-    ) {
-    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(schema_view.head);
+impl<V: decode_json_slot<Slot>, Slot, STail: decode_struct_fields<RTail>, RTail> decode_struct_fields(
+    *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Field<Slot>, RTail>> repr,
+    *const Value object
+) {
+    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        schema_view.head
+    );
     option::Option<Value> found = object_lookup(object, field_schema.name)?;
     Slot @value;
     switch (found) {
         case option::Some(json_value):
-            switch (decode_json_slot(field_schema.source_ty, field_schema.repr_ty, &json_value)) {
+            switch (decode_json_slot(
+                field_schema.source_ty, field_schema.repr_ty, &json_value
+            )) {
                 case Ok(decoded):
                     value = decoded;
                 case Err(error):
                     return Err(prepend_field_path(error, field_schema.name)?);
             }
         case option::None:
-            wire::WireError error = error_at(wire::MissingField, 0, "missing JSON object field");
+            wire::WireError error = error_at(
+                wire::MissingField, 0, "missing JSON object field"
+            );
             return Err(prepend_field_path(error, field_schema.name)?);
     }
-    RTail tail = decode_struct_fields(schema_view.tail, meta::type_tag<RTail>(), object)?;
-    meta::Field<Slot> field = unsafe { {
-        name: field_schema.name,
-        value: value,
-    } };
+    RTail tail = decode_struct_fields(
+        schema_view.tail, meta::type_tag<RTail>(), object
+    )?;
+    meta::Field<Slot> field = unsafe {
+        {
+            name: field_schema.name,
+            value: value,
+        }
+    };
     return Ok(unsafe { { head: field, tail: tail } });
 }
 
@@ -1224,7 +1501,9 @@ export Result<R, wire::WireError> decode_struct_repr_with_policy<S: decode_struc
     UnknownFieldPolicy unknown_fields
 ) {
     Value value = parse(input)?;
-    return decode_struct_repr_value_with_policy(schema, repr, &value, unknown_fields);
+    return decode_struct_repr_value_with_policy(
+        schema, repr, &value, unknown_fields
+    );
 }
 
 // Decodes a JSON object value into T from a caller-provided schema/repr pair.
@@ -1245,7 +1524,9 @@ export Result<T, wire::WireError> decode_struct_value_with_policy<T, S: decode_s
     *const Value value,
     UnknownFieldPolicy unknown_fields
 ) {
-    R decoded_repr = decode_struct_repr_value_with_policy(schema, repr, value, unknown_fields)?;
+    R decoded_repr = decode_struct_repr_value_with_policy(
+        schema, repr, value, unknown_fields
+    )?;
     return Ok(meta::from_repr<T>(decoded_repr));
 }
 
@@ -1268,7 +1549,9 @@ export Result<T, wire::WireError> decode_struct_with_policy<T, S: decode_struct_
     []const char input,
     UnknownFieldPolicy unknown_fields
 ) {
-    R decoded_repr = decode_struct_repr_with_policy(schema, repr, input, unknown_fields)?;
+    R decoded_repr = decode_struct_repr_with_policy(
+        schema, repr, input, unknown_fields
+    )?;
     return Ok(meta::from_repr<T>(decoded_repr));
 }
 
@@ -1319,29 +1602,36 @@ derivable impl<T> wire::decode_value(meta::Type<T> target, *Reader reader) {
     );
 }
 
-impl encode_enum_variant(*const meta::HNil schema, *const meta::CoNil repr, *Writer writer) {
-    switch (*repr) {
-    }
+impl encode_enum_variant(
+    *const meta::HNil schema, *const meta::CoNil repr, *Writer writer
+) {
+    switch (*repr) {}
 }
 
-impl<SP: encode_enum_payload_value<RP>, RP, STail: encode_enum_variant<RTail>, RTail>
-    encode_enum_variant(
-        *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
-        *const meta::Coproduct<meta::VariantRef<RP>, RTail> repr,
-        *Writer writer
-    ) {
+impl<SP: encode_enum_payload_value<RP>, RP, STail: encode_enum_variant<RTail>, RTail> encode_enum_variant(
+    *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
+    *const meta::Coproduct<meta::VariantRef<RP>, RTail> repr,
+    *Writer writer
+) {
     switch (*repr) {
         case meta::This(active):
-            meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
-            meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(schema_view.head);
-            meta::VariantRefView<RP> active_view = meta::variant_ref_view(&active);
+            meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
+                meta::hcons_view(schema);
+            meta::VariantSchemaView<SP> variant_schema =
+                meta::variant_schema_view(schema_view.head);
+            meta::VariantRefView<RP> active_view = meta::variant_ref_view(
+                &active
+            );
             push_byte(unsafe { &writer->out }, '{' as u8, 0)?;
             write_string_chars(unsafe { &writer->out }, variant_schema.name)?;
             push_byte(unsafe { &writer->out }, ':' as u8, 0)?;
-            encode_enum_payload_value(variant_schema.payload, active_view.payload, writer)?;
+            encode_enum_payload_value(
+                variant_schema.payload, active_view.payload, writer
+            )?;
             return push_byte(unsafe { &writer->out }, '}' as u8, 0);
         case meta::Next(tail):
-            meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
+            meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
+                meta::hcons_view(schema);
             return encode_enum_variant(schema_view.tail, &tail, writer);
     }
 }
@@ -1363,30 +1653,35 @@ impl encode_enum_payload_value(
     return push_chars(unsafe { &writer->out }, "null", 0);
 }
 
-impl<V: wire::encode_value<Writer>, Slot, STail: encode_enum_payloads<RTail>, RTail>
-    encode_enum_payloads(
-        *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
-        *const meta::HCons<meta::PayloadRef<V>, RTail> repr,
-        *Writer writer,
-        *bool first
-    ) {
+impl<V: wire::encode_value<Writer>, Slot, STail: encode_enum_payloads<RTail>, RTail> encode_enum_payloads(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    *const meta::HCons<meta::PayloadRef<V>, RTail> repr,
+    *Writer writer,
+    *bool first
+) {
     if (!unsafe { *first }) {
         push_byte(unsafe { &writer->out }, ',' as u8, 0)?;
     }
     unsafe { *first = false; };
-    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::HConsView<meta::PayloadRef<V>, RTail> repr_view = meta::hcons_view(repr);
-    meta::PayloadRefView<V> payload_ref = meta::payload_ref_view(repr_view.head);
+    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::HConsView<meta::PayloadRef<V>, RTail> repr_view = meta::hcons_view(
+        repr
+    );
+    meta::PayloadRefView<V> payload_ref = meta::payload_ref_view(
+        repr_view.head
+    );
     wire::encode_value(payload_ref.value, writer)?;
-    return encode_enum_payloads(schema_view.tail, repr_view.tail, writer, first);
+    return encode_enum_payloads(
+        schema_view.tail, repr_view.tail, writer, first
+    );
 }
 
-impl<V: wire::encode_value<Writer>, Slot, STail: encode_enum_payloads<RTail>, RTail>
-    encode_enum_payload_value(
-        *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
-        *const meta::HCons<meta::PayloadRef<V>, RTail> repr,
-        *Writer writer
-    ) {
+impl<V: wire::encode_value<Writer>, Slot, STail: encode_enum_payloads<RTail>, RTail> encode_enum_payload_value(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    *const meta::HCons<meta::PayloadRef<V>, RTail> repr,
+    *Writer writer
+) {
     push_byte(unsafe { &writer->out }, '[' as u8, 0)?;
     bool @first = true;
     encode_enum_payloads(schema, repr, writer, &first)?;
@@ -1402,30 +1697,38 @@ impl decode_enum_variant(
     return Err(error_at(wire::UnknownVariant, 0, "unknown JSON enum variant"));
 }
 
-impl<SP: decode_enum_payload_value<RP>, RP, STail: decode_enum_variant<RTail>, RTail>
-    decode_enum_variant(
-        *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
-        meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> repr,
-        text::Text name,
-        *const Value payload
-    ) {
-    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
-    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(schema_view.head);
+impl<SP: decode_enum_payload_value<RP>, RP, STail: decode_enum_variant<RTail>, RTail> decode_enum_variant(
+    *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
+    meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> repr,
+    text::Text name,
+    *const Value payload
+) {
+    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(
+        schema_view.head
+    );
     if (text::text_equal_slice(name, variant_schema.name)) {
         RP @decoded_payload;
-        switch (decode_enum_payload_value(variant_schema.payload, meta::type_tag<RP>(), payload)) {
+        switch (decode_enum_payload_value(
+            variant_schema.payload, meta::type_tag<RP>(), payload
+        )) {
             case Ok(value):
                 decoded_payload = value;
             case Err(error):
                 return Err(prepend_field_path(error, variant_schema.name)?);
         }
-        meta::Variant<RP> variant = unsafe { {
-            name: variant_schema.name,
-            payload: decoded_payload,
-        } };
+        meta::Variant<RP> variant = unsafe {
+            {
+                name: variant_schema.name,
+                payload: decoded_payload,
+            }
+        };
         return Ok(meta::This(variant));
     }
-    RTail tail = decode_enum_variant(schema_view.tail, meta::type_tag<RTail>(), name, payload)?;
+    RTail tail = decode_enum_variant(
+        schema_view.tail, meta::type_tag<RTail>(), name, payload
+    )?;
     return Ok(meta::Next(tail));
 }
 
@@ -1451,73 +1754,119 @@ impl decode_enum_payload_value(
             if (values.len == 0) {
                 return Ok({});
             }
-            return Err(error_at(wire::InvalidValue, 0, "unit enum payload must be null or empty array"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "unit enum payload must be null or empty array"
+                )
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected unit enum payload"));
+            return Err(
+                error_at(wire::TypeMismatch, 0, "expected unit enum payload")
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected unit enum payload"));
+            return Err(
+                error_at(wire::TypeMismatch, 0, "expected unit enum payload")
+            );
         case String(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected unit enum payload"));
+            return Err(
+                error_at(wire::TypeMismatch, 0, "expected unit enum payload")
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected unit enum payload"));
+            return Err(
+                error_at(wire::TypeMismatch, 0, "expected unit enum payload")
+            );
     }
 }
 
-impl<V: decode_json_slot<Slot>, Slot, STail: decode_enum_payloads<RTail>, RTail>
-    decode_enum_payloads(
-        *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
-        meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
-        []const Value values,
-        *usize index
-    ) {
+impl<V: decode_json_slot<Slot>, Slot, STail: decode_enum_payloads<RTail>, RTail> decode_enum_payloads(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
+    []const Value values,
+    *usize index
+) {
     if (unsafe { *index } >= values.len) {
-        return Err(error_at(wire::MissingField, 0, "missing JSON enum payload"));
+        return Err(
+            error_at(wire::MissingField, 0, "missing JSON enum payload")
+        );
     }
-    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(schema_view.head);
+    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(
+        schema_view.head
+    );
     Value value = values[unsafe { *index }];
     Slot @decoded;
-    switch (decode_json_slot(payload_schema.source_ty, payload_schema.repr_ty, &value)) {
+    switch (decode_json_slot(
+        payload_schema.source_ty, payload_schema.repr_ty, &value
+    )) {
         case Ok(item):
             decoded = item;
         case Err(error):
             return Err(prepend_index_path(error, unsafe { *index })?);
     }
-    meta::Payload<Slot> payload = unsafe { {
-        index: payload_schema.index,
-        value: decoded,
-    } };
+    meta::Payload<Slot> payload = unsafe {
+        {
+            index: payload_schema.index,
+            value: decoded,
+        }
+    };
     unsafe { *index = *index + 1; };
-    RTail tail = decode_enum_payloads(schema_view.tail, meta::type_tag<RTail>(), values, index)?;
+    RTail tail = decode_enum_payloads(
+        schema_view.tail, meta::type_tag<RTail>(), values, index
+    )?;
     return Ok(unsafe { { head: payload, tail: tail } });
 }
 
-impl<V: decode_json_slot<Slot>, Slot, STail: decode_enum_payloads<RTail>, RTail>
-    decode_enum_payload_value(
-        *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
-        meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
-        *const Value value
-    ) {
+impl<V: decode_json_slot<Slot>, Slot, STail: decode_enum_payloads<RTail>, RTail> decode_enum_payload_value(
+    *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
+    meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> repr,
+    *const Value value
+) {
     []const Value @values;
     switch (*value) {
         case Array(items):
             values = vec::vec_slice<Value>(&items);
         case Null:
-            return Err(error_at(wire::TypeMismatch, 0, "expected JSON enum payload array"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, 0, "expected JSON enum payload array"
+                )
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected JSON enum payload array"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, 0, "expected JSON enum payload array"
+                )
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected JSON enum payload array"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, 0, "expected JSON enum payload array"
+                )
+            );
         case String(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected JSON enum payload array"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, 0, "expected JSON enum payload array"
+                )
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, 0, "expected JSON enum payload array"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, 0, "expected JSON enum payload array"
+                )
+            );
     }
     usize @index = 0;
-    meta::HCons<meta::Payload<Slot>, RTail> decoded =
-        decode_enum_payloads(schema, repr, values, &index)?;
+    meta::HCons<meta::Payload<Slot>, RTail> decoded = decode_enum_payloads(
+        schema, repr, values, &index
+    )?;
     if (index != values.len) {
-        return Err(error_at(wire::InvalidValue, 0, "too many JSON enum payload values"));
+        return Err(
+            error_at(
+                wire::InvalidValue, 0, "too many JSON enum payload values"
+            )
+        );
     }
     return Ok(decoded);
 }
@@ -1549,22 +1898,46 @@ export Result<R, wire::WireError> decode_enum_repr_value<S: decode_enum_variant<
 ) {
     []const Value members = object_members(value)?;
     if (members.len != 2) {
-        return Err(error_at(wire::InvalidValue, 0, "externally tagged enum must contain one field"));
+        return Err(
+            error_at(
+                wire::InvalidValue, 0, "externally tagged enum must contain one field"
+            )
+        );
     }
     text::Text @name;
     switch (members[0]) {
         case String(key):
             name = key;
         case Null:
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON enum variant key"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "invalid JSON enum variant key"
+                )
+            );
         case Bool(_):
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON enum variant key"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "invalid JSON enum variant key"
+                )
+            );
         case Number(_):
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON enum variant key"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "invalid JSON enum variant key"
+                )
+            );
         case Array(_):
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON enum variant key"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "invalid JSON enum variant key"
+                )
+            );
         case Object(_):
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON enum variant key"));
+            return Err(
+                error_at(
+                    wire::InvalidValue, 0, "invalid JSON enum variant key"
+                )
+            );
     }
     Value payload = members[1];
     return decode_enum_variant(schema, repr, name, &payload);
@@ -1660,15 +2033,25 @@ impl wire::decode_value(meta::Type<bool> target, *Reader reader) {
         case Bool(inner):
             return Ok(inner);
         case Null:
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON boolean"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON boolean")
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON boolean"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON boolean")
+            );
         case String(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON boolean"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON boolean")
+            );
         case Array(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON boolean"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON boolean")
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON boolean"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON boolean")
+            );
     }
 }
 
@@ -1683,15 +2066,25 @@ impl wire::decode_value(meta::Type<text::Text> target, *Reader reader) {
         case String(inner):
             return Ok(inner);
         case Null:
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON string"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON string")
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON string"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON string")
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON string"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON string")
+            );
         case Array(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON string"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON string")
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON string"));
+            return Err(
+                error_at(wire::TypeMismatch, start, "expected JSON string")
+            );
     }
 }
 
@@ -1720,23 +2113,55 @@ impl wire::decode_value(meta::Type<bytes::Bytes> target, *Reader reader) {
                         case base64::Storage:
                             return Err(storage_error(start));
                         case base64::InvalidLength:
-                            return Err(error_at(wire::InvalidValue, start, "invalid base64 length"));
+                            return Err(
+                                error_at(
+                                    wire::InvalidValue, start, "invalid base64 length"
+                                )
+                            );
                         case base64::InvalidPadding:
-                            return Err(error_at(wire::InvalidValue, start, "invalid base64 padding"));
+                            return Err(
+                                error_at(
+                                    wire::InvalidValue, start, "invalid base64 padding"
+                                )
+                            );
                         case base64::InvalidChar:
-                            return Err(error_at(wire::InvalidValue, start, "invalid base64 character"));
+                            return Err(
+                                error_at(
+                                    wire::InvalidValue, start, "invalid base64 character"
+                                )
+                            );
                     }
             }
         case Null:
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON base64 string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected JSON base64 string"
+                )
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON base64 string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected JSON base64 string"
+                )
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON base64 string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected JSON base64 string"
+                )
+            );
         case Array(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON base64 string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected JSON base64 string"
+                )
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected JSON base64 string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected JSON base64 string"
+                )
+            );
     }
 }
 
@@ -1752,19 +2177,43 @@ impl wire::decode_value(meta::Type<char> target, *Reader reader) {
         case String(inner):
             []const char chars = text_slice_or_storage(inner)?;
             if (chars.len != 1) {
-                return Err(error_at(wire::InvalidValue, start, "expected one-character JSON string"));
+                return Err(
+                    error_at(
+                        wire::InvalidValue, start, "expected one-character JSON string"
+                    )
+                );
             }
             return Ok(chars[0]);
         case Null:
-            return Err(error_at(wire::TypeMismatch, start, "expected one-character JSON string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected one-character JSON string"
+                )
+            );
         case Bool(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected one-character JSON string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected one-character JSON string"
+                )
+            );
         case Number(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected one-character JSON string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected one-character JSON string"
+                )
+            );
         case Array(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected one-character JSON string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected one-character JSON string"
+                )
+            );
         case Object(_):
-            return Err(error_at(wire::TypeMismatch, start, "expected one-character JSON string"));
+            return Err(
+                error_at(
+                    wire::TypeMismatch, start, "expected one-character JSON string"
+                )
+            );
     }
 }
 
@@ -1777,11 +2226,15 @@ Result<T, wire::WireError> parse_object_key_number<T: parse::parse_number>(
         case Ok(value):
             return Ok(value);
         case Err(_):
-            return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+            return Err(
+                error_at(wire::InvalidValue, 0, "invalid JSON object key")
+            );
     }
 }
 
-Result<text::Text, wire::WireError> text_from_chars([]const char value) {
+Result<text::Text, wire::WireError> text_from_chars(
+    []const char value
+) {
     return text_copy_or_storage(value);
 }
 
@@ -1896,51 +2349,77 @@ impl decode_object_key(meta::Type<usize> target, text::Text key) {
 }
 
 impl wire::encode_value(*const i8 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0
+    );
 }
 
 impl wire::encode_value(*const i16 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0
+    );
 }
 
 impl wire::encode_value(*const i32 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::i64_to_string((*value) as i64), 0
+    );
 }
 
 impl wire::encode_value(*const i64 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::i64_to_string(*value), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::i64_to_string(*value), 0
+    );
 }
 
 impl wire::encode_value(*const u8 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0
+    );
 }
 
 impl wire::encode_value(*const u16 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0
+    );
 }
 
 impl wire::encode_value(*const u32 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::u64_to_string((*value) as u64), 0
+    );
 }
 
 impl wire::encode_value(*const u64 value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::u64_to_string(*value), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::u64_to_string(*value), 0
+    );
 }
 
 impl wire::encode_value(*const usize value, *Writer writer) {
-    return push_chars(unsafe { &writer->out }, format::usize_to_string(*value), 0);
+    return push_chars(
+        unsafe { &writer->out }, format::usize_to_string(*value), 0
+    );
 }
 
 impl wire::encode_value(*const f32 value, *Writer writer) {
     if (!f32_is_finite(*value)) {
-        return Err(error_at(wire::InvalidValue, 0, "non-finite float is not a JSON number"));
+        return Err(
+            error_at(
+                wire::InvalidValue, 0, "non-finite float is not a JSON number"
+            )
+        );
     }
     return push_chars(unsafe { &writer->out }, io::f32_to_string(*value), 0);
 }
 
 impl wire::encode_value(*const f64 value, *Writer writer) {
     if (!f64_is_finite(*value)) {
-        return Err(error_at(wire::InvalidValue, 0, "non-finite float is not a JSON number"));
+        return Err(
+            error_at(
+                wire::InvalidValue, 0, "non-finite float is not a JSON number"
+            )
+        );
     }
     return push_chars(unsafe { &writer->out }, io::f64_to_string(*value), 0);
 }
@@ -2018,82 +2497,114 @@ impl<T> wire::encode_value(*const [0]T value, *Writer writer) {
     return push_chars(unsafe { &writer->out }, "[]", 0);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [1]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [1]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [2]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [2]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [3]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [3]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [4]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [4]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [5]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [5]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [6]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [6]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [7]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [7]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [8]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [8]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [9]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [9]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [10]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [10]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [11]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [11]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [12]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [12]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [13]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [13]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [14]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [14]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [15]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [15]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
 
-impl<T: wire::encode_value<Writer>> wire::encode_value(*const [16]T value, *Writer writer) {
+impl<T: wire::encode_value<Writer>> wire::encode_value(
+    *const [16]T value, *Writer writer
+) {
     []const T items = (*value)[..];
     return write_slice_as_array(items, writer);
 }
@@ -2105,14 +2616,18 @@ impl<T> wire::decode_value(meta::Type<[0]T> target, *Reader reader) {
     return Ok(meta::from_repr<[0]T>(repr));
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[1]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[1]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 1)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
     return Ok([item0]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[2]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[2]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 2)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2120,7 +2635,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[2]T> target, 
     return Ok([item0, item1]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[3]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[3]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 3)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2129,7 +2646,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[3]T> target, 
     return Ok([item0, item1, item2]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[4]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[4]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 4)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2139,7 +2658,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[4]T> target, 
     return Ok([item0, item1, item2, item3]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[5]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[5]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 5)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2150,7 +2671,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[5]T> target, 
     return Ok([item0, item1, item2, item3, item4]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[6]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[6]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 6)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2162,7 +2685,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[6]T> target, 
     return Ok([item0, item1, item2, item3, item4, item5]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[7]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[7]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 7)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2175,7 +2700,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[7]T> target, 
     return Ok([item0, item1, item2, item3, item4, item5, item6]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[8]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[8]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 8)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2189,7 +2716,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[8]T> target, 
     return Ok([item0, item1, item2, item3, item4, item5, item6, item7]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[9]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[9]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 9)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2204,7 +2733,9 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[9]T> target, 
     return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8]);
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[10]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[10]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 10)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2217,10 +2748,14 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[10]T> target,
     T item7 = decode_array_item<T, T>(values, 7)?;
     T item8 = decode_array_item<T, T>(values, 8)?;
     T item9 = decode_array_item<T, T>(values, 9)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9]);
+    return Ok(
+        [item0, item1, item2, item3, item4, item5, item6, item7, item8, item9]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[11]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[11]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 11)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2234,10 +2769,16 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[11]T> target,
     T item8 = decode_array_item<T, T>(values, 8)?;
     T item9 = decode_array_item<T, T>(values, 9)?;
     T item10 = decode_array_item<T, T>(values, 10)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10]);
+    return Ok(
+        [
+            item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10
+        ]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[12]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[12]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 12)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2252,10 +2793,27 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[12]T> target,
     T item9 = decode_array_item<T, T>(values, 9)?;
     T item10 = decode_array_item<T, T>(values, 10)?;
     T item11 = decode_array_item<T, T>(values, 11)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10, item11]);
+    return Ok(
+        [
+            item0,
+            item1,
+            item2,
+            item3,
+            item4,
+            item5,
+            item6,
+            item7,
+            item8,
+            item9,
+            item10,
+            item11
+        ]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[13]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[13]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 13)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2271,10 +2829,28 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[13]T> target,
     T item10 = decode_array_item<T, T>(values, 10)?;
     T item11 = decode_array_item<T, T>(values, 11)?;
     T item12 = decode_array_item<T, T>(values, 12)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10, item11, item12]);
+    return Ok(
+        [
+            item0,
+            item1,
+            item2,
+            item3,
+            item4,
+            item5,
+            item6,
+            item7,
+            item8,
+            item9,
+            item10,
+            item11,
+            item12
+        ]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[14]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[14]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 14)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2291,10 +2867,29 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[14]T> target,
     T item11 = decode_array_item<T, T>(values, 11)?;
     T item12 = decode_array_item<T, T>(values, 12)?;
     T item13 = decode_array_item<T, T>(values, 13)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10, item11, item12, item13]);
+    return Ok(
+        [
+            item0,
+            item1,
+            item2,
+            item3,
+            item4,
+            item5,
+            item6,
+            item7,
+            item8,
+            item9,
+            item10,
+            item11,
+            item12,
+            item13
+        ]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[15]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[15]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 15)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2312,10 +2907,30 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[15]T> target,
     T item12 = decode_array_item<T, T>(values, 12)?;
     T item13 = decode_array_item<T, T>(values, 13)?;
     T item14 = decode_array_item<T, T>(values, 14)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10, item11, item12, item13, item14]);
+    return Ok(
+        [
+            item0,
+            item1,
+            item2,
+            item3,
+            item4,
+            item5,
+            item6,
+            item7,
+            item8,
+            item9,
+            item10,
+            item11,
+            item12,
+            item13,
+            item14
+        ]
+    );
 }
 
-impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[16]T> target, *Reader reader) {
+impl<T: wire::decode_value<Reader>> wire::decode_value(
+    meta::Type<[16]T> target, *Reader reader
+) {
     Value value = read_value(reader)?;
     []const Value values = array_values_exact(&value, 16)?;
     T item0 = decode_array_item<T, T>(values, 0)?;
@@ -2334,7 +2949,26 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(meta::Type<[16]T> target,
     T item13 = decode_array_item<T, T>(values, 13)?;
     T item14 = decode_array_item<T, T>(values, 14)?;
     T item15 = decode_array_item<T, T>(values, 15)?;
-    return Ok([item0, item1, item2, item3, item4, item5, item6, item7, item8, item9, item10, item11, item12, item13, item14, item15]);
+    return Ok(
+        [
+            item0,
+            item1,
+            item2,
+            item3,
+            item4,
+            item5,
+            item6,
+            item7,
+            item8,
+            item9,
+            item10,
+            item11,
+            item12,
+            item13,
+            item14,
+            item15
+        ]
+    );
 }
 
 impl<T: wire::encode_value<Writer>> wire::encode_value(
@@ -2396,7 +3030,11 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(
         }
         skip_ws(reader);
         if (at_end(reader)) {
-            return Err(error_at(wire::Eof, unsafe { reader->offset }, "unterminated array"));
+            return Err(
+                error_at(
+                    wire::Eof, unsafe { reader->offset }, "unterminated array"
+                )
+            );
         }
         if (peek(reader) == ',') {
             advance(reader);
@@ -2405,7 +3043,11 @@ impl<T: wire::decode_value<Reader>> wire::decode_value(
             advance(reader);
             return Ok(out);
         } else {
-            return Err(error_at(wire::Syntax, unsafe { reader->offset }, "expected array separator"));
+            return Err(
+                error_at(
+                    wire::Syntax, unsafe { reader->offset }, "expected array separator"
+                )
+            );
         }
     }
 }
@@ -2415,16 +3057,18 @@ impl<K: map::map_key + json_object_key, V: wire::encode_value<Writer>> wire::enc
     *Writer writer
 ) {
     push_byte(unsafe { &writer->out }, '{' as u8, 0)?;
-    map::hash_map_for_each_index<K, V, wire::WireError>(value, |index, key, item| {
-        if (index > 0) {
-            push_byte(unsafe { &writer->out }, ',' as u8, 0)?;
+    map::hash_map_for_each_index<K, V, wire::WireError>(
+        value, |index, key, item| {
+            if (index > 0) {
+                push_byte(unsafe { &writer->out }, ',' as u8, 0)?;
+            }
+            text::Text name = encode_object_key(key)?;
+            write_string_text(unsafe { &writer->out }, name)?;
+            push_byte(unsafe { &writer->out }, ':' as u8, 0)?;
+            wire::encode_value(item, writer)?;
+            return Ok;
         }
-        text::Text name = encode_object_key(key)?;
-        write_string_text(unsafe { &writer->out }, name)?;
-        push_byte(unsafe { &writer->out }, ':' as u8, 0)?;
-        wire::encode_value(item, writer)?;
-        return Ok;
-    })?;
+    )?;
     return push_byte(unsafe { &writer->out }, '}' as u8, 0);
 }
 
@@ -2448,20 +3092,32 @@ impl<K: map::map_key + json_object_key, V: wire::decode_value<Reader>> wire::dec
             case String(raw_name):
                 name = raw_name;
             case Null:
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object key")
+                );
             case Bool(_):
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object key")
+                );
             case Number(_):
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object key")
+                );
             case Array(_):
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object key")
+                );
             case Object(_):
-                return Err(error_at(wire::InvalidValue, 0, "invalid JSON object key"));
+                return Err(
+                    error_at(wire::InvalidValue, 0, "invalid JSON object key")
+                );
         }
         K key = decode_object_key(meta::type_tag<K>(), name)?;
         Value member_value = members[i + 1];
         V @decoded;
-        switch (decode_json_slot(meta::type_tag<V>(), meta::type_tag<V>(), &member_value)) {
+        switch (decode_json_slot(
+            meta::type_tag<V>(), meta::type_tag<V>(), &member_value
+        )) {
             case Ok(item):
                 decoded = item;
             case Err(error):
@@ -2474,7 +3130,11 @@ impl<K: map::map_key + json_object_key, V: wire::decode_value<Reader>> wire::dec
                     case map::InsertResult::Inserted:
                         {}
                     case map::InsertResult::Replaced(_):
-                        return Err(error_at(wire::DuplicateField, 0, "duplicate JSON object field"));
+                        return Err(
+                            error_at(
+                                wire::DuplicateField, 0, "duplicate JSON object field"
+                            )
+                        );
                 }
             case Err(_):
                 return Err(storage_error(0));

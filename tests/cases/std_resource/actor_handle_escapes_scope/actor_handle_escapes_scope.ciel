@@ -23,15 +23,20 @@ resource struct OwnedState {
     Channel<usize> out;
 }
 
-Result<OwnedState, Error> init_state(Channel<usize> out) {
+Result<OwnedState, Error> init_state(
+    Channel<usize> out
+) {
     []const char path = env::arg(1)?;
     return Ok({
         file: io::open_read(path)?,
         out: out,
-    });
+    }
+    );
 }
 
-Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command command) {
+Result<void, Error> handle(
+    *OwnedState state, Actor<Command> self, Command command
+) {
     switch (command) {
         case Probe(_):
             [1]u8 @buffer = [0;];
@@ -48,22 +53,30 @@ Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command comma
     }
 }
 
-Result<Actor<Command>, Error> spawn_inside_scope(Channel<usize> out) {
-    Actor<Command> actor = resource::scoped<Actor<Command>>(|| {
-        return spawn_actor_state<OwnedState, Command>(
-            || init_state(out),
-            handle
-        );
-    })?;
+Result<Actor<Command>, Error> spawn_inside_scope(
+    Channel<usize> out
+) {
+    Actor<Command> actor = resource::scoped<Actor<Command>>(
+        || {
+            return spawn_actor_state<OwnedState, Command>(
+                || init_state(out),
+                handle
+            );
+        }
+    )?;
     return Ok(actor);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "actor-escape")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "actor-escape")?;
+                return Ok;
+            }
+        )
+    );
 
     Channel<usize> out = must(make_channel<usize>());
     Actor<Command> actor = must(spawn_inside_scope(out));

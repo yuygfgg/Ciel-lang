@@ -36,7 +36,9 @@ export extern "C" ?*i32 maybe_ptr(bool take, *i32 ptr) {
     return null;
 }
 
-export extern "C" i32 call_callback(extern "C" i32 fn(i32) callback, i32 value) {
+export extern "C" i32 call_callback(
+    extern "C" i32 fn(i32) callback, i32 value
+) {
     return callback(value);
 }
 

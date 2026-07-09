@@ -8,7 +8,9 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<usize, Error> recv_value(Result<usize, async::AsyncError> result) {
+Result<usize, Error> recv_value(
+    Result<usize, async::AsyncError> result
+) {
     usize value = result?;
     return Ok(value);
 }
@@ -17,8 +19,10 @@ async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::try_send<usize>(pair.sender, 11)?;
     Result<usize, Error> picked = await select {
-        case got = async::recv<usize>(pair.receiver): recv_value(got);
-        case _timer = async_time::sleep_ms(50): Ok(99);
+        case got = async::recv<usize>(pair.receiver):
+            recv_value(got);
+        case _timer = async_time::sleep_ms(50):
+            Ok(99);
     };
     async::close<usize>(pair.sender)?;
     async::close_receiver<usize>(pair.receiver)?;

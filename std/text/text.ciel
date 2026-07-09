@@ -67,7 +67,9 @@ export Result<Text, TextError> text_empty() {
 }
 
 // Copies a character slice into an owned Text value.
-export Result<Text, TextError> text_copy([]const char text) {
+export Result<Text, TextError> text_copy(
+    []const char text
+) {
     switch (bytes::bytes_from_text(text)) {
         case Ok(value):
             return Ok({ bytes: value });
@@ -82,18 +84,24 @@ export usize text_len(Text text) = .len {
 }
 
 // Returns a cloned owned Bytes handle for the Text contents.
-export Result<bytes::Bytes, TextError> text_to_bytes(Text text) = .to_bytes {
+export Result<bytes::Bytes, TextError> text_to_bytes(
+    Text text
+) = .to_bytes {
     return Ok(text.bytes);
 }
 
 // Iterates the stored UTF-8 bytes as char code units; this is not Unicode scalar decoding.
-export _: iter::Iterator<char> text_chars(Text text) = .chars {
+export _: iter::Iterator<char> text_chars(
+    Text text
+) = .chars {
     TextCharIter out = { data: bytes::bytes_const_slice(text.bytes), index: 0 };
     return out;
 }
 
 // Copies Text contents into a mutable character slice allocation.
-export Result<[]char, TextError> text_to_chars(Text text) = .to_chars {
+export Result<[]char, TextError> text_to_chars(
+    Text text
+) = .to_chars {
     usize len = text_len(text);
     storage::RawStorage<char> @raw_storage;
     switch (unsafe { storage::raw_zeroed<char>(len) }) {
@@ -117,13 +125,17 @@ export Result<[]char, TextError> text_to_chars(Text text) = .to_chars {
 }
 
 // Copies Text contents into a read-only character slice.
-export Result<[]const char, TextError> text_to_slice(Text text) = .slice {
+export Result<[]const char, TextError> text_to_slice(
+    Text text
+) = .slice {
     []char chars = text_to_chars(text)?;
     return Ok(chars);
 }
 
 // Concatenates two Text values into a new owned Text.
-export Result<Text, TextError> text_concat(Text left, Text right) = .concat {
+export Result<Text, TextError> text_concat(
+    Text left, Text right
+) = .concat {
     switch (bytes::bytes_append(left.bytes, right.bytes)) {
         case Ok(value):
             return Ok({ bytes: value });
@@ -150,7 +162,9 @@ export bool text_equal(Text left, Text right) {
 }
 
 // Compares Text bytes with a character slice.
-export bool text_equal_slice(Text left, []const char right) {
+export bool text_equal_slice(
+    Text left, []const char right
+) {
     []const u8 left_bytes = bytes::bytes_const_slice(left.bytes);
     if (left_bytes.len != right.len) {
         return false;
@@ -230,7 +244,9 @@ export bool text_contains(Text text, Text needle) {
     return find_bytes(data, pat) != data.len || pat.len == 0;
 }
 
-export Result<usize, TextError> text_find(Text text, Text needle) = .find {
+export Result<usize, TextError> text_find(
+    Text text, Text needle
+) = .find {
     []const u8 data = bytes::bytes_const_slice(text.bytes);
     []const u8 pat = bytes::bytes_const_slice(needle.bytes);
     usize index = find_bytes(data, pat);
@@ -240,7 +256,9 @@ export Result<usize, TextError> text_find(Text text, Text needle) = .find {
     return Ok(index);
 }
 
-export Result<Text, TextError> text_trim(Text text) = .trim {
+export Result<Text, TextError> text_trim(
+    Text text
+) = .trim {
     []const u8 data = bytes::bytes_const_slice(text.bytes);
     usize @start = 0;
     while (start < data.len && ascii::char_is_whitespace(data[start] as char)) {
@@ -258,7 +276,9 @@ export Result<Text, TextError> text_trim(Text text) = .trim {
     }
 }
 
-Result<Text, TextError> text_map_ascii_case(Text text, bool to_upper) {
+Result<Text, TextError> text_map_ascii_case(
+    Text text, bool to_upper
+) {
     []const u8 data = bytes::bytes_const_slice(text.bytes);
     storage::RawStorage<u8> @raw;
     switch (unsafe { storage::raw_zeroed<u8>(data.len) }) {
@@ -290,21 +310,29 @@ Result<Text, TextError> text_map_ascii_case(Text text, bool to_upper) {
     }
 }
 
-export Result<Text, TextError> text_to_upper_ascii(Text text) = .to_upper_ascii {
+export Result<Text, TextError> text_to_upper_ascii(
+    Text text
+) = .to_upper_ascii {
     return text_map_ascii_case(text, true);
 }
 
-export Result<Text, TextError> text_to_lower_ascii(Text text) = .to_lower_ascii {
+export Result<Text, TextError> text_to_lower_ascii(
+    Text text
+) = .to_lower_ascii {
     return text_map_ascii_case(text, false);
 }
 
-export Result<Text, TextError> text_from_bool(bool value) {
+export Result<Text, TextError> text_from_bool(
+    bool value
+) {
     if (value) {
         return text_copy("true");
     }
     return text_copy("false");
 }
 
-export Result<Text, TextError> text_from_i64(i64 value) {
+export Result<Text, TextError> text_from_i64(
+    i64 value
+) {
     return text_copy(format::i64_to_string(value));
 }

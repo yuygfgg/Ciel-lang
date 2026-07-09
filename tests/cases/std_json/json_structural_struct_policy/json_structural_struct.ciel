@@ -65,7 +65,9 @@ i64 kind_code(wire::WireErrorKind kind) {
     }
 }
 
-bool is_packet_error_kind(Result<Packet, wire::WireError> result, wire::WireErrorKind kind) {
+bool is_packet_error_kind(
+    Result<Packet, wire::WireError> result, wire::WireErrorKind kind
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -87,11 +89,14 @@ Packet make_packet() {
         inner: {
             count: 2,
             label: must(text::text_copy("nested")),
-        },
+        }
+        ,
     };
 }
 
-i64 check_packet(Packet packet, i64 id, bool ok, []const char name, usize scores_len) {
+i64 check_packet(
+    Packet packet, i64 id, bool ok, []const char name, usize scores_len
+) {
     if (packet.id != id || packet.ok != ok) {
         return 1;
     }
@@ -116,12 +121,14 @@ i64 main() {
         return 10;
     }
 
-    Packet decoded = must(json::decode_struct(
-        meta::type_tag<Packet>(),
-        &schema,
-        meta::type_tag<meta::Repr<Packet>>(),
-        "{\"inner\":{\"label\":\"n\",\"count\":9},\"note\":null,\"scores\":[1,2,3],\"name\":\"beta\",\"ok\":false,\"id\":44}"
-    ));
+    Packet decoded = must(
+        json::decode_struct(
+            meta::type_tag<Packet>(),
+            &schema,
+            meta::type_tag<meta::Repr<Packet>>(),
+            "{\"inner\":{\"label\":\"n\",\"count\":9},\"note\":null,\"scores\":[1,2,3],\"name\":\"beta\",\"ok\":false,\"id\":44}"
+        )
+    );
     i64 checked = check_packet(decoded, 44, false, "beta", 3);
     if (checked != 0) {
         return 20 + checked;
@@ -132,24 +139,40 @@ i64 main() {
         case option::None:
             {}
     }
-    if (decoded.inner.count != 9 || !text::text_equal_slice(decoded.inner.label, "n")) {
+    if (decoded.inner.count != 9 ||
+        !text::text_equal_slice(decoded.inner.label, "n")) {
         return 26;
     }
 
     if (!is_packet_error_kind(
-        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"},\"extra\":0}"),
+        json::decode_struct(
+            meta::type_tag<Packet>(),
+            &schema,
+            meta::type_tag<meta::Repr<Packet>>(),
+            "{\"id\":1,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"},\"extra\":0}"
+        ),
         wire::UnknownField
     )) {
         return 30;
     }
     if (!is_packet_error_kind(
-        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"),
+        json::decode_struct(
+            meta::type_tag<Packet>(),
+            &schema,
+            meta::type_tag<meta::Repr<Packet>>(),
+            "{\"id\":1,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"
+        ),
         wire::MissingField
     )) {
         return 31;
     }
     if (!is_packet_error_kind(
-        json::decode_struct(meta::type_tag<Packet>(), &schema, meta::type_tag<meta::Repr<Packet>>(), "{\"id\":1,\"id\":2,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"),
+        json::decode_struct(
+            meta::type_tag<Packet>(),
+            &schema,
+            meta::type_tag<meta::Repr<Packet>>(),
+            "{\"id\":1,\"id\":2,\"ok\":true,\"name\":\"a\",\"scores\":[],\"note\":null,\"inner\":{\"count\":1,\"label\":\"x\"}}"
+        ),
         wire::DuplicateField
     )) {
         return 32;

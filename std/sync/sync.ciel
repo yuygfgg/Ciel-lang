@@ -12,7 +12,9 @@ import /std/meta;
 unsafe extern "C" {
     opaque struct CielMutex;
 
-    ?*CielMutex ciel_mutex_make(usize value_size, usize value_align, *const void initial);
+    ?*CielMutex ciel_mutex_make(
+        usize value_size, usize value_align, *const void initial
+    );
     ?*void ciel_mutex_lock(*CielMutex mutex);
     c::c_int ciel_mutex_unlock(*CielMutex mutex);
 }
@@ -61,7 +63,9 @@ impl<E: ErrorTrait> format_error(*const SyncWithError<E> error) {
 }
 
 // Functional update policy consumed by mutex_update. R and E are determined by updater and value type.
-export interface<F, T -> R, E> Result<Update<T, R>, E> update_value(*const F updater, T value);
+export interface<F, T -> R, E> Result<Update<T, R>, E> update_value(
+    *const F updater, T value
+);
 
 unsafe impl<T> clone_message(*const Mutex<T> value) {
     return Ok(*value);
@@ -82,7 +86,9 @@ void unlock_mutex(*CielMutex mutex) {
 }
 
 // Creates a mutex by cloning the initial Message value into synchronized storage.
-export Result<Mutex<T>, SyncError> make_mutex<T: Message>(T initial) {
+export Result<Mutex<T>, SyncError> make_mutex<T: Message>(
+    T initial
+) {
     T local = initial;
     T @cloned;
     switch (clone_message(&local)) {
@@ -91,7 +97,11 @@ export Result<Mutex<T>, SyncError> make_mutex<T: Message>(T initial) {
         case Err(error):
             return Err(MessageClone(error));
     }
-    ?*CielMutex raw = unsafe { ciel_mutex_make(type_size<T>(), type_align<T>(), &cloned as *const void) };
+    ?*CielMutex raw = unsafe {
+        ciel_mutex_make(
+            type_size<T>(), type_align<T>(), &cloned as *const void
+        )
+    };
     if (raw == null) {
         return Err(runtime_error());
     }
@@ -100,10 +110,7 @@ export Result<Mutex<T>, SyncError> make_mutex<T: Message>(T initial) {
 
 // Locks the mutex, clones the current value, applies update_value, and stores
 // the returned replacement before unlocking.
-export Result<R, SyncWithError<E>> mutex_update<
-    T: Message,
-    F: update_value<T, R = _, E = _: ErrorTrait>
->(
+export Result<R, SyncWithError<E>> mutex_update<T: Message, F: update_value<T, R = _, E = _: ErrorTrait>>(
     *const Mutex<T> mutex,
     *const F updater
 ) = .update {

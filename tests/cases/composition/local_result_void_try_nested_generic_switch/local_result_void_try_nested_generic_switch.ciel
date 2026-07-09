@@ -28,7 +28,9 @@ Result<void, LocalError> mark(i32 ch) {
     return Ok;
 }
 
-Result<void, LocalError> execute<T>(Work<T> work, Result<void, LocalError> |(T)| task) {
+Result<void, LocalError> execute<T>(
+    Work<T> work, Result<void, LocalError> |(T)| task
+) {
     switch (work) {
         case Run(value):
             mark(76)?;

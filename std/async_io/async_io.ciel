@@ -16,11 +16,19 @@ import /std/resource as resource;
 import /std/storage as storage;
 
 unsafe extern "C" {
-    ?*CielAsyncFd ciel_async_open(c::c_int mode, *const char path);
-    ?*CielAsyncFd ciel_async_from_raw_fd(c::c_int raw);
+    ?*CielAsyncFd ciel_async_open(
+        c::c_int mode, *const char path
+    );
+    ?*CielAsyncFd ciel_async_from_raw_fd(
+        c::c_int raw
+    );
 
-    ?*CielAsyncOp ciel_async_read_bytes(*CielAsyncFd fd, usize max_len);
-    ?*CielAsyncOp ciel_async_write_bytes(*CielAsyncFd fd, *const u8 data, usize len);
+    ?*CielAsyncOp ciel_async_read_bytes(
+        *CielAsyncFd fd, usize max_len
+    );
+    ?*CielAsyncOp ciel_async_write_bytes(
+        *CielAsyncFd fd, *const u8 data, usize len
+    );
 
 }
 
@@ -71,7 +79,9 @@ AsyncIoError runtime_error() {
     return Runtime(code as i64);
 }
 
-Result<Out, AsyncIoError> async_result<Out>(Result<Out, AsyncError> result) {
+Result<Out, AsyncIoError> async_result<Out>(
+    Result<Out, AsyncError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -80,34 +90,52 @@ Result<Out, AsyncIoError> async_result<Out>(Result<Out, AsyncError> result) {
     }
 }
 
-resource::Handle handle_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
-    return unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } };
+resource::Handle handle_from_parts(
+    u64 owner_id, u64 resource_id, u64 generation
+) {
+    return unsafe {
+        { owner_id: owner_id, resource_id: resource_id, generation: generation }
+    };
 }
 
-AsyncFd async_fd_from_handle(resource::Handle handle) {
+AsyncFd async_fd_from_handle(
+    resource::Handle handle
+) {
     return unsafe { { handle: handle } };
 }
 
-AsyncRead async_read_from_handle(resource::Handle handle) {
+AsyncRead async_read_from_handle(
+    resource::Handle handle
+) {
     return unsafe { { handle: handle } };
 }
 
-AsyncWrite async_write_from_handle(resource::Handle handle) {
+AsyncWrite async_write_from_handle(
+    resource::Handle handle
+) {
     return unsafe { { handle: handle } };
 }
 
-Result<resource::Handle, AsyncIoError> register_async_fd(*CielAsyncFd raw) {
+Result<resource::Handle, AsyncIoError> register_async_fd(
+    *CielAsyncFd raw
+) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
-    c::c_int rc = unsafe { ciel_resource_register_async_fd_handle(raw, &owner_id, &resource_id, &generation) };
+    c::c_int rc = unsafe {
+        ciel_resource_register_async_fd_handle(
+            raw, &owner_id, &resource_id, &generation
+        )
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
     return Ok(handle_from_parts(owner_id, resource_id, generation));
 }
 
-Result<resource::Handle, AsyncIoError> register_async_fd_owned(*CielAsyncFd raw) {
+Result<resource::Handle, AsyncIoError> register_async_fd_owned(
+    *CielAsyncFd raw
+) {
     Result<resource::Handle, AsyncIoError> result = register_async_fd(raw);
     switch (result) {
         case Ok(handle):
@@ -118,18 +146,26 @@ Result<resource::Handle, AsyncIoError> register_async_fd_owned(*CielAsyncFd raw)
     }
 }
 
-Result<resource::Handle, AsyncIoError> register_async_op(*CielAsyncOp raw) {
+Result<resource::Handle, AsyncIoError> register_async_op(
+    *CielAsyncOp raw
+) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
-    c::c_int rc = unsafe { ciel_resource_register_async_op_handle(raw, &owner_id, &resource_id, &generation) };
+    c::c_int rc = unsafe {
+        ciel_resource_register_async_op_handle(
+            raw, &owner_id, &resource_id, &generation
+        )
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
     return Ok(handle_from_parts(owner_id, resource_id, generation));
 }
 
-*const resource::Handle fd_handle(*const AsyncFd fd) {
+*const resource::Handle fd_handle(
+    *const AsyncFd fd
+) {
     return unsafe { &fd->handle };
 }
 
@@ -137,23 +173,33 @@ Result<resource::Handle, AsyncIoError> register_async_op(*CielAsyncOp raw) {
     return unsafe { &fd->handle };
 }
 
-*const resource::Handle read_handle(*const AsyncRead op) {
+*const resource::Handle read_handle(
+    *const AsyncRead op
+) {
     return unsafe { &op->handle };
 }
 
-*resource::Handle read_handle_mut(*AsyncRead op) {
+*resource::Handle read_handle_mut(
+    *AsyncRead op
+) {
     return unsafe { &op->handle };
 }
 
-*const resource::Handle write_handle(*const AsyncWrite op) {
+*const resource::Handle write_handle(
+    *const AsyncWrite op
+) {
     return unsafe { &op->handle };
 }
 
-*resource::Handle write_handle_mut(*AsyncWrite op) {
+*resource::Handle write_handle_mut(
+    *AsyncWrite op
+) {
     return unsafe { &op->handle };
 }
 
-Result<*CielAsyncFd, AsyncIoError> raw_async_fd(*const AsyncFd fd) {
+Result<*CielAsyncFd, AsyncIoError> raw_async_fd(
+    *const AsyncFd fd
+) {
     *const resource::Handle handle = fd_handle(fd);
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe {
@@ -178,8 +224,7 @@ unsafe c::c_int close_handle(*resource::Handle handle) {
         resource::ciel_resource_close_handle(
             unsafe { handle->owner_id },
             unsafe { handle->resource_id },
-            unsafe { handle->generation }
-        )
+            unsafe { handle->generation })
     };
     unsafe { handle->owner_id = 0; };
     unsafe { handle->resource_id = 0; };
@@ -187,7 +232,9 @@ unsafe c::c_int close_handle(*resource::Handle handle) {
     return rc;
 }
 
-c::c_int snapshot_async_op(*const resource::Handle handle, *?*CielAsyncOp out) {
+c::c_int snapshot_async_op(
+    *const resource::Handle handle, *?*CielAsyncOp out
+) {
     c::c_int rc = unsafe {
         ciel_resource_async_op_snapshot_handle(
             unsafe { handle->owner_id },
@@ -199,7 +246,9 @@ c::c_int snapshot_async_op(*const resource::Handle handle, *?*CielAsyncOp out) {
     return rc;
 }
 
-Result<*CielAsyncOp, AsyncIoError> raw_async_op(*const resource::Handle handle) {
+Result<*CielAsyncOp, AsyncIoError> raw_async_op(
+    *const resource::Handle handle
+) {
     ?*CielAsyncOp @raw = null;
     c::c_int rc = snapshot_async_op(handle, &raw);
     if ((rc as i64) != 0) {
@@ -211,7 +260,9 @@ Result<*CielAsyncOp, AsyncIoError> raw_async_op(*const resource::Handle handle) 
     return Ok(unsafe { raw as *CielAsyncOp });
 }
 
-?*void raw_async_op_or_null(*const resource::Handle handle) {
+?*void raw_async_op_or_null(
+    *const resource::Handle handle
+) {
     ?*CielAsyncOp @raw = null;
     c::c_int rc = snapshot_async_op(handle, &raw);
     if ((rc as i64) != 0 || raw == null) {
@@ -228,21 +279,32 @@ unsafe impl raw_operation(*const AsyncWrite op) {
     return raw_async_op_or_null(write_handle(op));
 }
 
-Result<*CielAsyncOp, AsyncIoError> raw_async_read(*const AsyncRead op) {
+Result<*CielAsyncOp, AsyncIoError> raw_async_read(
+    *const AsyncRead op
+) {
     return raw_async_op(read_handle(op));
 }
 
-Result<*CielAsyncOp, AsyncIoError> raw_async_write(*const AsyncWrite op) {
+Result<*CielAsyncOp, AsyncIoError> raw_async_write(
+    *const AsyncWrite op
+) {
     return raw_async_op(write_handle(op));
 }
 
-Result<bytes::Bytes, AsyncIoError> bytes_from_runtime(?*u8 raw, usize len) {
+Result<bytes::Bytes, AsyncIoError> bytes_from_runtime(
+    ?*u8 raw, usize len
+) {
     if (raw == null) {
         return Err(Runtime(5));
     }
-    []u8 view = unsafe { storage::raw_from_ptr<u8>(unsafe { raw as *void }, len) };
+    []u8 view = unsafe {
+        storage::raw_from_ptr<u8>(unsafe { raw as *void }, len)
+    };
     storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
-    return Ok(unsafe { bytes::bytes_from_raw_storage(raw_storage, len) });
+    return Ok(unsafe {
+        bytes::bytes_from_raw_storage(raw_storage, len)
+    }
+    );
 }
 
 c::c_int open_mode_code(io::OpenMode mode) {
@@ -258,43 +320,68 @@ c::c_int open_mode_code(io::OpenMode mode) {
 }
 
 // Opens path as an async fd using the same mode values as /std/io.
-export Result<AsyncFd, AsyncIoError> open_async([]const char path, io::OpenMode mode) = .open_async {
-    *char c_path = unsafe { c::ciel_cstr_from_slice(path.ptr, path.len) };
-    ?*CielAsyncFd raw = unsafe { ciel_async_open(open_mode_code(mode), c_path) };
+export Result<AsyncFd, AsyncIoError> open_async(
+    []const char path, io::OpenMode mode
+) = .open_async {
+    *char c_path = unsafe {
+        c::ciel_cstr_from_slice(path.ptr, path.len)
+    };
+    ?*CielAsyncFd raw = unsafe {
+        ciel_async_open(open_mode_code(mode), c_path)
+    };
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok(async_fd_from_handle(register_async_fd_owned(unsafe { raw as *CielAsyncFd })?));
+    return Ok(
+        async_fd_from_handle(
+            register_async_fd_owned(unsafe { raw as *CielAsyncFd })?
+        )
+    );
 }
 
 // Opens path for async reads.
-export Result<AsyncFd, AsyncIoError> open_async_read([]const char path) = .open_async_read {
+export Result<AsyncFd, AsyncIoError> open_async_read(
+    []const char path
+) = .open_async_read {
     return open_async(path, io::Read);
 }
 
 // Opens path for async writes, creating or truncating it.
-export Result<AsyncFd, AsyncIoError> create_async([]const char path) = .create_async {
+export Result<AsyncFd, AsyncIoError> create_async(
+    []const char path
+) = .create_async {
     return open_async(path, io::Write);
 }
 
 // Opens path for async append writes.
-export Result<AsyncFd, AsyncIoError> append_async([]const char path) = .append_async {
+export Result<AsyncFd, AsyncIoError> append_async(
+    []const char path
+) = .append_async {
     return open_async(path, io::Append);
 }
 
 // Unsafe hole: adopts a raw fd into the async runtime and the current resource
 // owner. The caller must guarantee the descriptor is valid, is not already
 // owned by another live Ciel resource, and may be closed by the async runtime.
-export unsafe Result<AsyncFd, AsyncIoError> async_from_raw_fd(os_fd::RawFd fd) {
-    ?*CielAsyncFd raw = unsafe { ciel_async_from_raw_fd(unsafe { os_fd::raw_fd(fd) }) };
+export unsafe Result<AsyncFd, AsyncIoError> async_from_raw_fd(
+    os_fd::RawFd fd
+) {
+    ?*CielAsyncFd raw = unsafe { ciel_async_from_raw_fd(
+        unsafe { os_fd::raw_fd(fd) }) };
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok(async_fd_from_handle(register_async_fd_owned(unsafe { raw as *CielAsyncFd })?));
+    return Ok(
+        async_fd_from_handle(
+            register_async_fd_owned(unsafe { raw as *CielAsyncFd })?
+        )
+    );
 }
 
 // Closes an async fd handle.
-export Result<void, AsyncIoError> close_async(AsyncFd @fd) = .close {
+export Result<void, AsyncIoError> close_async(
+    AsyncFd @fd
+) = .close {
     c::c_int rc = unsafe { close_handle(fd_handle_mut(&fd)) };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
@@ -303,33 +390,52 @@ export Result<void, AsyncIoError> close_async(AsyncFd @fd) = .close {
 }
 
 // Starts an async read operation and returns its low-level token.
-export Result<AsyncRead, AsyncIoError> read_bytes_async(*const AsyncFd fd, usize max_len) = .read_async {
-    ?*CielAsyncOp raw = unsafe { ciel_async_read_bytes(raw_async_fd(fd)?, max_len) };
+export Result<AsyncRead, AsyncIoError> read_bytes_async(
+    *const AsyncFd fd, usize max_len
+) = .read_async {
+    ?*CielAsyncOp raw = unsafe {
+        ciel_async_read_bytes(raw_async_fd(fd)?, max_len)
+    };
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok(async_read_from_handle(register_async_op(unsafe { raw as *CielAsyncOp })?));
+    return Ok(
+        async_read_from_handle(
+            register_async_op(unsafe { raw as *CielAsyncOp })?
+        )
+    );
 }
 
 // Starts an async write operation and returns its low-level token.
-export Result<AsyncWrite, AsyncIoError> write_bytes_async(*const AsyncFd fd, bytes::Bytes data) = .write_async {
+export Result<AsyncWrite, AsyncIoError> write_bytes_async(
+    *const AsyncFd fd, bytes::Bytes data
+) = .write_async {
     []const u8 view = bytes::bytes_const_slice(data);
-    ?*CielAsyncOp raw =
-        unsafe { ciel_async_write_bytes(raw_async_fd(fd)?, view.ptr, view.len) };
+    ?*CielAsyncOp raw = unsafe {
+        ciel_async_write_bytes(raw_async_fd(fd)?, view.ptr, view.len)
+    };
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok(async_write_from_handle(register_async_op(unsafe { raw as *CielAsyncOp })?));
+    return Ok(
+        async_write_from_handle(
+            register_async_op(unsafe { raw as *CielAsyncOp })?
+        )
+    );
 }
 
 // Awaits an async read and returns owned Bytes.
-export async Result<bytes::Bytes, AsyncIoError> read_bytes(*const AsyncFd fd, usize max_len) = .read {
+export async Result<bytes::Bytes, AsyncIoError> read_bytes(
+    *const AsyncFd fd, usize max_len
+) = .read {
     AsyncRead op = read_bytes_async(fd, max_len)?;
     return async_result(await async_core::future_from_op(op));
 }
 
 // Awaits an async write and returns the number of bytes written.
-export async Result<usize, AsyncIoError> write_bytes(*const AsyncFd fd, bytes::Bytes data) = .write {
+export async Result<usize, AsyncIoError> write_bytes(
+    *const AsyncFd fd, bytes::Bytes data
+) = .write {
     AsyncWrite op = write_bytes_async(fd, data)?;
     return async_result(await async_core::future_from_op(op));
 }
@@ -348,11 +454,19 @@ export Result<void, AsyncIoError> notify_read_done<M: Message>(
         case Err(error):
             return Err(MessageClone(error));
     }
-    ?*void boxed = unsafe { c::ciel_actor_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
+    ?*void boxed = unsafe {
+        c::ciel_actor_box_copy(
+            type_size<M>(), type_align<M>(), &cloned as *const void
+        )
+    };
     if (boxed == null) {
         return Err(Runtime(5));
     }
-    c::c_int rc = unsafe { ciel_async_notify_read(raw_async_read(op)?, actor_handle->handle as *CielActor, boxed) };
+    c::c_int rc = unsafe {
+        ciel_async_notify_read(
+            raw_async_read(op)?, actor_handle->handle as *CielActor, boxed
+        )
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
@@ -373,11 +487,19 @@ export Result<void, AsyncIoError> notify_write_done<M: Message>(
         case Err(error):
             return Err(MessageClone(error));
     }
-    ?*void boxed = unsafe { c::ciel_actor_box_copy(type_size<M>(), type_align<M>(), &cloned as *const void) };
+    ?*void boxed = unsafe {
+        c::ciel_actor_box_copy(
+            type_size<M>(), type_align<M>(), &cloned as *const void
+        )
+    };
     if (boxed == null) {
         return Err(Runtime(5));
     }
-    c::c_int rc = unsafe { ciel_async_notify_write(raw_async_write(op)?, actor_handle->handle as *CielActor, boxed) };
+    c::c_int rc = unsafe {
+        ciel_async_notify_write(
+            raw_async_write(op)?, actor_handle->handle as *CielActor, boxed
+        )
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
@@ -385,11 +507,15 @@ export Result<void, AsyncIoError> notify_write_done<M: Message>(
 }
 
 // Finishes a completed read operation and returns owned Bytes.
-export Result<bytes::Bytes, AsyncIoError> finish_read(AsyncRead @op) = .finish {
+export Result<bytes::Bytes, AsyncIoError> finish_read(
+    AsyncRead @op
+) = .finish {
     ?*u8 @raw = null;
     usize @len = 0;
     usize @cap = 0;
-    c::c_int rc = unsafe { ciel_async_finish_read(raw_async_read(&op)?, &raw, &len, &cap) };
+    c::c_int rc = unsafe {
+        ciel_async_finish_read(raw_async_read(&op)?, &raw, &len, &cap)
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
@@ -401,9 +527,13 @@ export Result<bytes::Bytes, AsyncIoError> finish_read(AsyncRead @op) = .finish {
 }
 
 // Finishes a completed write operation and returns bytes written.
-export Result<usize, AsyncIoError> finish_write(AsyncWrite @op) = .finish {
+export Result<usize, AsyncIoError> finish_write(
+    AsyncWrite @op
+) = .finish {
     usize @written = 0;
-    c::c_int rc = unsafe { ciel_async_finish_write(raw_async_write(&op)?, &written) };
+    c::c_int rc = unsafe {
+        ciel_async_finish_write(raw_async_write(&op)?, &written)
+    };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
     }
@@ -415,7 +545,9 @@ export Result<usize, AsyncIoError> finish_write(AsyncWrite @op) = .finish {
 }
 
 // Cancels a pending read operation.
-export Result<void, AsyncIoError> cancel_read(AsyncRead @op) = .cancel {
+export Result<void, AsyncIoError> cancel_read(
+    AsyncRead @op
+) = .cancel {
     c::c_int rc = unsafe { close_handle(read_handle_mut(&op)) };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
@@ -424,7 +556,9 @@ export Result<void, AsyncIoError> cancel_read(AsyncRead @op) = .cancel {
 }
 
 // Cancels a pending write operation.
-export Result<void, AsyncIoError> cancel_write(AsyncWrite @op) = .cancel {
+export Result<void, AsyncIoError> cancel_write(
+    AsyncWrite @op
+) = .cancel {
     c::c_int rc = unsafe { close_handle(write_handle_mut(&op)) };
     if ((rc as i64) != 0) {
         return Err(Runtime(rc as i64));
@@ -467,15 +601,22 @@ unsafe impl poll_done<bytes::Bytes>(*AsyncRead op, *bytes::Bytes out) {
     ?*u8 @raw = null;
     usize @len = 0;
     usize @cap = 0;
-    c::c_int rc =
-        unsafe { ciel_async_finish_read(unsafe { raw_op as *CielAsyncOp }, &raw, &len, &cap) };
+    c::c_int rc = unsafe {
+        ciel_async_finish_read(
+            unsafe { raw_op as *CielAsyncOp }, &raw, &len, &cap
+        )
+    };
     if ((rc as i64) == 0) {
         if (raw == null) {
             return 5 as c::c_int;
         }
-        []u8 view = unsafe { storage::raw_from_ptr<u8>(unsafe { raw as *void }, len) };
+        []u8 view = unsafe {
+            storage::raw_from_ptr<u8>(unsafe { raw as *void }, len)
+        };
         storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
-        *out = unsafe { bytes::bytes_from_raw_storage(raw_storage, len) };
+        *out = unsafe {
+            bytes::bytes_from_raw_storage(raw_storage, len)
+        };
         c::c_int close_rc = unsafe { close_handle(read_handle_mut(op)) };
         if ((close_rc as i64) != 0) {
             return close_rc;
@@ -507,7 +648,9 @@ unsafe impl poll_done<usize>(*AsyncWrite op, *usize out) {
         return 5 as c::c_int;
     }
     usize @written = 0;
-    c::c_int rc = unsafe { ciel_async_finish_write(unsafe { raw_op as *CielAsyncOp }, &written) };
+    c::c_int rc = unsafe {
+        ciel_async_finish_write(unsafe { raw_op as *CielAsyncOp }, &written)
+    };
     if ((rc as i64) == 0) {
         *out = written;
         c::c_int close_rc = unsafe { close_handle(write_handle_mut(op)) };

@@ -22,11 +22,15 @@ impl adapter::finish<usize>(DoneOp op) {
     return Ok(op.value);
 }
 
-impl adapter::notify_done<usize>(NotifyOp op, actor::Actor<usize> actor_handle, usize value) {
+impl adapter::notify_done<usize>(
+    NotifyOp op, actor::Actor<usize> actor_handle, usize value
+) {
     return actor::send<usize>(&actor_handle, value + op.bias);
 }
 
-Result<Out, Error> run_finish<Out, Op: adapter::finish<Out>>(Op op) {
+Result<Out, Error> run_finish<Out, Op: adapter::finish<Out>>(
+    Op op
+) {
     return adapter::finish<Out>(op);
 }
 
@@ -48,8 +52,9 @@ Result<channel::Channel<usize>, Error> record(
 
 i32 main() {
     channel::Channel<usize> out = must(channel::make_channel<usize>());
-    actor::Actor<usize> target =
-        must(actor::spawn_actor_cloned<channel::Channel<usize>, usize>(out, record));
+    actor::Actor<usize> target = must(
+        actor::spawn_actor_cloned<channel::Channel<usize>, usize>(out, record)
+    );
     must(run_notify<usize, NotifyOp>({ bias: 5 }, target, 3));
     usize notified = must(channel::channel_recv<usize>(&out));
     usize finished = must(run_finish<usize, DoneOp>({ value: 4 }));

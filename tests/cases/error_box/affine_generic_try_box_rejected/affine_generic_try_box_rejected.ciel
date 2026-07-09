@@ -13,7 +13,9 @@ impl format_error(*const FileError error) {
     return "file error";
 }
 
-Result<void, Error> adapt<E: ErrorTrait>(Result<void, E> result) {
+Result<void, Error> adapt<E: ErrorTrait>(
+    Result<void, E> result
+) {
     result?;
     return Ok;
 }

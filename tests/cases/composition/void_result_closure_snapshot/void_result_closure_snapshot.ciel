@@ -12,7 +12,9 @@ struct Cell {
     void tag;
 }
 
-Result<void, LocalError> apply<T>(T value, Result<void, LocalError> |(T)| action) {
+Result<void, LocalError> apply<T>(
+    T value, Result<void, LocalError> |(T)| action
+) {
     return action(value);
 }
 
@@ -25,13 +27,17 @@ i64 main() {
 
     cell.value = 99;
 
-    must(apply(cell, |Cell current| {
-        current.tag;
-        if (current.value == 99) {
-            return Ok;
-        }
-        return Err(Failed);
-    }));
+    must(
+        apply(
+            cell, |Cell current| {
+                current.tag;
+                if (current.value == 99) {
+                    return Ok;
+                }
+                return Err(Failed);
+            }
+        )
+    );
 
     return read_snapshot();
 }

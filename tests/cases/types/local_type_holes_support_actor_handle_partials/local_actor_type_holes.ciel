@@ -19,7 +19,9 @@ unsafe impl clone_message(*const Command value) {
     return Ok(*value);
 }
 
-Result<State, Error> handle(State state, Command command) {
+Result<State, Error> handle(
+    State state, Command command
+) {
     switch (command) {
         case Add(value):
             return Ok({ total: state.total + value });

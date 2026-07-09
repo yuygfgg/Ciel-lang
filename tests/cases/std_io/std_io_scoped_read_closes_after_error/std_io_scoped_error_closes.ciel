@@ -7,21 +7,27 @@ import /std/io;
 
 i32 main() {
     []const char path = must(env::arg(1));
-    Result<void, IoWithError<Error>> failed = with_create<void, Error>(path, |file| {
-        write_text(&file, "closed")?;
-        return Err(code_error(9));
-    });
+    Result<void, IoWithError<Error>> failed = with_create<void, Error>(
+        path, |file| {
+            write_text(&file, "closed")?;
+            return Err(code_error(9));
+        }
+    );
     switch (failed) {
         case Ok(_):
             return 1;
         case Err(_):
     }
 
-    usize n = must(with_open_read<usize>(path, |file| {
-        [16]u8 @buffer = [0;];
-        usize read_count = read(&file, buffer[..])?;
-        return Ok(read_count);
-    }));
+    usize n = must(
+        with_open_read<usize>(
+            path, |file| {
+                [16]u8 @buffer = [0;];
+                usize read_count = read(&file, buffer[..])?;
+                return Ok(read_count);
+            }
+        )
+    );
     if (n != 6) {
         return 2;
     }

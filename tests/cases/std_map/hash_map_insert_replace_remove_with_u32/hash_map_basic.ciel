@@ -22,7 +22,9 @@ i64 remove_code(map::RemoveResult<i64> result) {
     }
 }
 
-bool is_key_not_found(Result<i64, map::MapWithError<map::MapError>> value) {
+bool is_key_not_found(
+    Result<i64, map::MapWithError<map::MapError>> value
+) {
     switch (value) {
         case Ok(ok):
             return false;
@@ -82,10 +84,12 @@ i64 main() {
     }
 
     Result<i64, map::MapWithError<map::MapError>> after_update_result =
-        table.map::with(7 as u32, |value| {
-        *value = *value + 5;
-        return Ok(*value);
-    });
+        table.map::with(
+            7 as u32, |value| {
+                *value = *value + 5;
+                return Ok(*value);
+            }
+        );
     i64 after_update = must(after_update_result);
     if (after_update != 25) {
         return 8;
@@ -93,8 +97,8 @@ i64 main() {
 
     Result<i64, map::MapWithError<map::MapError>> read_back_result =
         table.map::with(7 as u32, |value| {
-        return Ok(*value);
-    });
+            return Ok(*value);
+        });
     i64 read_back = must(read_back_result);
     if (read_back != 25) {
         return 9;
@@ -102,8 +106,8 @@ i64 main() {
 
     Result<i64, map::MapWithError<map::MapError>> missing_with_result =
         table.map::with(9 as u32, |value| {
-        return Ok(*value);
-    });
+            return Ok(*value);
+        });
     if (!is_key_not_found(missing_with_result)) {
         return 10;
     }

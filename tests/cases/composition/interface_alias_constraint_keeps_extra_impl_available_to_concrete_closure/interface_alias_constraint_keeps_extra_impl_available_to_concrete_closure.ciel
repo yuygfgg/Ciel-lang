@@ -24,8 +24,10 @@ i64 fold<T: readable>(T value, i64 |(T)| callback) {
 
 i64 main() {
     Device device = { value: 10, offset: 5 };
-    return fold(device, |item| {
-        Device local = item;
-        return read(&local) + seek(&local);
-    });
+    return fold(
+        device, |item| {
+            Device local = item;
+            return read(&local) + seek(&local);
+        }
+    );
 }

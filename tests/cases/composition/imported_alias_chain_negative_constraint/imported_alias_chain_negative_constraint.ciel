@@ -3,7 +3,9 @@
 
 import ./stream_impl;
 
-i64 only_reader<T: reader_only + !seek>(*T value) {
+i64 only_reader<T: reader_only + !seek>(
+    *T value
+) {
     return read(value);
 }
 

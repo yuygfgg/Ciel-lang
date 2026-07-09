@@ -4,7 +4,9 @@
 
 import /std/lib;
 
-Result<void, Error> accept_handle<T: ShareHandle>(T value) {
+Result<void, Error> accept_handle<T: ShareHandle>(
+    T value
+) {
     T local = value;
     if (share_handle_marker(&local)) {
         return Ok();

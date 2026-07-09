@@ -53,25 +53,37 @@ i64 kind_code(wire::WireErrorKind kind) {
     }
 }
 
-bool small_error(Result<Small, wire::WireError> result, wire::WireErrorKind kind, []const char path) {
+bool small_error(
+    Result<Small, wire::WireError> result,
+    wire::WireErrorKind kind,
+    []const char path
+) {
     switch (result) {
         case Ok(_):
             return false;
         case Err(error):
-            return kind_code(error.kind) == kind_code(kind) && chars_equal(error.path, path);
+            return kind_code(error.kind) == kind_code(kind) &&
+            chars_equal(error.path, path);
     }
 }
 
-bool vec_error(Result<vec::Vec<i64>, wire::WireError> result, wire::WireErrorKind kind, []const char path) {
+bool vec_error(
+    Result<vec::Vec<i64>, wire::WireError> result,
+    wire::WireErrorKind kind,
+    []const char path
+) {
     switch (result) {
         case Ok(_):
             return false;
         case Err(error):
-            return kind_code(error.kind) == kind_code(kind) && chars_equal(error.path, path);
+            return kind_code(error.kind) == kind_code(kind) &&
+            chars_equal(error.path, path);
     }
 }
 
-bool bytes_equal_text(bytes::Bytes value, []const char expected) {
+bool bytes_equal_text(
+    bytes::Bytes value, []const char expected
+) {
     []const u8 data = bytes::bytes_const_slice(value);
     if (data.len != expected.len) {
         return false;
@@ -92,7 +104,9 @@ i64 main() {
     if (!text::text_equal_slice(bytes_json, "\"aGk=\"")) {
         return 1;
     }
-    bytes::Bytes decoded_payload = must(json::decode(meta::type_tag<bytes::Bytes>(), "\"aGk=\""));
+    bytes::Bytes decoded_payload = must(
+        json::decode(meta::type_tag<bytes::Bytes>(), "\"aGk=\"")
+    );
     if (!bytes_equal_text(decoded_payload, "hi")) {
         return 2;
     }
@@ -106,16 +120,26 @@ i64 main() {
         return 4;
     }
 
-    map::HashMap<i64, text::Text> @table = must(map::hash_map_new<i64, text::Text>());
-    must(map::hash_map_insert<i64, text::Text>(&table, 7, must(text::text_copy("seven"))));
-    text::Text map_json = must(json::encode<map::HashMap<i64, text::Text>>(&table));
+    map::HashMap<i64, text::Text> @table = must(
+        map::hash_map_new<i64, text::Text>()
+    );
+    must(
+        map::hash_map_insert<i64, text::Text>(
+            &table, 7, must(text::text_copy("seven"))
+        )
+    );
+    text::Text map_json = must(
+        json::encode<map::HashMap<i64, text::Text>>(&table)
+    );
     if (!text::text_equal_slice(map_json, "{\"7\":\"seven\"}")) {
         return 5;
     }
-    map::HashMap<i64, text::Text> decoded_map = must(json::decode(
-        meta::type_tag<map::HashMap<i64, text::Text>>(),
-        "{\"7\":\"seven\"}"
-    ));
+    map::HashMap<i64, text::Text> decoded_map = must(
+        json::decode(
+            meta::type_tag<map::HashMap<i64, text::Text>>(),
+            "{\"7\":\"seven\"}"
+        )
+    );
     switch (must(map::hash_map_get<i64, text::Text>(&decoded_map, 7))) {
         case map::GetResult::Found(value):
             if (!text::text_equal_slice(value, "seven")) {
@@ -126,13 +150,15 @@ i64 main() {
     }
 
     _ schema = meta::schema<Small>();
-    Small ignored = must(json::decode_struct_with_policy(
-        meta::type_tag<Small>(),
-        &schema,
-        meta::type_tag<meta::Repr<Small>>(),
-        "{\"id\":9,\"extra\":1}",
-        json::Ignore
-    ));
+    Small ignored = must(
+        json::decode_struct_with_policy(
+            meta::type_tag<Small>(),
+            &schema,
+            meta::type_tag<meta::Repr<Small>>(),
+            "{\"id\":9,\"extra\":1}",
+            json::Ignore
+        )
+    );
     if (ignored.id != 9) {
         return 8;
     }

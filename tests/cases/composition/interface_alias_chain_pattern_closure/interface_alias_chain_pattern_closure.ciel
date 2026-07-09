@@ -20,7 +20,9 @@ impl read(*Source source) {
     return source->value;
 }
 
-i64 fold<T: reader_only + !seek>(Packet<T> packet, i64 |(T)| callback) {
+i64 fold<T: reader_only + !seek>(
+    Packet<T> packet, i64 |(T)| callback
+) {
     switch (packet) {
         case Item(item):
             return callback(item);
@@ -33,8 +35,10 @@ i64 main() {
     Source source = { value: 14 };
     Packet<Source> packet = Item(source);
     i64 bias = 5;
-    return fold(packet, |item| {
-        Source local = item;
-        return read(&local) + bias;
-    });
+    return fold(
+        packet, |item| {
+            Source local = item;
+            return read(&local) + bias;
+        }
+    );
 }

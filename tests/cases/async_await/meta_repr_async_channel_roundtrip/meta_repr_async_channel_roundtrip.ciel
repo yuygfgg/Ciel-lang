@@ -18,9 +18,12 @@ async Result<i64, Error> drive() {
         async::channel<meta::Repr<Packet>>(1)?;
     Packet packet = { value: 17, tag: true };
 
-    await async::send<meta::Repr<Packet>>(pair.sender, meta::into_repr(&packet))?;
-    meta::Repr<Packet> envelope =
-        await async::recv<meta::Repr<Packet>>(pair.receiver)?;
+    await async::send<meta::Repr<Packet>>(
+        pair.sender, meta::into_repr(&packet)
+    )?;
+    meta::Repr<Packet> envelope = await async::recv<meta::Repr<Packet>>(
+        pair.receiver
+    )?;
     Packet received = meta::from_repr<Packet>(envelope);
     if (!received.tag) {
         return Err(text_error("missing tag"));

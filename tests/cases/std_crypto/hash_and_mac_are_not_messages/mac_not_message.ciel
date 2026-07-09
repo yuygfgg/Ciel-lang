@@ -4,6 +4,8 @@
 import /std/crypto as crypto;
 import /std/message;
 
-Result<crypto::Mac, Error> copy_mac(crypto::Mac mac) {
+Result<crypto::Mac, Error> copy_mac(
+    crypto::Mac mac
+) {
     return clone_message(&mac);
 }

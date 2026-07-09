@@ -9,15 +9,18 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<Channel<i64>, Error> handle(Channel<i64> done, i64 value) {
+Result<Channel<i64>, Error> handle(
+    Channel<i64> done, i64 value
+) {
     channel_send(&done, value)?;
     return Ok(done);
 }
 
 i32 main() {
     Channel<i64> done = must(make_channel<i64>());
-    Actor<i64> actor =
-        must(spawn_actor_cloned<Channel<i64>, i64>(done, handle));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<Channel<i64>, i64>(done, handle)
+    );
     atime::AsyncSleep op = must(atime::sleep_ms_async(0));
     must(atime::notify_sleep_done(&op, &actor, 1));
 

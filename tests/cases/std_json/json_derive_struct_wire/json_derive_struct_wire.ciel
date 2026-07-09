@@ -19,7 +19,9 @@ i64 main() {
     if (!text::text_equal_slice(encoded, "{\"id\":7,\"ok\":true}")) {
         return 1;
     }
-    Packet decoded = must(json::decode(meta::type_tag<Packet>(), "{\"id\":8,\"ok\":false}"));
+    Packet decoded = must(
+        json::decode(meta::type_tag<Packet>(), "{\"id\":8,\"ok\":false}")
+    );
     if (decoded.id != 8) {
         return 2;
     }

@@ -21,7 +21,9 @@ impl apply_with<i64 fn(i64)>(*Box box, i64 fn(i64) callback, i64 input) {
     return box->base + callback(input);
 }
 
-i64 evaluate(Plan plan, i64 |(with_i64_callback, i64 fn(i64), i64)| callback) {
+i64 evaluate(
+    Plan plan, i64 |(with_i64_callback, i64 fn(i64), i64)| callback
+) {
     switch (plan) {
         case Run(item, function, input):
             return callback(item, function, input);
@@ -33,5 +35,7 @@ i64 evaluate(Plan plan, i64 |(with_i64_callback, i64 fn(i64), i64)| callback) {
 i64 main() {
     Box box = { base: 10 };
     Plan plan = Run(&box, add_two, 6);
-    return evaluate(plan, |item, function, input| apply_with(item, function, input));
+    return evaluate(
+        plan, |item, function, input| apply_with(item, function, input)
+    );
 }

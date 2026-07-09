@@ -84,7 +84,9 @@ i64 kind_code(wire::WireErrorKind kind) {
     }
 }
 
-bool is_event_error_kind(Result<Event, wire::WireError> result, wire::WireErrorKind kind) {
+bool is_event_error_kind(
+    Result<Event, wire::WireError> result, wire::WireErrorKind kind
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -109,8 +111,12 @@ Inner inner(i64 id, []const char label) {
     return { id: id, label: must(text::text_copy(label)) };
 }
 
-i64 get_i64(*const map::HashMap<text::Text, i64> table, []const char key) {
-    switch (must(map::hash_map_get<text::Text, i64>(table, must(text::text_copy(key))))) {
+i64 get_i64(
+    *const map::HashMap<text::Text, i64> table, []const char key
+) {
+    switch (must(
+        map::hash_map_get<text::Text, i64>(table, must(text::text_copy(key)))
+    )) {
         case map::GetResult::Found(value):
             return value;
         case map::GetResult::Missing:
@@ -119,7 +125,8 @@ i64 get_i64(*const map::HashMap<text::Text, i64> table, []const char key) {
 }
 
 i64 check_packet(Packet packet) {
-    if (packet.numbers[0] != 1 || packet.numbers[1] != 2 || packet.numbers[2] != 3) {
+    if (packet.numbers[0] != 1 || packet.numbers[1] != 2 ||
+        packet.numbers[2] != 3) {
         return 1;
     }
     if (packet.grid[0][0] != 4 || packet.grid[0][1] != 5 ||
@@ -142,8 +149,11 @@ i64 main() {
     if (!text::text_equal_slice(direct_array, "[1,2,3]")) {
         return 1;
     }
-    [3]i64 decoded_numbers = must(json::decode(meta::type_tag<[3]i64>(), "[7,8,9]"));
-    if (decoded_numbers[0] != 7 || decoded_numbers[1] != 8 || decoded_numbers[2] != 9) {
+    [3]i64 decoded_numbers = must(
+        json::decode(meta::type_tag<[3]i64>(), "[7,8,9]")
+    );
+    if (decoded_numbers[0] != 7 || decoded_numbers[1] != 8 ||
+        decoded_numbers[2] != 9) {
         return 2;
     }
 
@@ -154,7 +164,9 @@ i64 main() {
     };
     _ packet_schema = meta::schema<Packet>();
     _ packet_repr = meta::as_ref_repr(&packet);
-    text::Text packet_json = must(json::encode_struct(&packet_schema, &packet_repr));
+    text::Text packet_json = must(
+        json::encode_struct(&packet_schema, &packet_repr)
+    );
     if (!text::text_equal_slice(
         packet_json,
         "{\"numbers\":[1,2,3],\"grid\":[[4,5],[6,7]],\"inners\":[{\"id\":8,\"label\":\"a\"},{\"id\":9,\"label\":\"b\"}]}"
@@ -162,21 +174,25 @@ i64 main() {
         return 3;
     }
 
-    Packet decoded_packet = must(json::decode_struct(
-        meta::type_tag<Packet>(),
-        &packet_schema,
-        meta::type_tag<meta::Repr<Packet>>(),
-        "{\"inners\":[{\"label\":\"a\",\"id\":8},{\"label\":\"b\",\"id\":9}],\"grid\":[[4,5],[6,7]],\"numbers\":[1,2,3]}"
-    ));
+    Packet decoded_packet = must(
+        json::decode_struct(
+            meta::type_tag<Packet>(),
+            &packet_schema,
+            meta::type_tag<meta::Repr<Packet>>(),
+            "{\"inners\":[{\"label\":\"a\",\"id\":8},{\"label\":\"b\",\"id\":9}],\"grid\":[[4,5],[6,7]],\"numbers\":[1,2,3]}"
+        )
+    );
     i64 packet_check = check_packet(decoded_packet);
     if (packet_check != 0) {
         return 10 + packet_check;
     }
 
-    [2][2]i64 decoded_grid = must(json::decode(
-        meta::type_tag<[2][2]i64>(),
-        "[[4,5],[6,7]]"
-    ));
+    [2][2]i64 decoded_grid = must(
+        json::decode(
+            meta::type_tag<[2][2]i64>(),
+            "[[4,5],[6,7]]"
+        )
+    );
     if (decoded_grid[0][0] != 4 || decoded_grid[0][1] != 5 ||
         decoded_grid[1][0] != 6 || decoded_grid[1][1] != 7) {
         return 15;
@@ -192,13 +208,16 @@ i64 main() {
     if (!text::text_equal_slice(data_json, "{\"Data\":[11,\"ok\"]}")) {
         return 21;
     }
-    Event decoded_event = must(json::decode(
-        meta::type_tag<Event>(),
-        "{\"Nested\":[{\"id\":12,\"label\":\"wrapped\"}]}"
-    ));
+    Event decoded_event = must(
+        json::decode(
+            meta::type_tag<Event>(),
+            "{\"Nested\":[{\"id\":12,\"label\":\"wrapped\"}]}"
+        )
+    );
     switch (decoded_event) {
         case Event::Nested(value):
-            if (value.id != 12 || !text::text_equal_slice(value.label, "wrapped")) {
+            if (value.id != 12 ||
+            !text::text_equal_slice(value.label, "wrapped")) {
                 return 22;
             }
         case Event::Ping:
@@ -213,25 +232,33 @@ i64 main() {
         return 25;
     }
 
-    map::HashMap<text::Text, i64> decoded_map = must(json::decode(
-        meta::type_tag<map::HashMap<text::Text, i64>>(),
-        "{\"a\":1,\"b\":2}"
-    ));
+    map::HashMap<text::Text, i64> decoded_map = must(
+        json::decode(
+            meta::type_tag<map::HashMap<text::Text, i64>>(),
+            "{\"a\":1,\"b\":2}"
+        )
+    );
     if (get_i64(&decoded_map, "a") != 1 || get_i64(&decoded_map, "b") != 2) {
         return 30;
     }
     if (!is_map_error_kind(
-        json::decode(meta::type_tag<map::HashMap<text::Text, i64>>(), "{\"a\":1,\"a\":2}"),
+        json::decode(
+            meta::type_tag<map::HashMap<text::Text, i64>>(), "{\"a\":1,\"a\":2}"
+        ),
         wire::DuplicateField
     )) {
         return 31;
     }
 
-    text::Text encoded_map = must(json::encode<map::HashMap<text::Text, i64>>(&decoded_map));
-    map::HashMap<text::Text, i64> roundtrip_map = must(json::decode(
-        meta::type_tag<map::HashMap<text::Text, i64>>(),
-        must(text::text_to_slice(encoded_map))
-    ));
+    text::Text encoded_map = must(
+        json::encode<map::HashMap<text::Text, i64>>(&decoded_map)
+    );
+    map::HashMap<text::Text, i64> roundtrip_map = must(
+        json::decode(
+            meta::type_tag<map::HashMap<text::Text, i64>>(),
+            must(text::text_to_slice(encoded_map))
+        )
+    );
     if (get_i64(&roundtrip_map, "a") != 1 || get_i64(&roundtrip_map, "b") != 2) {
         return 32;
     }

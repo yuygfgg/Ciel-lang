@@ -4,7 +4,9 @@
 import /std/io as io;
 import /std/result;
 
-async Result<void, Error> close_later(io::File @file) {
+async Result<void, Error> close_later(
+    io::File @file
+) {
     io::close(file)?;
     return Ok;
 }

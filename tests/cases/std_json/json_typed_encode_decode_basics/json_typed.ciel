@@ -33,7 +33,9 @@ i64 kind_code(wire::WireErrorKind kind) {
     }
 }
 
-bool is_i64_error_kind(Result<i64, wire::WireError> result, wire::WireErrorKind kind) {
+bool is_i64_error_kind(
+    Result<i64, wire::WireError> result, wire::WireErrorKind kind
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -63,7 +65,9 @@ i64 main() {
     if (must(json::decode(meta::type_tag<u8>(), "255")) != (255 as u8)) {
         return 5;
     }
-    if (!is_i64_error_kind(json::decode(meta::type_tag<i64>(), "\"nope\""), wire::TypeMismatch)) {
+    if (!is_i64_error_kind(
+        json::decode(meta::type_tag<i64>(), "\"nope\""), wire::TypeMismatch
+    )) {
         return 6;
     }
 
@@ -72,7 +76,9 @@ i64 main() {
     if (!text::text_equal_slice(message_json, "\"a\\nB\"")) {
         return 7;
     }
-    text::Text decoded_message = must(json::decode(meta::type_tag<text::Text>(), "\"a\\n\\u0042\""));
+    text::Text decoded_message = must(
+        json::decode(meta::type_tag<text::Text>(), "\"a\\n\\u0042\"")
+    );
     if (!text::text_equal_slice(decoded_message, "a\nB")) {
         return 8;
     }
@@ -82,8 +88,9 @@ i64 main() {
     if (!text::text_equal_slice(some_json, "-7")) {
         return 9;
     }
-    option::Option<i64> decoded_some =
-        must(json::decode(meta::type_tag<option::Option<i64>>(), " -7 "));
+    option::Option<i64> decoded_some = must(
+        json::decode(meta::type_tag<option::Option<i64>>(), " -7 ")
+    );
     switch (decoded_some) {
         case option::Some(value):
             if (value != -7) {
@@ -98,8 +105,9 @@ i64 main() {
     if (!text::text_equal_slice(none_json, "null")) {
         return 12;
     }
-    option::Option<i64> decoded_none =
-        must(json::decode(meta::type_tag<option::Option<i64>>(), " null "));
+    option::Option<i64> decoded_none = must(
+        json::decode(meta::type_tag<option::Option<i64>>(), " null ")
+    );
     switch (decoded_none) {
         case option::Some(_):
             return 13;

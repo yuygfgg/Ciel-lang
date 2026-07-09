@@ -18,7 +18,9 @@ i64 check_i64_vec() {
         return 1;
     }
 
-    vec::Vec<i64> decoded = must(json::decode(meta::type_tag<vec::Vec<i64>>(), "[ 1, -2, 3 ]"));
+    vec::Vec<i64> decoded = must(
+        json::decode(meta::type_tag<vec::Vec<i64>>(), "[ 1, -2, 3 ]")
+    );
     []const i64 values = decoded.vec::slice();
     if (values.len != 3 || values[0] != 1 || values[1] != -2 || values[2] != 3) {
         return 2;
@@ -27,8 +29,11 @@ i64 check_i64_vec() {
 }
 
 i64 check_nested_vec() {
-    vec::Vec<vec::Vec<i64>> decoded =
-        must(json::decode(meta::type_tag<vec::Vec<vec::Vec<i64>>>(), "[[1,2],[],[3]]"));
+    vec::Vec<vec::Vec<i64>> decoded = must(
+        json::decode(
+            meta::type_tag<vec::Vec<vec::Vec<i64>>>(), "[[1,2],[],[3]]"
+        )
+    );
     []const vec::Vec<i64> outer = decoded.vec::slice();
     if (outer.len != 3) {
         return 10;
@@ -50,8 +55,11 @@ i64 check_nested_vec() {
 }
 
 i64 check_option_vec() {
-    vec::Vec<option::Option<text::Text>> decoded =
-        must(json::decode(meta::type_tag<vec::Vec<option::Option<text::Text>>>(), "[\"a\",null,\"b\"]"));
+    vec::Vec<option::Option<text::Text>> decoded = must(
+        json::decode(
+            meta::type_tag<vec::Vec<option::Option<text::Text>>>(), "[\"a\",null,\"b\"]"
+        )
+    );
     []const option::Option<text::Text> values = decoded.vec::slice();
     if (values.len != 3) {
         return 20;
@@ -111,9 +119,12 @@ i64 check_float_values() {
         return 33;
     }
 
-    vec::Vec<f64> floats = must(json::decode(meta::type_tag<vec::Vec<f64>>(), "[0,1.5,-2.25e1]"));
+    vec::Vec<f64> floats = must(
+        json::decode(meta::type_tag<vec::Vec<f64>>(), "[0,1.5,-2.25e1]")
+    );
     []const f64 values = floats.vec::slice();
-    if (values.len != 3 || values[0] != 0.0 || values[1] != 1.5 || values[2] != -22.5) {
+    if (values.len != 3 || values[0] != 0.0 ||
+        values[1] != 1.5 || values[2] != -22.5) {
         return 34;
     }
     return 0;

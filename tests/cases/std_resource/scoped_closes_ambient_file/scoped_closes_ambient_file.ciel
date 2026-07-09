@@ -13,7 +13,9 @@ struct HandleParts {
     u64 generation;
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(
+    resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle.owner_id },
         resource_id: unsafe { handle.resource_id },
@@ -32,21 +34,29 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-Result<HandleParts, Error> open_deep([]const char path) {
+Result<HandleParts, Error> open_deep(
+    []const char path
+) {
     io::File file = io::open_read(path)?;
     return Ok(parts_from_handle(unsafe { file.handle }));
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "x")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "x")?;
+                return Ok;
+            }
+        )
+    );
 
-    HandleParts parts = must(resource::scoped<HandleParts>(|| {
-        return open_deep(path);
-    }));
+    HandleParts parts = must(
+        resource::scoped<HandleParts>(|| {
+            return open_deep(path);
+        })
+    );
     io::File stale = file_from_parts(parts);
 
     [1]u8 @buffer = [0;];

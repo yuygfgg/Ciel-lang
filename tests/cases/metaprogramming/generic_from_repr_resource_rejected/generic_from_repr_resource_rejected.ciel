@@ -22,8 +22,10 @@ i64 main() {
             tail: {
                 head: { name: "generation", value: 0 },
                 tail: {},
-            },
-        },
+            }
+            ,
+        }
+        ,
     };
     FileRepr repr = {
         head: { name: "handle", value: handle },

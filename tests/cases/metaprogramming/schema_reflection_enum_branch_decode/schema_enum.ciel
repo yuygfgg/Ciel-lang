@@ -32,7 +32,9 @@ impl count_variants(*const meta::HNil schema) {
 impl<P, Tail: count_variants> count_variants(
     *const meta::HCons<meta::VariantSchema<P>, Tail> schema
 ) {
-    meta::HConsView<meta::VariantSchema<P>, Tail> view = meta::hcons_view(schema);
+    meta::HConsView<meta::VariantSchema<P>, Tail> view = meta::hcons_view(
+        schema
+    );
     return 1 + count_variants(view.tail);
 }
 
@@ -43,16 +45,24 @@ impl count_payloads(*const meta::HNil schema) {
 impl<V, R, Tail: count_payloads> count_payloads(
     *const meta::HCons<meta::PayloadSchema<V, R>, Tail> schema
 ) {
-    meta::HConsView<meta::PayloadSchema<V, R>, Tail> view = meta::hcons_view(schema);
-    meta::PayloadSchemaView<V, R> payload_schema = meta::payload_schema_view(view.head);
+    meta::HConsView<meta::PayloadSchema<V, R>, Tail> view = meta::hcons_view(
+        schema
+    );
+    meta::PayloadSchemaView<V, R> payload_schema = meta::payload_schema_view(
+        view.head
+    );
     if (payload_schema.index != (0 as usize)) {
         return 100;
     }
     return 1 + count_payloads(view.tail);
 }
 
-interface<S, R> R decode_payloads(*const S schema, meta::Type<R> out);
-interface<P, R> R decode_payload(*const P schema, meta::Type<R> out);
+interface<S, R> R decode_payloads(
+    *const S schema, meta::Type<R> out
+);
+interface<P, R> R decode_payload(
+    *const P schema, meta::Type<R> out
+);
 
 impl decode_payloads(*const meta::HNil schema, meta::Type<meta::HNil> out) {
     return {};
@@ -62,34 +72,48 @@ impl<V, Slot, STail: decode_payloads<RTail>, RTail> decode_payloads(
     *const meta::HCons<meta::PayloadSchema<V, Slot>, STail> schema,
     meta::Type<meta::HCons<meta::Payload<Slot>, RTail>> out
 ) {
-    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(schema_view.head);
+    meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(
+        schema_view.head
+    );
     Slot value = decode_payload(schema_view.head, meta::type_tag<Slot>());
     RTail tail = decode_payloads(schema_view.tail, meta::type_tag<RTail>());
-    meta::Payload<Slot> payload = unsafe { {
-        index: payload_schema.index,
-        value: value,
-    } };
+    meta::Payload<Slot> payload = unsafe {
+        {
+            index: payload_schema.index,
+            value: value,
+        }
+    };
     return unsafe { { head: payload, tail: tail } };
 }
 
-impl decode_payload(*const meta::PayloadSchema<i64, i64> schema, meta::Type<i64> out) {
+impl decode_payload(
+    *const meta::PayloadSchema<i64, i64> schema, meta::Type<i64> out
+) {
     return 77;
 }
 
-interface<S, R> R choose_number(*const S schema, meta::Type<R> out);
+interface<S, R> R choose_number(
+    *const S schema, meta::Type<R> out
+);
 
 impl<SP, RP, STail, RTail> choose_number(
     *const meta::HCons<meta::VariantSchema<SP>, STail> schema,
     meta::Type<meta::Coproduct<meta::Variant<RP>, RTail>> out
 ) {
-    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::hcons_view(schema);
-    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(schema_view.head);
+    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(
+        schema_view.head
+    );
     RP payload = decode_payloads(variant_schema.payload, meta::type_tag<RP>());
-    meta::Variant<RP> variant = unsafe { {
-        name: variant_schema.name,
-        payload: payload,
-    } };
+    meta::Variant<RP> variant = unsafe {
+        {
+            name: variant_schema.name,
+            payload: payload,
+        }
+    };
     return meta::This(variant);
 }
 
@@ -104,7 +128,9 @@ i64 main() {
         meta::variant_schema_view(schema_view.head);
     meta::HConsView<meta::VariantSchema<meta::HNil>, meta::HNil> tail_view =
         meta::hcons_view(schema_view.tail);
-    meta::VariantSchemaView<meta::HNil> end_schema = meta::variant_schema_view(tail_view.head);
+    meta::VariantSchemaView<meta::HNil> end_schema = meta::variant_schema_view(
+        tail_view.head
+    );
     if (!chars_eq(number_schema.name, "Number")) {
         return 2;
     }
@@ -115,7 +141,9 @@ i64 main() {
         return 4;
     }
 
-    meta::Repr<Token> repr = choose_number(&schema, meta::type_tag<meta::Repr<Token>>());
+    meta::Repr<Token> repr = choose_number(
+        &schema, meta::type_tag<meta::Repr<Token>>()
+    );
     Token token = meta::from_repr<Token>(repr);
     switch (token) {
         case Number(value):

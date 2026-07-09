@@ -35,9 +35,9 @@ _: Iterator<i64> choose(bool flag) {
 i64 main() {
     _ iter = choose(true);
     switch (next(&iter)) {
-    case Item(value):
-        return value;
-    case Done:
-        return 0;
+        case Item(value):
+            return value;
+        case Done:
+            return 0;
     }
 }

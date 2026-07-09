@@ -6,17 +6,23 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-Result<io::File, io::IoError> pass_through(Result<io::File, io::IoError> input) {
+Result<io::File, io::IoError> pass_through(
+    Result<io::File, io::IoError> input
+) {
     io::File file = input?;
     return Ok(file);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "try")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "try")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(pass_through(io::open_read(path)));
     [4]u8 @buffer = [0;];

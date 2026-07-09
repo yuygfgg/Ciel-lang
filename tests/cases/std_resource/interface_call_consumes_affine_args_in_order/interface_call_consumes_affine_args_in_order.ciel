@@ -4,7 +4,9 @@
 import /std/io as io;
 import /std/result;
 
-interface<T> Result<void, Error> consume_pair(T left, T right);
+interface<T> Result<void, Error> consume_pair(
+    T left, T right
+);
 
 impl consume_pair(io::File left, io::File right) {
     io::close(left)?;

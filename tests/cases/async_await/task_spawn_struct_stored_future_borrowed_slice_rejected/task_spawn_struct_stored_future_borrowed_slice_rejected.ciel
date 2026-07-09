@@ -9,7 +9,9 @@ resource struct FutureBox {
     async::Future<Result<usize, Error>> inner;
 }
 
-async Result<usize, Error> len_later([]const i64 view) {
+async Result<usize, Error> len_later(
+    []const i64 view
+) {
     return Ok(view.len);
 }
 

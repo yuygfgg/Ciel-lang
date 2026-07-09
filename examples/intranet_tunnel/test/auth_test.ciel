@@ -31,7 +31,9 @@ bool bytes_eq_text([]const u8 left, []const char right) {
     return true;
 }
 
-bool is_err_hello(Result<auth::Hello, terr::AuthCodecError> value) {
+bool is_err_hello(
+    Result<auth::Hello, terr::AuthCodecError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -60,25 +62,51 @@ bool is_err_void(Result<void, terr::AuthCodecError> value) {
 
 i32 main() {
     [16]u8 psk = [
-        0x73 as u8, 0x65 as u8, 0x63 as u8, 0x72 as u8,
-        0x65 as u8, 0x74 as u8, 0x2d as u8, 0x74 as u8,
-        0x75 as u8, 0x6e as u8, 0x6e as u8, 0x65 as u8,
-        0x6c as u8, 0x2d as u8, 0x6b as u8, 0x31 as u8
+        0x73 as u8,
+        0x65 as u8,
+        0x63 as u8,
+        0x72 as u8,
+        0x65 as u8,
+        0x74 as u8,
+        0x2d as u8,
+        0x74 as u8,
+        0x75 as u8,
+        0x6e as u8,
+        0x6e as u8,
+        0x65 as u8,
+        0x6c as u8,
+        0x2d as u8,
+        0x6b as u8,
+        0x31 as u8
     ];
     [16]u8 wrong_psk = [
-        0x77 as u8, 0x72 as u8, 0x6f as u8, 0x6e as u8,
-        0x67 as u8, 0x2d as u8, 0x74 as u8, 0x75 as u8,
-        0x6e as u8, 0x6e as u8, 0x65 as u8, 0x6c as u8,
-        0x2d as u8, 0x6b as u8, 0x65 as u8, 0x79 as u8
+        0x77 as u8,
+        0x72 as u8,
+        0x6f as u8,
+        0x6e as u8,
+        0x67 as u8,
+        0x2d as u8,
+        0x74 as u8,
+        0x75 as u8,
+        0x6e as u8,
+        0x6e as u8,
+        0x65 as u8,
+        0x6c as u8,
+        0x2d as u8,
+        0x6b as u8,
+        0x65 as u8,
+        0x79 as u8
     ];
     [32]u8 nonce = [7 as u8;];
 
-    [32]u8 accepted_key_probe = expect(auth::compute_auth_tag(
-        psk[..],
-        frame::protocol_version(),
-        "dev",
-        nonce
-    ), "auth test PSK must be accepted by /std/crypto HMAC");
+    [32]u8 accepted_key_probe = expect(
+        auth::compute_auth_tag(
+            psk[..],
+            frame::protocol_version(),
+            "dev",
+            nonce
+        ), "auth test PSK must be accepted by /std/crypto HMAC"
+    );
 
     Result<[]u8, terr::AuthCodecError> payload_result =
         auth::encode_hello_with_nonce("dev", psk[..], nonce);
@@ -87,7 +115,9 @@ i32 main() {
     }
     []u8 payload = must(payload_result);
 
-    Result<auth::Hello, terr::AuthCodecError> hello_result = auth::decode_hello(payload);
+    Result<auth::Hello, terr::AuthCodecError> hello_result = auth::decode_hello(
+        payload
+    );
     if (is_err_hello(hello_result)) {
         return 102;
     }
@@ -104,7 +134,9 @@ i32 main() {
     if (auth::tag_len() != 32) {
         return 4;
     }
-    Result<void, terr::AuthCodecError> verify_result = auth::verify_hello(hello, "dev", psk[..]);
+    Result<void, terr::AuthCodecError> verify_result = auth::verify_hello(
+        hello, "dev", psk[..]
+    );
     if (is_err_void(verify_result)) {
         return 103;
     }
@@ -118,29 +150,37 @@ i32 main() {
         return 6;
     }
 
-    []u8 mismatched = must(auth::encode_hello_with_nonce("dev", psk[..], nonce));
+    []u8 mismatched = must(
+        auth::encode_hello_with_nonce("dev", psk[..], nonce)
+    );
     mismatched[3] = 4 as u8;
     if (!is_err_hello(auth::decode_hello(mismatched))) {
         return 7;
     }
 
     [65536]char long_route = ['x';];
-    if (!is_err_bytes(auth::encode_hello_with_nonce(long_route[..], psk[..], nonce))) {
+    if (!is_err_bytes(
+        auth::encode_hello_with_nonce(long_route[..], psk[..], nonce)
+    )) {
         return 8;
     }
 
-    [32]u8 tag_a = must(auth::compute_auth_tag(
-        psk[..],
-        frame::protocol_version(),
-        "dev",
-        nonce
-    ));
-    [32]u8 tag_b = must(auth::compute_auth_tag(
-        psk[..],
-        frame::protocol_version(),
-        "dev",
-        nonce
-    ));
+    [32]u8 tag_a = must(
+        auth::compute_auth_tag(
+            psk[..],
+            frame::protocol_version(),
+            "dev",
+            nonce
+        )
+    );
+    [32]u8 tag_b = must(
+        auth::compute_auth_tag(
+            psk[..],
+            frame::protocol_version(),
+            "dev",
+            nonce
+        )
+    );
     if (!bytes_eq(tag_a[..], tag_b[..])) {
         return 9;
     }
@@ -148,7 +188,9 @@ i32 main() {
         return 10;
     }
 
-    []u8 hello_ok = must(auth::encode_hello_ok_with_nonce(frame::protocol_version(), nonce));
+    []u8 hello_ok = must(
+        auth::encode_hello_ok_with_nonce(frame::protocol_version(), nonce)
+    );
     auth::HelloOk ok = must(auth::decode_hello_ok(hello_ok));
     if (ok.selected_version != frame::protocol_version()) {
         return 11;

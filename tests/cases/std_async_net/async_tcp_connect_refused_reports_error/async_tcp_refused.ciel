@@ -8,20 +8,24 @@ import /std/net as net;
 import /std/panic;
 import /std/result;
 
-Result<Channel<bool>, Error> handle(Channel<bool> out, bool ready) {
+Result<Channel<bool>, Error> handle(
+    Channel<bool> out, bool ready
+) {
     channel_send(&out, ready)?;
     return Ok(out);
 }
 
 i32 main() {
-    anet::AsyncTcpListener listener =
-        must(anet::listen_async(must(net::parse_addr("127.0.0.1:0"))));
+    anet::AsyncTcpListener listener = must(
+        anet::listen_async(must(net::parse_addr("127.0.0.1:0")))
+    );
     net::SocketAddr addr = must(anet::listener_addr(&listener));
     must(anet::close_listener(listener));
 
     Channel<bool> done = must(make_channel<bool>());
-    Actor<bool> actor =
-        must(spawn_actor_cloned<Channel<bool>, bool>(done, handle));
+    Actor<bool> actor = must(
+        spawn_actor_cloned<Channel<bool>, bool>(done, handle)
+    );
     anet::AsyncConnect op = must(anet::connect_async(addr));
     must(anet::notify_connect_done(&op, &actor, true));
     bool notified = must(channel_recv(&done));

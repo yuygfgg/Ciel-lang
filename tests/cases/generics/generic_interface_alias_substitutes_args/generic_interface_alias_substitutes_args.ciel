@@ -12,7 +12,9 @@ impl same<i64>(*Box box, i64 other) {
     return box->value == other;
 }
 
-i64 matches<T: same_as<i64>>(*T value, i64 expected) {
+i64 matches<T: same_as<i64>>(
+    *T value, i64 expected
+) {
     if (same(value, expected)) {
         return 1;
     }

@@ -5,7 +5,9 @@ import /std/codec as codec;
 import /std/meta as meta;
 import /std/result;
 
-bool is_output_too_short(Result<void, codec::CodecError> result) {
+bool is_output_too_short(
+    Result<void, codec::CodecError> result
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -21,7 +23,9 @@ bool is_output_too_short(Result<void, codec::CodecError> result) {
     }
 }
 
-bool is_input_too_short_u16(Result<u16, codec::CodecError> result) {
+bool is_input_too_short_u16(
+    Result<u16, codec::CodecError> result
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -37,7 +41,9 @@ bool is_input_too_short_u16(Result<u16, codec::CodecError> result) {
     }
 }
 
-bool is_input_too_short_u32(Result<u32, codec::CodecError> result) {
+bool is_input_too_short_u32(
+    Result<u32, codec::CodecError> result
+) {
     switch (result) {
         case Ok(_):
             return false;

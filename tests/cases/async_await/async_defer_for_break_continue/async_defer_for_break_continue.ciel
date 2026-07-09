@@ -16,7 +16,9 @@ void mark(i32 ch) {
     unsafe { putchar(ch) };
 }
 
-async Result<bool, Error> keep_looping(i32 value) {
+async Result<bool, Error> keep_looping(
+    i32 value
+) {
     await async_time::sleep_ms(0)?;
     return Ok(value < 3);
 }

@@ -33,17 +33,21 @@ i64 main() {
     [4]i64 values = [10, 20, 30, 40];
 
     _ zipped = iter::zip(iter::range(1, 4), iter::slice_iter(values[..]));
-    i64 zip_total = iter::fold(zipped, 0, |i64 acc, iter::Pair<i64, i64> pair| {
-        return acc + pair_sum(pair);
-    });
+    i64 zip_total = iter::fold(
+        zipped, 0, |i64 acc, iter::Pair<i64, i64> pair| {
+            return acc + pair_sum(pair);
+        }
+    );
 
     _ chained = iter::chain(iter::range(0, 2), iter::once(5));
     i64 chain_total = iter::fold(chained, 0, |i64 acc, i64 value| acc + value);
 
     _ enumerated = iter::enumerate(iter::range(4, 7));
-    i64 enum_total = iter::fold(enumerated, 0, |i64 acc, iter::Enumerated<i64> item| {
-        return acc + enum_score(item);
-    });
+    i64 enum_total = iter::fold(
+        enumerated, 0, |i64 acc, iter::Enumerated<i64> item| {
+            return acc + enum_score(item);
+        }
+    );
 
     iter::Once<i64> first = { state: iter::Item(2) };
     iter::Once<i64> second = { state: iter::Item(5) };

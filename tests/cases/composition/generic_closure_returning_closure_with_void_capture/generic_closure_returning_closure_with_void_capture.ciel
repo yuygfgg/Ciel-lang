@@ -6,7 +6,9 @@ struct Marker<T> {
     void tag;
 }
 
-i64 |()| make_reader<T>(Marker<T> marker, i64 |(T)| project) {
+i64 |()| make_reader<T>(
+    Marker<T> marker, i64 |(T)| project
+) {
     return || {
         marker.tag;
         return project(marker.value);

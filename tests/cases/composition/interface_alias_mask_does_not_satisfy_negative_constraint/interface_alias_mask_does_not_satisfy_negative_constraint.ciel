@@ -18,14 +18,18 @@ impl reset(*Source source) {
     return;
 }
 
-i64 use_source<T: readable + !reset>(T source, i64 |(T)| callback) {
+i64 use_source<T: readable + !reset>(
+    T source, i64 |(T)| callback
+) {
     return callback(source);
 }
 
 i64 main() {
     Source source = { value: 12 };
-    return use_source(source, |item| {
-        Source local = item;
-        return read(&local);
-    });
+    return use_source(
+        source, |item| {
+            Source local = item;
+            return read(&local);
+        }
+    );
 }

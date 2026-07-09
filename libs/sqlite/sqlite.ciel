@@ -25,20 +25,36 @@ unsafe extern "C" {
         *u64 out_resource,
         *u64 out_generation
     );
-    c::c_int ciel_sqlite_close(*CielSqliteConnection connection);
-    c::c_int ciel_sqlite_close_handle(u64 owner, u64 resource, u64 generation);
+    c::c_int ciel_sqlite_close(
+        *CielSqliteConnection connection
+    );
+    c::c_int ciel_sqlite_close_handle(
+        u64 owner, u64 resource, u64 generation
+    );
     c::c_int ciel_sqlite_connection_snapshot(
         u64 owner,
         u64 resource,
         u64 generation,
         *?*CielSqliteConnection out
     );
-    c::c_int ciel_sqlite_exec(*CielSqliteConnection connection, *const char sql, usize sql_len);
-    c::c_int ciel_sqlite_busy_timeout(*CielSqliteConnection connection, c::c_int milliseconds);
-    void ciel_sqlite_interrupt(*CielSqliteConnection connection);
-    c::c_int ciel_sqlite_last_insert_rowid(*CielSqliteConnection connection, *i64 out);
-    c::c_int ciel_sqlite_changes(*CielSqliteConnection connection, *i64 out);
-    c::c_int ciel_sqlite_total_changes(*CielSqliteConnection connection, *i64 out);
+    c::c_int ciel_sqlite_exec(
+        *CielSqliteConnection connection, *const char sql, usize sql_len
+    );
+    c::c_int ciel_sqlite_busy_timeout(
+        *CielSqliteConnection connection, c::c_int milliseconds
+    );
+    void ciel_sqlite_interrupt(
+        *CielSqliteConnection connection
+    );
+    c::c_int ciel_sqlite_last_insert_rowid(
+        *CielSqliteConnection connection, *i64 out
+    );
+    c::c_int ciel_sqlite_changes(
+        *CielSqliteConnection connection, *i64 out
+    );
+    c::c_int ciel_sqlite_total_changes(
+        *CielSqliteConnection connection, *i64 out
+    );
 
     c::c_int ciel_sqlite_prepare(
         *CielSqliteConnection connection,
@@ -48,18 +64,30 @@ unsafe extern "C" {
         *u64 out_resource,
         *u64 out_generation
     );
-    c::c_int ciel_sqlite_finalize(*CielSqliteStatement statement);
-    c::c_int ciel_sqlite_finalize_handle(u64 owner, u64 resource, u64 generation);
+    c::c_int ciel_sqlite_finalize(
+        *CielSqliteStatement statement
+    );
+    c::c_int ciel_sqlite_finalize_handle(
+        u64 owner, u64 resource, u64 generation
+    );
     c::c_int ciel_sqlite_statement_snapshot(
         u64 owner,
         u64 resource,
         u64 generation,
         *?*CielSqliteStatement out
     );
-    c::c_int ciel_sqlite_reset(*CielSqliteStatement statement);
-    c::c_int ciel_sqlite_clear_bindings(*CielSqliteStatement statement);
-    c::c_int ciel_sqlite_step(*CielSqliteStatement statement);
-    c::c_int ciel_sqlite_bind_parameter_count(*CielSqliteStatement statement, *usize out);
+    c::c_int ciel_sqlite_reset(
+        *CielSqliteStatement statement
+    );
+    c::c_int ciel_sqlite_clear_bindings(
+        *CielSqliteStatement statement
+    );
+    c::c_int ciel_sqlite_step(
+        *CielSqliteStatement statement
+    );
+    c::c_int ciel_sqlite_bind_parameter_count(
+        *CielSqliteStatement statement, *usize out
+    );
     c::c_int ciel_sqlite_bind_parameter_index(
         *CielSqliteStatement statement,
         *const char name,
@@ -67,9 +95,15 @@ unsafe extern "C" {
         *usize out
     );
 
-    c::c_int ciel_sqlite_bind_null(*CielSqliteStatement statement, usize index);
-    c::c_int ciel_sqlite_bind_i64(*CielSqliteStatement statement, usize index, i64 value);
-    c::c_int ciel_sqlite_bind_f64(*CielSqliteStatement statement, usize index, f64 value);
+    c::c_int ciel_sqlite_bind_null(
+        *CielSqliteStatement statement, usize index
+    );
+    c::c_int ciel_sqlite_bind_i64(
+        *CielSqliteStatement statement, usize index, i64 value
+    );
+    c::c_int ciel_sqlite_bind_f64(
+        *CielSqliteStatement statement, usize index, f64 value
+    );
     c::c_int ciel_sqlite_bind_text(
         *CielSqliteStatement statement,
         usize index,
@@ -83,14 +117,20 @@ unsafe extern "C" {
         usize data_len
     );
 
-    c::c_int ciel_sqlite_column_count(*CielSqliteStatement statement, *usize out);
+    c::c_int ciel_sqlite_column_count(
+        *CielSqliteStatement statement, *usize out
+    );
     c::c_int ciel_sqlite_column_type(
         *CielSqliteStatement statement,
         usize index,
         *c::c_int out
     );
-    c::c_int ciel_sqlite_column_i64(*CielSqliteStatement statement, usize index, *i64 out);
-    c::c_int ciel_sqlite_column_f64(*CielSqliteStatement statement, usize index, *f64 out);
+    c::c_int ciel_sqlite_column_i64(
+        *CielSqliteStatement statement, usize index, *i64 out
+    );
+    c::c_int ciel_sqlite_column_f64(
+        *CielSqliteStatement statement, usize index, *f64 out
+    );
     c::c_int ciel_sqlite_column_name_len(
         *CielSqliteStatement statement,
         usize index,
@@ -136,7 +176,9 @@ unsafe extern "C" {
     c::c_int ciel_sqlite_type_text();
     c::c_int ciel_sqlite_type_blob();
     c::c_int ciel_sqlite_type_null();
-    []const char ciel_sqlite_error_message(c::c_int code);
+    []const char ciel_sqlite_error_message(
+        c::c_int code
+    );
     []const char ciel_sqlite_libversion();
 }
 
@@ -266,39 +308,63 @@ export interface<T> Result<void, SqliteError> sqlite_bind(
     usize index
 );
 
-resource::Handle handle_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
-    return unsafe { { owner_id: owner_id, resource_id: resource_id, generation: generation } };
+resource::Handle handle_from_parts(
+    u64 owner_id, u64 resource_id, u64 generation
+) {
+    return unsafe {
+        { owner_id: owner_id, resource_id: resource_id, generation: generation }
+    };
 }
 
-Connection connection_from_handle(resource::Handle handle) {
+Connection connection_from_handle(
+    resource::Handle handle
+) {
     return unsafe { { handle: handle } };
 }
 
-Statement statement_from_handle(resource::Handle handle) {
+Statement statement_from_handle(
+    resource::Handle handle
+) {
     return unsafe { { handle: handle } };
 }
 
-Connection connection_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
-    return connection_from_handle(handle_from_parts(owner_id, resource_id, generation));
+Connection connection_from_parts(
+    u64 owner_id, u64 resource_id, u64 generation
+) {
+    return connection_from_handle(
+        handle_from_parts(owner_id, resource_id, generation)
+    );
 }
 
-Statement statement_from_parts(u64 owner_id, u64 resource_id, u64 generation) {
-    return statement_from_handle(handle_from_parts(owner_id, resource_id, generation));
+Statement statement_from_parts(
+    u64 owner_id, u64 resource_id, u64 generation
+) {
+    return statement_from_handle(
+        handle_from_parts(owner_id, resource_id, generation)
+    );
 }
 
-*const resource::Handle connection_handle(*const Connection connection) {
+*const resource::Handle connection_handle(
+    *const Connection connection
+) {
     return unsafe { &connection->handle };
 }
 
-*resource::Handle connection_handle_mut(*Connection connection) {
+*resource::Handle connection_handle_mut(
+    *Connection connection
+) {
     return unsafe { &connection->handle };
 }
 
-*const resource::Handle statement_handle(*const Statement statement) {
+*const resource::Handle statement_handle(
+    *const Statement statement
+) {
     return unsafe { &statement->handle };
 }
 
-*resource::Handle statement_handle_mut(*Statement statement) {
+*resource::Handle statement_handle_mut(
+    *Statement statement
+) {
     return unsafe { &statement->handle };
 }
 
@@ -311,7 +377,9 @@ unsafe void clear_handle(*resource::Handle handle) {
 impl transfer_to_parent(*const Connection value) {
     Connection @local = unsafe { *value };
     resource::Handle handle = unsafe {
-        resource::transfer_handle_to_parent_in_place(connection_handle_mut(&local))?
+        resource::transfer_handle_to_parent_in_place(
+            connection_handle_mut(&local)
+        )?
     };
     return Ok(connection_from_handle(handle));
 }
@@ -319,7 +387,9 @@ impl transfer_to_parent(*const Connection value) {
 impl transfer_to_parent(*const Statement value) {
     Statement @local = unsafe { *value };
     resource::Handle handle = unsafe {
-        resource::transfer_handle_to_parent_in_place(statement_handle_mut(&local))?
+        resource::transfer_handle_to_parent_in_place(
+            statement_handle_mut(&local)
+        )?
     };
     return Ok(statement_from_handle(handle));
 }
@@ -346,7 +416,9 @@ Result<void, SqliteError> check(c::c_int rc) {
     return Ok;
 }
 
-SqliteWithError<E> sqlite_scoped_error<E>(resource::ScopedError<SqliteWithError<E>> error) {
+SqliteWithError<E> sqlite_scoped_error<E>(
+    resource::ScopedError<SqliteWithError<E>> error
+) {
     switch (error) {
         case resource::Resource(inner):
             return WithResourceCleanup(inner);
@@ -366,7 +438,9 @@ Result<R, SqliteWithError<E>> sqlite_scoped_result<R, E>(
     }
 }
 
-Result<T, SqliteError> text_result<T>(Result<T, text::TextError> result) {
+Result<T, SqliteError> text_result<T>(
+    Result<T, text::TextError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -375,7 +449,9 @@ Result<T, SqliteError> text_result<T>(Result<T, text::TextError> result) {
     }
 }
 
-Result<T, SqliteError> bytes_result<T>(Result<T, bytes::BytesError> result) {
+Result<T, SqliteError> bytes_result<T>(
+    Result<T, bytes::BytesError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -395,7 +471,9 @@ Result<storage::RawStorage<T>, SqliteError> storage_result<T>(
     }
 }
 
-Result<*CielSqliteConnection, SqliteError> raw_connection(*const Connection connection) {
+Result<*CielSqliteConnection, SqliteError> raw_connection(
+    *const Connection connection
+) {
     *const resource::Handle handle = connection_handle(connection);
     ?*CielSqliteConnection @raw = null;
     c::c_int rc = unsafe {
@@ -415,7 +493,9 @@ Result<*CielSqliteConnection, SqliteError> raw_connection(*const Connection conn
     return Ok(unsafe { raw as *CielSqliteConnection });
 }
 
-Result<*CielSqliteStatement, SqliteError> raw_statement(*const Statement statement) {
+Result<*CielSqliteStatement, SqliteError> raw_statement(
+    *const Statement statement
+) {
     *const resource::Handle handle = statement_handle(statement);
     ?*CielSqliteStatement @raw = null;
     c::c_int rc = unsafe {
@@ -453,7 +533,9 @@ export []const char version() {
 }
 
 // Opens a database with an explicit mode.
-export Result<Connection, SqliteError> open_with_mode([]const char path, OpenMode mode) {
+export Result<Connection, SqliteError> open_with_mode(
+    []const char path, OpenMode mode
+) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
@@ -474,7 +556,9 @@ export Result<Connection, SqliteError> open_with_mode([]const char path, OpenMod
 }
 
 // Opens a database using read-write-create mode.
-export Result<Connection, SqliteError> open([]const char path) {
+export Result<Connection, SqliteError> open(
+    []const char path
+) {
     return open_with_mode(path, ReadWriteCreate);
 }
 
@@ -483,7 +567,9 @@ export Result<Connection, SqliteError> open_memory() {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
-    c::c_int rc = unsafe { ciel_sqlite_open_memory(&owner_id, &resource_id, &generation) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_open_memory(&owner_id, &resource_id, &generation)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -491,14 +577,15 @@ export Result<Connection, SqliteError> open_memory() {
 }
 
 // Closes a connection. Closing is idempotent for this handle wrapper.
-export Result<void, SqliteError> close(Connection @connection) {
+export Result<void, SqliteError> close(
+    Connection @connection
+) {
     *resource::Handle handle = connection_handle_mut(&connection);
     c::c_int rc = unsafe {
         ciel_sqlite_close_handle(
             unsafe { handle->owner_id },
             unsafe { handle->resource_id },
-            unsafe { handle->generation }
-        )
+            unsafe { handle->generation })
     };
     unsafe { clear_handle(handle) };
     return check(rc);
@@ -509,55 +596,75 @@ export Result<R, SqliteWithError<E>> with_open<R, E: ErrorTrait>(
     []const char path,
     Result<R, E> |(Connection)| body
 ) {
-    return sqlite_scoped_result<R, E>(resource::scoped<R, SqliteWithError<E>>(|| {
-        Connection @connection;
-        switch (open(path)) {
-            case Ok(value):
-                connection = value;
-            case Err(error):
-                return Err(WithSqlite(error));
-        }
-        switch (body(connection)) {
-            case Ok(value):
-                return Ok(value);
-            case Err(error):
-                return Err(WithBody(error));
-        }
-    }));
+    return sqlite_scoped_result<R, E>(
+        resource::scoped < R, SqliteWithError <
+        E >> (|| {
+            Connection @connection;
+            switch (open(path)) {
+                case Ok(value):
+                    connection = value;
+                case Err(error):
+                    return Err(WithSqlite(error));
+            }
+            switch (body(connection)) {
+                case Ok(value):
+                    return Ok(value);
+                case Err(error):
+                    return Err(WithBody(error));
+            }
+        })
+    );
 }
 
 // Opens an in-memory database for the duration of body and closes it on return.
-export Result<R, SqliteWithError<E>> with_memory<R, E: ErrorTrait>(Result<R, E> |(Connection)| body) {
-    return sqlite_scoped_result<R, E>(resource::scoped<R, SqliteWithError<E>>(|| {
-        Connection @connection;
-        switch (open_memory()) {
-            case Ok(value):
-                connection = value;
-            case Err(error):
-                return Err(WithSqlite(error));
-        }
-        switch (body(connection)) {
-            case Ok(value):
-                return Ok(value);
-            case Err(error):
-                return Err(WithBody(error));
-        }
-    }));
+export Result<R, SqliteWithError<E>> with_memory<R, E: ErrorTrait>(
+    Result<R, E> |(Connection)| body
+) {
+    return sqlite_scoped_result<R, E>(
+        resource::scoped < R, SqliteWithError <
+        E >> (|| {
+            Connection @connection;
+            switch (open_memory()) {
+                case Ok(value):
+                    connection = value;
+                case Err(error):
+                    return Err(WithSqlite(error));
+            }
+            switch (body(connection)) {
+                case Ok(value):
+                    return Ok(value);
+                case Err(error):
+                    return Err(WithBody(error));
+            }
+        })
+    );
 }
 
 // Executes SQL that does not need row results.
-export Result<void, SqliteError> exec(*const Connection connection, []const char sql) {
-    return check(unsafe { ciel_sqlite_exec(raw_connection(connection)?, sql.ptr, sql.len) });
+export Result<void, SqliteError> exec(
+    *const Connection connection, []const char sql
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_exec(raw_connection(connection)?, sql.ptr, sql.len)
+        }
+    );
 }
 
 // Sets SQLite's busy timeout in milliseconds.
-export Result<void, SqliteError> busy_timeout(*const Connection connection, i64 milliseconds) {
+export Result<void, SqliteError> busy_timeout(
+    *const Connection connection, i64 milliseconds
+) {
     if (milliseconds < 0) {
         return Err(NegativeBusyTimeout);
     }
-    return check(unsafe {
-        ciel_sqlite_busy_timeout(raw_connection(connection)?, milliseconds as c::c_int)
-    });
+    return check(
+        unsafe {
+            ciel_sqlite_busy_timeout(
+                raw_connection(connection)?, milliseconds as c::c_int
+            )
+        }
+    );
 }
 
 // Interrupts outstanding work on a connection.
@@ -571,9 +678,13 @@ export void interrupt(*const Connection connection) {
 }
 
 // Returns the rowid of the most recent successful insert on this connection.
-export Result<i64, SqliteError> last_insert_rowid(*const Connection connection) {
+export Result<i64, SqliteError> last_insert_rowid(
+    *const Connection connection
+) {
     i64 @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_last_insert_rowid(raw_connection(connection)?, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_last_insert_rowid(raw_connection(connection)?, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -581,9 +692,13 @@ export Result<i64, SqliteError> last_insert_rowid(*const Connection connection) 
 }
 
 // Returns the number of rows changed by the most recent statement.
-export Result<i64, SqliteError> changes(*const Connection connection) {
+export Result<i64, SqliteError> changes(
+    *const Connection connection
+) {
     i64 @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_changes(raw_connection(connection)?, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_changes(raw_connection(connection)?, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -591,9 +706,13 @@ export Result<i64, SqliteError> changes(*const Connection connection) {
 }
 
 // Returns total rows changed on this connection.
-export Result<i64, SqliteError> total_changes(*const Connection connection) {
+export Result<i64, SqliteError> total_changes(
+    *const Connection connection
+) {
     i64 @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_total_changes(raw_connection(connection)?, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_total_changes(raw_connection(connection)?, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -601,7 +720,9 @@ export Result<i64, SqliteError> total_changes(*const Connection connection) {
 }
 
 // Prepares one SQL statement.
-export Result<Statement, SqliteError> prepare(*const Connection connection, []const char sql) {
+export Result<Statement, SqliteError> prepare(
+    *const Connection connection, []const char sql
+) {
     u64 @owner_id = 0;
     u64 @resource_id = 0;
     u64 @generation = 0;
@@ -622,14 +743,15 @@ export Result<Statement, SqliteError> prepare(*const Connection connection, []co
 }
 
 // Finalizes a prepared statement. Finalizing is idempotent for this wrapper.
-export Result<void, SqliteError> finalize(Statement @statement) {
+export Result<void, SqliteError> finalize(
+    Statement @statement
+) {
     *resource::Handle handle = statement_handle_mut(&statement);
     c::c_int rc = unsafe {
         ciel_sqlite_finalize_handle(
             unsafe { handle->owner_id },
             unsafe { handle->resource_id },
-            unsafe { handle->generation }
-        )
+            unsafe { handle->generation })
     };
     unsafe { clear_handle(handle) };
     return check(rc);
@@ -641,35 +763,48 @@ export Result<R, SqliteWithError<E>> with_statement<R, E: ErrorTrait>(
     []const char sql,
     Result<R, E> |(Statement)| body
 ) {
-    return sqlite_scoped_result<R, E>(resource::scoped<R, SqliteWithError<E>>(|| {
-        Statement @statement;
-        switch (prepare(connection, sql)) {
-            case Ok(value):
-                statement = value;
-            case Err(error):
-                return Err(WithSqlite(error));
-        }
-        switch (body(statement)) {
-            case Ok(value):
-                return Ok(value);
-            case Err(error):
-                return Err(WithBody(error));
-        }
-    }));
+    return sqlite_scoped_result<R, E>(
+        resource::scoped < R, SqliteWithError <
+        E >> (|| {
+            Statement @statement;
+            switch (prepare(connection, sql)) {
+                case Ok(value):
+                    statement = value;
+                case Err(error):
+                    return Err(WithSqlite(error));
+            }
+            switch (body(statement)) {
+                case Ok(value):
+                    return Ok(value);
+                case Err(error):
+                    return Err(WithBody(error));
+            }
+        })
+    );
 }
 
 // Resets a prepared statement to run it again.
-export Result<void, SqliteError> reset(*const Statement statement) {
+export Result<void, SqliteError> reset(
+    *const Statement statement
+) {
     return check(unsafe { ciel_sqlite_reset(raw_statement(statement)?) });
 }
 
 // Clears all bound parameters.
-export Result<void, SqliteError> clear_bindings(*const Statement statement) {
-    return check(unsafe { ciel_sqlite_clear_bindings(raw_statement(statement)?) });
+export Result<void, SqliteError> clear_bindings(
+    *const Statement statement
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_clear_bindings(raw_statement(statement)?)
+        }
+    );
 }
 
 // Advances a prepared statement by one row.
-export Result<Step, SqliteError> step(*const Statement statement) {
+export Result<Step, SqliteError> step(
+    *const Statement statement
+) {
     c::c_int rc = unsafe { ciel_sqlite_step(raw_statement(statement)?) };
     if (rc == unsafe { ciel_sqlite_row_code() }) {
         return Ok(Row);
@@ -681,9 +816,13 @@ export Result<Step, SqliteError> step(*const Statement statement) {
 }
 
 // Returns the number of bind parameters in a prepared statement.
-export Result<usize, SqliteError> bind_parameter_count(*const Statement statement) {
+export Result<usize, SqliteError> bind_parameter_count(
+    *const Statement statement
+) {
     usize @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_bind_parameter_count(raw_statement(statement)?, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_bind_parameter_count(raw_statement(statement)?, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -691,10 +830,14 @@ export Result<usize, SqliteError> bind_parameter_count(*const Statement statemen
 }
 
 // Returns the zero-based bind index for a named parameter.
-export Result<usize, SqliteError> bind_parameter_index(*const Statement statement, []const char name) {
+export Result<usize, SqliteError> bind_parameter_index(
+    *const Statement statement, []const char name
+) {
     usize @out = 0;
     c::c_int rc = unsafe {
-        ciel_sqlite_bind_parameter_index(raw_statement(statement)?, name.ptr, name.len, &out)
+        ciel_sqlite_bind_parameter_index(
+            raw_statement(statement)?, name.ptr, name.len, &out
+        )
     };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
@@ -703,36 +846,68 @@ export Result<usize, SqliteError> bind_parameter_index(*const Statement statemen
 }
 
 // Binds NULL to a zero-based parameter index.
-export Result<void, SqliteError> bind_null(*const Statement statement, usize index) {
-    return check(unsafe { ciel_sqlite_bind_null(raw_statement(statement)?, index) });
+export Result<void, SqliteError> bind_null(
+    *const Statement statement, usize index
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_bind_null(raw_statement(statement)?, index)
+        }
+    );
 }
 
 // Binds an integer to a zero-based parameter index.
-export Result<void, SqliteError> bind_i64(*const Statement statement, usize index, i64 value) {
-    return check(unsafe { ciel_sqlite_bind_i64(raw_statement(statement)?, index, value) });
+export Result<void, SqliteError> bind_i64(
+    *const Statement statement, usize index, i64 value
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_bind_i64(raw_statement(statement)?, index, value)
+        }
+    );
 }
 
 // Binds a floating-point value to a zero-based parameter index.
-export Result<void, SqliteError> bind_f64(*const Statement statement, usize index, f64 value) {
-    return check(unsafe { ciel_sqlite_bind_f64(raw_statement(statement)?, index, value) });
+export Result<void, SqliteError> bind_f64(
+    *const Statement statement, usize index, f64 value
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_bind_f64(raw_statement(statement)?, index, value)
+        }
+    );
 }
 
 // Binds text to a zero-based parameter index. SQLite copies the bytes.
-export Result<void, SqliteError> bind_text(*const Statement statement, usize index, []const char value) {
-    return check(unsafe {
-        ciel_sqlite_bind_text(raw_statement(statement)?, index, value.ptr, value.len)
-    });
+export Result<void, SqliteError> bind_text(
+    *const Statement statement, usize index, []const char value
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_bind_text(
+                raw_statement(statement)?, index, value.ptr, value.len
+            )
+        }
+    );
 }
 
 // Binds bytes to a zero-based parameter index. SQLite copies the bytes.
-export Result<void, SqliteError> bind_blob(*const Statement statement, usize index, []const u8 value) {
-    return check(unsafe {
-        ciel_sqlite_bind_blob(raw_statement(statement)?, index, value.ptr, value.len)
-    });
+export Result<void, SqliteError> bind_blob(
+    *const Statement statement, usize index, []const u8 value
+) {
+    return check(
+        unsafe {
+            ciel_sqlite_bind_blob(
+                raw_statement(statement)?, index, value.ptr, value.len
+            )
+        }
+    );
 }
 
 // Binds an owned Value to a zero-based parameter index.
-export Result<void, SqliteError> bind_value(*const Statement statement, usize index, Value value) {
+export Result<void, SqliteError> bind_value(
+    *const Statement statement, usize index, Value value
+) {
     switch (value) {
         case Null:
             return bind_null(statement, index);
@@ -741,15 +916,23 @@ export Result<void, SqliteError> bind_value(*const Statement statement, usize in
         case Float(v):
             return bind_f64(statement, index, v);
         case Text(v):
-            return bind_text(statement, index, text_result<[]const char>(text::text_to_slice(v))?);
+            return bind_text(
+                statement, index, text_result<[]const char>(
+                    text::text_to_slice(v)
+                )?
+            );
         case Blob(v):
-            return bind_blob(statement, index, bytes_result<[]u8>(bytes::bytes_to_slice(v))?);
+            return bind_blob(
+                statement, index, bytes_result<[]u8>(bytes::bytes_to_slice(v))?
+            );
     }
     return Err(InvalidState);
 }
 
 // Binds a value using sqlite_bind<T> implementations.
-export Result<void, SqliteError> bind<T: sqlite_bind>(*const Statement statement, usize index, T value) {
+export Result<void, SqliteError> bind<T: sqlite_bind>(
+    *const Statement statement, usize index, T value
+) {
     return sqlite_bind(&value, statement, index);
 }
 
@@ -761,12 +944,22 @@ impl sqlite_bind(*const f64 value, *const Statement statement, usize index) {
     return bind_f64(statement, index, *value);
 }
 
-impl sqlite_bind(*const text::Text value, *const Statement statement, usize index) {
-    return bind_text(statement, index, text_result<[]const char>(text::text_to_slice(*value))?);
+impl sqlite_bind(
+    *const text::Text value, *const Statement statement, usize index
+) {
+    return bind_text(
+        statement, index, text_result<[]const char>(
+            text::text_to_slice(*value)
+        )?
+    );
 }
 
-impl sqlite_bind(*const bytes::Bytes value, *const Statement statement, usize index) {
-    return bind_blob(statement, index, bytes_result<[]u8>(bytes::bytes_to_slice(*value))?);
+impl sqlite_bind(
+    *const bytes::Bytes value, *const Statement statement, usize index
+) {
+    return bind_blob(
+        statement, index, bytes_result<[]u8>(bytes::bytes_to_slice(*value))?
+    );
 }
 
 impl sqlite_bind(*const Value value, *const Statement statement, usize index) {
@@ -774,9 +967,13 @@ impl sqlite_bind(*const Value value, *const Statement statement, usize index) {
 }
 
 // Returns the number of result columns.
-export Result<usize, SqliteError> column_count(*const Statement statement) {
+export Result<usize, SqliteError> column_count(
+    *const Statement statement
+) {
     usize @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_column_count(raw_statement(statement)?, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_count(raw_statement(statement)?, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -784,9 +981,13 @@ export Result<usize, SqliteError> column_count(*const Statement statement) {
 }
 
 // Returns the storage class for a result column.
-export Result<ColumnType, SqliteError> column_type(*const Statement statement, usize index) {
+export Result<ColumnType, SqliteError> column_type(
+    *const Statement statement, usize index
+) {
     c::c_int @out = 0 as c::c_int;
-    c::c_int rc = unsafe { ciel_sqlite_column_type(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_type(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -806,7 +1007,9 @@ export Result<ColumnType, SqliteError> column_type(*const Statement statement, u
 }
 
 // Returns true when the result column is NULL.
-export Result<bool, SqliteError> column_is_null(*const Statement statement, usize index) {
+export Result<bool, SqliteError> column_is_null(
+    *const Statement statement, usize index
+) {
     ColumnType kind = column_type(statement, index)?;
     switch (kind) {
         case ColumnNull:
@@ -824,9 +1027,13 @@ export Result<bool, SqliteError> column_is_null(*const Statement statement, usiz
 }
 
 // Reads a column as i64 using SQLite conversion rules.
-export Result<i64, SqliteError> column_i64(*const Statement statement, usize index) {
+export Result<i64, SqliteError> column_i64(
+    *const Statement statement, usize index
+) {
     i64 @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_column_i64(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_i64(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -834,9 +1041,13 @@ export Result<i64, SqliteError> column_i64(*const Statement statement, usize ind
 }
 
 // Reads a column as f64 using SQLite conversion rules.
-export Result<f64, SqliteError> column_f64(*const Statement statement, usize index) {
+export Result<f64, SqliteError> column_f64(
+    *const Statement statement, usize index
+) {
     f64 @out = 0.0;
-    c::c_int rc = unsafe { ciel_sqlite_column_f64(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_f64(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -844,9 +1055,13 @@ export Result<f64, SqliteError> column_f64(*const Statement statement, usize ind
 }
 
 // Returns the byte length of a result column name.
-export Result<usize, SqliteError> column_name_len(*const Statement statement, usize index) {
+export Result<usize, SqliteError> column_name_len(
+    *const Statement statement, usize index
+) {
     usize @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_column_name_len(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_name_len(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -861,7 +1076,9 @@ export Result<usize, SqliteError> column_name_copy_to(
 ) {
     usize @copied = 0;
     c::c_int rc = unsafe {
-        ciel_sqlite_column_name_copy_to(raw_statement(statement)?, index, out.ptr, out.len, &copied)
+        ciel_sqlite_column_name_copy_to(
+            raw_statement(statement)?, index, out.ptr, out.len, &copied
+        )
     };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
@@ -870,10 +1087,12 @@ export Result<usize, SqliteError> column_name_copy_to(
 }
 
 // Returns the result column name as owned Text.
-export Result<text::Text, SqliteError> column_name(*const Statement statement, usize index) {
+export Result<text::Text, SqliteError> column_name(
+    *const Statement statement, usize index
+) {
     usize len = column_name_len(statement, index)?;
-    storage::RawStorage<char> @raw_storage =
-        storage_result<char>(unsafe { storage::raw_zeroed<char>(len) })?;
+    storage::RawStorage<char> @raw_storage = storage_result<char>(
+        unsafe { storage::raw_zeroed<char>(len) })?;
     []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
     usize copied = column_name_copy_to(statement, index, out)?;
     if (copied != len) {
@@ -883,9 +1102,13 @@ export Result<text::Text, SqliteError> column_name(*const Statement statement, u
 }
 
 // Returns the byte length of a text column after SQLite conversion.
-export Result<usize, SqliteError> column_text_len(*const Statement statement, usize index) {
+export Result<usize, SqliteError> column_text_len(
+    *const Statement statement, usize index
+) {
     usize @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_column_text_len(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_text_len(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -900,7 +1123,9 @@ export Result<usize, SqliteError> column_text_copy_to(
 ) {
     usize @copied = 0;
     c::c_int rc = unsafe {
-        ciel_sqlite_column_text_copy_to(raw_statement(statement)?, index, out.ptr, out.len, &copied)
+        ciel_sqlite_column_text_copy_to(
+            raw_statement(statement)?, index, out.ptr, out.len, &copied
+        )
     };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
@@ -909,10 +1134,12 @@ export Result<usize, SqliteError> column_text_copy_to(
 }
 
 // Returns a text column as a mutable copied character slice.
-export Result<[]char, SqliteError> column_text_slice(*const Statement statement, usize index) {
+export Result<[]char, SqliteError> column_text_slice(
+    *const Statement statement, usize index
+) {
     usize len = column_text_len(statement, index)?;
-    storage::RawStorage<char> @raw_storage =
-        storage_result<char>(unsafe { storage::raw_zeroed<char>(len) })?;
+    storage::RawStorage<char> @raw_storage = storage_result<char>(
+        unsafe { storage::raw_zeroed<char>(len) })?;
     []char out = unsafe { storage::raw_slice<char>(&raw_storage) };
     usize copied = column_text_copy_to(statement, index, out)?;
     if (copied != len) {
@@ -922,15 +1149,21 @@ export Result<[]char, SqliteError> column_text_slice(*const Statement statement,
 }
 
 // Returns a text column as owned Text.
-export Result<text::Text, SqliteError> column_text(*const Statement statement, usize index) {
+export Result<text::Text, SqliteError> column_text(
+    *const Statement statement, usize index
+) {
     []char out = column_text_slice(statement, index)?;
     return text_result<text::Text>(text::text_copy(out[..]));
 }
 
 // Returns the byte length of a blob column.
-export Result<usize, SqliteError> column_blob_len(*const Statement statement, usize index) {
+export Result<usize, SqliteError> column_blob_len(
+    *const Statement statement, usize index
+) {
     usize @out = 0;
-    c::c_int rc = unsafe { ciel_sqlite_column_blob_len(raw_statement(statement)?, index, &out) };
+    c::c_int rc = unsafe {
+        ciel_sqlite_column_blob_len(raw_statement(statement)?, index, &out)
+    };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
     }
@@ -945,7 +1178,9 @@ export Result<usize, SqliteError> column_blob_copy_to(
 ) {
     usize @copied = 0;
     c::c_int rc = unsafe {
-        ciel_sqlite_column_blob_copy_to(raw_statement(statement)?, index, out.ptr, out.len, &copied)
+        ciel_sqlite_column_blob_copy_to(
+            raw_statement(statement)?, index, out.ptr, out.len, &copied
+        )
     };
     if (rc != unsafe { ciel_sqlite_ok_code() }) {
         return Err(sqlite_error(rc));
@@ -954,10 +1189,12 @@ export Result<usize, SqliteError> column_blob_copy_to(
 }
 
 // Returns a blob column as a mutable copied byte slice.
-export Result<[]u8, SqliteError> column_blob_slice(*const Statement statement, usize index) {
+export Result<[]u8, SqliteError> column_blob_slice(
+    *const Statement statement, usize index
+) {
     usize len = column_blob_len(statement, index)?;
-    storage::RawStorage<u8> @raw_storage =
-        storage_result<u8>(unsafe { storage::raw_zeroed<u8>(len) })?;
+    storage::RawStorage<u8> @raw_storage = storage_result<u8>(
+        unsafe { storage::raw_zeroed<u8>(len) })?;
     []u8 out = unsafe { storage::raw_slice<u8>(&raw_storage) };
     usize copied = column_blob_copy_to(statement, index, out)?;
     if (copied != len) {
@@ -967,13 +1204,17 @@ export Result<[]u8, SqliteError> column_blob_slice(*const Statement statement, u
 }
 
 // Returns a blob column as owned Bytes.
-export Result<bytes::Bytes, SqliteError> column_blob(*const Statement statement, usize index) {
+export Result<bytes::Bytes, SqliteError> column_blob(
+    *const Statement statement, usize index
+) {
     []u8 out = column_blob_slice(statement, index)?;
     return bytes_result<bytes::Bytes>(bytes::bytes_copy(out[..]));
 }
 
 // Reads a result column as an owned Value.
-export Result<Value, SqliteError> column_value(*const Statement statement, usize index) {
+export Result<Value, SqliteError> column_value(
+    *const Statement statement, usize index
+) {
     ColumnType kind = column_type(statement, index)?;
     switch (kind) {
         case ColumnNull:

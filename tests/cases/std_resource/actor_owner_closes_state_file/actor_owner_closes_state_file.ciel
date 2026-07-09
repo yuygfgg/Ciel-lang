@@ -33,7 +33,9 @@ resource struct OwnedState {
     Channel<HandleParts> out;
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(
+    resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle.owner_id },
         resource_id: unsafe { handle.resource_id },
@@ -52,18 +54,25 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-Result<OwnedState, Error> init_state(Channel<HandleParts> out) {
+Result<OwnedState, Error> init_state(
+    Channel<HandleParts> out
+) {
     []const char path = env::arg(1)?;
     return Ok({
         file: io::open_read(path)?,
         out: out,
-    });
+    }
+    );
 }
 
-Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command command) {
+Result<void, Error> handle(
+    *OwnedState state, Actor<Command> self, Command command
+) {
     switch (command) {
         case Snapshot(_):
-            channel_send(&state->out, parts_from_handle(unsafe { state->file.handle }))?;
+            channel_send(
+                &state->out, parts_from_handle(unsafe { state->file.handle })
+            )?;
             stop(&self)?;
             return Ok;
     }
@@ -71,16 +80,22 @@ Result<void, Error> handle(*OwnedState state, Actor<Command> self, Command comma
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "actor-owned")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "actor-owned")?;
+                return Ok;
+            }
+        )
+    );
 
     Channel<HandleParts> out = must(make_channel<HandleParts>());
-    Actor<Command> actor = must(spawn_actor_state<OwnedState, Command>(
-        || init_state(out),
-        handle
-    ));
+    Actor<Command> actor = must(
+        spawn_actor_state<OwnedState, Command>(
+            || init_state(out),
+            handle
+        )
+    );
     must(send(&actor, Snapshot));
     HandleParts parts = must(channel_recv(&out));
     must(join(&actor));

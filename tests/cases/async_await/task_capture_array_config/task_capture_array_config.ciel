@@ -14,10 +14,16 @@ struct Config {
 
 i32 main() {
     Config config = { values: [2, 5, 7] };
-    async::Task<usize, Error> task = must(async::spawn<usize, Error>(async || {
-        await async_time::sleep_ms(1)?;
-        return Ok(config.values[0] + config.values[1] + config.values[2]);
-    }));
+    async::Task<usize, Error> task = must(
+        async::spawn<usize, Error>(
+            async || {
+                await async_time::sleep_ms(1)?;
+                return Ok(
+                    config.values[0] + config.values[1] + config.values[2]
+                );
+            }
+        )
+    );
     must(print_value(must(async::block_on(task))));
     return 0;
 }

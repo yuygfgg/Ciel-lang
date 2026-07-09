@@ -10,11 +10,15 @@ enum FutureChoice {
     Empty,
 }
 
-async Result<usize, Error> len_later([]const i64 view) {
+async Result<usize, Error> len_later(
+    []const i64 view
+) {
     return Ok(view.len);
 }
 
-async Result<usize, Error> keep_choice(FutureChoice choice) {
+async Result<usize, Error> keep_choice(
+    FutureChoice choice
+) {
     return Ok(0);
 }
 

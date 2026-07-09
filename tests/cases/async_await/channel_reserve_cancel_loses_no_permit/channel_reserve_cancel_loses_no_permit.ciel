@@ -8,13 +8,17 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<usize, Error> send_reserved(Result<async::SendPermit<usize>, async::AsyncError> result) {
+Result<usize, Error> send_reserved(
+    Result<async::SendPermit<usize>, async::AsyncError> result
+) {
     async::SendPermit<usize> permit = result?;
     async::permit_send<usize>(permit, 99)?;
     return Ok(9);
 }
 
-Result<usize, Error> timer_value(Result<void, async::AsyncError> result) {
+Result<usize, Error> timer_value(
+    Result<void, async::AsyncError> result
+) {
     result?;
     return Ok(2);
 }
@@ -23,8 +27,10 @@ async Result<usize, Error> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::try_send<usize>(pair.sender, 1)?;
     Result<usize, Error> picked = await select {
-        case permit = async::reserve<usize>(pair.sender): send_reserved(permit);
-        case slept = async_time::sleep_ms(1): timer_value(slept);
+        case permit = async::reserve<usize>(pair.sender):
+            send_reserved(permit);
+        case slept = async_time::sleep_ms(1):
+            timer_value(slept);
     };
     if (picked? != 2) {
         return Err(code_error(70));

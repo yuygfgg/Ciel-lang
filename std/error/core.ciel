@@ -1,5 +1,7 @@
 // Formats an error-like value into a stable diagnostic message slice.
-export interface<T> []const char format_error(*const T error);
+export interface<T>[]const char format_error(
+    *const T error
+);
 
 // Constraint alias for values that can be boxed into the standard Error type.
 export interface ErrorTrait = format_error;
@@ -17,7 +19,9 @@ export Error error_box(ErrorTrait error) {
 }
 
 // Wraps a standard Error with a new context string while preserving the source.
-export Error error_with_context(Error source, []const char context) = .with_context {
+export Error error_with_context(
+    Error source, []const char context
+) = .with_context {
     Error source_copy = source;
     return { value: source.value, context: context, source: &source_copy };
 }

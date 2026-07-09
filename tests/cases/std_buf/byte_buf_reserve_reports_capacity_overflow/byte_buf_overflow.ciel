@@ -4,7 +4,9 @@
 import /std/buf as buf;
 import /std/result;
 
-bool is_capacity_overflow(Result<void, buf::BufError> value) {
+bool is_capacity_overflow(
+    Result<void, buf::BufError> value
+) {
     switch (value) {
         case Ok(_):
             return false;

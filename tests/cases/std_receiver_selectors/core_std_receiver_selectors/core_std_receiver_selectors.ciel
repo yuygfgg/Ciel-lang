@@ -11,7 +11,8 @@ impl update_value<i64, i64, SyncError>(*const AddOne updater, i64 value) {
     return Ok({
         value: value + 1,
         result: value + 1,
-    });
+    }
+    );
 }
 
 impl map_call<i64, i64>(*AddOne mapper, i64 value) {
@@ -92,7 +93,10 @@ i64 main() {
     if (text.len() != 5) {
         return 12;
     }
-    if (text.to_bytes().must().len() != 5) {
+    if (text
+            .to_bytes()
+            .must()
+            .len() != 5) {
         return 13;
     }
     if (text.to_chars().must().len != 5) {
@@ -111,14 +115,18 @@ i64 main() {
 
     Mutex<i64> mutex = make_mutex<i64>(5).must();
     AddOne updater = {};
-    Result<i64, SyncWithError<SyncError>> updated_result = mutex.update(&updater);
+    Result<i64, SyncWithError<SyncError>> updated_result = mutex.update(
+        &updater
+    );
     if (updated_result.must() != 6) {
         return 17;
     }
-    Result<i64, SyncWithError<SyncError>> with_result = mutex.with(|slot| {
-        *slot = *slot + 2;
-        return Ok(*slot);
-    });
+    Result<i64, SyncWithError<SyncError>> with_result = mutex.with(
+        |slot| {
+            *slot = *slot + 2;
+            return Ok(*slot);
+        }
+    );
     if (with_result.must() != 8) {
         return 18;
     }
@@ -131,8 +139,9 @@ i64 main() {
     if (atomic.exchange(30, SeqCst).must() != 20) {
         return 20;
     }
-    CompareExchange<i64> exchanged =
-        atomic.compare_exchange(30, 40, SeqCst, Acquire).must();
+    CompareExchange<i64> exchanged = atomic.compare_exchange(
+        30, 40, SeqCst, Acquire
+    ).must();
     if (!exchanged.exchanged || exchanged.previous != 30) {
         return 21;
     }
@@ -191,25 +200,35 @@ i64 main() {
     IsEven even = {};
     [5]i64 raw = [1, 2, 3, 4, 5];
     Result<Vec<i64>, VecError> selector_collected_result =
-        raw[..].iter().filter(even).map(add).collect();
+        raw[..]
+            .iter()
+            .filter(even)
+            .map(add)
+            .collect();
     Vec<i64> selector_collected = selector_collected_result.must();
-    Result<Vec<i64>, VecError> ordinary_collected_result =
-        collect<Vec<i64>>(map(filter(slice_iter(raw[..]), even), add));
+    Result<Vec<i64>, VecError> ordinary_collected_result = collect<Vec<i64>>(
+        map(filter(slice_iter(raw[..]), even), add)
+    );
     Vec<i64> ordinary_collected = ordinary_collected_result.must();
-    if (
-        selector_collected.len() != ordinary_collected.len() ||
-        sum_i64_slice(selector_collected.slice()) != sum_i64_slice(ordinary_collected.slice())
-    ) {
+    if (selector_collected.len() != ordinary_collected.len() ||
+        sum_i64_slice(selector_collected.slice()) != sum_i64_slice(
+            ordinary_collected.slice()
+        )) {
         return 32;
     }
-    if (selector_collected.len() != 2 || sum_i64_slice(selector_collected.slice()) != 8) {
+    if (selector_collected.len() != 2 ||
+        sum_i64_slice(selector_collected.slice()) != 8) {
         return 33;
     }
 
     i64 selector_fold =
-        range(0, 6).filter(even).map(add).take(2).fold(0, |i64 acc, i64 value| {
-            return acc + value;
-        });
+        range(0, 6)
+            .filter(even)
+            .map(add)
+            .take(2)
+            .fold(0, |i64 acc, i64 value| {
+                return acc + value;
+            });
     i64 ordinary_fold = fold(
         take(map(filter(range(0, 6), even), add), 2),
         0,
@@ -223,12 +242,14 @@ i64 main() {
 
     Result<Vec<i64>, VecError> vec_iter_result = numbers.iter().collect();
     Vec<i64> vec_iter_values = vec_iter_result.must();
-    if (vec_iter_values.len() != 2 || sum_i64_slice(vec_iter_values.slice()) != 8) {
+    if (vec_iter_values.len() != 2 ||
+        sum_i64_slice(vec_iter_values.slice()) != 8) {
         return 35;
     }
     Result<Vec<u8>, VecError> byte_iter_result = bytes.iter().collect();
     Vec<u8> byte_iter_values = byte_iter_result.must();
-    if (byte_iter_values.len() != 3 || sum_u8_slice(byte_iter_values.slice()) != 294) {
+    if (byte_iter_values.len() != 3 ||
+        sum_u8_slice(byte_iter_values.slice()) != 294) {
         return 36;
     }
     if (text.chars().count() != 5) {

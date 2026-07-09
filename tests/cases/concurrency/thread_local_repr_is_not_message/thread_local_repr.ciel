@@ -13,6 +13,8 @@ unsafe impl thread_local_marker(*const GLContext value) {
 }
 
 i32 main() {
-    Channel<meta::Repr<GLContext>> channel = must(make_channel<meta::Repr<GLContext>>());
+    Channel<meta::Repr<GLContext>> channel = must(
+        make_channel<meta::Repr<GLContext>>()
+    );
     return 0;
 }

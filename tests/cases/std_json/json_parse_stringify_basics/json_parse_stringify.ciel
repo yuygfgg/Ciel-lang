@@ -33,7 +33,9 @@ i64 kind_code(wire::WireErrorKind kind) {
     }
 }
 
-bool is_kind(Result<json::Value, wire::WireError> result, wire::WireErrorKind kind) {
+bool is_kind(
+    Result<json::Value, wire::WireError> result, wire::WireErrorKind kind
+) {
     switch (result) {
         case Ok(_):
             return false;
@@ -184,7 +186,8 @@ i64 check_unicode_escape() {
             if (data.len != 3) {
                 return 30;
             }
-            if (data[0] != (0xe2 as u8) || data[1] != (0x82 as u8) || data[2] != (0xac as u8)) {
+            if (data[0] != (0xe2 as u8) || data[1] != (0x82 as u8) ||
+            data[2] != (0xac as u8)) {
                 return 31;
             }
             return 0;
@@ -202,14 +205,20 @@ i64 check_unicode_escape() {
 }
 
 i64 main() {
-    json::Value value = must(json::parse("{\"name\":\"a\\n\\u0042\",\"items\":[null,true,-12.5e2]}"));
+    json::Value value = must(
+        json::parse(
+            "{\"name\":\"a\\n\\u0042\",\"items\":[null,true,-12.5e2]}"
+        )
+    );
     i64 @checked = check_main_value(value);
     if (checked != 0) {
         return checked;
     }
 
     text::Text encoded = must(json::stringify(&value));
-    if (!text::text_equal_slice(encoded, "{\"name\":\"a\\nB\",\"items\":[null,true,-12.5e2]}")) {
+    if (!text::text_equal_slice(
+        encoded, "{\"name\":\"a\\nB\",\"items\":[null,true,-12.5e2]}"
+    )) {
         return 40;
     }
 

@@ -7,16 +7,22 @@ import /std/io as io;
 import /std/resource as resource;
 import /std/result;
 
-Result<void, Error> invoke(Result<void, Error> |(io::File)| body, io::File @file) {
+Result<void, Error> invoke(
+    Result<void, Error> |(io::File)| body, io::File @file
+) {
     return body(file);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "cleanup")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "cleanup")?;
+                return Ok;
+            }
+        )
+    );
 
     resource::Limits limits = {
         max_resources: 8,
@@ -24,12 +30,16 @@ i32 main() {
         max_pending_ops: 16,
         max_descriptors: 1,
     };
-    must(resource::scoped_with_limits<void, Error>(limits, || {
-        io::File file = io::open_read(path)?;
-        invoke(|ignored| Ok, file)?;
-        io::File again = io::open_read(path)?;
-        io::close(again)?;
-        return Ok;
-    }));
+    must(
+        resource::scoped_with_limits<void, Error>(
+            limits, || {
+                io::File file = io::open_read(path)?;
+                invoke(| ignored| Ok, file)?;
+                io::File again = io::open_read(path)?;
+                io::close(again)?;
+                return Ok;
+            }
+        )
+    );
     return 0;
 }

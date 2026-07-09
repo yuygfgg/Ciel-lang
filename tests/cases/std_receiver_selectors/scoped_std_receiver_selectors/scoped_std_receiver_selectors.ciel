@@ -3,16 +3,20 @@
 import /std/lib;
 import /std/async as async;
 
-Result<void, Error> use_io_path_selectors([]const char path, []const u8 data) {
+Result<void, Error> use_io_path_selectors(
+    []const char path, []const u8 data
+) {
     path.with_open(Write, |file| {
         file.write_all(data)?;
         return Ok(1);
     })?;
-    path.with_open_read(|file| {
-        [8]u8 @out = [0;];
-        _ read = file.read(out[..])?;
-        return Ok(2);
-    })?;
+    path.with_open_read(
+        |file| {
+            [8]u8 @out = [0;];
+            _ read = file.read(out[..])?;
+            return Ok(2);
+        }
+    )?;
     path.with_create(|file| {
         file.write(data)?;
         return Ok(3);
@@ -24,7 +28,9 @@ Result<void, Error> use_io_path_selectors([]const char path, []const u8 data) {
     return Ok;
 }
 
-async Result<void, Error> use_async_path_selectors([]const char path, Bytes data) {
+async Result<void, Error> use_async_path_selectors(
+    []const char path, Bytes data
+) {
     AsyncFd read_fd = path.open_async_read()?;
     read_fd.close()?;
     AsyncFd write_fd = path.create_async()?;
@@ -48,10 +54,12 @@ Result<void, Error> use_net_path_selectors(
         stream.close()?;
         return Ok(1);
     })?;
-    host.with_tcp_connect(80 as u16, |stream| {
-        stream.close()?;
-        return Ok(2);
-    })?;
+    host.with_tcp_connect(
+        80 as u16, |stream| {
+            stream.close()?;
+            return Ok(2);
+        }
+    )?;
     addr.with_listen(|listener| {
         listener.close()?;
         return Ok(3);

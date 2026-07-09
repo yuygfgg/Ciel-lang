@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-interface<T, U> Result<U, Error> convert(*T value, U seed);
+interface<T, U> Result<U, Error> convert(
+    *T value, U seed
+);
 interface convert_i64 = convert<i64>;
 
 enum Step {
@@ -19,7 +21,9 @@ impl convert<i64>(*Box box, i64 seed) {
     return Ok(box->value + seed);
 }
 
-Result<i64, Error> eval(Step step, Result<i64, Error> |(convert_i64, i64)| callback) {
+Result<i64, Error> eval(
+    Step step, Result<i64, Error> |(convert_i64, i64)| callback
+) {
     switch (step) {
         case Apply(item, seed):
             return callback(item, seed);

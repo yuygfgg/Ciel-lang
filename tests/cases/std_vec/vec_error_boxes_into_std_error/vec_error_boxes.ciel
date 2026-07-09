@@ -4,7 +4,9 @@
 import /std/result;
 import /std/vec as vec;
 
-Result<void, Error> reserve_too_much(*vec::Vec<i64> values) {
+Result<void, Error> reserve_too_much(
+    *vec::Vec<i64> values
+) {
     values.vec::reserve(~(0 as usize))?;
     return Ok;
 }

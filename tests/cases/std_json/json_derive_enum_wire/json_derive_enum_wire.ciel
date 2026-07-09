@@ -19,7 +19,9 @@ i64 main() {
     if (!text::text_equal_slice(encoded, "{\"Data\":[11]}")) {
         return 1;
     }
-    Event decoded = must(json::decode(meta::type_tag<Event>(), "{\"Ping\":null}"));
+    Event decoded = must(
+        json::decode(meta::type_tag<Event>(), "{\"Ping\":null}")
+    );
     switch (decoded) {
         case Event::Ping:
             return 0;

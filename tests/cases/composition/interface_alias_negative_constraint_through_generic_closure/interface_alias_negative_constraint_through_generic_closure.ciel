@@ -13,15 +13,19 @@ impl read(*Source source) {
     return source->value;
 }
 
-i64 fold_source<T: readable + !reset>(T source, i64 |(T)| callback) {
+i64 fold_source<T: readable + !reset>(
+    T source, i64 |(T)| callback
+) {
     return callback(source);
 }
 
 i64 main() {
     Source source = { value: 12 };
     i64 add = 7;
-    return fold_source(source, |item| {
-        Source local = item;
-        return read(&local) + add;
-    });
+    return fold_source(
+        source, |item| {
+            Source local = item;
+            return read(&local) + add;
+        }
+    );
 }

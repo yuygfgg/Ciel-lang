@@ -5,7 +5,9 @@ import /std/async as async;
 import /std/async_time as async_time;
 import /std/result;
 
-async Result<usize, Error> read_first([]const usize view) {
+async Result<usize, Error> read_first(
+    []const usize view
+) {
     return Ok(view[0]);
 }
 

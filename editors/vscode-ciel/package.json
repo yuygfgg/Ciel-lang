@@ -41,7 +41,8 @@
         }
       },
       "[ciel]": {
-        "editor.semanticHighlighting.enabled": true
+        "editor.semanticHighlighting.enabled": true,
+        "editor.defaultFormatter": "ciel-lang.vscode-ciel"
       },
       "[markdown]": {
         "editor.semanticHighlighting.enabled": true
@@ -59,6 +60,24 @@
           "type": "string",
           "default": "",
           "description": "Path to the ciel-lsp executable on non-Windows hosts. If empty, the extension searches the workspace build output and PATH."
+        },
+        "ciel.formatter.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable document formatting for Ciel source files on non-Windows hosts."
+        },
+        "ciel.formatter.path": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the cielc executable used for formatting on non-Windows hosts. If empty, the extension searches the workspace build output and PATH."
+        },
+        "ciel.formatter.extraArgs": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "description": "Additional arguments passed to `cielc fmt` before the source file path. --write and --check are ignored by the VS Code formatter."
         }
       }
     },

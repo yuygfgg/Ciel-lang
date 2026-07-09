@@ -17,7 +17,9 @@ impl eq<i64>(*Number number, i64 other) {
     return number->value == other;
 }
 
-i64 check(Stored<comparable_i64> stored, bool |(comparable_i64)| callback) {
+i64 check(
+    Stored<comparable_i64> stored, bool |(comparable_i64)| callback
+) {
     switch (stored) {
         case Item(value):
             if (callback(value)) {

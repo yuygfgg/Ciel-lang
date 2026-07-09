@@ -24,18 +24,22 @@ unsafe impl clone_message(*const Msg value) {
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Msg> actor = must(spawn_actor_cloned<i64, Msg>(0, |i64 state, Msg msg| {
-        Channel<i64> local_out = out;
-        switch (msg) {
-            case Load(marker):
-                marker.tags[2];
-                return Ok(state + marker.value);
-            case Flush(done):
-                done;
-                channel_send(&local_out, state)?;
-                return Ok(state);
-        }
-    }));
+    Actor<Msg> actor = must(
+        spawn_actor_cloned<i64, Msg>(
+            0, |i64 state, Msg msg| {
+                Channel<i64> local_out = out;
+                switch (msg) {
+                    case Load(marker):
+                        marker.tags[2];
+                        return Ok(state + marker.value);
+                    case Flush(done):
+                        done;
+                        channel_send(&local_out, state)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     Marker marker = { value: 11 };
     must(send(&actor, Load(marker)));

@@ -7,7 +7,9 @@ struct Box<T> {
     T value;
 }
 
-i64 fold<T: read + !seek>(Box<T> box, i64 |(T)| callback) {
+i64 fold<T: read + !seek>(
+    Box<T> box, i64 |(T)| callback
+) {
     return callback(box.value);
 }
 

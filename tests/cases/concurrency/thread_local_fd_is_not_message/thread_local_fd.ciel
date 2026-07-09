@@ -4,7 +4,9 @@
 import /std/lib;
 import /std/os/fd as fd;
 
-Result<void, Error> accept_local<T: ThreadLocal>(T value) {
+Result<void, Error> accept_local<T: ThreadLocal>(
+    T value
+) {
     T local = value;
     if (thread_local_marker(&local)) {
         return Ok;

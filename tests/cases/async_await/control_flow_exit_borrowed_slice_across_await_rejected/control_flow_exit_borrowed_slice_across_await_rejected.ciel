@@ -34,7 +34,9 @@ async Result<usize, Error> continue_after_await() {
     return Ok(continue_view[0]);
 }
 
-async Result<usize, Error> switch_break_after_await(Choice choice) {
+async Result<usize, Error> switch_break_after_await(
+    Choice choice
+) {
     [3]usize values = [10, 20, 30];
     []const usize switch_view = values[..];
     switch (choice) {

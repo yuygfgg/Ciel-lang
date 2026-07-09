@@ -20,11 +20,13 @@ export struct AgentConfig {
 }
 
 export []const char server_usage() {
-    return "usage: tunnel-server --control 127.0.0.1:7000 --public 127.0.0.1:7001 --route dev --psk secret-tunnel-key";
+    return
+        "usage: tunnel-server --control 127.0.0.1:7000 --public 127.0.0.1:7001 --route dev --psk secret-tunnel-key";
 }
 
 export []const char agent_usage() {
-    return "usage: tunnel-agent --server 127.0.0.1:7000 --target 127.0.0.1:9000 --route dev --psk secret-tunnel-key";
+    return
+        "usage: tunnel-agent --server 127.0.0.1:7000 --target 127.0.0.1:9000 --route dev --psk secret-tunnel-key";
 }
 
 bool same_text([]const char left, []const char right) {
@@ -55,7 +57,9 @@ bool is_agent_flag([]const char flag) {
         same_text(flag, "--psk");
 }
 
-Result<void, app_error::TunnelError> validate_pairs(bool server) {
+Result<void, app_error::TunnelError> validate_pairs(
+    bool server
+) {
     usize len = app_error::tunnel(env::args_len())?;
     usize @i = 1;
     while (i < len) {
@@ -81,7 +85,9 @@ Result<void, app_error::TunnelError> validate_pairs(bool server) {
     return Ok;
 }
 
-Result<[]const char, app_error::TunnelError> required_flag([]const char flag) {
+Result<[]const char, app_error::TunnelError> required_flag(
+    []const char flag
+) {
     usize len = app_error::tunnel(env::args_len())?;
     usize @i = 1;
     while ((i + 1) < len) {
@@ -99,12 +105,14 @@ export Result<ServerConfig, app_error::TunnelError> parse_server_args() {
     []const char public = required_flag("--public")?;
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
-    return Ok({
-        control_addr: app_error::tunnel(control.net::parse_addr())?,
-        public_addr: app_error::tunnel(public.net::parse_addr())?,
-        route: app_error::tunnel(text::text_copy(route))?,
-        psk: app_error::tunnel(bytes::bytes_from_text(psk))?
-    });
+    return Ok(
+        {
+            control_addr: app_error::tunnel(control.net::parse_addr())?,
+            public_addr: app_error::tunnel(public.net::parse_addr())?,
+            route: app_error::tunnel(text::text_copy(route))?,
+            psk: app_error::tunnel(bytes::bytes_from_text(psk))?
+        }
+    );
 }
 
 export Result<AgentConfig, app_error::TunnelError> parse_agent_args() {
@@ -113,10 +121,12 @@ export Result<AgentConfig, app_error::TunnelError> parse_agent_args() {
     []const char target = required_flag("--target")?;
     []const char route = required_flag("--route")?;
     []const char psk = required_flag("--psk")?;
-    return Ok({
-        server_addr: app_error::tunnel(server.net::parse_addr())?,
-        target_addr: app_error::tunnel(target.net::parse_addr())?,
-        route: app_error::tunnel(text::text_copy(route))?,
-        psk: app_error::tunnel(bytes::bytes_from_text(psk))?
-    });
+    return Ok(
+        {
+            server_addr: app_error::tunnel(server.net::parse_addr())?,
+            target_addr: app_error::tunnel(target.net::parse_addr())?,
+            route: app_error::tunnel(text::text_copy(route))?,
+            psk: app_error::tunnel(bytes::bytes_from_text(psk))?
+        }
+    );
 }

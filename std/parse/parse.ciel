@@ -5,8 +5,12 @@ import /std/meta as meta;
 import /std/ord as ord;
 
 unsafe extern "C" {
-    c::c_int ciel_parse_f32(*const char text, usize len, *f32 out, *usize out_end, *c::c_int out_range);
-    c::c_int ciel_parse_f64(*const char text, usize len, *f64 out, *usize out_end, *c::c_int out_range);
+    c::c_int ciel_parse_f32(
+        *const char text, usize len, *f32 out, *usize out_end, *c::c_int out_range
+    );
+    c::c_int ciel_parse_f64(
+        *const char text, usize len, *f64 out, *usize out_end, *c::c_int out_range
+    );
 }
 
 export enum ParseError {
@@ -29,7 +33,9 @@ impl format_error(*const ParseError error) {
     }
 }
 
-export interface<T> Result<T, ParseError> parse_number(meta::Type<T> tag, []const char text);
+export interface<T> Result<T, ParseError> parse_number(
+    meta::Type<T> tag, []const char text
+);
 
 usize skip_ws([]const char text, usize start) {
     usize @i = start;
@@ -39,7 +45,9 @@ usize skip_ws([]const char text, usize start) {
     return i;
 }
 
-Result<void, ParseError> require_trailing_ws([]const char text, usize start) {
+Result<void, ParseError> require_trailing_ws(
+    []const char text, usize start
+) {
     usize @i = start;
     while (i < text.len) {
         if (!ascii::char_is_whitespace(text[i])) {
@@ -50,7 +58,9 @@ Result<void, ParseError> require_trailing_ws([]const char text, usize start) {
     return Ok;
 }
 
-Result<u64, ParseError> parse_unsigned_decimal([]const char text, u64 limit, bool allow_plus) {
+Result<u64, ParseError> parse_unsigned_decimal(
+    []const char text, u64 limit, bool allow_plus
+) {
     usize @i = skip_ws(text, 0);
     if (i >= text.len) {
         return Err(Empty);
@@ -94,7 +104,9 @@ Result<u64, ParseError> parse_unsigned_decimal([]const char text, u64 limit, boo
     return Ok(value);
 }
 
-Result<i64, ParseError> parse_i64_text([]const char text) {
+Result<i64, ParseError> parse_i64_text(
+    []const char text
+) {
     usize @i = skip_ws(text, 0);
     if (i >= text.len) {
         return Err(Empty);
@@ -134,7 +146,8 @@ Result<i64, ParseError> parse_i64_text([]const char text) {
                 }
                 require_trailing_ws(text, i)?;
                 if (negative) {
-                    if (value == ((ord::max_value(meta::type_tag<i64>()) as u64) + 1)) {
+                    if (value ==
+                    ((ord::max_value(meta::type_tag<i64>()) as u64) + 1)) {
                         return Ok(ord::min_value(meta::type_tag<i64>()));
                     }
                     return Ok(-(value as i64));
@@ -154,11 +167,15 @@ Result<i64, ParseError> parse_i64_text([]const char text) {
     return Ok(value as i64);
 }
 
-Result<u64, ParseError> parse_u64_text([]const char text) {
+Result<u64, ParseError> parse_u64_text(
+    []const char text
+) {
     return parse_unsigned_decimal(text, ~(0 as u64), true);
 }
 
-Result<f64, ParseError> parse_f64_text([]const char text) {
+Result<f64, ParseError> parse_f64_text(
+    []const char text
+) {
     usize start = skip_ws(text, 0);
     if (start >= text.len) {
         return Err(Empty);
@@ -166,7 +183,9 @@ Result<f64, ParseError> parse_f64_text([]const char text) {
     f64 @out = 0.0;
     usize @end = 0;
     c::c_int @range = 0;
-    c::c_int rc = unsafe { ciel_parse_f64(text.ptr, text.len, &out, &end, &range) };
+    c::c_int rc = unsafe {
+        ciel_parse_f64(text.ptr, text.len, &out, &end, &range)
+    };
     if ((rc as i64) != 0) {
         return Err(InvalidChar(start));
     }
@@ -180,7 +199,9 @@ Result<f64, ParseError> parse_f64_text([]const char text) {
     return Ok(out);
 }
 
-Result<f32, ParseError> parse_f32_text([]const char text) {
+Result<f32, ParseError> parse_f32_text(
+    []const char text
+) {
     usize start = skip_ws(text, 0);
     if (start >= text.len) {
         return Err(Empty);
@@ -188,7 +209,9 @@ Result<f32, ParseError> parse_f32_text([]const char text) {
     f32 @out = 0.0 as f32;
     usize @end = 0;
     c::c_int @range = 0;
-    c::c_int rc = unsafe { ciel_parse_f32(text.ptr, text.len, &out, &end, &range) };
+    c::c_int rc = unsafe {
+        ciel_parse_f32(text.ptr, text.len, &out, &end, &range)
+    };
     if ((rc as i64) != 0) {
         return Err(InvalidChar(start));
     }

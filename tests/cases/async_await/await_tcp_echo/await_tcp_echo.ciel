@@ -23,7 +23,9 @@ bool same_prefix([]u8 got, []const u8 want) {
     return true;
 }
 
-async Result<usize, Error> serve_once(anet::AsyncTcpListener listener) {
+async Result<usize, Error> serve_once(
+    anet::AsyncTcpListener listener
+) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
     anet::close_listener(listener)?;
     bytes::Bytes inbound = await anet::read(&server, 8)?;
@@ -38,7 +40,9 @@ async Result<usize, Error> serve_once(anet::AsyncTcpListener listener) {
     return Ok(eof_len);
 }
 
-async Result<usize, Error> run_client(net::SocketAddr bound) {
+async Result<usize, Error> run_client(
+    net::SocketAddr bound
+) {
     anet::AsyncTcpStream @client = await anet::connect(bound)?;
     [4]u8 payload = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
     bytes::Bytes out = bytes::bytes_copy(payload[..])?;
@@ -60,11 +64,14 @@ async Result<usize, Error> run_client(net::SocketAddr bound) {
 }
 
 async Result<usize, Error> drive() {
-    anet::AsyncTcpListener listener =
-        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    anet::AsyncTcpListener listener = anet::listen_async(
+        net::parse_addr("127.0.0.1:0")?
+    )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
 
-    async::Task<usize, Error> server = async::spawn<usize>(serve_once(listener))?;
+    async::Task<usize, Error> server = async::spawn<usize>(
+        serve_once(listener)
+    )?;
     usize copied = await run_client(bound)?;
     usize eof_len = await server?;
     return Ok(copied + eof_len);

@@ -13,25 +13,31 @@ unsafe impl<T: Message> clone_message(*const Route<T> value) {
     return Ok(*value);
 }
 
-Result<void, Error> flush_value<T: Message>(*const Channel<T> out, T value) {
+Result<void, Error> flush_value<T: Message>(
+    *const Channel<T> out, T value
+) {
     channel_send(out, value)?;
     return Ok;
 }
 
 i64 main() {
     Channel<i64> out = must(make_channel<i64>());
-    Actor<Route<i64>> actor = must(spawn_actor_cloned<i64, Route<i64>>(0, |i64 state, Route<i64> msg| {
-        Channel<i64> local_out = out;
-        switch (msg) {
-            case Deliver(result):
-                i64 value = result?;
-                return Ok(state + value);
-            case Flush(marker):
-                marker;
-                flush_value(&local_out, state)?;
-                return Ok(state);
-        }
-    }));
+    Actor<Route<i64>> actor = must(
+        spawn_actor_cloned<i64, Route<i64>>(
+            0, |i64 state, Route<i64> msg| {
+                Channel<i64> local_out = out;
+                switch (msg) {
+                    case Deliver(result):
+                        i64 value = result?;
+                        return Ok(state + value);
+                    case Flush(marker):
+                        marker;
+                        flush_value(&local_out, state)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     must(send(&actor, Deliver(Ok(6))));
     must(send(&actor, Deliver(Ok(7))));

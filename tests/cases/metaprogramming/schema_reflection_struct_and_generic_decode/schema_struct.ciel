@@ -31,13 +31,19 @@ impl count_fields(*const meta::HNil schema) {
 impl<V, R, Tail: count_fields> count_fields(
     *const meta::HCons<meta::FieldSchema<V, R>, Tail> schema
 ) {
-    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::hcons_view(schema);
+    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::hcons_view(
+        schema
+    );
     return 1 + count_fields(view.tail);
 }
 
-interface<F, R> R decode_field(*const F schema, meta::Type<R> out);
+interface<F, R> R decode_field(
+    *const F schema, meta::Type<R> out
+);
 
-impl decode_field(*const meta::FieldSchema<i64, i64> schema, meta::Type<i64> out) {
+impl decode_field(
+    *const meta::FieldSchema<i64, i64> schema, meta::Type<i64> out
+) {
     meta::FieldSchemaView<i64, i64> view = meta::field_schema_view(schema);
     if (chars_eq(view.name, "id")) {
         return 40;
@@ -45,12 +51,16 @@ impl decode_field(*const meta::FieldSchema<i64, i64> schema, meta::Type<i64> out
     return -1;
 }
 
-impl decode_field(*const meta::FieldSchema<bool, bool> schema, meta::Type<bool> out) {
+impl decode_field(
+    *const meta::FieldSchema<bool, bool> schema, meta::Type<bool> out
+) {
     meta::FieldSchemaView<bool, bool> view = meta::field_schema_view(schema);
     return chars_eq(view.name, "ok");
 }
 
-interface<S, R> R decode_schema(*const S schema, meta::Type<R> out);
+interface<S, R> R decode_schema(
+    *const S schema, meta::Type<R> out
+);
 
 impl decode_schema(*const meta::HNil schema, meta::Type<meta::HNil> out) {
     return {};
@@ -60,14 +70,19 @@ impl<V, Slot, STail: decode_schema<RTail>, RTail> decode_schema(
     *const meta::HCons<meta::FieldSchema<V, Slot>, STail> schema,
     meta::Type<meta::HCons<meta::Field<Slot>, RTail>> out
 ) {
-    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view = meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(schema_view.head);
+    meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view =
+        meta::hcons_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        schema_view.head
+    );
     Slot value = decode_field(schema_view.head, meta::type_tag<Slot>());
     RTail tail = decode_schema(schema_view.tail, meta::type_tag<RTail>());
-    meta::Field<Slot> field = unsafe { {
-        name: field_schema.name,
-        value: value,
-    } };
+    meta::Field<Slot> field = unsafe {
+        {
+            name: field_schema.name,
+            value: value,
+        }
+    };
     return unsafe { { head: field, tail: tail } };
 }
 
@@ -75,10 +90,14 @@ i64 main() {
     meta::Schema<Packet> schema = meta::schema<Packet>();
     meta::HConsView<meta::FieldSchema<i64, i64>, meta::HCons<meta::FieldSchema<bool, bool>, meta::HNil>> schema_view =
         meta::hcons_view(&schema);
-    meta::FieldSchemaView<i64, i64> id_schema = meta::field_schema_view(schema_view.head);
+    meta::FieldSchemaView<i64, i64> id_schema = meta::field_schema_view(
+        schema_view.head
+    );
     meta::HConsView<meta::FieldSchema<bool, bool>, meta::HNil> tail_view =
         meta::hcons_view(schema_view.tail);
-    meta::FieldSchemaView<bool, bool> ok_schema = meta::field_schema_view(tail_view.head);
+    meta::FieldSchemaView<bool, bool> ok_schema = meta::field_schema_view(
+        tail_view.head
+    );
     if (!chars_eq(id_schema.name, "id")) {
         return 1;
     }

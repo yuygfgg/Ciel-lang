@@ -35,14 +35,18 @@ export unsafe struct Schema<T> {}
 
 // Compiler-provided marker fact for Ciel ABI function-pointer values.
 // User code cannot implement this interface directly.
-export interface<T> bool ciel_fn_value_marker(*const T value);
+export interface<T> bool ciel_fn_value_marker(
+    *const T value
+);
 
 // Constraint alias for Ciel ABI function-pointer values.
 export interface CielFnValue = ciel_fn_value_marker;
 
 // Compiler-provided marker fact for concrete closure instance values.
 // User code cannot implement this interface directly.
-export interface<T> bool closure_value_marker(*const T value);
+export interface<T> bool closure_value_marker(
+    *const T value
+);
 
 // Constraint alias for concrete closure instance values.
 export interface ClosureValue = closure_value_marker;
@@ -593,120 +597,375 @@ export struct ArrayCatView<L, R> {
     *const R right;
 }
 
-export HConsView<H, T> hcons_view<H, T>(*const HCons<H, T> value) {
-    return unsafe { { head: &value->head, tail: &value->tail } };
+export HConsView<H, T> hcons_view<H, T>(
+    *const HCons<H, T> value
+) {
+    return unsafe {
+        { head: &value->head, tail: &value->tail }
+    };
 }
 
 export HNil hnil() {
     return {};
 }
 
-export FieldRefView<T> field_ref_view<T>(*const FieldRef<T> value) {
-    return unsafe { { name: value->name, value: value->value } };
+export FieldRefView<T> field_ref_view<T>(
+    *const FieldRef<T> value
+) {
+    return unsafe {
+        { name: value->name, value: value->value }
+    };
 }
 
-export FieldView<T> field_view<T>(*const Field<T> value) {
-    return unsafe { { name: value->name, value: &value->value } };
+export FieldView<T> field_view<T>(
+    *const Field<T> value
+) {
+    return unsafe {
+        { name: value->name, value: &value->value }
+    };
 }
 
-export FieldSchemaView<T, R> field_schema_view<T, R>(*const FieldSchema<T, R> value) {
-    return unsafe { { name: value->name, source_ty: value->source_ty, repr_ty: value->repr_ty } };
+export FieldSchemaView<T, R> field_schema_view<T, R>(
+    *const FieldSchema<T, R> value
+) {
+    return unsafe {
+        { name: value->name, source_ty: value->source_ty, repr_ty: value->repr_ty }
+    };
 }
 
-export PayloadRefView<T> payload_ref_view<T>(*const PayloadRef<T> value) {
-    return unsafe { { index: value->index, value: value->value } };
+export PayloadRefView<T> payload_ref_view<T>(
+    *const PayloadRef<T> value
+) {
+    return unsafe {
+        { index: value->index, value: value->value }
+    };
 }
 
-export PayloadView<T> payload_view<T>(*const Payload<T> value) {
-    return unsafe { { index: value->index, value: &value->value } };
+export PayloadView<T> payload_view<T>(
+    *const Payload<T> value
+) {
+    return unsafe {
+        { index: value->index, value: &value->value }
+    };
 }
 
-export PayloadSchemaView<T, R> payload_schema_view<T, R>(*const PayloadSchema<T, R> value) {
-    return unsafe { { index: value->index, source_ty: value->source_ty, repr_ty: value->repr_ty } };
+export PayloadSchemaView<T, R> payload_schema_view<T, R>(
+    *const PayloadSchema<T, R> value
+) {
+    return unsafe {
+        {
+            index: value->index, source_ty: value->source_ty, repr_ty: value->repr_ty
+        }
+    };
 }
 
-export VariantRefView<P> variant_ref_view<P>(*const VariantRef<P> value) {
-    return unsafe { { name: value->name, payload: &value->payload } };
+export VariantRefView<P> variant_ref_view<P>(
+    *const VariantRef<P> value
+) {
+    return unsafe {
+        { name: value->name, payload: &value->payload }
+    };
 }
 
-export VariantView<P> variant_view<P>(*const Variant<P> value) {
-    return unsafe { { name: value->name, payload: &value->payload } };
+export VariantView<P> variant_view<P>(
+    *const Variant<P> value
+) {
+    return unsafe {
+        { name: value->name, payload: &value->payload }
+    };
 }
 
-export ElementSchemaView<T, R> element_schema_view<T, R>(*const ElementSchema<T, R> value) {
-    return unsafe { { source_ty: value->source_ty, repr_ty: value->repr_ty } };
+export ElementSchemaView<T, R> element_schema_view<T, R>(
+    *const ElementSchema<T, R> value
+) {
+    return unsafe {
+        { source_ty: value->source_ty, repr_ty: value->repr_ty }
+    };
 }
 
-export VariantSchemaView<P> variant_schema_view<P>(*const VariantSchema<P> value) {
-    return unsafe { { name: value->name, payload: &value->payload } };
+export VariantSchemaView<P> variant_schema_view<P>(
+    *const VariantSchema<P> value
+) {
+    return unsafe {
+        { name: value->name, payload: &value->payload }
+    };
 }
 
-export ArrayChunk1View<T> array_chunk1_view<T>(*const ArrayChunk1<T> value) {
+export ArrayChunk1View<T> array_chunk1_view<T>(
+    *const ArrayChunk1<T> value
+) {
     return unsafe { { item0: &value->item0 } };
 }
 
-export ArrayChunk2View<T> array_chunk2_view<T>(*const ArrayChunk2<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1 } };
+export ArrayChunk2View<T> array_chunk2_view<T>(
+    *const ArrayChunk2<T> value
+) {
+    return unsafe {
+        { item0: &value->item0, item1: &value->item1 }
+    };
 }
 
-export ArrayChunk3View<T> array_chunk3_view<T>(*const ArrayChunk3<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2 } };
+export ArrayChunk3View<T> array_chunk3_view<T>(
+    *const ArrayChunk3<T> value
+) {
+    return unsafe {
+        { item0: &value->item0, item1: &value->item1, item2: &value->item2 }
+    };
 }
 
-export ArrayChunk4View<T> array_chunk4_view<T>(*const ArrayChunk4<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3 } };
+export ArrayChunk4View<T> array_chunk4_view<T>(
+    *const ArrayChunk4<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3
+        }
+    };
 }
 
-export ArrayChunk5View<T> array_chunk5_view<T>(*const ArrayChunk5<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4 } };
+export ArrayChunk5View<T> array_chunk5_view<T>(
+    *const ArrayChunk5<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4
+        }
+    };
 }
 
-export ArrayChunk6View<T> array_chunk6_view<T>(*const ArrayChunk6<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5 } };
+export ArrayChunk6View<T> array_chunk6_view<T>(
+    *const ArrayChunk6<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5
+        }
+    };
 }
 
-export ArrayChunk7View<T> array_chunk7_view<T>(*const ArrayChunk7<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6 } };
+export ArrayChunk7View<T> array_chunk7_view<T>(
+    *const ArrayChunk7<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6
+        }
+    };
 }
 
-export ArrayChunk8View<T> array_chunk8_view<T>(*const ArrayChunk8<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7 } };
+export ArrayChunk8View<T> array_chunk8_view<T>(
+    *const ArrayChunk8<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7
+        }
+    };
 }
 
-export ArrayChunk9View<T> array_chunk9_view<T>(*const ArrayChunk9<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8 } };
+export ArrayChunk9View<T> array_chunk9_view<T>(
+    *const ArrayChunk9<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8
+        }
+    };
 }
 
-export ArrayChunk10View<T> array_chunk10_view<T>(*const ArrayChunk10<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9 } };
+export ArrayChunk10View<T> array_chunk10_view<T>(
+    *const ArrayChunk10<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9
+        }
+    };
 }
 
-export ArrayChunk11View<T> array_chunk11_view<T>(*const ArrayChunk11<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10 } };
+export ArrayChunk11View<T> array_chunk11_view<T>(
+    *const ArrayChunk11<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10
+        }
+    };
 }
 
-export ArrayChunk12View<T> array_chunk12_view<T>(*const ArrayChunk12<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11 } };
+export ArrayChunk12View<T> array_chunk12_view<T>(
+    *const ArrayChunk12<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10,
+            item11: &value->item11
+        }
+    };
 }
 
-export ArrayChunk13View<T> array_chunk13_view<T>(*const ArrayChunk13<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12 } };
+export ArrayChunk13View<T> array_chunk13_view<T>(
+    *const ArrayChunk13<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10,
+            item11: &value->item11,
+            item12: &value->item12
+        }
+    };
 }
 
-export ArrayChunk14View<T> array_chunk14_view<T>(*const ArrayChunk14<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13 } };
+export ArrayChunk14View<T> array_chunk14_view<T>(
+    *const ArrayChunk14<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10,
+            item11: &value->item11,
+            item12: &value->item12,
+            item13: &value->item13
+        }
+    };
 }
 
-export ArrayChunk15View<T> array_chunk15_view<T>(*const ArrayChunk15<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13, item14: &value->item14 } };
+export ArrayChunk15View<T> array_chunk15_view<T>(
+    *const ArrayChunk15<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10,
+            item11: &value->item11,
+            item12: &value->item12,
+            item13: &value->item13,
+            item14: &value->item14
+        }
+    };
 }
 
-export ArrayChunk16View<T> array_chunk16_view<T>(*const ArrayChunk16<T> value) {
-    return unsafe { { item0: &value->item0, item1: &value->item1, item2: &value->item2, item3: &value->item3, item4: &value->item4, item5: &value->item5, item6: &value->item6, item7: &value->item7, item8: &value->item8, item9: &value->item9, item10: &value->item10, item11: &value->item11, item12: &value->item12, item13: &value->item13, item14: &value->item14, item15: &value->item15 } };
+export ArrayChunk16View<T> array_chunk16_view<T>(
+    *const ArrayChunk16<T> value
+) {
+    return unsafe {
+        {
+            item0: &value->item0,
+            item1: &value->item1,
+            item2: &value->item2,
+            item3: &value->item3,
+            item4: &value->item4,
+            item5: &value->item5,
+            item6: &value->item6,
+            item7: &value->item7,
+            item8: &value->item8,
+            item9: &value->item9,
+            item10: &value->item10,
+            item11: &value->item11,
+            item12: &value->item12,
+            item13: &value->item13,
+            item14: &value->item14,
+            item15: &value->item15
+        }
+    };
 }
 
-export ArrayCatView<L, R> array_cat_view<L, R>(*const ArrayCat<L, R> value) {
-    return unsafe { { left: &value->left, right: &value->right } };
+export ArrayCatView<L, R> array_cat_view<L, R>(
+    *const ArrayCat<L, R> value
+) {
+    return unsafe {
+        { left: &value->left, right: &value->right }
+    };
 }
 
 export ArrayNil array_nil() {

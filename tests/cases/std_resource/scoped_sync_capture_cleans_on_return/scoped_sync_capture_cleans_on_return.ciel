@@ -9,10 +9,14 @@ import /std/result;
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "capture")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "capture")?;
+                return Ok;
+            }
+        )
+    );
 
     resource::Limits limits = {
         max_resources: 8,
@@ -21,17 +25,23 @@ i32 main() {
         max_descriptors: 1,
     };
 
-    must(resource::scoped_with_limits<void, Error>(limits, || {
-        io::File file = io::open_read(path)?;
-        resource::scoped<void>(|| {
-            if (false) {
-                io::close(file)?;
+    must(
+        resource::scoped_with_limits<void, Error>(
+            limits, || {
+                io::File file = io::open_read(path)?;
+                resource::scoped<void>(
+                    || {
+                        if (false) {
+                            io::close(file)?;
+                        }
+                        return Ok;
+                    }
+                )?;
+                io::File again = io::open_read(path)?;
+                io::close(again)?;
+                return Ok;
             }
-            return Ok;
-        })?;
-        io::File again = io::open_read(path)?;
-        io::close(again)?;
-        return Ok;
-    }));
+        )
+    );
     return 0;
 }

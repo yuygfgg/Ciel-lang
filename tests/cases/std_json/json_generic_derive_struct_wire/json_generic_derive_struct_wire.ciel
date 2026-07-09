@@ -18,7 +18,9 @@ i64 main() {
     if (!text::text_equal_slice(encoded, "{\"value\":5}")) {
         return 1;
     }
-    Box<i64> decoded = must(json::decode(meta::type_tag<Box<i64>>(), "{\"value\":9}"));
+    Box<i64> decoded = must(
+        json::decode(meta::type_tag<Box<i64>>(), "{\"value\":9}")
+    );
     if (decoded.value != 9) {
         return 2;
     }

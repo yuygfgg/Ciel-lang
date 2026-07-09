@@ -18,15 +18,19 @@ i64 main() {
     Payload<[]i64> payload = { value: values };
     Holder<Payload<[]i64>> holder = Wrap(payload);
 
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 message| {
-        Holder<Payload<[]i64>> local = holder;
-        switch (local) {
-            case Wrap(item):
-                item.value[0];
-            case Empty:
-        }
-        return Ok(state + message);
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 message| {
+                Holder<Payload<[]i64>> local = holder;
+                switch (local) {
+                    case Wrap(item):
+                        item.value[0];
+                    case Empty:
+                }
+                return Ok(state + message);
+            }
+        )
+    );
 
     must(send(&actor, 1));
     must(join(&actor));

@@ -6,8 +6,10 @@ import /std/lib;
 i64 main() {
     _ @table = must(hash_map_new<u32, i64>());
     must(table.insert(3 as u32, 33));
-    Result<i64, MapWithError<MapError>> result = table.with(3 as u32, |value| {
-        return Ok(*value);
-    });
+    Result<i64, MapWithError<MapError>> result = table.with(
+        3 as u32, |value| {
+            return Ok(*value);
+        }
+    );
     return must(result);
 }

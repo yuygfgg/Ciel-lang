@@ -22,8 +22,7 @@ struct Stored {
     Peekable<Range> value;
 }
 
-void takes(Peekable<Range> value) {
-}
+void takes(Peekable<Range> value) {}
 
 impl next<i64>(*Range iter) {
     return Item(iter->value);

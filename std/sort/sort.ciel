@@ -13,7 +13,9 @@ impl format_error(*const SortError error) {
     }
 }
 
-bool ord_less<T: ord::lt>(*const T left, *const T right) {
+bool ord_less<T: ord::lt>(
+    *const T left, *const T right
+) {
     return ord::lt(left, right);
 }
 
@@ -72,7 +74,8 @@ void sift_down_range<T>(
         if (less(&items[lo + swap_idx], &items[lo + child])) {
             swap_idx = child;
         }
-        if ((child + 1) <= end && less(&items[lo + swap_idx], &items[lo + child + 1])) {
+        if ((child + 1) <= end &&
+            less(&items[lo + swap_idx], &items[lo + child + 1])) {
             swap_idx = child + 1;
         }
         if (swap_idx == root) {
@@ -189,7 +192,9 @@ void introsort_range<T>(
     insertion_sort_range<T>(items, left, right, less);
 }
 
-export void sort_by<T>([]T items, bool |(*const T, *const T)| less) {
+export void sort_by<T>(
+    []T items, bool |(*const T, *const T)| less
+) {
     if (items.len < 2) {
         return;
     }
@@ -273,7 +278,9 @@ export Result<void, SortError> sort_stable_by<T>(
     return Ok;
 }
 
-export Result<void, SortError> sort_stable<T: ord::lt>([]T items) {
+export Result<void, SortError> sort_stable<T: ord::lt>(
+    []T items
+) {
     return sort_stable_by<T>(items, ord_less<T>);
 }
 

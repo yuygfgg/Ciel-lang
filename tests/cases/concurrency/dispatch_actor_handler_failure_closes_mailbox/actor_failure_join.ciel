@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-Result<i64, Error> fail_after_one(i64 state, i64 msg) {
+Result<i64, Error> fail_after_one(
+    i64 state, i64 msg
+) {
     if (msg == 1) {
         return Err(code_error(77));
     }

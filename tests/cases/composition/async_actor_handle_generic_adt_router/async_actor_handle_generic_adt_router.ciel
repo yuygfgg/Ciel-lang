@@ -22,7 +22,9 @@ unsafe impl<M: Message> clone_message(*const RouterMsg<M> value) {
     return Ok(*value);
 }
 
-Result<void, Error> accept_shared<T: ShareHandle>(T value) {
+Result<void, Error> accept_shared<T: ShareHandle>(
+    T value
+) {
     T local = value;
     if (share_handle_marker(&local)) {
         return Ok;
@@ -40,19 +42,25 @@ i64 main() {
     must(accept_shared(target));
 
     Channel<i64> done = must(make_channel<i64>());
-    Actor<RouterMsg<i64>> router = must(spawn_actor_cloned<i64, RouterMsg<i64>>(0, |i64 state, RouterMsg<i64> msg| {
-        Channel<i64> local_done = done;
-        switch (msg) {
-            case RouteTo(route):
-                Actor<i64> local_target = route.target;
-                send(&local_target, route.message)?;
-                return Ok(state + 1);
-            case Done(marker):
-                marker;
-                channel_send(&local_done, state)?;
-                return Ok(state);
-        }
-    }));
+    Actor<RouterMsg<i64>> router = must(
+        spawn_actor_cloned<i64, RouterMsg<i64>>(
+            0, |i64 state, RouterMsg<i64> msg| {
+                Channel<i64> local_done =
+                    done;
+                switch (msg) {
+                    case RouteTo(route):
+                        Actor<i64> local_target =
+                            route.target;
+                        send(&local_target, route.message)?;
+                        return Ok(state + 1);
+                    case Done(marker):
+                        marker;
+                        channel_send(&local_done, state)?;
+                        return Ok(state);
+                }
+            }
+        )
+    );
 
     Route<i64> route = { target: target, message: 9 };
     must(send(&router, RouteTo(route)));

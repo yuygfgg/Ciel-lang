@@ -1,6 +1,5 @@
 // ciel-test: compile
 
 i64 main() {
-    while (true) {
-    }
+    while (true) {}
 }

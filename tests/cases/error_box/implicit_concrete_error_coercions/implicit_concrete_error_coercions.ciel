@@ -37,7 +37,9 @@ bool same_text([]const char left, []const char right) {
     return true;
 }
 
-bool result_error_text(Result<void, Error> result, []const char expected) {
+bool result_error_text(
+    Result<void, Error> result, []const char expected
+) {
     switch (result) {
         case Ok:
             return false;

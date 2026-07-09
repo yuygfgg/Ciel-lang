@@ -7,22 +7,32 @@ import /std/io as io;
 import /std/resource as resource;
 import /std/result;
 
-Result<io::File, Error> return_from_nested_scope(io::File @file) {
-    io::File returned = resource::scoped<io::File, Error>(|| {
-        io::File inner = resource::scoped<io::File, Error>(|| {
-            return Ok(file);
-        })?;
-        return Ok(inner);
-    })?;
+Result<io::File, Error> return_from_nested_scope(
+    io::File @file
+) {
+    io::File returned = resource::scoped<io::File, Error>(
+        || {
+            io::File inner = resource::scoped<io::File, Error>(
+                || {
+                    return Ok(file);
+                }
+            )?;
+            return Ok(inner);
+        }
+    )?;
     return Ok(returned);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "nested-scope")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "nested-scope")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File root_file = must(io::open_read(path));
     io::File returned = must(return_from_nested_scope(root_file));

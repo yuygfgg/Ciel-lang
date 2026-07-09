@@ -25,7 +25,9 @@ bool same_prefix([]u8 got, []const u8 want) {
     return true;
 }
 
-async Result<usize, Error> copy_file(aio::AsyncFd input, aio::AsyncFd output) {
+async Result<usize, Error> copy_file(
+    aio::AsyncFd input, aio::AsyncFd output
+) {
     bytes::Bytes bytes = await aio::read_bytes(&input, 16)?;
     usize written = await aio::write_bytes(&output, bytes)?;
 
@@ -37,24 +39,32 @@ async Result<usize, Error> copy_file(aio::AsyncFd input, aio::AsyncFd output) {
 i32 main() {
     []const char input_path = must(env::arg(1));
     []const char output_path = must(env::arg(2));
-    must(io::with_create<void>(input_path, |file| {
-        io::write_text(&file, "ping")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            input_path, |file| {
+                io::write_text(&file, "ping")?;
+                return Ok;
+            }
+        )
+    );
 
     aio::AsyncFd input = must(aio::open_async_read(input_path));
     aio::AsyncFd output = must(aio::create_async(output_path));
     Result<usize, Error> result = async::block_on(copy_file(input, output));
     usize written = must(result);
-    must(io::with_open_read<void, Error>(output_path, |file| {
-        [4]u8 @got = [0;];
-        usize copied_len = io::read(&file, got[..])?;
-        [4]u8 want = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
-        if (copied_len != 4 || !same_prefix(got[..], want[..])) {
-            return Err(code_error(41));
-        }
-        return Ok;
-    }));
+    must(
+        io::with_open_read<void, Error>(
+            output_path, |file| {
+                [4]u8 @got = [0;];
+                usize copied_len = io::read(&file, got[..])?;
+                [4]u8 want = [112 as u8, 105 as u8, 110 as u8, 103 as u8];
+                if (copied_len != 4 || !same_prefix(got[..], want[..])) {
+                    return Err(code_error(41));
+                }
+                return Ok;
+            }
+        )
+    );
     must(io::print_value(written));
     return 0;
 }

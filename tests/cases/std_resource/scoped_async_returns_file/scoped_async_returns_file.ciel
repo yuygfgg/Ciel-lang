@@ -10,21 +10,27 @@ import /std/resource as resource;
 import /std/result;
 
 async Result<io::File, Error> open_in_child_owner() {
-    io::File file = await resource::scoped_async<io::File, Error>(async || {
-        await async_time::sleep_ms(0)?;
-        []const char path = env::arg(1)?;
-        io::File file = io::open_read(path)?;
-        return Ok(file);
-    })?;
+    io::File file = await resource::scoped_async<io::File, Error>(
+        async || {
+            await async_time::sleep_ms(0)?;
+            []const char path = env::arg(1)?;
+            io::File file = io::open_read(path)?;
+            return Ok(file);
+        }
+    )?;
     return Ok(file);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "async-scoped")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "async-scoped")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(async::block_on(open_in_child_owner()));
     [16]u8 @buffer = [0;];

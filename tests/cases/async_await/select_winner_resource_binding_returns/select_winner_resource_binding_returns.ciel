@@ -15,17 +15,23 @@ async Result<io::File, Error> open_file() {
 
 async Result<io::File, Error> select_file() {
     return await biased select {
-        case file = open_file(): file;
-        case slept = async_time::sleep_ms(10000): Err(text_error("timer won"));
+        case file = open_file():
+            file;
+        case slept = async_time::sleep_ms(10000):
+            Err(text_error("timer won"));
     };
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "select-return")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "select-return")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(async::block_on(select_file()));
     [16]u8 @buffer = [0;];

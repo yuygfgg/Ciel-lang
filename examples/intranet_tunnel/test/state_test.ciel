@@ -32,7 +32,9 @@ i64 agent_state_code(state::AgentStreamState item) {
     }
 }
 
-bool is_err_server(Result<state::ServerStreamState, terr::ProtocolError> value) {
+bool is_err_server(
+    Result<state::ServerStreamState, terr::ProtocolError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -41,7 +43,9 @@ bool is_err_server(Result<state::ServerStreamState, terr::ProtocolError> value) 
     }
 }
 
-bool is_err_agent(Result<state::AgentStreamState, terr::ProtocolError> value) {
+bool is_err_agent(
+    Result<state::AgentStreamState, terr::ProtocolError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -51,11 +55,12 @@ bool is_err_agent(Result<state::AgentStreamState, terr::ProtocolError> value) {
 }
 
 i32 main() {
-    state::ServerStreamState @server =
-        must(state::server_transition(
+    state::ServerStreamState @server = must(
+        state::server_transition(
             state::ServerPendingAgentOpen,
             state::ServerAgentOpenSucceeded
-        ));
+        )
+    );
     if (server_state_code(server) != 2) {
         return 1;
     }
@@ -71,18 +76,21 @@ i32 main() {
     if (server_state_code(server) != 5) {
         return 4;
     }
-    if (!is_err_server(state::server_transition(
-        state::ServerPendingAgentOpen,
-        state::ServerClientEof
-    ))) {
+    if (!is_err_server(
+        state::server_transition(
+            state::ServerPendingAgentOpen,
+            state::ServerClientEof
+        )
+    )) {
         return 5;
     }
 
-    state::AgentStreamState @agent =
-        must(state::agent_transition(
+    state::AgentStreamState @agent = must(
+        state::agent_transition(
             state::AgentDialingTarget,
             state::AgentTargetOpenSucceeded
-        ));
+        )
+    );
     if (agent_state_code(agent) != 2) {
         return 6;
     }
@@ -98,10 +106,12 @@ i32 main() {
     if (agent_state_code(agent) != 5) {
         return 9;
     }
-    if (!is_err_agent(state::agent_transition(
-        state::AgentDialingTarget,
-        state::AgentServerEof
-    ))) {
+    if (!is_err_agent(
+        state::agent_transition(
+            state::AgentDialingTarget,
+            state::AgentServerEof
+        )
+    )) {
         return 10;
     }
 

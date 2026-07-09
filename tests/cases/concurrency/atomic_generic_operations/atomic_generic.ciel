@@ -13,8 +13,12 @@ i64 main() {
     i64 after_store = must(atomic_load(&counter, Acquire));
     i64 old_exchange = must(atomic_exchange(&counter, 30, AcqRel));
 
-    CompareExchange<i64> miss = must(atomic_compare_exchange(&counter, 99, 40, AcqRel, Acquire));
-    CompareExchange<i64> hit = must(atomic_compare_exchange(&counter, 30, 40, SeqCst, Acquire));
+    CompareExchange<i64> miss = must(
+        atomic_compare_exchange(&counter, 99, 40, AcqRel, Acquire)
+    );
+    CompareExchange<i64> hit = must(
+        atomic_compare_exchange(&counter, 30, 40, SeqCst, Acquire)
+    );
 
     i64 old_add = must(atomic_fetch_add(&counter, 2, AcqRel));
     i64 old_sub = must(atomic_fetch_sub(&counter, 5, AcqRel));

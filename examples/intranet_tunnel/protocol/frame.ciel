@@ -61,7 +61,9 @@ export u16 frame_kind_code(FrameKind kind) {
     }
 }
 
-export Result<FrameKind, tunnel_error::ProtocolError> frame_kind_from_code(u16 code) {
+export Result<FrameKind, tunnel_error::ProtocolError> frame_kind_from_code(
+    u16 code
+) {
     if (code == (1 as u16)) {
         return Ok(Hello);
     }
@@ -95,7 +97,9 @@ export Result<FrameKind, tunnel_error::ProtocolError> frame_kind_from_code(u16 c
     return Err(tunnel_error::UnknownFrameKind(code));
 }
 
-export bool frame_kind_requires_zero_stream(FrameKind kind) {
+export bool frame_kind_requires_zero_stream(
+    FrameKind kind
+) {
     switch (kind) {
         case Hello:
             return true;
@@ -128,7 +132,9 @@ export Result<void, tunnel_error::ProtocolError> validate_stream_id(
         if (stream_id == (0 as u32)) {
             return Ok;
         }
-        return Err(tunnel_error::InvalidStreamId(frame_kind_code(kind), stream_id));
+        return Err(
+            tunnel_error::InvalidStreamId(frame_kind_code(kind), stream_id)
+        );
     }
     if (stream_id != (0 as u32)) {
         return Ok;
@@ -136,7 +142,9 @@ export Result<void, tunnel_error::ProtocolError> validate_stream_id(
     return Err(tunnel_error::InvalidStreamId(frame_kind_code(kind), stream_id));
 }
 
-export Result<void, tunnel_error::ProtocolError> validate_payload_len(usize len) {
+export Result<void, tunnel_error::ProtocolError> validate_payload_len(
+    usize len
+) {
     if (len <= max_payload_len()) {
         return Ok;
     }

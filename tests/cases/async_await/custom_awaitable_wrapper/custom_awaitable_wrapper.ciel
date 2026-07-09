@@ -28,7 +28,9 @@ async Result<usize, Error> compute(usize value) {
     return Ok(value + 3);
 }
 
-async Result<usize, Error> await_wrapped(usize value) {
+async Result<usize, Error> await_wrapped(
+    usize value
+) {
     Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(value) } };
     return await wrapped;
 }

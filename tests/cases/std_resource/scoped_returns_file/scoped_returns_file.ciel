@@ -7,20 +7,28 @@ import /std/io as io;
 import /std/resource as resource;
 import /std/result;
 
-Result<io::File, Error> open_in_child_owner([]const char path) {
-    io::File file = resource::scoped<io::File>(|| {
-        io::File file = io::open_read(path)?;
-        return Ok(file);
-    })?;
+Result<io::File, Error> open_in_child_owner(
+    []const char path
+) {
+    io::File file = resource::scoped<io::File>(
+        || {
+            io::File file = io::open_read(path)?;
+            return Ok(file);
+        }
+    )?;
     return Ok(file);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "scoped")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "scoped")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(open_in_child_owner(path));
     [8]u8 @buffer = [0;];

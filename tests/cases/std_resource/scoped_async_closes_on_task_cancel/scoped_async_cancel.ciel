@@ -20,7 +20,9 @@ unsafe impl clone_message(*const HandleParts value) {
     return Ok(*value);
 }
 
-HandleParts parts_from_handle(resource::Handle handle) {
+HandleParts parts_from_handle(
+    resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle.owner_id },
         resource_id: unsafe { handle.resource_id },
@@ -39,27 +41,41 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-async Result<void, Error> scoped_worker(async::Sender<HandleParts> sender) {
-    await resource::scoped_async<void, Error>(async || {
-        []const char path = env::arg(1)?;
-        io::File file = io::open_read(path)?;
-        async::try_send<HandleParts>(sender, parts_from_handle(unsafe { file.handle }))?;
-        await async_time::sleep_ms(10000)?;
-        return Ok;
-    })?;
+async Result<void, Error> scoped_worker(
+    async::Sender<HandleParts> sender
+) {
+    await resource::scoped_async<void, Error>(
+        async || {
+            []const char path = env::arg(1)?;
+            io::File file = io::open_read(path)?;
+            async::try_send<HandleParts>(
+                sender, parts_from_handle(unsafe { file.handle })
+            )?;
+            await async_time::sleep_ms(10000)?;
+            return Ok;
+        }
+    )?;
     return Ok;
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "cancel-scope")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "cancel-scope")?;
+                return Ok;
+            }
+        )
+    );
 
     async::ChannelPair<HandleParts> pair = must(async::channel<HandleParts>(1));
-    async::Task<void, Error> task = must(async::spawn<void>(scoped_worker(pair.sender)));
-    HandleParts parts = must(async::block_on(async::recv<HandleParts>(pair.receiver)));
+    async::Task<void, Error> task = must(
+        async::spawn<void>(scoped_worker(pair.sender))
+    );
+    HandleParts parts = must(
+        async::block_on(async::recv<HandleParts>(pair.receiver))
+    );
     must(async::cancel<void>(&task));
     must(async::close<HandleParts>(pair.sender));
     must(async::close_receiver<HandleParts>(pair.receiver));

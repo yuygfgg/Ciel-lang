@@ -6,7 +6,9 @@ import /std/async_net as anet;
 import /std/bytes as bytes;
 import /std/result;
 
-async Result<void, Error> bad_timeout(anet::AsyncTcpStream stream, bytes::Bytes data) {
+async Result<void, Error> bad_timeout(
+    anet::AsyncTcpStream stream, bytes::Bytes data
+) {
     anet::AsyncTcpWrite op = anet::write_bytes(stream, data)?;
     _ timed = async::timeout(
         async::future_from_op(op),

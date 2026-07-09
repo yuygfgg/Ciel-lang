@@ -50,7 +50,9 @@ bool is_invalid_store(Result<void, AtomicError> result) {
     }
 }
 
-bool is_invalid_compare(Result<CompareExchange<i64>, AtomicError> result) {
+bool is_invalid_compare(
+    Result<CompareExchange<i64>, AtomicError> result
+) {
     switch (result) {
         case Ok(value):
             return false;
@@ -79,10 +81,14 @@ i64 main() {
     if (is_invalid_store(atomic_store<i64>(&value, 2, AcqRel)) == false) {
         return 4;
     }
-    if (is_invalid_compare(atomic_compare_exchange<i64>(&value, 1, 2, SeqCst, Release)) == false) {
+    if (is_invalid_compare(
+        atomic_compare_exchange<i64>(&value, 1, 2, SeqCst, Release)
+    ) == false) {
         return 5;
     }
-    if (is_invalid_compare(atomic_compare_exchange<i64>(&value, 1, 2, Release, Acquire)) == false) {
+    if (is_invalid_compare(
+        atomic_compare_exchange<i64>(&value, 1, 2, Release, Acquire)
+    ) == false) {
         return 6;
     }
 

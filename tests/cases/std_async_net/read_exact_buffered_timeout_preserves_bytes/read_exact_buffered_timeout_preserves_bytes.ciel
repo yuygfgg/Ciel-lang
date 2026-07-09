@@ -20,7 +20,9 @@ enum ProbeError {
     Runtime(i64),
 }
 
-Result<T, ProbeError> net_step<T>([]const char stage, Result<T, anet::AsyncNetError> result) {
+Result<T, ProbeError> net_step<T>(
+    []const char stage, Result<T, anet::AsyncNetError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -29,7 +31,9 @@ Result<T, ProbeError> net_step<T>([]const char stage, Result<T, anet::AsyncNetEr
     }
 }
 
-Result<T, ProbeError> bytes_step<T>([]const char stage, Result<T, bytes::BytesError> result) {
+Result<T, ProbeError> bytes_step<T>(
+    []const char stage, Result<T, bytes::BytesError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -38,7 +42,9 @@ Result<T, ProbeError> bytes_step<T>([]const char stage, Result<T, bytes::BytesEr
     }
 }
 
-Result<T, ProbeError> net_addr_step<T>([]const char stage, Result<T, net::NetError> result) {
+Result<T, ProbeError> net_addr_step<T>(
+    []const char stage, Result<T, net::NetError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -47,7 +53,9 @@ Result<T, ProbeError> net_addr_step<T>([]const char stage, Result<T, net::NetErr
     }
 }
 
-Result<T, ProbeError> async_step<T>([]const char stage, Result<T, async::AsyncError> result) {
+Result<T, ProbeError> async_step<T>(
+    []const char stage, Result<T, async::AsyncError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -56,7 +64,9 @@ Result<T, ProbeError> async_step<T>([]const char stage, Result<T, async::AsyncEr
     }
 }
 
-Result<T, ProbeError> task_step<T>([]const char stage, Result<T, Error> result) {
+Result<T, ProbeError> task_step<T>(
+    []const char stage, Result<T, Error> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -97,21 +107,33 @@ async Result<void, Error> write_delayed_chunks(
 }
 
 async Result<usize, ProbeError> drive() {
-    net::SocketAddr addr = net_addr_step("parse listen addr", net::parse_addr("127.0.0.1:0"))?;
-    anet::AsyncTcpListener listener = net_step("listen_async", anet::listen_async(addr))?;
-    net::SocketAddr bound = net_step("listener_addr", anet::listener_addr(&listener))?;
-    async::ChannelPair<usize> first_chunk_written =
-        async_step("first chunk channel", async::channel<usize>(1))?;
-    async::ChannelPair<usize> write_rest =
-        async_step("write rest channel", async::channel<usize>(1))?;
+    net::SocketAddr addr = net_addr_step(
+        "parse listen addr", net::parse_addr("127.0.0.1:0")
+    )?;
+    anet::AsyncTcpListener listener = net_step(
+        "listen_async", anet::listen_async(addr)
+    )?;
+    net::SocketAddr bound = net_step(
+        "listener_addr", anet::listener_addr(&listener)
+    )?;
+    async::ChannelPair<usize> first_chunk_written = async_step(
+        "first chunk channel", async::channel<usize>(1)
+    )?;
+    async::ChannelPair<usize> write_rest = async_step(
+        "write rest channel", async::channel<usize>(1)
+    )?;
     async::Task<void, Error> server = async_step(
         "spawn server",
         async::spawn<void>(
-            write_delayed_chunks(listener, first_chunk_written.sender, write_rest.receiver)
+            write_delayed_chunks(
+                listener, first_chunk_written.sender, write_rest.receiver
+            )
         )
     )?;
 
-    anet::AsyncTcpStream client = net_step("connect client", await anet::connect(bound))?;
+    anet::AsyncTcpStream client = net_step(
+        "connect client", await anet::connect(bound)
+    )?;
     anet::BufferedStreamReader reader = net_step(
         "buffered_reader_from_stream",
         anet::buffered_reader_from_stream(client, 2)
@@ -140,9 +162,15 @@ async Result<usize, ProbeError> drive() {
         case Ok(value):
             switch (value) {
                 case Ok(_):
-                    return Err(Logic("timeout arm lost to read_exact_buffered"));
+                    return Err(
+                        Logic("timeout arm lost to read_exact_buffered")
+                    );
                 case Err(error):
-                    return Err(Net("read_exact_buffered completed before timeout", error));
+                    return Err(
+                        Net(
+                            "read_exact_buffered completed before timeout", error
+                        )
+                    );
             }
     }
 
@@ -155,77 +183,142 @@ async Result<usize, ProbeError> drive() {
         await anet::read_exact_buffered(&reader, 6)
     )?;
     [6]u8 @got = [0;];
-    usize copied = bytes_step("bytes_copy_to", bytes::bytes_copy_to(exact, got[..]))?;
+    usize copied = bytes_step(
+        "bytes_copy_to", bytes::bytes_copy_to(exact, got[..])
+    )?;
     [6]u8 want = [1 as u8, 2 as u8, 3 as u8, 4 as u8, 5 as u8, 6 as u8];
     if (copied != 6 || !same_bytes(got[..], want[..])) {
         return Err(Logic("buffered bytes were not preserved after timeout"));
     }
 
-    anet::AsyncTcpReadHalf half = net_step("into_read_half", anet::into_read_half(reader))?;
+    anet::AsyncTcpReadHalf half = net_step(
+        "into_read_half", anet::into_read_half(reader)
+    )?;
     net_step("shutdown_read_half", anet::shutdown_read_half(&half))?;
     task_step("await server task", await server)?;
     return Ok(copied);
 }
 
-Result<void, io::IoError> print_async_error([]const char stage, *const async::AsyncError error) {
+Result<void, io::IoError> print_async_error(
+    []const char stage, *const async::AsyncError error
+) {
     switch (*error) {
         case async::Runtime(code):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async runtime at {} code {}", [stage, code]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async runtime at {} code {}",
+                [stage, code]
+            );
         case async::Timeout:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async timeout at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async timeout at {}",
+                [stage]
+            );
         case async::ChannelClosed:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async channel closed at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async channel closed at {}",
+                [stage]
+            );
         case async::MessageClone(inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async message clone at {}: {}", [stage, error_message(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async message clone at {}: {}",
+                [stage, error_message(&inner)]
+            );
         case async::Operation(inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async operation at {}: {}", [stage, error_message(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async operation at {}: {}",
+                [stage, error_message(&inner)]
+            );
     }
 }
 
-Result<void, io::IoError> print_bytes_error([]const char stage, *const bytes::BytesError error) {
+Result<void, io::IoError> print_bytes_error(
+    []const char stage, *const bytes::BytesError error
+) {
     switch (*error) {
         case bytes::CapacityOverflow:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: bytes capacity overflow at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: bytes capacity overflow at {}",
+                [stage]
+            );
         case bytes::SliceOutOfBounds:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: bytes slice out of bounds at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: bytes slice out of bounds at {}",
+                [stage]
+            );
         case bytes::ShortCopy:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: short bytes copy at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: short bytes copy at {}",
+                [stage]
+            );
         case bytes::Runtime(code):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: bytes runtime at {} code {}", [stage, code]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: bytes runtime at {} code {}",
+                [stage, code]
+            );
     }
 }
 
-Result<void, io::IoError> print_net_addr_error([]const char stage, *const net::NetError error) {
+Result<void, io::IoError> print_net_addr_error(
+    []const char stage, *const net::NetError error
+) {
     switch (*error) {
         case net::Resource(inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: net resource at {}: {}", [stage, format_error(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: net resource at {}: {}",
+                [stage, format_error(&inner)]
+            );
         case net::Runtime(code):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: net runtime at {} code {}", [stage, code]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: net runtime at {} code {}",
+                [stage, code]
+            );
         case net::InvalidAddressFamily:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: invalid address family at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: invalid address family at {}",
+                [stage]
+            );
         case net::WriteZero:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: net write zero at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: net write zero at {}",
+                [stage]
+            );
     }
 }
 
-Result<void, io::IoError> print_async_net_error([]const char stage, *const anet::AsyncNetError error) {
+Result<void, io::IoError> print_async_net_error(
+    []const char stage, *const anet::AsyncNetError error
+) {
     switch (*error) {
         case anet::Runtime(code):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async_net runtime at {} code {}", [stage, code]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async_net runtime at {} code {}",
+                [stage, code]
+            );
         case anet::BytesError(inner):
             return print_bytes_error(stage, &inner);
         case anet::MessageClone(inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async_net message clone at {}: {}", [stage, error_message(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async_net message clone at {}: {}",
+                [stage, error_message(&inner)]
+            );
         case anet::Async(inner):
             return print_async_error(stage, &inner);
         case anet::Timeout:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async_net timeout at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async_net timeout at {}",
+                [stage]
+            );
         case anet::WriteZero:
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: async_net write zero at {}", [stage]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async_net write zero at {}",
+                [stage]
+            );
     }
 }
 
-Result<void, io::IoError> print_probe_error(*const ProbeError error) {
+Result<void, io::IoError> print_probe_error(
+    *const ProbeError error
+) {
     switch (*error) {
         case Net(stage, inner):
             return print_async_net_error(stage, &inner);
@@ -234,15 +327,26 @@ Result<void, io::IoError> print_probe_error(*const ProbeError error) {
         case Bytes(stage, inner):
             return print_bytes_error(stage, &inner);
         case Io(stage, inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: io at {}: {}", [stage, format_error(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: io at {}: {}",
+                [stage, format_error(&inner)]
+            );
         case NetAddr(stage, inner):
             return print_net_addr_error(stage, &inner);
         case Task(stage, inner):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: task at {}: {}", [stage, error_message(&inner)]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: task at {}: {}",
+                [stage, error_message(&inner)]
+            );
         case Logic(message):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: {}", [message]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: {}", [message]
+            );
         case Runtime(code):
-            return io::eprintln("read_exact_buffered_timeout_preserves_bytes failed: synthesized async runtime code {}", [code]);
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: synthesized async runtime code {}",
+                [code]
+            );
     }
 }
 

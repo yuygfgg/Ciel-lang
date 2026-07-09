@@ -44,7 +44,7 @@ i64 main() {
     Result<void, Error> ok = run_task(true);
     switch (ok) {
         case Ok:
-        case Err(error):
+            case Err(error):
             return 1;
     }
 

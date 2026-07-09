@@ -33,7 +33,9 @@ impl format_error(*const BufError error) {
 }
 
 // Creates an empty ByteBuf with at least the requested initial capacity.
-export Result<ByteBuf, BufError> byte_buf_new(usize capacity) {
+export Result<ByteBuf, BufError> byte_buf_new(
+    usize capacity
+) {
     storage::RawStorage<u8> @raw;
     switch (unsafe { storage::raw_zeroed<u8>(capacity) }) {
         case Ok(storage):
@@ -58,12 +60,16 @@ export void byte_buf_clear(*ByteBuf buf) = .clear {
 
 // Returns a read-only view of the initialized byte prefix.
 export []const u8 byte_buf_slice(*const ByteBuf buf) = .slice {
-    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
+    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(
+        &buf->storage
+    ) };
     return unsafe { storage_view[..buf->len] };
 }
 
 // Creates a read-only byte iterator over the initialized byte prefix.
-export _: iter::Iterator<u8> byte_buf_iter(*const ByteBuf buf) = .iter {
+export _: iter::Iterator<u8> byte_buf_iter(
+    *const ByteBuf buf
+) = .iter {
     iter::SliceIter<u8> out = { items: byte_buf_slice(buf), index: 0 };
     return out;
 }
@@ -75,7 +81,9 @@ export []u8 byte_buf_mut_slice(*ByteBuf buf) = .mut_slice {
 }
 
 export usize byte_buf_capacity(*const ByteBuf buf) = .capacity {
-    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(&buf->storage) };
+    []const u8 storage_view = unsafe { storage::raw_const_slice<u8>(
+        &buf->storage
+    ) };
     return storage_view.len;
 }
 
@@ -101,7 +109,9 @@ usize grown_capacity(usize current, usize needed) {
 }
 
 // Ensures room for additional bytes after the initialized prefix.
-export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) = .reserve {
+export Result<void, BufError> byte_buf_reserve(
+    *ByteBuf buf, usize additional
+) = .reserve {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > ((~(0 as usize)) - len)) {
@@ -114,7 +124,10 @@ export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) =
 
     usize next_cap = grown_capacity(cap, needed);
     storage::RawStorage<u8> @next;
-    switch (unsafe { storage::raw_realloc_zeroed<u8>(buf->storage, len, next_cap) }) {
+    switch (unsafe {
+        storage::raw_realloc_zeroed<u8>(buf->storage, len, next_cap)
+    }
+) {
         case Ok(storage):
             next = storage;
         case Err(_):
@@ -128,12 +141,16 @@ export Result<void, BufError> byte_buf_reserve(*ByteBuf buf, usize additional) =
 }
 
 // Appends a byte slice to the initialized prefix, growing as needed.
-export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data) = .push_slice {
+export Result<void, BufError> byte_buf_push_slice(
+    *ByteBuf buf, []const u8 data
+) = .push_slice {
     byte_buf_reserve(buf, data.len)?;
     usize len = byte_buf_len(buf);
     if (data.len > 0) {
         []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
-        c::c_int rc = unsafe { c::ciel_u8_copy(&storage_view[len], data.ptr, data.len) };
+        c::c_int rc = unsafe {
+            c::ciel_u8_copy(&storage_view[len], data.ptr, data.len)
+        };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }
@@ -145,14 +162,18 @@ export Result<void, BufError> byte_buf_push_slice(*ByteBuf buf, []const u8 data)
 }
 
 // Copies a slice into a new ByteBuf with exactly data.len initialized bytes.
-export Result<ByteBuf, BufError> byte_buf_from_slice([]const u8 data) {
+export Result<ByteBuf, BufError> byte_buf_from_slice(
+    []const u8 data
+) {
     ByteBuf @out = byte_buf_new(data.len)?;
     byte_buf_push_slice(&out, data)?;
     return Ok(out);
 }
 
 // Reserves additional uninitialized tail space and returns a mutable view to it.
-export Result<[]u8, BufError> byte_buf_spare_mut_slice(*ByteBuf buf, usize additional) = .spare_mut_slice {
+export Result<[]u8, BufError> byte_buf_spare_mut_slice(
+    *ByteBuf buf, usize additional
+) = .spare_mut_slice {
     byte_buf_reserve(buf, additional)?;
     usize len = byte_buf_len(buf);
     []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
@@ -160,7 +181,9 @@ export Result<[]u8, BufError> byte_buf_spare_mut_slice(*ByteBuf buf, usize addit
 }
 
 // Marks additional bytes previously written through byte_buf_spare_mut_slice as initialized.
-export Result<void, BufError> byte_buf_commit_tail(*ByteBuf buf, usize additional) = .commit_tail {
+export Result<void, BufError> byte_buf_commit_tail(
+    *ByteBuf buf, usize additional
+) = .commit_tail {
     usize len = byte_buf_len(buf);
     usize cap = byte_buf_capacity(buf);
     if (additional > (cap - len)) {
@@ -173,7 +196,9 @@ export Result<void, BufError> byte_buf_commit_tail(*ByteBuf buf, usize additiona
 }
 
 // Removes count initialized bytes from the front and shifts the remaining bytes down.
-export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count) = .discard_prefix {
+export Result<void, BufError> byte_buf_discard_prefix(
+    *ByteBuf buf, usize count
+) = .discard_prefix {
     usize len = byte_buf_len(buf);
     if (count > len) {
         return Err(DiscardOutOfBounds);
@@ -184,7 +209,9 @@ export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count)
     usize remaining = len - count;
     if (remaining > 0) {
         []u8 storage_view = unsafe { storage::raw_slice<u8>(&buf->storage) };
-        c::c_int rc = unsafe { c::ciel_u8_copy(storage_view.ptr, &storage_view[count], remaining) };
+        c::c_int rc = unsafe {
+            c::ciel_u8_copy(storage_view.ptr, &storage_view[count], remaining)
+        };
         if ((rc as i64) != 0) {
             return Err(copy_error(rc));
         }
@@ -196,7 +223,9 @@ export Result<void, BufError> byte_buf_discard_prefix(*ByteBuf buf, usize count)
 }
 
 // Copies the initialized bytes into an immutable Bytes value.
-export Result<bytes::Bytes, BufError> byte_buf_to_bytes(*const ByteBuf buf) = .to_bytes {
+export Result<bytes::Bytes, BufError> byte_buf_to_bytes(
+    *const ByteBuf buf
+) = .to_bytes {
     switch (bytes::bytes_copy(byte_buf_slice(buf))) {
         case Ok(value):
             return Ok(value);
@@ -217,7 +246,9 @@ export Result<bytes::Bytes, BufError> byte_buf_to_bytes(*const ByteBuf buf) = .t
 // Consumes a ByteBuf and copies its initialized bytes into immutable Bytes.
 // Copying preserves Bytes immutability even if older mutable slice views still
 // point at the buffer's backing storage.
-export Result<bytes::Bytes, BufError> byte_buf_freeze(ByteBuf @buf) = .freeze {
+export Result<bytes::Bytes, BufError> byte_buf_freeze(
+    ByteBuf @buf
+) = .freeze {
     return byte_buf_to_bytes(&buf);
 }
 

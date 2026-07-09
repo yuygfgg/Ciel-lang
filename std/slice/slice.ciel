@@ -16,7 +16,9 @@ impl format_error(*const SliceError error) {
     }
 }
 
-export bool slice_equal<T: ord::eq>([]const T left, []const T right) = .equal {
+export bool slice_equal<T: ord::eq>(
+    []const T left, []const T right
+) = .equal {
     if (left.len != right.len) {
         return false;
     }
@@ -30,7 +32,9 @@ export bool slice_equal<T: ord::eq>([]const T left, []const T right) = .equal {
     return true;
 }
 
-export bool slice_equal_bytes([]const u8 left, []const u8 right) {
+export bool slice_equal_bytes(
+    []const u8 left, []const u8 right
+) {
     if (left.len != right.len) {
         return false;
     }
@@ -90,7 +94,9 @@ export void slice_fill<T>([]T items, T value) = .fill {
     }
 }
 
-export bool slice_contains<T: ord::eq>([]const T items, T needle) = .contains {
+export bool slice_contains<T: ord::eq>(
+    []const T items, T needle
+) = .contains {
     usize @i = 0;
     while (i < items.len) {
         if (ord::eq(&items[i], &needle)) {
@@ -115,7 +121,9 @@ export Result<usize, SliceError> slice_index_of<T: ord::eq>(
     return Err(NotFound);
 }
 
-export bool slice_is_sorted<T: ord::lt>([]const T items) = .is_sorted {
+export bool slice_is_sorted<T: ord::lt>(
+    []const T items
+) = .is_sorted {
     if (items.len < 2) {
         return true;
     }

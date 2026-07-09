@@ -16,7 +16,9 @@ i64 consume_explicit<T>(meta::Repr<T> repr) {
     return 0;
 }
 
-i64 consume_after_value<T>(T value, meta::Repr<T> repr) {
+i64 consume_after_value<T>(
+    T value, meta::Repr<T> repr
+) {
     T copy = meta::from_repr<T>(repr);
     return 0;
 }
@@ -33,8 +35,7 @@ i64 main() {
     Packet packet = { id: 17, ok: true };
     meta::Repr<Packet> repr = meta::into_repr(&packet);
     Holder<Packet> holder = { repr: meta::into_repr(&packet) };
-    return consume_explicit<Packet>(repr)
-        + consume_after_value(packet, meta::into_repr(&packet))
-        + read_holder(holder)
-        - 17;
+    return consume_explicit<Packet>(repr) +
+        consume_after_value(packet, meta::into_repr(&packet)) +
+        read_holder(holder) - 17;
 }

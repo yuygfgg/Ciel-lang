@@ -10,7 +10,9 @@ enum FutureChoice {
     Empty,
 }
 
-async Result<usize, Error> len_later([]const i64 view) {
+async Result<usize, Error> len_later(
+    []const i64 view
+) {
     return Ok(view.len);
 }
 
@@ -22,8 +24,8 @@ async::Task<usize, Error> spawn_enum_payload_future() {
             return must(async::spawn<usize>(future));
         case Empty:
             return must(async::spawn<usize, Error>(async || {
-                return Ok(0);
-            }));
+                    return Ok(0);
+                }));
     }
     return must(async::spawn<usize, Error>(async || {
         return Ok(1);

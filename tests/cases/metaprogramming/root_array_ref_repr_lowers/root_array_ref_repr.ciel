@@ -6,7 +6,9 @@ import /std/meta as meta;
 i64 small_array_refs() {
     [3]i64 values = [2, 5, 7];
     meta::RefRepr<[3]i64> refs = meta::as_ref_repr(&values);
-    meta::ArrayChunk3View<*const i64> refs_view = meta::array_chunk3_view(&refs);
+    meta::ArrayChunk3View<*const i64> refs_view = meta::array_chunk3_view(
+        &refs
+    );
     *const i64 item0 = *refs_view.item0;
     *const i64 item1 = *refs_view.item1;
     *const i64 item2 = *refs_view.item2;
@@ -23,8 +25,12 @@ i64 chunked_array_refs() {
     meta::RefRepr<[20]i64> refs = meta::as_ref_repr(&values);
     meta::ArrayCatView<meta::ArrayChunk16<*const i64>, meta::ArrayChunk4<*const i64>> refs_view =
         meta::array_cat_view(&refs);
-    meta::ArrayChunk16View<*const i64> left_view = meta::array_chunk16_view(refs_view.left);
-    meta::ArrayChunk4View<*const i64> right_view = meta::array_chunk4_view(refs_view.right);
+    meta::ArrayChunk16View<*const i64> left_view = meta::array_chunk16_view(
+        refs_view.left
+    );
+    meta::ArrayChunk4View<*const i64> right_view = meta::array_chunk4_view(
+        refs_view.right
+    );
     *const i64 left0 = *left_view.item0;
     *const i64 right0 = *right_view.item0;
     *const i64 right3 = *right_view.item3;

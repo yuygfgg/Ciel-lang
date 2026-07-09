@@ -6,7 +6,9 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-Result<io::File, Error> return_from_loop([]const char path) {
+Result<io::File, Error> return_from_loop(
+    []const char path
+) {
     io::File file = io::open_read(path)?;
     while (true) {
         return Ok(file);
@@ -16,10 +18,14 @@ Result<io::File, Error> return_from_loop([]const char path) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "loop-return")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "loop-return")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(return_from_loop(path));
     [16]u8 @buffer = [0;];

@@ -9,7 +9,9 @@ enum Msg {
     Done(i64),
 }
 
-Result<Channel<usize>, Error> handle(Channel<usize> done_signal, meta::Repr<Msg> envelope) {
+Result<Channel<usize>, Error> handle(
+    Channel<usize> done_signal, meta::Repr<Msg> envelope
+) {
     Msg msg = meta::from_repr<Msg>(envelope);
     switch (msg) {
         case Start(self):
@@ -24,10 +26,12 @@ Result<Channel<usize>, Error> handle(Channel<usize> done_signal, meta::Repr<Msg>
 
 i32 main() {
     Channel<usize> done_signal = must(make_channel<usize>());
-    Actor<meta::Repr<Msg>> actor = must(spawn_actor_cloned<Channel<usize>, meta::Repr<Msg>>(
-        done_signal,
-        handle
-    ));
+    Actor<meta::Repr<Msg>> actor = must(
+        spawn_actor_cloned<Channel<usize>, meta::Repr<Msg>>(
+            done_signal,
+            handle
+        )
+    );
     Msg start = Start(actor);
     must(send(&actor, meta::into_repr(&start)));
     usize value = must(channel_recv(&done_signal));

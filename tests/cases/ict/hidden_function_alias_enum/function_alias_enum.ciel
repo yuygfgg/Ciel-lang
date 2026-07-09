@@ -23,7 +23,9 @@ enum Slot<I: Iterator<Item = _>> {
     Value(Item),
 }
 
-Item fallback<I: Iterator<Item = _>>(I iter, Item value) {
+Item fallback<I: Iterator<Item = _>>(
+    I iter, Item value
+) {
     return value;
 }
 
@@ -32,7 +34,7 @@ i64 main() {
     Cached<Range> cached = fallback(range, 13);
     Slot<Range> slot = Value(cached);
     switch (slot) {
-    case Value(value):
-        return value;
+        case Value(value):
+            return value;
     }
 }

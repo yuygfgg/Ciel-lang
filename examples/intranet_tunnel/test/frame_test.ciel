@@ -27,7 +27,9 @@ u16 exhaustive_kind_code(frame::FrameKind kind) {
     }
 }
 
-bool is_err_kind(Result<frame::FrameKind, terr::ProtocolError> value) {
+bool is_err_kind(
+    Result<frame::FrameKind, terr::ProtocolError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -81,7 +83,9 @@ Result<void, Error> box_auth_codec_error() {
     return Ok;
 }
 
-bool protocol_text_nonempty(terr::ProtocolError error) {
+bool protocol_text_nonempty(
+    terr::ProtocolError error
+) {
     return format_error(&error).len > 0;
 }
 
@@ -89,11 +93,15 @@ bool auth_text_nonempty(terr::AuthError error) {
     return format_error(&error).len > 0;
 }
 
-bool frame_codec_text_nonempty(terr::FrameCodecError error) {
+bool frame_codec_text_nonempty(
+    terr::FrameCodecError error
+) {
     return format_error(&error).len > 0;
 }
 
-bool auth_codec_text_nonempty(terr::AuthCodecError error) {
+bool auth_codec_text_nonempty(
+    terr::AuthCodecError error
+) {
     return format_error(&error).len > 0;
 }
 
@@ -138,7 +146,9 @@ i32 main() {
     if (!protocol_text_nonempty(terr::UnknownFrameKind(11 as u16))) {
         return 11;
     }
-    if (!protocol_text_nonempty(terr::OversizedPayload(frame::max_payload_len() + 1))) {
+    if (!protocol_text_nonempty(
+        terr::OversizedPayload(frame::max_payload_len() + 1)
+    )) {
         return 12;
     }
     if (!protocol_text_nonempty(terr::InvalidStreamId(8 as u16, 7 as u32))) {

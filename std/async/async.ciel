@@ -26,7 +26,9 @@ impl<E: ErrorTrait> format_error(*const TaskGroupError<E> error) {
     }
 }
 
-Result<Out, AsyncError> timeout_elapsed<Out>(Result<void, AsyncError> sleep_result) {
+Result<Out, AsyncError> timeout_elapsed<Out>(
+    Result<void, AsyncError> sleep_result
+) {
     sleep_result?;
     return Err(timeout_error());
 }
@@ -38,20 +40,28 @@ export async Result<Out, AsyncError> timeout<A: SelectableFuture<Out = _>>(
     u64 ms
 ) {
     return await biased select {
-        case sleep_result = async_time::sleep_ms(ms): timeout_elapsed<Out>(sleep_result);
-        case value = future: Ok(value);
+        case sleep_result = async_time::sleep_ms(ms):
+            timeout_elapsed<Out>(sleep_result);
+        case value = future:
+            Ok(value);
     };
 }
 
-void cancel_task_group_on_exit<T, E>(TaskGroup<T, E> group) {
+void cancel_task_group_on_exit<T, E>(
+    TaskGroup<T, E> group
+) {
     group_cancel_all<T, E>(&group);
 }
 
-void close_task_group_on_exit<T, E>(TaskGroup<T, E> group) {
+void close_task_group_on_exit<T, E>(
+    TaskGroup<T, E> group
+) {
     group_close<T, E>(&group);
 }
 
-Result<void, AsyncError> cleanup_task_group<T, E>(*const TaskGroup<T, E> group) {
+Result<void, AsyncError> cleanup_task_group<T, E>(
+    *const TaskGroup<T, E> group
+) {
     switch (group_cancel_all<T, E>(group)) {
         case Ok:
             {}

@@ -10,12 +10,16 @@ import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> bytes_len_result(Result<bytes::Bytes, anet::AsyncNetError> result) {
+Result<usize, Error> bytes_len_result(
+    Result<bytes::Bytes, anet::AsyncNetError> result
+) {
     bytes::Bytes bytes = result?;
     return Ok(bytes::bytes_len(bytes));
 }
 
-Result<usize, Error> timeout_tag(Result<void, async::AsyncError> result) {
+Result<usize, Error> timeout_tag(
+    Result<void, async::AsyncError> result
+) {
     result?;
     return Ok(99);
 }
@@ -36,16 +40,20 @@ async Result<usize, Error> write_payload(
 }
 
 async Result<usize, Error> drive() {
-    anet::AsyncTcpListener listener =
-        anet::listen_async(net::parse_addr("127.0.0.1:0")?)?;
+    anet::AsyncTcpListener listener = anet::listen_async(
+        net::parse_addr("127.0.0.1:0")?
+    )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::ChannelPair<usize> write_done = async::channel<usize>(1)?;
-    async::Task<usize, Error> server =
-        async::spawn<usize>(write_payload(listener, write_done.sender))?;
+    async::Task<usize, Error> server = async::spawn<usize>(
+        write_payload(listener, write_done.sender)
+    )?;
 
     anet::AsyncTcpStream client = await anet::connect(bound)?;
     anet::AsyncTcpSplit halves = anet::split(client)?;
-    anet::BufferedStreamReader reader = anet::buffered_reader_from_split(halves, 4)?;
+    anet::BufferedStreamReader reader = anet::buffered_reader_from_split(
+        halves, 4
+    )?;
     _ ready = await async::recv<usize>(write_done.receiver)?;
 
     bytes::Bytes first = await anet::read_buffered(&reader, 2)?;
@@ -54,8 +62,10 @@ async Result<usize, Error> drive() {
     }
 
     Result<usize, Error> picked = await select {
-        case bytes = anet::read_buffered(&reader, 2): bytes_len_result(bytes);
-        case slept = async_time::sleep_ms(20): timeout_tag(slept);
+        case bytes = anet::read_buffered(&reader, 2):
+            bytes_len_result(bytes);
+        case slept = async_time::sleep_ms(20):
+            timeout_tag(slept);
     };
     usize second_len = picked?;
     if (second_len != 2) {

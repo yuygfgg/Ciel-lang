@@ -30,7 +30,9 @@ impl reset(*Device device) {
     return;
 }
 
-i64 visit(Packet<readable_seekable> packet, i64 |(readable_seekable)| callback) {
+i64 visit(
+    Packet<readable_seekable> packet, i64 |(readable_seekable)| callback
+) {
     switch (packet) {
         case One(item):
             return callback(item);

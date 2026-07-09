@@ -36,7 +36,8 @@ i64 main() {
         return 8;
     }
     i16 max_i16 = ((~(0 as u16)) >> 1) as i16;
-    if (ord::min_value(meta::type_tag<i16>()) != ((0 as i16) - max_i16 - (1 as i16))) {
+    if (ord::min_value(meta::type_tag<i16>()) !=
+        ((0 as i16) - max_i16 - (1 as i16))) {
         return 9;
     }
     f64 max_f64 = ord::max_value(meta::type_tag<f64>());

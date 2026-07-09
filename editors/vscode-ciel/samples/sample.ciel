@@ -65,8 +65,10 @@ _: Iterator<i64> make_range(i64 value) {
 
 async Result<Event, Error> read_event() {
     Event event = await select {
-        case tick = async_time::sleep_ms(10): Event::Timeout;
-        case value = async_time::sleep_ms(1): Event::Data({ value: 1, count: 2 });
+        case tick = async_time::sleep_ms(10):
+            Event::Timeout;
+        case value = async_time::sleep_ms(1):
+            Event::Data({ value: 1, count: 2 });
     };
     return Ok(event);
 }
@@ -75,7 +77,9 @@ i32 main() {
     Result<Event, Error> event = async::block_on(read_event());
     switch (event) {
         case Result::Ok(Event::Data(packet)):
-            io::println("Data: {}", [packet.measure()]).expect("Failed to print");
+            io::println("Data: {}", [packet.measure()]).expect(
+                "Failed to print"
+            );
         case Result::Ok(Event::Timeout):
             io::println("Timeout!", []).expect("Failed to print");
         case Result::Err(_):

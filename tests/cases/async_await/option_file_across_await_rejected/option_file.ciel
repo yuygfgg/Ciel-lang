@@ -7,7 +7,9 @@ import /std/io as io;
 import /std/option as option;
 import /std/result;
 
-async Result<void, Error> keep_option([]const char path) {
+async Result<void, Error> keep_option(
+    []const char path
+) {
     option::Option<io::File> maybe = option::Some(io::open_read(path)?);
     await async_time::sleep_ms(0)?;
     switch (maybe) {

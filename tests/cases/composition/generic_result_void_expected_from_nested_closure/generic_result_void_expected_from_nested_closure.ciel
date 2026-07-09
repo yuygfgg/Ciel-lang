@@ -29,7 +29,9 @@ void mark(i32 ch) {
     return;
 }
 
-Result<void, Error> handle(Work<void> work, Runner<Result<void, Error> |(void)|> runner) {
+Result<void, Error> handle(
+    Work<void> work, Runner<Result<void, Error> |(void)|> runner
+) {
     switch (work) {
         case Do(value):
             runner.tag;

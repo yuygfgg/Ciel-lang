@@ -9,24 +9,35 @@ import /std/resource as resource;
 import /std/result;
 import /std/text as text;
 
-async Result<io::File, Error> open_later(text::Text path) {
+async Result<io::File, Error> open_later(
+    text::Text path
+) {
     io::File file = io::open_read(text::text_to_slice(path)?)?;
     return Ok(file);
 }
 
-Result<async::Future<Result<io::File, Error>>, resource::ScopedError<Error>> future_from_child_owner(text::Text path) {
-    async::Future<Result<io::File, Error>> future = resource::scoped<async::Future<Result<io::File, Error>>, Error>(|| {
-        return Ok(open_later(path));
-    })?;
+Result<async::Future<Result<io::File, Error>>, resource::ScopedError<Error>> future_from_child_owner(
+    text::Text path
+) {
+    async::Future<Result<io::File, Error>> future =
+        resource::scoped<async::Future<Result<io::File, Error>>, Error>(
+            || {
+                return Ok(open_later(path));
+            }
+        )?;
     return Ok(future);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "future")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "future")?;
+                return Ok;
+            }
+        )
+    );
 
     text::Text owned_path = must(text::text_copy(path));
     switch (future_from_child_owner(owned_path)) {

@@ -36,13 +36,34 @@ usize route_len_max() {
 
 [28]u8 auth_context() {
     return [
-        0x63 as u8, 0x69 as u8, 0x65 as u8, 0x6c as u8,
-        0x2d as u8, 0x69 as u8, 0x6e as u8, 0x74 as u8,
-        0x72 as u8, 0x61 as u8, 0x6e as u8, 0x65 as u8,
-        0x74 as u8, 0x2d as u8, 0x74 as u8, 0x75 as u8,
-        0x6e as u8, 0x6e as u8, 0x65 as u8, 0x6c as u8,
-        0x2d as u8, 0x61 as u8, 0x75 as u8, 0x74 as u8,
-        0x68 as u8, 0x2d as u8, 0x76 as u8, 0x31 as u8
+        0x63 as u8,
+        0x69 as u8,
+        0x65 as u8,
+        0x6c as u8,
+        0x2d as u8,
+        0x69 as u8,
+        0x6e as u8,
+        0x74 as u8,
+        0x72 as u8,
+        0x61 as u8,
+        0x6e as u8,
+        0x65 as u8,
+        0x74 as u8,
+        0x2d as u8,
+        0x74 as u8,
+        0x75 as u8,
+        0x6e as u8,
+        0x6e as u8,
+        0x65 as u8,
+        0x6c as u8,
+        0x2d as u8,
+        0x61 as u8,
+        0x75 as u8,
+        0x74 as u8,
+        0x68 as u8,
+        0x2d as u8,
+        0x76 as u8,
+        0x31 as u8
     ];
 }
 
@@ -68,7 +89,9 @@ Result<void, tunnel_error::AuthCodecError> auth_codec_void(
     }
 }
 
-Result<T, tunnel_error::AuthCodecError> auth_buf_result<T>(Result<T, buf::BufError> result) {
+Result<T, tunnel_error::AuthCodecError> auth_buf_result<T>(
+    Result<T, buf::BufError> result
+) {
     switch (result) {
         case Ok(value):
             return Ok(value);
@@ -77,7 +100,9 @@ Result<T, tunnel_error::AuthCodecError> auth_buf_result<T>(Result<T, buf::BufErr
     }
 }
 
-Result<void, tunnel_error::AuthCodecError> auth_buf_void(Result<void, buf::BufError> result) {
+Result<void, tunnel_error::AuthCodecError> auth_buf_void(
+    Result<void, buf::BufError> result
+) {
     switch (result) {
         case Ok:
             return Ok;
@@ -108,21 +133,29 @@ Result<void, tunnel_error::AuthCodecError> auth_crypto_void(
     }
 }
 
-Result<void, tunnel_error::AuthCodecError> ensure_route_len([]const char route) {
+Result<void, tunnel_error::AuthCodecError> ensure_route_len(
+    []const char route
+) {
     if (route.len <= route_len_max()) {
         return Ok;
     }
-    return Err(tunnel_error::AuthFailure(tunnel_error::RouteNameTooLong(route.len)));
+    return Err(
+        tunnel_error::AuthFailure(tunnel_error::RouteNameTooLong(route.len))
+    );
 }
 
-Result<void, tunnel_error::AuthCodecError> push_u16(*buf::ByteBuf out, u16 value) {
+Result<void, tunnel_error::AuthCodecError> push_u16(
+    *buf::ByteBuf out, u16 value
+) {
     [2]u8 @part = [0;];
     auth_codec_void(binary::put_be(part[..], value))?;
     auth_buf_void(out.buf::push_slice(part[..]))?;
     return Ok;
 }
 
-Result<void, tunnel_error::AuthCodecError> push_chars(*buf::ByteBuf out, []const char text) {
+Result<void, tunnel_error::AuthCodecError> push_chars(
+    *buf::ByteBuf out, []const char text
+) {
     [1]u8 @one = [0;];
     usize @i = 0;
     while (i < text.len) {
@@ -140,7 +173,9 @@ Result<[]u8, tunnel_error::AuthCodecError> build_auth_transcript(
 ) {
     ensure_route_len(route)?;
     usize capacity = (28 as usize) + (4 as usize) + route.len + nonce_len();
-    buf::ByteBuf @out = auth_buf_result<buf::ByteBuf>(buf::byte_buf_new(capacity))?;
+    buf::ByteBuf @out = auth_buf_result<buf::ByteBuf>(
+        buf::byte_buf_new(capacity)
+    )?;
     [28]u8 context = auth_context();
     auth_buf_void(out.buf::push_slice(context[..]))?;
     push_u16(&out, version)?;
@@ -168,7 +203,9 @@ export Result<[32]u8, tunnel_error::AuthCodecError> compute_auth_tag(
         crypto::mac_once(auth_algorithm(), psk, transcript, tag[..])
     )?;
     if (written != tag_len()) {
-        return Err(tunnel_error::AuthFailure(tunnel_error::TagLengthMismatch(written)));
+        return Err(
+            tunnel_error::AuthFailure(tunnel_error::TagLengthMismatch(written))
+        );
     }
     return Ok(tag);
 }
@@ -181,7 +218,9 @@ export Result<[]u8, tunnel_error::AuthCodecError> encode_hello_with_nonce(
     ensure_route_len(route)?;
     [32]u8 tag = compute_auth_tag(psk, frame::protocol_version(), route, nonce)?;
     usize capacity = (4 as usize) + route.len + nonce_len() + tag_len();
-    buf::ByteBuf @out = auth_buf_result<buf::ByteBuf>(buf::byte_buf_new(capacity))?;
+    buf::ByteBuf @out = auth_buf_result<buf::ByteBuf>(
+        buf::byte_buf_new(capacity)
+    )?;
     push_u16(&out, frame::protocol_version())?;
     push_u16(&out, route.len as u16)?;
     push_chars(&out, route)?;
@@ -190,12 +229,16 @@ export Result<[]u8, tunnel_error::AuthCodecError> encode_hello_with_nonce(
     return Ok(out.buf::mut_slice());
 }
 
-export Result<[]u8, tunnel_error::AuthCodecError> encode_hello([]const char route, []const u8 psk) {
+export Result<[]u8, tunnel_error::AuthCodecError> encode_hello(
+    []const char route, []const u8 psk
+) {
     [32]u8 nonce = random_nonce()?;
     return encode_hello_with_nonce(route, psk, nonce);
 }
 
-void copy_u8_array_32([]const u8 input, usize start, *[32]u8 out) {
+void copy_u8_array_32(
+    []const u8 input, usize start, *[32]u8 out
+) {
     usize @i = 0;
     while (i < nonce_len()) {
         (*out)[i] = input[start + i];
@@ -203,15 +246,20 @@ void copy_u8_array_32([]const u8 input, usize start, *[32]u8 out) {
     }
 }
 
-export Result<Hello, tunnel_error::AuthCodecError> decode_hello([]const u8 input) {
+export Result<Hello, tunnel_error::AuthCodecError> decode_hello(
+    []const u8 input
+) {
     usize min_len = (4 as usize) + nonce_len() + tag_len();
     if (input.len < min_len) {
         return Err(tunnel_error::AuthFailure(tunnel_error::MalformedHello));
     }
 
-    u16 version = auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
-    usize route_len =
-        auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[2..4]))? as usize;
+    u16 version = auth_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[..2])
+    )?;
+    usize route_len = auth_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[2..4])
+    )? as usize;
     usize expected_len = (4 as usize) + route_len + nonce_len() + tag_len();
     if (input.len != expected_len) {
         return Err(tunnel_error::AuthFailure(tunnel_error::MalformedHello));
@@ -223,12 +271,14 @@ export Result<Hello, tunnel_error::AuthCodecError> decode_hello([]const u8 input
     [32]u8 @tag = [0;];
     copy_u8_array_32(input, route_end, &nonce);
     copy_u8_array_32(input, route_end + nonce_len(), &tag);
-    return Ok({
-        version: version,
-        route: input[route_start..route_end],
-        nonce: nonce,
-        tag: tag
-    });
+    return Ok(
+        {
+            version: version,
+            route: input[route_start..route_end],
+            nonce: nonce,
+            tag: tag
+        }
+    );
 }
 
 bool route_matches([]const u8 actual, []const char expected) {
@@ -251,15 +301,18 @@ export Result<void, tunnel_error::AuthCodecError> verify_hello(
     []const u8 psk
 ) {
     if (hello.version != frame::protocol_version()) {
-        return Err(tunnel_error::AuthFailure(
-            tunnel_error::AuthUnsupportedVersion(hello.version)
-        ));
+        return Err(
+            tunnel_error::AuthFailure(
+                tunnel_error::AuthUnsupportedVersion(hello.version)
+            )
+        );
     }
     if (!route_matches(hello.route, expected_route)) {
         return Err(tunnel_error::AuthFailure(tunnel_error::RouteMismatch));
     }
-    [32]u8 expected_tag =
-        compute_auth_tag(psk, hello.version, expected_route, hello.nonce)?;
+    [32]u8 expected_tag = compute_auth_tag(
+        psk, hello.version, expected_route, hello.nonce
+    )?;
     if (!crypto::constant_time_eq(expected_tag[..], hello.tag[..])) {
         return Err(tunnel_error::AuthFailure(tunnel_error::TagMismatch));
     }
@@ -283,20 +336,28 @@ export Result<[]u8, tunnel_error::AuthCodecError> encode_hello_ok() {
     return encode_hello_ok_with_nonce(frame::protocol_version(), server_nonce);
 }
 
-export Result<HelloOk, tunnel_error::AuthCodecError> decode_hello_ok([]const u8 input) {
+export Result<HelloOk, tunnel_error::AuthCodecError> decode_hello_ok(
+    []const u8 input
+) {
     if (input.len != ((2 as usize) + nonce_len())) {
-        return Err(tunnel_error::AuthProtocol(
-            tunnel_error::MalformedPayload
-        ));
+        return Err(
+            tunnel_error::AuthProtocol(
+                tunnel_error::MalformedPayload
+            )
+        );
     }
-    u16 selected_version =
-        auth_codec_result<u16>(binary::get_be(meta::type_tag<u16>(), input[..2]))?;
+    u16 selected_version = auth_codec_result<u16>(
+        binary::get_be(meta::type_tag<u16>(), input[..2])
+    )?;
     if (selected_version != frame::protocol_version()) {
-        return Err(tunnel_error::AuthFailure(
-            tunnel_error::AuthUnsupportedVersion(selected_version)
-        ));
+        return Err(
+            tunnel_error::AuthFailure(
+                tunnel_error::AuthUnsupportedVersion(selected_version)
+            )
+        );
     }
     [32]u8 @server_nonce = [0;];
     copy_u8_array_32(input, 2, &server_nonce);
-    return Ok({ selected_version: selected_version, server_nonce: server_nonce });
+    return Ok(
+        { selected_version: selected_version, server_nonce: server_nonce });
 }

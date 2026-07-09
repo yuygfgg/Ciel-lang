@@ -18,17 +18,21 @@ impl same<bool>(*Box box, bool other) {
     return box->value == 0;
 }
 
-i64 accept<T: same<i64> + !same<bool>>(T value, i64 |(T)| callback) {
+i64 accept<T: same<i64> + !same<bool>>(
+    T value, i64 |(T)| callback
+) {
     return callback(value);
 }
 
 i64 main() {
     Box box = { value: 7 };
-    return accept(box, |item| {
-        Box local = item;
-        if (same(&local, 7)) {
-            return 1;
+    return accept(
+        box, |item| {
+            Box local = item;
+            if (same(&local, 7)) {
+                return 1;
+            }
+            return 0;
         }
-        return 0;
-    });
+    );
 }

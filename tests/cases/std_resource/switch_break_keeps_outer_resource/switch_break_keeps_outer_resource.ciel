@@ -11,7 +11,9 @@ enum Choice {
     Other,
 }
 
-Result<usize, Error> read_after_switch_break([]const char path) {
+Result<usize, Error> read_after_switch_break(
+    []const char path
+) {
     io::File file = io::open_read(path)?;
     Choice choice = Stop;
     switch (choice) {
@@ -28,10 +30,14 @@ Result<usize, Error> read_after_switch_break([]const char path) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "switch")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "switch")?;
+                return Ok;
+            }
+        )
+    );
 
     usize n = must(read_after_switch_break(path));
     if (n != 6) {

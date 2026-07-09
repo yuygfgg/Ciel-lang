@@ -6,16 +6,22 @@ import /std/env as env;
 import /std/io as io;
 import /std/result;
 
-io::File pass_through(io::File |(io::File)| body, io::File @file) {
+io::File pass_through(
+    io::File |(io::File)| body, io::File @file
+) {
     return body(file);
 }
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "closure-return")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "closure-return")?;
+                return Ok;
+            }
+        )
+    );
 
     io::File file = must(io::open_read(path));
     io::File returned = pass_through(|file| file, file);

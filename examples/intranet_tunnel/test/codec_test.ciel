@@ -4,7 +4,9 @@ import ../protocol/codec as tunnel_codec;
 import ../protocol/error as terr;
 import ../protocol/frame as frame;
 
-bool is_err_header(Result<frame::FrameHeader, terr::FrameCodecError> value) {
+bool is_err_header(
+    Result<frame::FrameHeader, terr::FrameCodecError> value
+) {
     switch (value) {
         case Ok(_):
             return false;
@@ -33,7 +35,8 @@ i32 main() {
         return 1;
     }
     frame::FrameHeader decoded = must(tunnel_codec::decode_header(encoded));
-    if (frame::frame_kind_code(decoded.kind) != frame::frame_kind_code(header.kind)) {
+    if (frame::frame_kind_code(decoded.kind) !=
+        frame::frame_kind_code(header.kind)) {
         return 2;
     }
     if (decoded.stream_id != header.stream_id || decoded.length != header.length) {
@@ -63,7 +66,11 @@ i32 main() {
     }
 
     []u8 oversized = must(tunnel_codec::encode_header(header));
-    must(binary::put_be(oversized[12..16], (frame::max_payload_len() + 1) as u32));
+    must(
+        binary::put_be(
+            oversized[12..16], (frame::max_payload_len() + 1) as u32
+        )
+    );
     if (!is_err_header(tunnel_codec::decode_header(oversized))) {
         return 7;
     }

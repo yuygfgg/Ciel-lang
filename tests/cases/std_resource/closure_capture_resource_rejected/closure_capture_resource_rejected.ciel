@@ -4,7 +4,9 @@
 import /std/io as io;
 import /std/result;
 
-Result<void, Error> |()| make_closer([]const char path) {
+Result<void, Error> |()| make_closer(
+    []const char path
+) {
     io::File file = io::open_read(path)?;
     return || {
         io::close(file)?;

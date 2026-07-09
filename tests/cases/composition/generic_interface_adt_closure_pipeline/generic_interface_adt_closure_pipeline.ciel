@@ -19,7 +19,9 @@ impl score(*Item item) {
     return item->base + item->bonus;
 }
 
-Maybe<i64> adjust_score<T: scorable + !reset>(Maybe<T> value, i64 |(i64)| adjust) {
+Maybe<i64> adjust_score<T: scorable + !reset>(
+    Maybe<T> value, i64 |(i64)| adjust
+) {
     switch (value) {
         case Some(inner):
             return Some(adjust(score(&inner)));

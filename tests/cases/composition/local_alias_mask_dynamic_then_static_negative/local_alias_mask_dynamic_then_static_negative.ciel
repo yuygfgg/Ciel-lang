@@ -18,7 +18,9 @@ impl seek(*Reader reader) {
     return;
 }
 
-i64 static_only<T: readable + !seek>(T value) {
+i64 static_only<T: readable + !seek>(
+    T value
+) {
     return read(&value);
 }
 

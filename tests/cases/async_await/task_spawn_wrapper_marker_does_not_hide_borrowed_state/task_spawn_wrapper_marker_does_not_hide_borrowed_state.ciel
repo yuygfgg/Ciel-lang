@@ -20,11 +20,15 @@ unsafe impl<T> async::abort_future(*Wrapped<T> awaitable) {
 
 unsafe derive<T> async::spawnable_future_marker<Wrapped<T>>;
 
-Wrapped<Result<usize, Error>> wrap(async::Future<Result<usize, Error>> future) {
+Wrapped<Result<usize, Error>> wrap(
+    async::Future<Result<usize, Error>> future
+) {
     return unsafe { { inner: future } };
 }
 
-async Result<usize, Error> len_later([]const i64 view) {
+async Result<usize, Error> len_later(
+    []const i64 view
+) {
     return Ok(view.len);
 }
 

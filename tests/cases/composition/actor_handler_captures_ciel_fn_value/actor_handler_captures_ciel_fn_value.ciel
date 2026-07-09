@@ -12,12 +12,16 @@ i64 main() {
     Channel<i64> out = must(make_channel<i64>());
     i64 fn(i64) op = bump;
 
-    Actor<i64> actor = must(spawn_actor_cloned<i64, i64>(0, |i64 state, i64 msg| {
-        Channel<i64> local_out = out;
-        i64 next = op(state + msg);
-        channel_send(&local_out, next)?;
-        return Ok(next);
-    }));
+    Actor<i64> actor = must(
+        spawn_actor_cloned<i64, i64>(
+            0, |i64 state, i64 msg| {
+                Channel<i64> local_out = out;
+                i64 next = op(state + msg);
+                channel_send(&local_out, next)?;
+                return Ok(next);
+            }
+        )
+    );
 
     must(send(&actor, 5));
     must(send(&actor, 7));

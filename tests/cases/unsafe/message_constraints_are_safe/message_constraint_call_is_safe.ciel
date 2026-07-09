@@ -3,7 +3,9 @@
 
 import /std/lib;
 
-Result<T, Error> copy_message<T: Message>(T value) {
+Result<T, Error> copy_message<T: Message>(
+    T value
+) {
     T local = value;
     return clone_message(&local);
 }

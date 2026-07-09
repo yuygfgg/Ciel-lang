@@ -36,17 +36,21 @@ Result<meta::Repr<State>, Error> handle(
 }
 
 i64 main() {
-    Channel<meta::Repr<Packet>> packets = must(make_channel<meta::Repr<Packet>>());
+    Channel<meta::Repr<Packet>> packets = must(
+        make_channel<meta::Repr<Packet>>()
+    );
     Packet packet = { value: 4, ok: true };
     must(channel_send(&packets, meta::into_repr(&packet)));
     Packet received = meta::from_repr<Packet>(must(channel_recv(&packets)));
     must(channel_close(&packets));
 
     State initial = { total: received.value };
-    Actor<meta::Repr<Command>> actor = must(spawn_actor_cloned<meta::Repr<State>, meta::Repr<Command>>(
-        meta::into_repr(&initial),
-        handle
-    ));
+    Actor<meta::Repr<Command>> actor = must(
+        spawn_actor_cloned<meta::Repr<State>, meta::Repr<Command>>(
+            meta::into_repr(&initial),
+            handle
+        )
+    );
 
     Command add6 = Add(6);
     Command add9 = Add(9);

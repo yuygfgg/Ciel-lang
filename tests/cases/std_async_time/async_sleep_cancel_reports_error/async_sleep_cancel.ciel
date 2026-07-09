@@ -11,7 +11,9 @@ struct HandleParts {
     u64 generation;
 }
 
-HandleParts parts_from_handle(*const resource::Handle handle) {
+HandleParts parts_from_handle(
+    *const resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle->owner_id },
         resource_id: unsafe { handle->resource_id },
@@ -19,7 +21,9 @@ HandleParts parts_from_handle(*const resource::Handle handle) {
     };
 }
 
-resource::Handle handle_from_parts(HandleParts parts) {
+resource::Handle handle_from_parts(
+    HandleParts parts
+) {
     return unsafe {
         {
             owner_id: parts.owner_id,
@@ -29,7 +33,9 @@ resource::Handle handle_from_parts(HandleParts parts) {
     };
 }
 
-atime::AsyncSleep sleep_from_parts(HandleParts parts) {
+atime::AsyncSleep sleep_from_parts(
+    HandleParts parts
+) {
     return unsafe { { handle: handle_from_parts(parts) } };
 }
 

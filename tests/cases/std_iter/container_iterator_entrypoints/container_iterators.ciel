@@ -20,11 +20,15 @@ impl iter::filter_accept<i64>(*Even predicate, *const i64 value) {
     return ((*value) % 2) == 0;
 }
 
-usize count_any<I: iter::Iterator<Item = _>>(I source) {
+usize count_any<I: iter::Iterator<Item = _>>(
+    I source
+) {
     return source.iter::count();
 }
 
-Item first_or<I: iter::Iterator<Item = _>>(I source, Item fallback) {
+Item first_or<I: iter::Iterator<Item = _>>(
+    I source, Item fallback
+) {
     switch (iter::next(&source)) {
         case iter::Item(value):
             return value;
@@ -33,7 +37,9 @@ Item first_or<I: iter::Iterator<Item = _>>(I source, Item fallback) {
     }
 }
 
-i64 sum_i64<I: iter::Iterator<Item = _>>(I source) {
+i64 sum_i64<I: iter::Iterator<Item = _>>(
+    I source
+) {
     i64 @total = 0;
     while (true) {
         switch (iter::next(&source)) {
@@ -46,7 +52,9 @@ i64 sum_i64<I: iter::Iterator<Item = _>>(I source) {
     }
 }
 
-i64 sum_u8<I: iter::Iterator<Item = _>>(I source) {
+i64 sum_u8<I: iter::Iterator<Item = _>>(
+    I source
+) {
     i64 @total = 0;
     while (true) {
         switch (iter::next(&source)) {
@@ -59,7 +67,9 @@ i64 sum_u8<I: iter::Iterator<Item = _>>(I source) {
     }
 }
 
-i64 sum_char<I: iter::Iterator<Item = _>>(I source) {
+i64 sum_char<I: iter::Iterator<Item = _>>(
+    I source
+) {
     i64 @total = 0;
     while (true) {
         switch (iter::next(&source)) {
@@ -106,7 +116,8 @@ i64 main() {
     if (selected.vec::len() != 2 || sum_i64_vec(&selected) != 8) {
         return 3;
     }
-    if (sum_i64(iter::map(iter::filter(iter::slice_iter(raw[..]), even), add)) != 8) {
+    if (sum_i64(iter::map(iter::filter(iter::slice_iter(raw[..]), even), add)) !=
+        8) {
         return 4;
     }
 
@@ -121,7 +132,10 @@ i64 main() {
     }
     vec::Vec<i64> many_vec = must(vec::vec_from_slice<i64>(raw[..]));
     Result<vec::Vec<i64>, vec::VecError> vec_result =
-        many_vec.vec::iter().iter::filter(even).iter::collect();
+        many_vec
+            .vec::iter()
+            .iter::filter(even)
+            .iter::collect();
     vec::Vec<i64> filtered_vec = must(vec_result);
     if (filtered_vec.vec::len() != 2 || sum_i64_vec(&filtered_vec) != 6) {
         return 7;
@@ -135,8 +149,11 @@ i64 main() {
     if (first_or(one_bytes.bytes::iter(), 0 as u8) != (9 as u8)) {
         return 9;
     }
-    bytes::Bytes many_bytes = must(bytes::bytes_copy([1 as u8, 2 as u8, 3 as u8]));
-    Result<vec::Vec<u8>, vec::VecError> byte_vec_result = many_bytes.bytes::iter().iter::collect();
+    bytes::Bytes many_bytes = must(
+        bytes::bytes_copy([1 as u8, 2 as u8, 3 as u8])
+    );
+    Result<vec::Vec<u8>, vec::VecError> byte_vec_result =
+        many_bytes.bytes::iter().iter::collect();
     vec::Vec<u8> byte_vec = must(byte_vec_result);
     if (byte_vec.vec::len() != 3 || sum_u8(many_bytes.bytes::iter()) != 6) {
         return 10;
@@ -150,7 +167,9 @@ i64 main() {
     if (first_or(one_buf.buf::iter(), 0 as u8) != (4 as u8)) {
         return 12;
     }
-    buf::ByteBuf @many_buf = must(buf::byte_buf_from_slice([4 as u8, 5 as u8, 6 as u8]));
+    buf::ByteBuf @many_buf = must(
+        buf::byte_buf_from_slice([4 as u8, 5 as u8, 6 as u8])
+    );
     if (sum_u8(many_buf.buf::iter()) != 15) {
         return 13;
     }
@@ -164,7 +183,8 @@ i64 main() {
         return 15;
     }
     text::Text many_text = must(text::text_copy("abc"));
-    Result<vec::Vec<char>, vec::VecError> char_vec_result = many_text.text::chars().iter::collect();
+    Result<vec::Vec<char>, vec::VecError> char_vec_result =
+        many_text.text::chars().iter::collect();
     vec::Vec<char> char_vec = must(char_vec_result);
     if (char_vec.vec::len() != 3 || sum_char(many_text.text::chars()) != 294) {
         return 16;

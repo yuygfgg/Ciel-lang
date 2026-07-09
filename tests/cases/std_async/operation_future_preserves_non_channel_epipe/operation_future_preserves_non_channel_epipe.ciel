@@ -28,7 +28,9 @@ unsafe impl adapter::raw_operation(*const NonChannelEpipeOp op) {
     return adapter::raw_operation(unsafe { &op->inner });
 }
 
-unsafe impl adapter::poll_done<bytes::Bytes>(*NonChannelEpipeOp op, *bytes::Bytes out) {
+unsafe impl adapter::poll_done<bytes::Bytes>(
+    *NonChannelEpipeOp op, *bytes::Bytes out
+) {
     op;
     out;
     return unsafe { ciel_async_channel_closed_errno() };
@@ -39,7 +41,9 @@ unsafe impl async::abort_future(*NonChannelEpipeOp op) {
     return Ok;
 }
 
-Result<aio::AsyncFd, Error> pipe_read_end(*c::c_int write_fd_out) {
+Result<aio::AsyncFd, Error> pipe_read_end(
+    *c::c_int write_fd_out
+) {
     [2]c::c_int @fds = [0 as c::c_int;];
     c::c_int rc = unsafe { pipe(&fds[0]) };
     if ((rc as i64) != 0) {
@@ -55,8 +59,9 @@ async Result<usize, Error> drive_async() {
     aio::AsyncFd read_fd = pipe_read_end(&write_fd)?;
     aio::AsyncRead read = aio::read_bytes_async(&read_fd, 8)?;
     NonChannelEpipeOp wrapped = { inner: read };
-    Result<bytes::Bytes, async::AsyncError> result =
-        await async::future_from_op(wrapped);
+    Result<bytes::Bytes, async::AsyncError> result = await async::future_from_op(
+        wrapped
+    );
     aio::close_async(read_fd)?;
     _ close_writer = unsafe { close(write_fd) };
     switch (result) {

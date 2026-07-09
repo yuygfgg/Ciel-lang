@@ -1,0 +1,3 @@
+line_width = 80
+indent_width = 4
+chain_call_break_threshold = 3

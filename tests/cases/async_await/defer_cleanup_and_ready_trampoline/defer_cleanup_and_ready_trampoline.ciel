@@ -18,8 +18,12 @@ void mark(i32 ch) {
     unsafe { putchar(ch) };
 }
 
-*CielFuture raw_future<A: async::Awaitable<Result<usize, Error>>>(*const A future) {
-    return unsafe { async::awaitable_future<Result<usize, Error>>(future) as *CielFuture };
+*CielFuture raw_future<A: async::Awaitable<Result<usize, Error>>>(
+    *const A future
+) {
+    return unsafe {
+        async::awaitable_future<Result<usize, Error>>(future) as *CielFuture
+    };
 }
 
 async Result<usize, Error> early_return() {
@@ -46,7 +50,9 @@ async Result<usize, Error> abort_target() {
     return Ok(4);
 }
 
-async Result<usize, Error> ready_loop(usize limit) {
+async Result<usize, Error> ready_loop(
+    usize limit
+) {
     usize @i = 0;
     usize @count = 0;
     while (i < limit) {
@@ -61,7 +67,9 @@ async Result<usize, Error> ready_inc(usize value) {
     return Ok(value + 1);
 }
 
-async Result<usize, Error> ready_chain(usize limit) {
+async Result<usize, Error> ready_chain(
+    usize limit
+) {
     usize @i = 0;
     usize @count = 0;
     while (i < limit) {
@@ -75,7 +83,9 @@ bool poll_ready_step<A: async::Awaitable<Result<usize, Error>>>(
     *const A future,
     *Result<usize, Error> out
 ) {
-    c::c_int rc = unsafe { ciel_future_poll_trampoline(raw_future(future), out as *void) };
+    c::c_int rc = unsafe {
+        ciel_future_poll_trampoline(raw_future(future), out as *void)
+    };
     return rc == 0;
 }
 
@@ -91,7 +101,9 @@ i32 main() {
     async::Future<Result<usize, Error>> cancel_future = cancel_target();
     Result<usize, Error> @cancel_out = Ok(0);
     c::c_int cancel_start = unsafe {
-        ciel_future_poll_trampoline(raw_future(&cancel_future), &cancel_out as *void)
+        ciel_future_poll_trampoline(
+            raw_future(&cancel_future), &cancel_out as *void
+        )
     };
     if (cancel_start == 0) {
         return 3;
@@ -102,7 +114,9 @@ i32 main() {
     async::Future<Result<usize, Error>> abort_future = abort_target();
     Result<usize, Error> @abort_out = Ok(0);
     c::c_int abort_start = unsafe {
-        ciel_future_poll_trampoline(raw_future(&abort_future), &abort_out as *void)
+        ciel_future_poll_trampoline(
+            raw_future(&abort_future), &abort_out as *void
+        )
     };
     if (abort_start == 0) {
         return 5;

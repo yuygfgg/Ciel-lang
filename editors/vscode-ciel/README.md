@@ -12,6 +12,7 @@ VSCode language support for Ciel source files.
 - Starts `ciel-lsp` on macOS and Linux when available.
 - Uses the Ciel language server for compiler-backed diagnostics, semantic
   token refinements, hover, go-to-definition, signature help, and inlay hints.
+- Formats Ciel source files by invoking `cielc fmt`.
 - Does not start the language server on Windows.
 - Adds `Ciel: Restart Language Server` and `Ciel: Show Tree-sitter Syntax Tree`.
 
@@ -23,11 +24,12 @@ entry point, and launch the extension host:
 ```sh
 npm install
 npm run build
-cargo build --bin ciel-lsp
+cargo build --bin ciel-lsp --bin cielc
 ```
 
 Then open this folder in VS Code and press F5. In that layout, the extension
-can find `../../target/debug/ciel-lsp` automatically.
+can find `../../target/debug/ciel-lsp` and `../../target/debug/cielc`
+automatically.
 
 Tree-sitter source lives in the repository's top-level `tree-sitter-ciel/`
 directory. `npm run build` generates `parsers/tree-sitter-ciel.wasm` and copies
@@ -44,6 +46,18 @@ On non-Windows hosts, the extension searches for the language server in:
 
 Set `ciel.languageServer.path` to use a specific executable.
 
+On non-Windows hosts, the extension searches for the formatter in:
+
+- `server/cielc` inside the installed extension
+- `../../target/release/cielc` from the extension directory
+- `../../target/debug/cielc` from the extension directory
+- `cielc` on `PATH`
+
+Set `ciel.formatter.path` to use a specific executable. Formatting can be
+disabled with `ciel.formatter.enabled`; `ciel.formatter.extraArgs` appends
+arguments to `cielc fmt` before the file path. Formatter options are normally
+read from `.ciel-format` in the workspace.
+
 Run the extension smoke test with:
 
 ```sh
@@ -52,17 +66,19 @@ npm test
 
 ## Package and Install
 
-Check the extension and build the language server before packaging:
+Check the extension and build the language server and formatter before
+packaging:
 
 ```sh
-cargo build --release --bin ciel-lsp
+cargo build --release --bin ciel-lsp --bin cielc
 npm install
 npm run build
 ```
 
-The `.vsix` package does not currently bundle `ciel-lsp` by default. After
-installing it, make sure `ciel-lsp` is on `PATH`, set
-`ciel.languageServer.path`, or package a server binary at `server/ciel-lsp`.
+The `.vsix` package does not currently bundle `ciel-lsp` or `cielc` by default.
+After installing it, make sure both binaries are on `PATH`, set
+`ciel.languageServer.path` and `ciel.formatter.path`, or package binaries at
+`server/ciel-lsp` and `server/cielc`.
 
 Create a VSCode extension package:
 

@@ -13,7 +13,9 @@ struct HandleParts {
     u64 generation;
 }
 
-HandleParts parts_from_handle(*const resource::Handle handle) {
+HandleParts parts_from_handle(
+    *const resource::Handle handle
+) {
     return {
         owner_id: unsafe { handle->owner_id },
         resource_id: unsafe { handle->resource_id },
@@ -21,7 +23,9 @@ HandleParts parts_from_handle(*const resource::Handle handle) {
     };
 }
 
-resource::Handle handle_from_parts(HandleParts parts) {
+resource::Handle handle_from_parts(
+    HandleParts parts
+) {
     return unsafe {
         {
             owner_id: parts.owner_id,
@@ -45,7 +49,9 @@ bool read_is_err(io::File file) {
     }
 }
 
-Result<void, Error> claim_and_read(HandleParts parent_parts) {
+Result<void, Error> claim_and_read(
+    HandleParts parent_parts
+) {
     io::File parent_file = file_from_parts(parent_parts);
     io::File file = resource::transfer_to_current(&parent_file)?;
     [5]u8 @buffer = [0;];
@@ -58,22 +64,34 @@ Result<void, Error> claim_and_read(HandleParts parent_parts) {
 
 i32 main() {
     []const char path = must(env::arg(1));
-    must(io::with_create<void>(path, |file| {
-        io::write_text(&file, "claim")?;
-        return Ok;
-    }));
+    must(
+        io::with_create<void>(
+            path, |file| {
+                io::write_text(&file, "claim")?;
+                return Ok;
+            }
+        )
+    );
 
-    io::File parent_file = must(resource::scoped<io::File, Error>(|| {
-        io::File file = io::open_read(path)?;
-        io::File moved = resource::transfer_to_parent(&file)?;
-        return Ok(moved);
-    }));
-    HandleParts parent_parts = parts_from_handle(unsafe { &parent_file.handle });
+    io::File parent_file = must(
+        resource::scoped<io::File, Error>
+        (|| {
+            io::File file = io::open_read(path)?;
+            io::File moved = resource::transfer_to_parent(&file)?;
+            return Ok(moved);
+        })
+    );
+    HandleParts parent_parts = parts_from_handle(
+        unsafe { &parent_file.handle });
 
-    must(resource::scoped<void, Error>(|| {
-        claim_and_read(parent_parts)?;
-        return Ok;
-    }));
+    must(
+        resource::scoped<void, Error>(
+            || {
+                claim_and_read(parent_parts)?;
+                return Ok;
+            }
+        )
+    );
 
     if (!read_is_err(file_from_parts(parent_parts))) {
         return 1;

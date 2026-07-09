@@ -9,8 +9,11 @@ resource unsafe struct Wrapped {
     async::Future<Result<usize, Error>> inner;
 }
 
-unsafe impl async::awaitable_future<Result<usize, Error>>(*const Wrapped future) {
-    return async::awaitable_future<Result<usize, Error>>(unsafe { &future->inner });
+unsafe impl async::awaitable_future<Result<usize, Error>>(
+    *const Wrapped future
+) {
+    return async::awaitable_future<Result<usize, Error>>(
+        unsafe { &future->inner });
 }
 
 unsafe impl async::abort_future(*Wrapped future) {
@@ -20,15 +23,21 @@ unsafe impl async::abort_future(*Wrapped future) {
 
 unsafe derive async::cancel_safe_marker<Wrapped>;
 
-Out consume<A: async::SelectableFuture<Out = _>>(A future) {
+Out consume<A: async::SelectableFuture<Out = _>>(
+    A future
+) {
     return async::block_on(future);
 }
 
-Result<usize, Error> consume_direct(Wrapped future) {
+Result<usize, Error> consume_direct(
+    Wrapped future
+) {
     return async::block_on(future);
 }
 
-async Result<usize, Error> await_direct(Wrapped future) {
+async Result<usize, Error> await_direct(
+    Wrapped future
+) {
     return await future;
 }
 

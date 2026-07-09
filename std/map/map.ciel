@@ -8,7 +8,9 @@ import /std/storage as storage;
 import /std/text as text;
 
 unsafe extern "C" {
-    ?*void ciel_box_copy(usize size, usize align, *const void source);
+    ?*void ciel_box_copy(
+        usize size, usize align, *const void source
+    );
 }
 
 // Computes a seeded hash for keys used by HashMap.
@@ -191,13 +193,19 @@ MapError map_runtime_error() {
     return unsafe { raw as *Node<K, V> };
 }
 
-?*Node<K, V> bucket_head<K, V>(*const HashMap<K, V> map, usize index) {
-    []const ?*void buckets = unsafe { storage::raw_const_slice<?*void>(&map->buckets) };
+?*Node<K, V> bucket_head<K, V>(
+    *const HashMap<K, V> map, usize index
+) {
+    []const ?*void buckets = unsafe { storage::raw_const_slice<?*void>(
+        &map->buckets
+    ) };
     ?*void raw = buckets[index];
     return raw_to_node<K, V>(raw);
 }
 
-void set_bucket_head<K, V>(*HashMap<K, V> map, usize index, ?*Node<K, V> node) {
+void set_bucket_head<K, V>(
+    *HashMap<K, V> map, usize index, ?*Node<K, V> node
+) {
     []?*void buckets = unsafe { storage::raw_slice<?*void>(&map->buckets) };
     buckets[index] = node_to_raw<K, V>(node);
 }
@@ -222,7 +230,9 @@ Result<*Node<K, V>, MapError> make_node<K, V>(
     return Ok(unsafe { raw as *Node<K, V> });
 }
 
-Result<void, MapError> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize requested_capacity) {
+Result<void, MapError> hash_map_rehash<K: map_key, V>(
+    *HashMap<K, V> map, usize requested_capacity
+) {
     usize @capacity = requested_capacity;
     if (capacity < initial_capacity()) {
         capacity = initial_capacity();
@@ -237,7 +247,9 @@ Result<void, MapError> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize 
     }
     storage::RawStorage<?*void> old_buckets = unsafe { map->buckets };
     usize old_capacity = unsafe { map->capacity };
-    []const ?*void old_slice = unsafe { storage::raw_const_slice<?*void>(&old_buckets) };
+    []const ?*void old_slice = unsafe { storage::raw_const_slice<?*void>(
+        &old_buckets
+    ) };
     []?*void next_slice = unsafe { storage::raw_slice<?*void>(&next_buckets) };
 
     usize @i = 0;
@@ -265,7 +277,9 @@ Result<void, MapError> hash_map_rehash<K: map_key, V>(*HashMap<K, V> map, usize 
     return Ok;
 }
 
-Result<void, MapError> ensure_insert_capacity<K: map_key, V>(*HashMap<K, V> map) {
+Result<void, MapError> ensure_insert_capacity<K: map_key, V>(
+    *HashMap<K, V> map
+) {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return hash_map_rehash<K, V>(map, initial_capacity());
@@ -292,22 +306,30 @@ export Result<HashMap<K, V>, MapError> hash_map_new<K: map_key, V>() {
         case Err(_):
             return Err(map_runtime_error());
     }
-    return Ok(unsafe { { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() } });
+    return Ok(
+        unsafe {
+            { buckets: buckets, capacity: capacity, len: 0, seed: default_seed() }
+        }
+    );
 }
 
 // Returns the number of entries currently stored in the map.
-export usize hash_map_len<K: map_key, V>(*const HashMap<K, V> map) = .len {
+export usize hash_map_len<K: map_key, V>(
+    *const HashMap<K, V> map
+) = .len {
     return unsafe { map->len };
 }
 
 // Removes all entries while keeping the map reusable.
-export void hash_map_clear<K: map_key, V>(*HashMap<K, V> map) = .clear {
+export void hash_map_clear<K: map_key, V>(
+    *HashMap<K, V> map
+) = .clear {
     usize @capacity = unsafe { map->capacity };
     if (capacity == 0) {
         capacity = initial_capacity();
     }
-    storage::RawStorage<?*void> buckets =
-        must(unsafe { storage::raw_zeroed<?*void>(capacity) });
+    storage::RawStorage<?*void> buckets = must(
+        unsafe { storage::raw_zeroed<?*void>(capacity) });
     unsafe {
         map->buckets = buckets;
         map->capacity = capacity;
@@ -396,7 +418,9 @@ export Result<InsertResult<V>, MapError> hash_map_insert<K: map_key, V>(
         current = node->next;
     }
 
-    *Node<K, V> node = make_node<K, V>(hash, key, value, bucket_head<K, V>(map, index))?;
+    *Node<K, V> node = make_node<K, V>(
+        hash, key, value, bucket_head<K, V>(map, index)
+    )?;
     set_bucket_head<K, V>(map, index, node);
     unsafe {
         map->len = map->len + 1;
@@ -656,7 +680,9 @@ impl key_eq(*const meta::HNil left, *const meta::HNil right) {
     return true;
 }
 
-impl<Head: map_key, Tail: map_key> hash_key(*const meta::HCons<Head, Tail> value, u64 seed) {
+impl<Head: map_key, Tail: map_key> hash_key(
+    *const meta::HCons<Head, Tail> value, u64 seed
+) {
     meta::HConsView<Head, Tail> view = meta::hcons_view(value);
     u64 head_hash = hash_key(view.head, mix_u64(1, seed));
     return hash_key(view.tail, head_hash);
@@ -668,7 +694,8 @@ impl<Head: map_key, Tail: map_key> key_eq(
 ) {
     meta::HConsView<Head, Tail> left_view = meta::hcons_view(left);
     meta::HConsView<Head, Tail> right_view = meta::hcons_view(right);
-    return key_eq(left_view.head, right_view.head) && key_eq(left_view.tail, right_view.tail);
+    return key_eq(left_view.head, right_view.head) &&
+        key_eq(left_view.tail, right_view.tail);
 }
 
 impl<T: map_key> hash_key(*const meta::FieldRef<T> value, u64 seed) {
@@ -676,7 +703,9 @@ impl<T: map_key> hash_key(*const meta::FieldRef<T> value, u64 seed) {
     return hash_key(view.value, seed);
 }
 
-impl<T: map_key> key_eq(*const meta::FieldRef<T> left, *const meta::FieldRef<T> right) {
+impl<T: map_key> key_eq(
+    *const meta::FieldRef<T> left, *const meta::FieldRef<T> right
+) {
     meta::FieldRefView<T> left_view = meta::field_ref_view(left);
     meta::FieldRefView<T> right_view = meta::field_ref_view(right);
     return key_eq(left_view.value, right_view.value);
@@ -687,7 +716,9 @@ impl<T: map_key> hash_key(*const meta::Field<T> value, u64 seed) {
     return hash_key(view.value, seed);
 }
 
-impl<T: map_key> key_eq(*const meta::Field<T> left, *const meta::Field<T> right) {
+impl<T: map_key> key_eq(
+    *const meta::Field<T> left, *const meta::Field<T> right
+) {
     meta::FieldView<T> left_view = meta::field_view(left);
     meta::FieldView<T> right_view = meta::field_view(right);
     return key_eq(left_view.value, right_view.value);
@@ -699,10 +730,13 @@ impl<T: map_key> hash_key(*const meta::PayloadRef<T> value, u64 seed) {
     return hash_key(view.value, index_hash);
 }
 
-impl<T: map_key> key_eq(*const meta::PayloadRef<T> left, *const meta::PayloadRef<T> right) {
+impl<T: map_key> key_eq(
+    *const meta::PayloadRef<T> left, *const meta::PayloadRef<T> right
+) {
     meta::PayloadRefView<T> left_view = meta::payload_ref_view(left);
     meta::PayloadRefView<T> right_view = meta::payload_ref_view(right);
-    return left_view.index == right_view.index && key_eq(left_view.value, right_view.value);
+    return left_view.index == right_view.index &&
+        key_eq(left_view.value, right_view.value);
 }
 
 impl<T: map_key> hash_key(*const meta::Payload<T> value, u64 seed) {
@@ -711,10 +745,13 @@ impl<T: map_key> hash_key(*const meta::Payload<T> value, u64 seed) {
     return hash_key(view.value, index_hash);
 }
 
-impl<T: map_key> key_eq(*const meta::Payload<T> left, *const meta::Payload<T> right) {
+impl<T: map_key> key_eq(
+    *const meta::Payload<T> left, *const meta::Payload<T> right
+) {
     meta::PayloadView<T> left_view = meta::payload_view(left);
     meta::PayloadView<T> right_view = meta::payload_view(right);
-    return left_view.index == right_view.index && key_eq(left_view.value, right_view.value);
+    return left_view.index == right_view.index &&
+        key_eq(left_view.value, right_view.value);
 }
 
 impl<P: map_key> hash_key(*const meta::VariantRef<P> value, u64 seed) {
@@ -722,7 +759,9 @@ impl<P: map_key> hash_key(*const meta::VariantRef<P> value, u64 seed) {
     return hash_key(view.payload, mix_u64(2, seed));
 }
 
-impl<P: map_key> key_eq(*const meta::VariantRef<P> left, *const meta::VariantRef<P> right) {
+impl<P: map_key> key_eq(
+    *const meta::VariantRef<P> left, *const meta::VariantRef<P> right
+) {
     meta::VariantRefView<P> left_view = meta::variant_ref_view(left);
     meta::VariantRefView<P> right_view = meta::variant_ref_view(right);
     return key_eq(left_view.payload, right_view.payload);
@@ -733,20 +772,20 @@ impl<P: map_key> hash_key(*const meta::Variant<P> value, u64 seed) {
     return hash_key(view.payload, mix_u64(2, seed));
 }
 
-impl<P: map_key> key_eq(*const meta::Variant<P> left, *const meta::Variant<P> right) {
+impl<P: map_key> key_eq(
+    *const meta::Variant<P> left, *const meta::Variant<P> right
+) {
     meta::VariantView<P> left_view = meta::variant_view(left);
     meta::VariantView<P> right_view = meta::variant_view(right);
     return key_eq(left_view.payload, right_view.payload);
 }
 
 impl hash_key(*const meta::CoNil value, u64 seed) {
-    switch (*value) {
-    }
+    switch (*value) {}
 }
 
 impl key_eq(*const meta::CoNil left, *const meta::CoNil right) {
-    switch (*left) {
-    }
+    switch (*left) {}
 }
 
 impl<Head: map_key, Tail: map_key> hash_key(

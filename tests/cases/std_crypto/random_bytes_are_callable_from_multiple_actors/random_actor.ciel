@@ -4,7 +4,9 @@
 import /std/crypto as crypto;
 import /std/lib;
 
-Result<Channel<usize>, Error> worker(Channel<usize> done, usize label) {
+Result<Channel<usize>, Error> worker(
+    Channel<usize> done, usize label
+) {
     [16]u8 @out = [0;];
     crypto::random_bytes(out[..])?;
     channel_send(&done, label)?;
@@ -13,8 +15,12 @@ Result<Channel<usize>, Error> worker(Channel<usize> done, usize label) {
 
 i64 main() {
     Channel<usize> done = must(make_channel<usize>());
-    Actor<usize> left = must(spawn_actor_cloned<Channel<usize>, usize>(done, worker));
-    Actor<usize> right = must(spawn_actor_cloned<Channel<usize>, usize>(done, worker));
+    Actor<usize> left = must(
+        spawn_actor_cloned<Channel<usize>, usize>(done, worker)
+    );
+    Actor<usize> right = must(
+        spawn_actor_cloned<Channel<usize>, usize>(done, worker)
+    );
 
     must(send(&left, 1 as usize));
     must(send(&right, 2 as usize));

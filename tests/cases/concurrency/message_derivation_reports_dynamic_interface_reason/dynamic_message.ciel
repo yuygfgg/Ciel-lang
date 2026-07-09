@@ -5,7 +5,9 @@ import /std/message;
 
 interface<T> i64 measure(*T value);
 
-Result<measure, Error> copy_dynamic(measure value) {
+Result<measure, Error> copy_dynamic(
+    measure value
+) {
     measure local = value;
     return clone_message(&local);
 }

@@ -12,7 +12,8 @@ async Result<anet::ReadIntoResult, Error> bad_select(
 ) {
     anet::AsyncTcpReadInto op = anet::read_into_async(stream, buffer)?;
     return await select {
-        case bytes = async::future_from_op(op): bytes;
+        case bytes = async::future_from_op(op):
+            bytes;
     };
 }
 

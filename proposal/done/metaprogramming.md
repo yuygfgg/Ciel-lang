@@ -16,6 +16,16 @@ This proposal owns the core representation and lowering machinery. Concrete
 policies such as pure-library `Message`, encoding, decoding, hashing, and error
 formatting are consumers of this mechanism.
 
+## Post-Acceptance Amendment
+
+Structural nodes that carry provenance, metadata, payload, or array storage are
+now `unsafe struct`s. Safe library code reads them through the determined
+`to_view<A -> View>` interface, which maps each node type to one canonical
+read-only view. The earlier per-node view helper functions have been removed.
+`design.md` contains the normative current surface; examples below that access
+structural fields directly are historical shorthand for access through
+`to_view`.
+
 ## Proposal Order
 
 ```text

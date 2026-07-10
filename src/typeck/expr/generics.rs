@@ -953,6 +953,31 @@ impl TypeChecker {
             name: interface.name.clone(),
             args: full_args.get(1..).unwrap_or(&[]).to_vec(),
         };
+        if !matches!(
+            self.solve_hidden_from_capability(&receiver_ty, &capability, &hidden_names, subst),
+            capability_solve::HiddenSolveResult::NoSolution
+        ) {
+            return;
+        }
+
+        // Concrete meta markers participate in capability lookup through their
+        // normalized SOP storage types. Apply the same fallback while solving
+        // determined parameters, before concrete implementation selection.
+        let normalized_args = full_args
+            .iter()
+            .map(|ty| self.meta_repr_constraint_receiver_ty(ty, None))
+            .collect::<Vec<_>>();
+        if normalized_args == full_args {
+            return;
+        }
+        let Some(receiver_ty) = normalized_args.first().cloned() else {
+            return;
+        };
+        let capability = ConstraintRef {
+            def_id: interface.def_id,
+            name: interface.name.clone(),
+            args: normalized_args.get(1..).unwrap_or(&[]).to_vec(),
+        };
         self.solve_hidden_from_capability(&receiver_ty, &capability, &hidden_names, subst);
     }
 

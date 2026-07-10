@@ -159,7 +159,7 @@ unsafe impl clone_message(*const meta::HNil value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::Field<T> value) {
-    meta::FieldView<T> view = meta::field_view(value);
+    meta::FieldView<T> view = meta::to_view(value);
     T copied = clone_message(view.value)?;
     return Ok(unsafe {
         { name: view.name, value: copied }
@@ -170,14 +170,14 @@ unsafe impl<T: Message> clone_message(*const meta::Field<T> value) {
 unsafe impl<Head: Message, Tail: Message> clone_message(
     *const meta::HCons<Head, Tail> value
 ) {
-    meta::HConsView<Head, Tail> view = meta::hcons_view(value);
+    meta::HConsView<Head, Tail> view = meta::to_view(value);
     Head head = clone_message(view.head)?;
     Tail tail = clone_message(view.tail)?;
     return Ok(unsafe { { head: head, tail: tail } });
 }
 
 unsafe impl<T: Message> clone_message(*const meta::Payload<T> value) {
-    meta::PayloadView<T> view = meta::payload_view(value);
+    meta::PayloadView<T> view = meta::to_view(value);
     T copied = clone_message(view.value)?;
     return Ok(unsafe {
         { index: view.index, value: copied }
@@ -186,7 +186,7 @@ unsafe impl<T: Message> clone_message(*const meta::Payload<T> value) {
 }
 
 unsafe impl<P: Message> clone_message(*const meta::Variant<P> value) {
-    meta::VariantView<P> view = meta::variant_view(value);
+    meta::VariantView<P> view = meta::to_view(value);
     P payload = clone_message(view.payload)?;
     return Ok(unsafe {
         { name: view.name, payload: payload }
@@ -216,13 +216,13 @@ unsafe impl clone_message(*const meta::ArrayNil value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk1<T> value) {
-    meta::ArrayChunk1View<T> view = meta::array_chunk1_view(value);
+    meta::ArrayChunk1View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     return Ok(unsafe { { item0: item0 } });
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk2<T> value) {
-    meta::ArrayChunk2View<T> view = meta::array_chunk2_view(value);
+    meta::ArrayChunk2View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     return Ok(unsafe {
@@ -232,7 +232,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk2<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk3<T> value) {
-    meta::ArrayChunk3View<T> view = meta::array_chunk3_view(value);
+    meta::ArrayChunk3View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -243,7 +243,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk3<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk4<T> value) {
-    meta::ArrayChunk4View<T> view = meta::array_chunk4_view(value);
+    meta::ArrayChunk4View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -256,7 +256,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk4<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk5<T> value) {
-    meta::ArrayChunk5View<T> view = meta::array_chunk5_view(value);
+    meta::ArrayChunk5View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -270,7 +270,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk5<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk6<T> value) {
-    meta::ArrayChunk6View<T> view = meta::array_chunk6_view(value);
+    meta::ArrayChunk6View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -292,7 +292,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk6<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk7<T> value) {
-    meta::ArrayChunk7View<T> view = meta::array_chunk7_view(value);
+    meta::ArrayChunk7View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -316,7 +316,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk7<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk8<T> value) {
-    meta::ArrayChunk8View<T> view = meta::array_chunk8_view(value);
+    meta::ArrayChunk8View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -342,7 +342,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk8<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk9<T> value) {
-    meta::ArrayChunk9View<T> view = meta::array_chunk9_view(value);
+    meta::ArrayChunk9View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -370,7 +370,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk9<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk10<T> value) {
-    meta::ArrayChunk10View<T> view = meta::array_chunk10_view(value);
+    meta::ArrayChunk10View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -400,7 +400,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk10<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk11<T> value) {
-    meta::ArrayChunk11View<T> view = meta::array_chunk11_view(value);
+    meta::ArrayChunk11View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -432,7 +432,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk11<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk12<T> value) {
-    meta::ArrayChunk12View<T> view = meta::array_chunk12_view(value);
+    meta::ArrayChunk12View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -466,7 +466,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk12<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk13<T> value) {
-    meta::ArrayChunk13View<T> view = meta::array_chunk13_view(value);
+    meta::ArrayChunk13View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -502,7 +502,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk13<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk14<T> value) {
-    meta::ArrayChunk14View<T> view = meta::array_chunk14_view(value);
+    meta::ArrayChunk14View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -540,7 +540,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk14<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk15<T> value) {
-    meta::ArrayChunk15View<T> view = meta::array_chunk15_view(value);
+    meta::ArrayChunk15View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -580,7 +580,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk15<T> value) {
 }
 
 unsafe impl<T: Message> clone_message(*const meta::ArrayChunk16<T> value) {
-    meta::ArrayChunk16View<T> view = meta::array_chunk16_view(value);
+    meta::ArrayChunk16View<T> view = meta::to_view(value);
     T item0 = clone_message(view.item0)?;
     T item1 = clone_message(view.item1)?;
     T item2 = clone_message(view.item2)?;
@@ -624,7 +624,7 @@ unsafe impl<T: Message> clone_message(*const meta::ArrayChunk16<T> value) {
 unsafe impl<L: Message, R: Message> clone_message(
     *const meta::ArrayCat<L, R> value
 ) {
-    meta::ArrayCatView<L, R> view = meta::array_cat_view(value);
+    meta::ArrayCatView<L, R> view = meta::to_view(value);
     L left = clone_message(view.left)?;
     R right = clone_message(view.right)?;
     return Ok(unsafe { { left: left, right: right } });

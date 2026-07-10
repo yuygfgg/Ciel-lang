@@ -10,8 +10,9 @@ unsafe struct Secret {
 i64 main() {
     Secret value = unsafe { { token: 7 } };
     meta::RefRepr<Secret> repr = unsafe { meta::as_ref_repr(&value) };
-    meta::HConsView<meta::FieldRef<i64>, meta::HNil> repr_view =
-        meta::hcons_view(&repr);
-    meta::FieldRefView<i64> field = meta::field_ref_view(repr_view.head);
+    meta::HConsView<meta::FieldRef<i64>, meta::HNil> repr_view = meta::to_view(
+        &repr
+    );
+    meta::FieldRefView<i64> field = meta::to_view(repr_view.head);
     return *field.value - 7;
 }

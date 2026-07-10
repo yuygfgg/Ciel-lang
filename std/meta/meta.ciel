@@ -597,7 +597,10 @@ export struct ArrayCatView<L, R> {
     *const R right;
 }
 
-export HConsView<H, T> hcons_view<H, T>(
+// Converts a trusted structural node into its canonical safe read-only view.
+export interface<A -> View> View to_view(*const A value);
+
+impl<H, T> to_view<HConsView<H, T>>(
     *const HCons<H, T> value
 ) {
     return unsafe {
@@ -609,7 +612,7 @@ export HNil hnil() {
     return {};
 }
 
-export FieldRefView<T> field_ref_view<T>(
+impl<T> to_view<FieldRefView<T>>(
     *const FieldRef<T> value
 ) {
     return unsafe {
@@ -617,7 +620,7 @@ export FieldRefView<T> field_ref_view<T>(
     };
 }
 
-export FieldView<T> field_view<T>(
+impl<T> to_view<FieldView<T>>(
     *const Field<T> value
 ) {
     return unsafe {
@@ -625,7 +628,7 @@ export FieldView<T> field_view<T>(
     };
 }
 
-export FieldSchemaView<T, R> field_schema_view<T, R>(
+impl<T, R> to_view<FieldSchemaView<T, R>>(
     *const FieldSchema<T, R> value
 ) {
     return unsafe {
@@ -633,7 +636,7 @@ export FieldSchemaView<T, R> field_schema_view<T, R>(
     };
 }
 
-export PayloadRefView<T> payload_ref_view<T>(
+impl<T> to_view<PayloadRefView<T>>(
     *const PayloadRef<T> value
 ) {
     return unsafe {
@@ -641,7 +644,7 @@ export PayloadRefView<T> payload_ref_view<T>(
     };
 }
 
-export PayloadView<T> payload_view<T>(
+impl<T> to_view<PayloadView<T>>(
     *const Payload<T> value
 ) {
     return unsafe {
@@ -649,7 +652,7 @@ export PayloadView<T> payload_view<T>(
     };
 }
 
-export PayloadSchemaView<T, R> payload_schema_view<T, R>(
+impl<T, R> to_view<PayloadSchemaView<T, R>>(
     *const PayloadSchema<T, R> value
 ) {
     return unsafe {
@@ -659,7 +662,7 @@ export PayloadSchemaView<T, R> payload_schema_view<T, R>(
     };
 }
 
-export VariantRefView<P> variant_ref_view<P>(
+impl<P> to_view<VariantRefView<P>>(
     *const VariantRef<P> value
 ) {
     return unsafe {
@@ -667,7 +670,7 @@ export VariantRefView<P> variant_ref_view<P>(
     };
 }
 
-export VariantView<P> variant_view<P>(
+impl<P> to_view<VariantView<P>>(
     *const Variant<P> value
 ) {
     return unsafe {
@@ -675,7 +678,7 @@ export VariantView<P> variant_view<P>(
     };
 }
 
-export ElementSchemaView<T, R> element_schema_view<T, R>(
+impl<T, R> to_view<ElementSchemaView<T, R>>(
     *const ElementSchema<T, R> value
 ) {
     return unsafe {
@@ -683,7 +686,7 @@ export ElementSchemaView<T, R> element_schema_view<T, R>(
     };
 }
 
-export VariantSchemaView<P> variant_schema_view<P>(
+impl<P> to_view<VariantSchemaView<P>>(
     *const VariantSchema<P> value
 ) {
     return unsafe {
@@ -691,13 +694,13 @@ export VariantSchemaView<P> variant_schema_view<P>(
     };
 }
 
-export ArrayChunk1View<T> array_chunk1_view<T>(
+impl<T> to_view<ArrayChunk1View<T>>(
     *const ArrayChunk1<T> value
 ) {
     return unsafe { { item0: &value->item0 } };
 }
 
-export ArrayChunk2View<T> array_chunk2_view<T>(
+impl<T> to_view<ArrayChunk2View<T>>(
     *const ArrayChunk2<T> value
 ) {
     return unsafe {
@@ -705,7 +708,7 @@ export ArrayChunk2View<T> array_chunk2_view<T>(
     };
 }
 
-export ArrayChunk3View<T> array_chunk3_view<T>(
+impl<T> to_view<ArrayChunk3View<T>>(
     *const ArrayChunk3<T> value
 ) {
     return unsafe {
@@ -713,7 +716,7 @@ export ArrayChunk3View<T> array_chunk3_view<T>(
     };
 }
 
-export ArrayChunk4View<T> array_chunk4_view<T>(
+impl<T> to_view<ArrayChunk4View<T>>(
     *const ArrayChunk4<T> value
 ) {
     return unsafe {
@@ -726,7 +729,7 @@ export ArrayChunk4View<T> array_chunk4_view<T>(
     };
 }
 
-export ArrayChunk5View<T> array_chunk5_view<T>(
+impl<T> to_view<ArrayChunk5View<T>>(
     *const ArrayChunk5<T> value
 ) {
     return unsafe {
@@ -740,7 +743,7 @@ export ArrayChunk5View<T> array_chunk5_view<T>(
     };
 }
 
-export ArrayChunk6View<T> array_chunk6_view<T>(
+impl<T> to_view<ArrayChunk6View<T>>(
     *const ArrayChunk6<T> value
 ) {
     return unsafe {
@@ -755,7 +758,7 @@ export ArrayChunk6View<T> array_chunk6_view<T>(
     };
 }
 
-export ArrayChunk7View<T> array_chunk7_view<T>(
+impl<T> to_view<ArrayChunk7View<T>>(
     *const ArrayChunk7<T> value
 ) {
     return unsafe {
@@ -771,7 +774,7 @@ export ArrayChunk7View<T> array_chunk7_view<T>(
     };
 }
 
-export ArrayChunk8View<T> array_chunk8_view<T>(
+impl<T> to_view<ArrayChunk8View<T>>(
     *const ArrayChunk8<T> value
 ) {
     return unsafe {
@@ -788,7 +791,7 @@ export ArrayChunk8View<T> array_chunk8_view<T>(
     };
 }
 
-export ArrayChunk9View<T> array_chunk9_view<T>(
+impl<T> to_view<ArrayChunk9View<T>>(
     *const ArrayChunk9<T> value
 ) {
     return unsafe {
@@ -806,7 +809,7 @@ export ArrayChunk9View<T> array_chunk9_view<T>(
     };
 }
 
-export ArrayChunk10View<T> array_chunk10_view<T>(
+impl<T> to_view<ArrayChunk10View<T>>(
     *const ArrayChunk10<T> value
 ) {
     return unsafe {
@@ -825,7 +828,7 @@ export ArrayChunk10View<T> array_chunk10_view<T>(
     };
 }
 
-export ArrayChunk11View<T> array_chunk11_view<T>(
+impl<T> to_view<ArrayChunk11View<T>>(
     *const ArrayChunk11<T> value
 ) {
     return unsafe {
@@ -845,7 +848,7 @@ export ArrayChunk11View<T> array_chunk11_view<T>(
     };
 }
 
-export ArrayChunk12View<T> array_chunk12_view<T>(
+impl<T> to_view<ArrayChunk12View<T>>(
     *const ArrayChunk12<T> value
 ) {
     return unsafe {
@@ -866,7 +869,7 @@ export ArrayChunk12View<T> array_chunk12_view<T>(
     };
 }
 
-export ArrayChunk13View<T> array_chunk13_view<T>(
+impl<T> to_view<ArrayChunk13View<T>>(
     *const ArrayChunk13<T> value
 ) {
     return unsafe {
@@ -888,7 +891,7 @@ export ArrayChunk13View<T> array_chunk13_view<T>(
     };
 }
 
-export ArrayChunk14View<T> array_chunk14_view<T>(
+impl<T> to_view<ArrayChunk14View<T>>(
     *const ArrayChunk14<T> value
 ) {
     return unsafe {
@@ -911,7 +914,7 @@ export ArrayChunk14View<T> array_chunk14_view<T>(
     };
 }
 
-export ArrayChunk15View<T> array_chunk15_view<T>(
+impl<T> to_view<ArrayChunk15View<T>>(
     *const ArrayChunk15<T> value
 ) {
     return unsafe {
@@ -935,7 +938,7 @@ export ArrayChunk15View<T> array_chunk15_view<T>(
     };
 }
 
-export ArrayChunk16View<T> array_chunk16_view<T>(
+impl<T> to_view<ArrayChunk16View<T>>(
     *const ArrayChunk16<T> value
 ) {
     return unsafe {
@@ -960,7 +963,7 @@ export ArrayChunk16View<T> array_chunk16_view<T>(
     };
 }
 
-export ArrayCatView<L, R> array_cat_view<L, R>(
+impl<L, R> to_view<ArrayCatView<L, R>>(
     *const ArrayCat<L, R> value
 ) {
     return unsafe {

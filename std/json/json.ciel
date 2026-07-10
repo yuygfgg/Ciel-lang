@@ -1246,8 +1246,8 @@ impl<V, Slot, Tail: schema_has_field> schema_has_field(
     text::Text name
 ) {
     meta::HConsView<meta::FieldSchema<V, Slot>, Tail> schema_view =
-        meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        meta::to_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::to_view(
         schema_view.head
     );
     if (text::text_equal_slice(name, field_schema.name)) {
@@ -1353,14 +1353,14 @@ impl<V: wire::encode_value<Writer>, Slot, STail: encode_struct_fields<RTail>, RT
     }
     unsafe { *first = false; };
     meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view =
-        meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        meta::to_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::to_view(
         schema_view.head
     );
-    meta::HConsView<meta::FieldRef<V>, RTail> repr_view = meta::hcons_view(
+    meta::HConsView<meta::FieldRef<V>, RTail> repr_view = meta::to_view(
         repr
     );
-    meta::FieldRefView<V> field_ref = meta::field_ref_view(repr_view.head);
+    meta::FieldRefView<V> field_ref = meta::to_view(repr_view.head);
     write_string_chars(unsafe { &writer->out }, field_schema.name)?;
     push_byte(unsafe { &writer->out }, ':' as u8, 0)?;
     wire::encode_value(field_ref.value, writer)?;
@@ -1383,8 +1383,8 @@ impl<V: decode_json_slot<Slot>, Slot, STail: decode_struct_fields<RTail>, RTail>
     *const Value object
 ) {
     meta::HConsView<meta::FieldSchema<V, Slot>, STail> schema_view =
-        meta::hcons_view(schema);
-    meta::FieldSchemaView<V, Slot> field_schema = meta::field_schema_view(
+        meta::to_view(schema);
+    meta::FieldSchemaView<V, Slot> field_schema = meta::to_view(
         schema_view.head
     );
     option::Option<Value> found = object_lookup(object, field_schema.name)?;
@@ -1616,10 +1616,11 @@ impl<SP: encode_enum_payload_value<RP>, RP, STail: encode_enum_variant<RTail>, R
     switch (*repr) {
         case meta::This(active):
             meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
-                meta::hcons_view(schema);
-            meta::VariantSchemaView<SP> variant_schema =
-                meta::variant_schema_view(schema_view.head);
-            meta::VariantRefView<RP> active_view = meta::variant_ref_view(
+                meta::to_view(schema);
+            meta::VariantSchemaView<SP> variant_schema = meta::to_view(
+                schema_view.head
+            );
+            meta::VariantRefView<RP> active_view = meta::to_view(
                 &active
             );
             push_byte(unsafe { &writer->out }, '{' as u8, 0)?;
@@ -1631,7 +1632,7 @@ impl<SP: encode_enum_payload_value<RP>, RP, STail: encode_enum_variant<RTail>, R
             return push_byte(unsafe { &writer->out }, '}' as u8, 0);
         case meta::Next(tail):
             meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
-                meta::hcons_view(schema);
+                meta::to_view(schema);
             return encode_enum_variant(schema_view.tail, &tail, writer);
     }
 }
@@ -1664,11 +1665,11 @@ impl<V: wire::encode_value<Writer>, Slot, STail: encode_enum_payloads<RTail>, RT
     }
     unsafe { *first = false; };
     meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view =
-        meta::hcons_view(schema);
-    meta::HConsView<meta::PayloadRef<V>, RTail> repr_view = meta::hcons_view(
+        meta::to_view(schema);
+    meta::HConsView<meta::PayloadRef<V>, RTail> repr_view = meta::to_view(
         repr
     );
-    meta::PayloadRefView<V> payload_ref = meta::payload_ref_view(
+    meta::PayloadRefView<V> payload_ref = meta::to_view(
         repr_view.head
     );
     wire::encode_value(payload_ref.value, writer)?;
@@ -1703,9 +1704,10 @@ impl<SP: decode_enum_payload_value<RP>, RP, STail: decode_enum_variant<RTail>, R
     text::Text name,
     *const Value payload
 ) {
-    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view =
-        meta::hcons_view(schema);
-    meta::VariantSchemaView<SP> variant_schema = meta::variant_schema_view(
+    meta::HConsView<meta::VariantSchema<SP>, STail> schema_view = meta::to_view(
+        schema
+    );
+    meta::VariantSchemaView<SP> variant_schema = meta::to_view(
         schema_view.head
     );
     if (text::text_equal_slice(name, variant_schema.name)) {
@@ -1790,8 +1792,8 @@ impl<V: decode_json_slot<Slot>, Slot, STail: decode_enum_payloads<RTail>, RTail>
         );
     }
     meta::HConsView<meta::PayloadSchema<V, Slot>, STail> schema_view =
-        meta::hcons_view(schema);
-    meta::PayloadSchemaView<V, Slot> payload_schema = meta::payload_schema_view(
+        meta::to_view(schema);
+    meta::PayloadSchemaView<V, Slot> payload_schema = meta::to_view(
         schema_view.head
     );
     Value value = values[unsafe { *index }];

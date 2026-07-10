@@ -1832,13 +1832,21 @@ be represented by `meta::Repr<T>`.
 The compiler-owned marker structs `RefRepr<T>`, `Repr<T>`, and `Schema<T>`, and
 the structural nodes that carry provenance, metadata, payload, or array slots,
 are `unsafe struct`s. Safe code cannot forge those values with struct literals.
-Safe reads use the explicit view functions such as `hcons_view`,
-`field_ref_view`, `field_view`, `field_schema_view`, `payload_ref_view`,
-`payload_view`, `payload_schema_view`, `variant_ref_view`, `variant_view`,
-`variant_schema_view`, `element_schema_view`, `array_chunkN_view`, and
-`array_cat_view`. These functions return ordinary read-only view structs whose
-fields are `*const` pointers into the trusted meta node or copied static
-metadata. Empty nodes `HNil` and `ArrayNil` remain safe values.
+Safe reads use the determined `to_view` interface:
+
+```ciel
+export interface<A -> View> View to_view(*const A value);
+```
+
+Each trusted structural node type with readable fields has exactly one
+canonical read-only view.
+The standard implementations map `HCons<H, T>` to `HConsView<H, T>`, the
+`FieldRef`, `Field`, `FieldSchema`, `PayloadRef`, `Payload`, `PayloadSchema`,
+`VariantRef`, `Variant`, `VariantSchema`, and `ElementSchema` nodes to their
+corresponding `View` types, `ArrayChunkN<T>` to `ArrayChunkNView<T>`, and
+`ArrayCat<L, R>` to `ArrayCatView<L, R>`. The returned view fields are `*const`
+pointers into the trusted meta node or copied static metadata. Empty nodes
+`HNil` and `ArrayNil` remain safe values.
 
 For a visible enum it normalizes to a `Coproduct` list in variant declaration
 order. Each branch is a `VariantRef<PayloadProduct>` for `RefRepr<T>` and a
@@ -4486,21 +4494,9 @@ export struct ArrayChunk3View<T> { *const T item0; *const T item1; *const T item
 // ArrayChunk4View<T> through ArrayChunk16View<T> expose item0 through itemN-1.
 export struct ArrayCatView<L, R> { *const L left; *const R right; }
 
-export HConsView<H, T> hcons_view<H, T>(*const HCons<H, T> value);
+export interface<A -> View> View to_view(*const A value);
+
 export HNil hnil();
-export FieldRefView<T> field_ref_view<T>(*const FieldRef<T> value);
-export FieldView<T> field_view<T>(*const Field<T> value);
-export FieldSchemaView<T, R> field_schema_view<T, R>(*const FieldSchema<T, R> value);
-export PayloadRefView<T> payload_ref_view<T>(*const PayloadRef<T> value);
-export PayloadView<T> payload_view<T>(*const Payload<T> value);
-export PayloadSchemaView<T, R> payload_schema_view<T, R>(*const PayloadSchema<T, R> value);
-export VariantRefView<P> variant_ref_view<P>(*const VariantRef<P> value);
-export VariantView<P> variant_view<P>(*const Variant<P> value);
-export ElementSchemaView<T, R> element_schema_view<T, R>(*const ElementSchema<T, R> value);
-export VariantSchemaView<P> variant_schema_view<P>(*const VariantSchema<P> value);
-export ArrayChunk1View<T> array_chunk1_view<T>(*const ArrayChunk1<T> value);
-// array_chunk2_view<T> through array_chunk16_view<T> follow the same pattern.
-export ArrayCatView<L, R> array_cat_view<L, R>(*const ArrayCat<L, R> value);
 export ArrayNil array_nil();
 
 export RefRepr<T> as_ref_repr<T>(*const T value);

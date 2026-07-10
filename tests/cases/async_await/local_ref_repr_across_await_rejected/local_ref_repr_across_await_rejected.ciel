@@ -12,9 +12,10 @@ struct Packet {
 }
 
 i64 read_id(meta::RefRepr<Packet> repr) {
-    meta::HConsView<meta::FieldRef<i64>, meta::HNil> repr_view =
-        meta::hcons_view(&repr);
-    meta::FieldRefView<i64> field = meta::field_ref_view(repr_view.head);
+    meta::HConsView<meta::FieldRef<i64>, meta::HNil> repr_view = meta::to_view(
+        &repr
+    );
+    meta::FieldRefView<i64> field = meta::to_view(repr_view.head);
     return *field.value;
 }
 

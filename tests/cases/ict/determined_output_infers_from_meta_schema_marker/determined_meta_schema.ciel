@@ -1,0 +1,16 @@
+// ciel-test: run
+// expect-exit: 2
+
+import /std/meta as meta;
+
+struct Packet {
+    i64 id;
+    bool ok;
+}
+
+i64 main() {
+    meta::Schema<Packet> schema = meta::schema<Packet>();
+    _ schema_view = meta::to_view(&schema);
+    _ field_view = meta::to_view(schema_view.head);
+    return field_view.name.len as i64;
+}

@@ -44,7 +44,7 @@ impl count_fields(*const meta::HNil schema) {
 impl<V, R, Tail: count_fields> count_fields(
     *const meta::HCons<meta::FieldSchema<V, R>, Tail> schema
 ) {
-    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::hcons_view(
+    meta::HConsView<meta::FieldSchema<V, R>, Tail> view = meta::to_view(
         schema
     );
     return 1 + count_fields(view.tail);
@@ -64,11 +64,11 @@ i64 bool_value(bool ok) {
 i64 main() {
     meta::Schema<[3]u8> bytes = meta::schema<[3]u8>();
     meta::ArrayChunk3View<meta::ElementSchema<u8, u8>> bytes_view =
-        meta::array_chunk3_view(&bytes);
-    meta::ElementSchemaView<u8, u8> bytes0 = meta::element_schema_view(
+        meta::to_view(&bytes);
+    meta::ElementSchemaView<u8, u8> bytes0 = meta::to_view(
         bytes_view.item0
     );
-    meta::ElementSchemaView<u8, u8> bytes1 = meta::element_schema_view(
+    meta::ElementSchemaView<u8, u8> bytes1 = meta::to_view(
         bytes_view.item1
     );
     if (source_code(bytes0.source_ty) != 1) {
@@ -80,11 +80,11 @@ i64 main() {
 
     meta::Schema<[2][2]i64> nested = meta::schema<[2][2]i64>();
     meta::ArrayChunk2View<meta::ElementSchema<[2]i64, meta::ArrayChunk2<i64>>> nested_view =
-        meta::array_chunk2_view(&nested);
+        meta::to_view(&nested);
     meta::ElementSchemaView<[2]i64, meta::ArrayChunk2<i64>> nested0 =
-        meta::element_schema_view(nested_view.item0);
+        meta::to_view(nested_view.item0);
     meta::ElementSchemaView<[2]i64, meta::ArrayChunk2<i64>> nested1 =
-        meta::element_schema_view(nested_view.item1);
+        meta::to_view(nested_view.item1);
     if (source_code(nested0.source_ty) != 2) {
         return 3;
     }
@@ -100,13 +100,13 @@ i64 main() {
         return 5;
     }
     meta::HConsView<meta::FieldSchema<i64, i64>, meta::HCons<meta::FieldSchema<bool, bool>, meta::HNil>> closure_view =
-        meta::hcons_view(&closure_schema);
-    meta::FieldSchemaView<i64, i64> capture0 = meta::field_schema_view(
+        meta::to_view(&closure_schema);
+    meta::FieldSchemaView<i64, i64> capture0 = meta::to_view(
         closure_view.head
     );
     meta::HConsView<meta::FieldSchema<bool, bool>, meta::HNil> closure_tail =
-        meta::hcons_view(closure_view.tail);
-    meta::FieldSchemaView<bool, bool> capture1 = meta::field_schema_view(
+        meta::to_view(closure_view.tail);
+    meta::FieldSchemaView<bool, bool> capture1 = meta::to_view(
         closure_tail.head
     );
     if (!chars_eq(capture0.name, "capture#0")) {

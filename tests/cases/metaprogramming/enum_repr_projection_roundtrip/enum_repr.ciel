@@ -19,12 +19,12 @@ impl count_payloads(*const meta::HNil value) {
 impl<V, Tail: count_payloads> count_payloads(
     *const meta::HCons<meta::PayloadRef<V>, Tail> value
 ) {
-    meta::HConsView<meta::PayloadRef<V>, Tail> view = meta::hcons_view(value);
+    meta::HConsView<meta::PayloadRef<V>, Tail> view = meta::to_view(value);
     return 1 + count_payloads(view.tail);
 }
 
 impl<P: count_payloads> active_payloads(*const meta::VariantRef<P> value) {
-    meta::VariantRefView<P> view = meta::variant_ref_view(value);
+    meta::VariantRefView<P> view = meta::to_view(value);
     return count_payloads(view.payload);
 }
 

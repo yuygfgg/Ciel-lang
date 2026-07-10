@@ -17,14 +17,14 @@ impl count_owned(*const meta::HNil value) {
 impl<V, Tail: count_refs> count_refs(
     *const meta::HCons<meta::FieldRef<V>, Tail> value
 ) {
-    meta::HConsView<meta::FieldRef<V>, Tail> view = meta::hcons_view(value);
+    meta::HConsView<meta::FieldRef<V>, Tail> view = meta::to_view(value);
     return 1 + count_refs(view.tail);
 }
 
 impl<V, Tail: count_owned> count_owned(
     *const meta::HCons<meta::Field<V>, Tail> value
 ) {
-    meta::HConsView<meta::Field<V>, Tail> view = meta::hcons_view(value);
+    meta::HConsView<meta::Field<V>, Tail> view = meta::to_view(value);
     return 1 + count_owned(view.tail);
 }
 

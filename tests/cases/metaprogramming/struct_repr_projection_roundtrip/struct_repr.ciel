@@ -17,14 +17,14 @@ impl count_fields(*const meta::HNil value) {
 impl<V, Tail: count_fields> count_fields(
     *const meta::HCons<meta::FieldRef<V>, Tail> value
 ) {
-    meta::HConsView<meta::FieldRef<V>, Tail> view = meta::hcons_view(value);
+    meta::HConsView<meta::FieldRef<V>, Tail> view = meta::to_view(value);
     return 1 + count_fields(view.tail);
 }
 
 i64 read_id(meta::RefRepr<Packet> repr) {
     meta::HConsView<meta::FieldRef<i64>, meta::HCons<meta::FieldRef<bool>, meta::HNil>> repr_view =
-        meta::hcons_view(&repr);
-    meta::FieldRefView<i64> field = meta::field_ref_view(repr_view.head);
+        meta::to_view(&repr);
+    meta::FieldRefView<i64> field = meta::to_view(repr_view.head);
     return *field.value;
 }
 
@@ -35,10 +35,11 @@ i64 main() {
     Packet copy = meta::from_repr<Packet>(owned);
     i64 count = count_fields(&refs);
     meta::HConsView<meta::FieldRef<i64>, meta::HCons<meta::FieldRef<bool>, meta::HNil>> refs_view =
-        meta::hcons_view(&refs);
-    meta::HConsView<meta::FieldRef<bool>, meta::HNil> tail_view =
-        meta::hcons_view(refs_view.tail);
-    meta::FieldRefView<bool> ok_field = meta::field_ref_view(tail_view.head);
+        meta::to_view(&refs);
+    meta::HConsView<meta::FieldRef<bool>, meta::HNil> tail_view = meta::to_view(
+        refs_view.tail
+    );
+    meta::FieldRefView<bool> ok_field = meta::to_view(tail_view.head);
     if (*ok_field.value) {
         return read_id(refs) + copy.id + count - 82;
     }

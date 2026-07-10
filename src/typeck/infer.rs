@@ -175,19 +175,20 @@ impl TypeChecker {
         capability: &ConstraintRef,
         hidden_names: &HashSet<String>,
         subst: &mut HashMap<String, Ty>,
-    ) {
+    ) -> capability_solve::HiddenSolveResult {
         let assumptions = self.hidden_solver_assumptions(receiver_ty);
-        match capability_solve::solve_hidden_from_capability(
+        let result = capability_solve::solve_hidden_from_capability(
             &self.ctx,
             receiver_ty,
             capability,
             hidden_names,
             &assumptions,
-        ) {
+        );
+        match &result {
             capability_solve::HiddenSolveResult::Unique(bindings) => {
                 for (name, ty) in bindings {
-                    if hidden_names.contains(&name) {
-                        subst.insert(name, ty);
+                    if hidden_names.contains(name) {
+                        subst.insert(name.clone(), ty.clone());
                     }
                 }
             }
@@ -202,6 +203,7 @@ impl TypeChecker {
             }
             capability_solve::HiddenSolveResult::NoSolution => {}
         }
+        result
     }
 
     pub(super) fn hidden_solver_assumptions(

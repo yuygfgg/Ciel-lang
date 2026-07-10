@@ -4,6 +4,14 @@ This proposal extends `/std/meta` with schema reflection for generic
 deserialization and other policies that need a type's visible field and variant
 metadata before a value exists.
 
+## Post-Acceptance Amendment
+
+Schema nodes are now `unsafe struct`s and safe reads use the determined
+`to_view<A -> View>` interface. The earlier per-node view helper functions have
+been removed. Examples below that access schema fields directly are historical
+shorthand for first obtaining the canonical read-only view with `to_view`;
+`design.md` is normative.
+
 The existing structural metaprogramming proposal exposes value projection:
 
 1. `as_ref_repr<T>(&value)` borrows an existing value.

@@ -26,9 +26,8 @@ impl TypeChecker {
                 let name = binding.name.clone();
                 let init_state = binding.init_state;
                 let binding_ty = binding
-                    .narrowed_ty
+                    .flow_ty
                     .clone()
-                    .or_else(|| binding.flow_ty.clone())
                     .unwrap_or_else(|| binding.ty.clone());
                 if require_assigned && !binding.init_state.is_assigned() {
                     if init_state.is_moved() && self.type_is_affine(&binding_ty) {
@@ -218,7 +217,7 @@ impl TypeChecker {
                     Ty::Pointer { nullable: true, .. } => {
                         self.diagnostics.push(Diagnostic::new(
                             inner.span,
-                            "cannot dereference nullable pointer without narrowing",
+                            format!("`*` requires non-null pointer, got `{}`", inner.ty),
                         ));
                         (Ty::Unknown, ViewMutability::ReadOnly)
                     }
@@ -386,7 +385,6 @@ impl TypeChecker {
             let flow_ty = self.assignment_flow_ty(&binding.ty, value_ty);
             binding.init_state = InitState::Assigned;
             binding.flow_ty = flow_ty;
-            binding.narrowed_ty = None;
         }
     }
 
@@ -1283,9 +1281,18 @@ impl TypeChecker {
         ) = (source, target)
         {
             if *source_nullable && !*target_nullable {
+                if source_inner == target_inner
+                    && pointer_view_can_weaken(*target_mutability, *source_mutability)
+                {
+                    self.require_unsafe(
+                        span,
+                        "nullable-to-non-null pointer casts require unsafe block",
+                    );
+                    return;
+                }
                 self.diagnostics.push(Diagnostic::new(
                     span,
-                    "nullable pointer cannot be cast to non-null pointer without narrowing",
+                    format!("cannot cast `{source}` to `{target}`"),
                 ));
                 return;
             }

@@ -1441,12 +1441,15 @@ division by zero panics. Floating-point operations follow IEEE 754.
 `as` permits numeric-to-numeric casts, integer-to-`char` casts,
 `char`-to-integer casts, and pointer casts involving `*void`, `?*void`,
 `*const void`, or `?*const void`. Integer narrowing casts truncate in release
-builds and trap on out-of-range values in debug builds. Pointer casts preserve
-nullability and never remove read-only view mutability; converting `?*T` to
-`*U` requires nullable narrowing first, and converting `*const T` to `*U` is
-rejected. When the left-hand side is a closure literal or a parenthesized
-closure literal, `as` may also supply a closure or Ciel-ABI function-pointer
-expected type as specified above.
+builds and trap on out-of-range values in debug builds. Safe pointer casts
+preserve nullability, and no pointer cast may remove read-only view mutability.
+Inside `unsafe`, a nullable pointer may be cast to a non-null pointer with the
+same pointee type while preserving or weakening its pointer view. The
+programmer is responsible for proving that the pointer is non-null. Other
+pointer type changes must still go through `*void` or `?*void`. When the
+left-hand side is a closure literal or a parenthesized closure literal, `as`
+may also supply a closure or Ciel-ABI function-pointer expected type as
+specified above.
 
 Pointer casts from a typed pointer to `*void` or `?*void` are safe type erasure.
 Casts from `*void` or `?*void` back to a typed pointer are unsafe operations:
@@ -1487,38 +1490,38 @@ array-to-slice conversion according to source access, function item or function
 pointer to matching closure, and noncapturing closure to matching Ciel-ABI
 function pointer. Other conversions require `as` or an explicit function.
 
-## 9. Nullable Pointer Narrowing
+## 9. Nullable Pointer Conversion
 
-Narrowing applies only to local bindings of nullable pointer type, including
-parameters. It never applies to struct fields, globals, or arbitrary
-expressions.
+Comparing a nullable pointer with `null` produces `bool` and does not change the
+pointer's type. This rule is uniform for locals, fields, loop conditions, and
+short-circuit expressions; Ciel does not perform flow-sensitive nullable
+pointer narrowing.
+
+`/std/pointer` provides the ordinary Ciel capability `to_option`, which
+preserves the pointer view while making the null check explicit:
 
 ```ciel
-?*T p = get();
-if (p != null) {
-    use(p); // p is narrowed to *T inside this branch
+switch (pointer::to_option(value)) {
+    case option::Some(pointer):
+        use(pointer);
+    case option::None:
+        handle_missing();
 }
 ```
 
-`if (p == null) return;` narrows `p` to `*T` after the statement. Short-circuit
-`&&` is supported:
+`pointer::unwrap(value)` is built on `to_option`. It returns the corresponding
+non-null pointer and panics when `value` is null. Code that needs distinct null
+and non-null behavior should use `to_option` instead of checking and then
+calling `unwrap`.
+
+Unsafe code may explicitly cast a nullable pointer to the corresponding
+non-null pointer when an external invariant already proves it is non-null:
 
 ```ciel
-if (p != null && p->value > 0) {
-    use(p);
-}
+*T pointer = unsafe { nullable as *T };
 ```
 
-Reassigning `p`, assigning through a pointer to `p`, or passing `&p` to code
-that may write it invalidates the narrowing immediately. Fields must be copied
-to locals before narrowing:
-
-```ciel
-?*T temp = obj->ptr;
-if (temp != null) {
-    use(temp);
-}
-```
+Neither `to_option` nor `unwrap` is a compiler intrinsic.
 
 ## 10. Interfaces and Capabilities
 
@@ -3610,6 +3613,21 @@ export T option_unwrap_or<T>(Option<T> value, T fallback);
 it because optional values are baseline data modeling vocabulary. Format
 libraries may attach their own policies to it; JSON maps `None` to `null` and
 `Some(value)` to the value's ordinary JSON representation.
+
+```ciel
+// /std/pointer
+export import /std/option as option;
+
+export interface<P -> O> O to_option(P pointer) = .to_option;
+export interface<P -> Out> Out unwrap(P pointer) = .unwrap;
+```
+
+`/std/pointer` implements both capabilities for writable and read-only nullable
+pointers. `to_option` maps `?*T` to `Option<*T>` and `?*const T` to
+`Option<*const T>`. `unwrap` returns the corresponding non-null pointer or
+panics on null, and is implemented in Ciel using `to_option`. These are ordinary
+determined-output interfaces, not compiler intrinsics. `/std/lib` re-exports
+the module.
 
 ```ciel
 // /std/base64

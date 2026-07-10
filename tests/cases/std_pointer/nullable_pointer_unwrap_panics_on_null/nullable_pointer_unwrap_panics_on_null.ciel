@@ -1,0 +1,11 @@
+// ciel-test: run
+// expect-exit: 101
+// expect-stderr-contains: called unwrap on a null pointer
+
+import /std/pointer as pointer;
+
+i64 main() {
+    ?*i64 nullable = null;
+    pointer::unwrap(nullable);
+    return 0;
+}

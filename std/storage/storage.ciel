@@ -2,6 +2,7 @@
 export import /std/result;
 import /std/c as c;
 import /std/meta as meta;
+import /std/pointer as pointer;
 
 unsafe extern "C" {
     ?*void ciel_raw_alloc_zeroed(
@@ -50,7 +51,7 @@ export unsafe Result<RawStorage<T>, Error> raw_zeroed<T>(
         return Err(runtime_error());
     }
     []T view = unsafe {
-        raw_from_ptr<T>(unsafe { raw as *void }, capacity)
+        raw_from_ptr<T>(pointer::unwrap(raw) as *void, capacity)
     };
     return Ok(unsafe { { storage: view } });
 }
@@ -75,7 +76,7 @@ export unsafe Result<RawStorage<T>, Error> raw_realloc_zeroed<T>(
         return Err(runtime_error());
     }
     []T view = unsafe {
-        raw_from_ptr<T>(unsafe { raw as *void }, next_capacity)
+        raw_from_ptr<T>(pointer::unwrap(raw) as *void, next_capacity)
     };
     return Ok(unsafe { { storage: view } });
 }

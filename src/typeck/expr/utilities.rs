@@ -2157,6 +2157,20 @@ impl TypeChecker {
                 .receiver_ty
                 .as_ref()
                 .map(|ty| self.substitute_ty_normalized(ty, &subst, instance_span));
+            // Inference permits view weakening, but impl selection is over the
+            // exact fully applied capability term.
+            if !concrete_interface_args
+                .iter()
+                .zip(interface_args.iter())
+                .all(|(candidate, required)| self.impl_term_ty_equivalent(candidate, required))
+            {
+                continue;
+            }
+            if let (Some(candidate), Some(required)) = (concrete_receiver.as_ref(), receiver_ty)
+                && !self.impl_term_ty_equivalent(candidate, required)
+            {
+                continue;
+            }
             matches.push((
                 template,
                 concrete_interface_args,
@@ -2205,6 +2219,12 @@ impl TypeChecker {
             );
         }
         None
+    }
+
+    fn impl_term_ty_equivalent(&mut self, candidate: &Ty, required: &Ty) -> bool {
+        self.meta_repr_storage_equivalent(candidate, required)
+            || std_id::std_async_future_accepts_generated(&self.ctx.resolved, candidate, required)
+            || std_id::std_async_future_accepts_generated(&self.ctx.resolved, required, candidate)
     }
 
     pub(super) fn dynamic_view_interface(
@@ -2963,17 +2983,6 @@ impl TypeChecker {
             || self.is_std_message_async_frame_opt_in_marker_def(def_id)
             || self.is_std_async_spawnable_future_marker_def(def_id)
             || self.is_compiler_provided_meta_marker_def(def_id)
-    }
-
-    pub(in crate::typeck) fn apply_condition_narrowing(
-        &mut self,
-        scopes: &mut LocalScopes,
-        cond: &TExpr,
-        truth: bool,
-    ) {
-        for (local_id, ty) in nullable_narrowings_from_condition(cond, truth) {
-            scopes.narrow_to(local_id, ty);
-        }
     }
 }
 

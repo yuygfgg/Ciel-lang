@@ -85,6 +85,9 @@ export import /std/map;
 // Re-exports standard optional values.
 export import /std/option;
 
+// Re-exports nullable pointer conversion helpers.
+export import /std/pointer;
+
 // Re-exports static iterator abstractions and adapters.
 export import /std/iter;
 

@@ -8,6 +8,7 @@ export import /std/message;
 export import /std/result;
 import /std/c as c;
 import /std/meta;
+import /std/pointer as pointer;
 import /std/sync as sync;
 
 unsafe extern "C" {
@@ -69,7 +70,7 @@ export Result<Channel<T>, ChannelError> make_channel<T: Message>() {
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 // Clones and sends a value to a blocking channel.
@@ -103,7 +104,7 @@ export Result<T, ChannelError> channel_recv<T: Message>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     T value = *typed;
     return Ok(value);
 }

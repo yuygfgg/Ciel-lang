@@ -1,0 +1,9 @@
+// ciel-test: error
+// expect-error: nullable-to-non-null pointer casts require unsafe block
+
+i64 main() {
+    i64 @value = 9;
+    ?*i64 nullable = &value;
+    *i64 pointer = nullable as *i64;
+    return *pointer;
+}

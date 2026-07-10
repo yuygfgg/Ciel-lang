@@ -11,6 +11,7 @@ import /std/c as c;
 import /std/io as io;
 import /std/os/fd as fd;
 import /std/panic;
+import /std/pointer as pointer;
 import /std/result;
 
 #c_include "unistd.h"
@@ -51,7 +52,7 @@ Result<usize, Error> drive() {
     if (raw_op_void == null) {
         return Err(code_error(80));
     }
-    *CielAsyncOp raw_op = unsafe { raw_op_void as *CielAsyncOp };
+    *CielAsyncOp raw_op = unsafe { pointer::unwrap(raw_op_void) as *CielAsyncOp };
     _ future = async::future_from_op(read);
     Result<bytes::Bytes, async::AsyncError> @out = Err(async::Runtime(0));
     c::c_int start = unsafe {

@@ -3,6 +3,7 @@
 
 import /std/async as async;
 import /std/async_time as async_time;
+import /std/pointer as pointer;
 import /std/result;
 
 struct Box {
@@ -16,7 +17,7 @@ async Result<i64, Error> main_async() {
     if (ptr == null) {
         return Ok(0);
     }
-    return Ok(ptr->value);
+    return Ok(pointer::unwrap(ptr)->value);
 }
 
 i32 main() {

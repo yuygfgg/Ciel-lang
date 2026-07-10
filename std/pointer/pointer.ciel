@@ -1,0 +1,41 @@
+// Nullable pointer conversion helpers.
+export import /std/option as option;
+import /std/panic;
+
+// Converts a nullable pointer to an Option while preserving its pointer view.
+export interface<P -> O> O to_option(P pointer) = .to_option;
+
+impl<T> to_option<option::Option<*T>>(?*T pointer) {
+    if (pointer == null) {
+        return option::None;
+    }
+    return option::Some(unsafe { pointer as *T });
+}
+
+impl<T> to_option<option::Option<*const T>>(?*const T pointer) {
+    if (pointer == null) {
+        return option::None;
+    }
+    return option::Some(unsafe { pointer as *const T });
+}
+
+// Returns the non-null pointer or panics when the pointer is null.
+export interface<P -> Out> Out unwrap(P pointer) = .unwrap;
+
+impl<T> unwrap<*T>(?*T pointer) {
+    switch (to_option<option::Option<*T>>(pointer)) {
+        case option::Some(value):
+            return value;
+        case option::None:
+            panic("called unwrap on a null pointer");
+    }
+}
+
+impl<T> unwrap<*const T>(?*const T pointer) {
+    switch (to_option<option::Option<*const T>>(pointer)) {
+        case option::Some(value):
+            return value;
+        case option::None:
+            panic("called unwrap on a null pointer");
+    }
+}

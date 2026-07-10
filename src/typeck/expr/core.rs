@@ -82,7 +82,6 @@ impl TypeChecker {
                 }
                 if can_move && let Some(binding) = scopes.get_mut(*local_id) {
                     binding.init_state = InitState::Moved;
-                    binding.narrowed_ty = None;
                 }
                 TExpr {
                     span: expr.span,
@@ -544,9 +543,6 @@ impl TypeChecker {
                                 "cannot take the address of a void value",
                             ));
                         }
-                        if let TExprKind::Local(local_id, _) = &inner.expr.kind {
-                            scopes.clear_narrowing(*local_id);
-                        }
                         inner
                     }
                     UnaryOp::Neg => CheckedLvalue::writable(self.check_expr(
@@ -596,7 +592,7 @@ impl TypeChecker {
                         Ty::Pointer { nullable: true, .. } => {
                             self.diagnostics.push(Diagnostic::new(
                                 inner.expr.span,
-                                "cannot dereference nullable pointer without narrowing",
+                                format!("`*` requires non-null pointer, got `{}`", inner.expr.ty),
                             ));
                             Ty::Unknown
                         }
@@ -623,7 +619,6 @@ impl TypeChecker {
                     let left = self.check_expr(scopes, left, Some(&Ty::Bool))?;
                     self.require_assignable(&Ty::Bool, &left.ty, left.span);
                     let mut right_scopes = scopes.clone();
-                    self.apply_condition_narrowing(&mut right_scopes, &left, true);
                     let right = self.check_expr(&mut right_scopes, right, Some(&Ty::Bool))?;
                     (left, right)
                 } else if op.is_equality() && matches!(left.kind, ExprKind::Literal(Literal::Null))

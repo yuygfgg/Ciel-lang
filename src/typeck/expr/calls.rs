@@ -117,7 +117,6 @@ impl TypeChecker {
                     name: arm.binding.name.clone(),
                     ty: binding_ty,
                     flow_ty,
-                    narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: BindingMutability::Immutable,
                     captured: false,
@@ -1504,7 +1503,6 @@ impl TypeChecker {
                     name: param.name.name.clone(),
                     ty: binding_ty,
                     flow_ty,
-                    narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: param.mutability,
                     captured: false,
@@ -1625,7 +1623,6 @@ impl TypeChecker {
                     }
                     if let Some(binding) = scopes.get_mut(capture.local_id) {
                         binding.init_state = InitState::Moved;
-                        binding.narrowed_ty = None;
                     }
                 } else {
                     self.diagnostics.push(Diagnostic::new(

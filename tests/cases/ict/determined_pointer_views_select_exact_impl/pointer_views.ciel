@@ -1,0 +1,21 @@
+// ciel-test: run
+// expect-exit: 3
+
+interface<P -> Out> Out classify(P pointer);
+
+impl<T> classify<i64>(?*T pointer) {
+    return 1;
+}
+
+impl<T> classify<u8>(?*const T pointer) {
+    return 2 as u8;
+}
+
+i64 main() {
+    i64 @value = 0;
+    ?*i64 writable = &value;
+    ?*const i64 readonly = &value;
+    i64 writable_class = classify(writable);
+    u8 readonly_class = classify(readonly);
+    return writable_class + (readonly_class as i64);
+}

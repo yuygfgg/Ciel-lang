@@ -2,6 +2,7 @@
 export import /std/result;
 import /std/c as c;
 import /std/message;
+import /std/pointer as pointer;
 
 unsafe extern "C" {
     opaque struct CielCryptoRng;
@@ -226,7 +227,7 @@ export Result<SystemRng, CryptoError> system_rng() {
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { { handle: raw as *void } });
+    return Ok(unsafe { { handle: pointer::unwrap(raw) as *void } });
 }
 
 // Fills out with random bytes using an existing SystemRng handle.
@@ -285,7 +286,7 @@ export Result<Hash, CryptoError> hash_new(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { { handle: raw as *void } });
+    return Ok(unsafe { { handle: pointer::unwrap(raw) as *void } });
 }
 
 // Creates a streaming hash context using a built-in algorithm enum.
@@ -386,7 +387,7 @@ export Result<Mac, CryptoError> mac_new(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { { handle: raw as *void } });
+    return Ok(unsafe { { handle: pointer::unwrap(raw) as *void } });
 }
 
 // Creates a streaming MAC context using a built-in algorithm enum and key.

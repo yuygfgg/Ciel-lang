@@ -146,7 +146,6 @@ impl TypeChecker {
                         name: name.name.clone(),
                         ty: binding_ty,
                         flow_ty,
-                        narrowed_ty: None,
                         init_state: InitState::from_assigned(checked.assigned),
                         mutability: *mutability,
                         captured: false,
@@ -202,10 +201,8 @@ impl TypeChecker {
                 self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
                 let before = scopes.clone();
                 let mut then_scopes = before.clone();
-                self.apply_condition_narrowing(&mut then_scopes, &cond, true);
                 let checked_then = self.check_block(&mut then_scopes, then_block, ret_ty)?;
                 let mut else_scopes = before.clone();
-                self.apply_condition_narrowing(&mut else_scopes, &cond, false);
                 let checked_else = else_branch
                     .as_ref()
                     .and_then(|stmt| self.check_stmt(&mut else_scopes, stmt, ret_ty));
@@ -473,7 +470,6 @@ impl TypeChecker {
                         name: local_name.clone(),
                         ty: binding_ty,
                         flow_ty,
-                        narrowed_ty: None,
                         init_state: InitState::from_assigned(checked.assigned),
                         mutability: *mutability,
                         captured: false,
@@ -620,7 +616,6 @@ impl TypeChecker {
                         name: binding_name.clone(),
                         ty: storage_ty,
                         flow_ty,
-                        narrowed_ty: None,
                         init_state: InitState::Assigned,
                         mutability,
                         captured: false,

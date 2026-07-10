@@ -1,10 +1,11 @@
-// ciel-test: error
-// expect-error: nullable pointer
+// ciel-test: run
+// expect-exit: 0
 
 i64 main() {
-    i64 value = 0;
+    i64 @value = 0;
     *i64 ptr = &value;
     ?*void erased = ptr as ?*void;
-    *i64 restored = unsafe { erased as *i64 };
+    *void checked = unsafe { erased as *void };
+    *i64 restored = unsafe { checked as *i64 };
     return *restored;
 }

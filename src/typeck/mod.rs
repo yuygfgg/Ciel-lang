@@ -315,7 +315,6 @@ struct Binding {
     name: String,
     ty: Ty,
     flow_ty: Option<Ty>,
-    narrowed_ty: Option<Ty>,
     init_state: InitState,
     mutability: BindingMutability,
     captured: bool,
@@ -511,23 +510,10 @@ impl LocalScopes {
     fn effective_ty(&self, id: LocalId) -> Option<Ty> {
         self.get(id).map(|binding| {
             binding
-                .narrowed_ty
+                .flow_ty
                 .clone()
-                .or_else(|| binding.flow_ty.clone())
                 .unwrap_or_else(|| binding.ty.clone())
         })
-    }
-
-    fn narrow_to(&mut self, id: LocalId, ty: Ty) {
-        if let Some(binding) = self.get_mut(id) {
-            binding.narrowed_ty = Some(ty);
-        }
-    }
-
-    fn clear_narrowing(&mut self, id: LocalId) {
-        if let Some(binding) = self.get_mut(id) {
-            binding.narrowed_ty = None;
-        }
     }
 
     fn mark_all_captured(&mut self) {
@@ -565,15 +551,6 @@ impl LocalScopes {
                         .get(id)
                         .and_then(|binding| binding.flow_ty.as_ref()),
                 );
-                let left_narrowed = left_scope
-                    .get(id)
-                    .and_then(|binding| binding.narrowed_ty.clone());
-                let right_narrowed = right_scope
-                    .get(id)
-                    .and_then(|binding| binding.narrowed_ty.clone());
-                binding.narrowed_ty = (left_narrowed == right_narrowed)
-                    .then_some(left_narrowed)
-                    .flatten();
             }
         }
     }
@@ -587,7 +564,6 @@ impl LocalScopes {
                 if let Some(source_binding) = source_scope.get(id) {
                     binding.init_state = source_binding.init_state;
                     binding.flow_ty = source_binding.flow_ty.clone();
-                    binding.narrowed_ty = source_binding.narrowed_ty.clone();
                 }
             }
         }

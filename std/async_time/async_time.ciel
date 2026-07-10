@@ -6,6 +6,7 @@ import /std/actor as actor;
 import /std/c as c;
 import /std/message;
 import /std/meta;
+import /std/pointer as pointer;
 import /std/resource;
 import /std/resource as resource;
 
@@ -134,7 +135,7 @@ Result<*CielAsyncOp, AsyncTimeError> raw_sleep(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { raw as *CielAsyncOp });
+    return Ok(pointer::unwrap(raw));
 }
 
 Result<*void, AsyncTimeError> box_message<M: Message>(
@@ -156,7 +157,7 @@ Result<*void, AsyncTimeError> box_message<M: Message>(
     if (boxed == null) {
         return Err(Runtime(5));
     }
-    return Ok(boxed);
+    return Ok(pointer::unwrap(boxed));
 }
 
 // Starts a monotonic timer operation token without awaiting it.
@@ -169,7 +170,7 @@ export Result<AsyncSleep, AsyncTimeError> sleep_ms_async(
     }
     return Ok(
         unsafe {
-            { handle: register_async_op_owned(unsafe { raw as *CielAsyncOp })? }
+            { handle: register_async_op_owned(pointer::unwrap(raw))? }
         }
     );
 }

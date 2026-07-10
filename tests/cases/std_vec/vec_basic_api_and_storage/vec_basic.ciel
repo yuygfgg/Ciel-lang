@@ -2,6 +2,7 @@
 // expect-exit: 0
 
 import /std/result;
+import /std/pointer as pointer;
 import /std/vec as vec;
 
 struct Pair {
@@ -140,7 +141,8 @@ i64 main() {
     if (right_ptr == null) {
         return 13;
     }
-    if (left_ptr->value != 11 || right_ptr->value != 22) {
+    if (pointer::unwrap(left_ptr)->value != 11 ||
+        pointer::unwrap(right_ptr)->value != 22) {
         return 14;
     }
     ptrs.vec::clear();

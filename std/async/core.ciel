@@ -12,6 +12,7 @@ import /std/c as c;
 import /std/async/internal/adapter as adapter;
 import /std/meta;
 import /std/meta as meta;
+import /std/pointer as pointer;
 
 unsafe extern "C" {
     opaque struct CielAsyncSender;
@@ -222,7 +223,7 @@ extern "C" c::c_int operation_future_run<resource Op: adapter::OperationFuture<O
             operation_future_finish_context(ctx);
             return 0 as c::c_int;
         }
-        *CielAsyncOp op = unsafe { raw as *CielAsyncOp };
+        *CielAsyncOp op = unsafe { pointer::unwrap(raw) as *CielAsyncOp };
         ctx->op = raw;
         unsafe {
             ciel_future_bind_operation(future, op)
@@ -238,7 +239,7 @@ extern "C" c::c_int operation_future_run<resource Op: adapter::OperationFuture<O
     }
     ?*void maybe_op = ctx->op;
     if (maybe_op != null) {
-        *CielAsyncOp op = unsafe { maybe_op as *CielAsyncOp };
+        *CielAsyncOp op = unsafe { pointer::unwrap(maybe_op) as *CielAsyncOp };
         unsafe {
             ciel_future_clear_operation(future, op)
         };
@@ -263,7 +264,7 @@ extern "C" void operation_future_cleanup<resource Op>(
     *OperationFutureCtx<Op> ctx = unsafe { ctx_raw as *OperationFutureCtx<Op> };
     ?*void maybe_op = ctx->op;
     if (maybe_op != null) {
-        *CielAsyncOp op = unsafe { maybe_op as *CielAsyncOp };
+        *CielAsyncOp op = unsafe { pointer::unwrap(maybe_op) as *CielAsyncOp };
         unsafe { ciel_async_cancel(op) };
         ctx->op = null;
     }
@@ -489,7 +490,7 @@ extern "C" c::c_int channel_reserve_run<T>(
         if (raw_permit == null) {
             *out = Err(Runtime(5));
         } else {
-            SendPermit<T> permit = { handle: raw_permit as *void };
+            SendPermit<T> permit = { handle: pointer::unwrap(raw_permit) as *void };
             *out = Ok(permit);
         }
     } else {
@@ -596,7 +597,7 @@ unsafe impl<T> clone_message(*const Sender<T> value) {
     if (raw == null) {
         return Err(boxed_async_runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 unsafe derive<T> share_handle_marker<Sender<T>>;
@@ -608,7 +609,7 @@ unsafe impl<T> clone_message(*const Receiver<T> value) {
     if (raw == null) {
         return Err(boxed_async_runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 unsafe derive<T> share_handle_marker<Receiver<T>>;
@@ -643,8 +644,8 @@ export Result<ChannelPair<T>, AsyncError> channel<T>(
     if (raw_receiver == null) {
         return Err(Runtime(5));
     }
-    Sender<T> sender = { handle: raw_sender as *void };
-    Receiver<T> receiver = { handle: raw_receiver as *void };
+    Sender<T> sender = { handle: pointer::unwrap(raw_sender) as *void };
+    Receiver<T> receiver = { handle: pointer::unwrap(raw_receiver) as *void };
     return Ok({ sender: sender, receiver: receiver });
 }
 
@@ -819,7 +820,7 @@ extern "C" c::c_int task_group_next_run<T, E>(
         if (raw_task == null) {
             return 5 as c::c_int;
         } else {
-            Task<T, E> task = { handle: raw_task as *void };
+            Task<T, E> task = { handle: pointer::unwrap(raw_task) as *void };
             *out = task;
         }
     } else {
@@ -857,7 +858,7 @@ export Result<TaskGroup<T, E>, AsyncError> task_group<T, E>() {
     if (raw == null) {
         return Err(async_runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 // Adds a task to a group.

@@ -2,6 +2,7 @@
 export import /std/result;
 import /std/c as c;
 import /std/message;
+import /std/pointer as pointer;
 import /std/resource;
 import /std/resource as resource;
 
@@ -306,7 +307,7 @@ export Result<SocketAddr, NetError> parse_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Resolves a host and port to a TCP socket address.
@@ -323,7 +324,7 @@ export Result<SocketAddr, NetError> resolve_tcp(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Returns whether addr is IPv4 or IPv6.
@@ -617,7 +618,7 @@ export Result<SocketAddr, NetError> listener_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Returns the local address of stream.
@@ -640,7 +641,7 @@ export Result<SocketAddr, NetError> stream_local_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Returns the peer address of stream.
@@ -663,7 +664,7 @@ export Result<SocketAddr, NetError> stream_peer_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 void close_scoped_stream(TcpStream stream) {

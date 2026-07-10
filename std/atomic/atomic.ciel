@@ -8,6 +8,7 @@ export import /std/message;
 export import /std/result;
 import /std/c as c;
 import /std/meta;
+import /std/pointer as pointer;
 
 unsafe extern "C" {
     opaque struct CielAtomic;
@@ -238,7 +239,7 @@ export Result<Atomic<T>, AtomicError> make_atomic<T: AtomicValue>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 // Atomically loads and returns the current value.
@@ -254,7 +255,7 @@ export Result<T, AtomicError> atomic_load<T: AtomicValue>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     return Ok(*typed);
 }
 
@@ -294,7 +295,7 @@ export Result<T, AtomicError> atomic_exchange<T: AtomicValue>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     return Ok(*typed);
 }
 
@@ -326,7 +327,7 @@ export Result<CompareExchange<T>, AtomicError> atomic_compare_exchange<T: Atomic
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     return Ok({
         exchanged: (exchanged as i64) != 0,
         previous: *typed,
@@ -349,7 +350,7 @@ export Result<T, AtomicError> atomic_fetch_add<T: AtomicInteger>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     return Ok(*typed);
 }
 
@@ -368,6 +369,6 @@ export Result<T, AtomicError> atomic_fetch_sub<T: AtomicInteger>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    *T typed = unsafe { raw as *T };
+    *T typed = unsafe { pointer::unwrap(raw) as *T };
     return Ok(*typed);
 }

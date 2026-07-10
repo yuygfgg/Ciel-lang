@@ -7,57 +7,6 @@ pub(super) fn pattern_span(pattern: &Pattern) -> crate::span::Span {
     }
 }
 
-pub(super) fn nullable_narrowings_from_condition(cond: &TExpr, truth: bool) -> Vec<(LocalId, Ty)> {
-    match &cond.kind {
-        TExprKind::Binary { op, left, right } if matches!(op, BinaryOp::Eq | BinaryOp::Ne) => {
-            let should_narrow =
-                (matches!(op, BinaryOp::Ne) && truth) || (matches!(op, BinaryOp::Eq) && !truth);
-            if !should_narrow {
-                return Vec::new();
-            }
-            nullable_comparison_local(left, right)
-                .or_else(|| nullable_comparison_local(right, left))
-                .into_iter()
-                .collect()
-        }
-        TExprKind::Binary {
-            op: BinaryOp::And,
-            left,
-            right,
-        } if truth => {
-            let mut narrowings = nullable_narrowings_from_condition(left, true);
-            narrowings.extend(nullable_narrowings_from_condition(right, true));
-            narrowings
-        }
-        _ => Vec::new(),
-    }
-}
-
-pub(super) fn nullable_comparison_local(candidate: &TExpr, other: &TExpr) -> Option<(LocalId, Ty)> {
-    if !matches!(other.kind, TExprKind::Literal(Literal::Null)) {
-        return None;
-    }
-    let TExprKind::Local(local_id, _) = candidate.kind else {
-        return None;
-    };
-    let Ty::Pointer {
-        nullable: true,
-        mutability,
-        inner,
-    } = &candidate.ty
-    else {
-        return None;
-    };
-    Some((
-        local_id,
-        Ty::Pointer {
-            nullable: false,
-            mutability: *mutability,
-            inner: inner.clone(),
-        },
-    ))
-}
-
 pub(super) fn bool_literal_is(expr: &TExpr, expected: bool) -> bool {
     matches!(expr.kind, TExprKind::Literal(Literal::Bool(value)) if value == expected)
 }

@@ -2356,7 +2356,6 @@ impl TypeChecker {
                     name: name.clone(),
                     ty: binding_ty,
                     flow_ty,
-                    narrowed_ty: None,
                     init_state: InitState::Assigned,
                     mutability: *mutability,
                     captured: false,

@@ -1,0 +1,32 @@
+// ciel-test: run
+// expect-exit: 12
+
+import /std/pointer as pointer;
+import /std/option as option;
+
+struct Value {
+    i64 number;
+}
+
+i64 main() {
+    Value @value = { number: 5 };
+    ?*Value writable = &value;
+    switch (pointer::to_option(writable)) {
+        case option::Some(pointer_value):
+            pointer_value->number = pointer_value->number + 1;
+        case option::None:
+            return 1;
+    }
+
+    ?*Value missing = null;
+    switch (pointer::to_option(missing)) {
+        case option::Some(_):
+            return 2;
+        case option::None:
+    }
+
+    ?*const Value readonly = &value;
+    *const Value checked = pointer::unwrap(readonly);
+    *Value checked_writable = writable.pointer::unwrap();
+    return checked->number + checked_writable->number;
+}

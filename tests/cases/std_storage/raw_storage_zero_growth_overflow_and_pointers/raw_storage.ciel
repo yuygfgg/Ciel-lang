@@ -2,6 +2,7 @@
 // expect-exit: 0
 
 import /std/result;
+import /std/pointer as pointer;
 import /std/storage as storage;
 
 struct Cell {
@@ -78,7 +79,8 @@ i64 main() {
     if (second_ptr == null) {
         return 7;
     }
-    if (first_ptr->value != 11 || second_ptr->value != 22) {
+    if (pointer::unwrap(first_ptr)->value != 11 ||
+        pointer::unwrap(second_ptr)->value != 22) {
         return 7;
     }
     if (ptr_view[2] != null || ptr_view[3] != null) {

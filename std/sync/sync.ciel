@@ -8,6 +8,7 @@ export import /std/message;
 export import /std/result;
 import /std/c as c;
 import /std/meta;
+import /std/pointer as pointer;
 
 unsafe extern "C" {
     opaque struct CielMutex;
@@ -105,7 +106,7 @@ export Result<Mutex<T>, SyncError> make_mutex<T: Message>(
     if (raw == null) {
         return Err(runtime_error());
     }
-    return Ok({ handle: raw as *void });
+    return Ok({ handle: pointer::unwrap(raw) as *void });
 }
 
 // Locks the mutex, clones the current value, applies update_value, and stores
@@ -121,7 +122,7 @@ export Result<R, SyncWithError<E>> mutex_update<T: Message, F: update_value<T, R
     }
     defer unlock_mutex(raw_mutex);
 
-    *T slot = unsafe { raw_slot as *T };
+    *T slot = unsafe { pointer::unwrap(raw_slot) as *T };
     T @current;
     switch (clone_message(slot)) {
         case Ok(value):
@@ -160,7 +161,7 @@ export Result<R, SyncWithError<E>> mutex_with<T, R: Message, E: ErrorTrait>(
     }
     defer unlock_mutex(raw_mutex);
 
-    *T slot = unsafe { raw_slot as *T };
+    *T slot = unsafe { pointer::unwrap(raw_slot) as *T };
     switch (body(slot)) {
         case Ok(value):
             return Ok(value);

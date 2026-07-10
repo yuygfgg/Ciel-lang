@@ -12,6 +12,7 @@ import /std/c as c;
 import /std/message;
 import /std/meta;
 import /std/net as net;
+import /std/pointer as pointer;
 import /std/resource;
 import /std/resource as resource;
 import /std/storage as storage;
@@ -992,7 +993,7 @@ Result<*CielAsyncFd, AsyncNetError> raw_async_fd(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { raw as *CielAsyncFd });
+    return Ok(pointer::unwrap(raw));
 }
 
 Result<*CielAsyncTcpListener, AsyncNetError> raw_listener(
@@ -1014,7 +1015,7 @@ Result<*CielAsyncTcpListener, AsyncNetError> raw_listener(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { raw as *CielAsyncTcpListener });
+    return Ok(pointer::unwrap(raw));
 }
 
 Result<*CielAsyncFd, AsyncNetError> raw_stream(
@@ -1042,7 +1043,7 @@ Result<*CielBufferedReader, AsyncNetError> raw_buffered_reader(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(raw);
+    return Ok(pointer::unwrap(raw));
 }
 
 c::c_int snapshot_async_op(
@@ -1070,7 +1071,7 @@ Result<*CielAsyncOp, AsyncNetError> raw_async_op(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(unsafe { raw as *CielAsyncOp });
+    return Ok(pointer::unwrap(raw));
 }
 
 ?*void raw_async_op_or_null(
@@ -1151,7 +1152,7 @@ Result<bytes::Bytes, AsyncNetError> bytes_from_runtime(
         return Err(Runtime(5));
     }
     []u8 view = unsafe {
-        storage::raw_from_ptr<u8>(unsafe { raw as *void }, len)
+        storage::raw_from_ptr<u8>(pointer::unwrap(raw) as *void, len)
     };
     storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
     return Ok(unsafe {
@@ -1167,7 +1168,7 @@ Result<buf::ByteBuf, AsyncNetError> byte_buf_from_runtime(
         return Err(Runtime(5));
     }
     []u8 view = unsafe {
-        storage::raw_from_ptr<u8>(unsafe { raw as *void }, cap)
+        storage::raw_from_ptr<u8>(pointer::unwrap(raw) as *void, cap)
     };
     storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
     return Ok(unsafe {
@@ -1195,7 +1196,7 @@ Result<*void, AsyncNetError> box_message<M: Message>(
     if (boxed == null) {
         return Err(Runtime(5));
     }
-    return Ok(boxed);
+    return Ok(pointer::unwrap(boxed));
 }
 
 // Opens an async TCP listener bound to addr.
@@ -1209,7 +1210,8 @@ export Result<AsyncTcpListener, AsyncNetError> listen_async(
     return Ok(
         listener_from_handle(
             register_async_listener_owned(
-                unsafe { raw as *CielAsyncTcpListener })?
+                pointer::unwrap(raw)
+            )?
         )
     );
 }
@@ -1228,7 +1230,7 @@ export Result<net::SocketAddr, AsyncNetError> listener_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Closes an async listener handle.
@@ -1252,7 +1254,7 @@ export Result<AsyncAccept, AsyncNetError> accept_async(
     }
     return Ok(
         accept_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1267,7 +1269,7 @@ export Result<AsyncConnect, AsyncNetError> connect_async(
     }
     return Ok(
         connect_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1395,7 +1397,7 @@ export Result<net::SocketAddr, AsyncNetError> stream_local_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Returns the peer address of an async stream.
@@ -1412,7 +1414,7 @@ export Result<net::SocketAddr, AsyncNetError> stream_peer_addr(
     if (raw == null) {
         return Err(Runtime(5));
     }
-    return Ok(addr_from_raw(unsafe { raw as *CielSocketAddr }));
+    return Ok(addr_from_raw(pointer::unwrap(raw)));
 }
 
 // Starts an async TCP read operation and returns its low-level token.
@@ -1427,7 +1429,7 @@ export Result<AsyncTcpRead, AsyncNetError> read_bytes(
     }
     return Ok(
         read_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1445,7 +1447,7 @@ export Result<AsyncTcpWrite, AsyncNetError> write_bytes(
     }
     return Ok(
         write_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1464,7 +1466,7 @@ export Result<AsyncTcpReadInto, AsyncNetError> read_into_async(
     }
     return Ok(
         read_into_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1482,7 +1484,7 @@ export Result<AsyncTcpWrite, AsyncNetError> write_half_bytes(
     }
     return Ok(
         write_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1601,7 +1603,7 @@ export Result<AsyncBufferedRead, AsyncNetError> read_buffered_async(
     }
     return Ok(
         buffered_read_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1619,7 +1621,7 @@ export Result<AsyncBufferedRead, AsyncNetError> read_exact_buffered_async(
     }
     return Ok(
         buffered_read_from_handle(
-            register_async_op_owned(unsafe { raw as *CielAsyncOp })?
+            register_async_op_owned(pointer::unwrap(raw))?
         )
     );
 }
@@ -1870,7 +1872,7 @@ export Result<AsyncTcpStream, AsyncNetError> finish_accept(
     return Ok(
         stream_from_handle(
             register_finished_async_fd(
-                unsafe { raw as *CielAsyncFd }, accept_handle_mut(&op)
+                pointer::unwrap(raw), accept_handle_mut(&op)
             )?
         )
     );
@@ -1893,7 +1895,7 @@ export Result<AsyncTcpStream, AsyncNetError> finish_connect(
     return Ok(
         stream_from_handle(
             register_finished_async_fd(
-                unsafe { raw as *CielAsyncFd }, connect_handle_mut(&op)
+                pointer::unwrap(raw), connect_handle_mut(&op)
             )?
         )
     );
@@ -2078,7 +2080,7 @@ unsafe impl poll_done<AsyncTcpStream>(*AsyncAccept op, *AsyncTcpStream out) {
     }
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe {
-        ciel_async_tcp_finish_accept(unsafe { raw_op as *CielAsyncOp }, &raw)
+        ciel_async_tcp_finish_accept(pointer::unwrap(raw_op), &raw)
     };
     if ((rc as i64) == 0) {
         if (raw == null) {
@@ -2086,7 +2088,7 @@ unsafe impl poll_done<AsyncTcpStream>(*AsyncAccept op, *AsyncTcpStream out) {
         }
         c::c_int register_rc = unsafe {
             register_finished_async_fd_out(
-                unsafe { raw as *CielAsyncFd }, accept_handle_mut(op), stream_handle_mut(
+                pointer::unwrap(raw), accept_handle_mut(op), stream_handle_mut(
                     out
                 )
             )
@@ -2122,7 +2124,7 @@ unsafe impl poll_done<AsyncTcpStream>(*AsyncConnect op, *AsyncTcpStream out) {
     }
     ?*CielAsyncFd @raw = null;
     c::c_int rc = unsafe {
-        ciel_async_tcp_finish_connect(unsafe { raw_op as *CielAsyncOp }, &raw)
+        ciel_async_tcp_finish_connect(pointer::unwrap(raw_op), &raw)
     };
     if ((rc as i64) == 0) {
         if (raw == null) {
@@ -2130,7 +2132,7 @@ unsafe impl poll_done<AsyncTcpStream>(*AsyncConnect op, *AsyncTcpStream out) {
         }
         c::c_int register_rc = unsafe {
             register_finished_async_fd_out(
-                unsafe { raw as *CielAsyncFd }, connect_handle_mut(op), stream_handle_mut(
+                pointer::unwrap(raw), connect_handle_mut(op), stream_handle_mut(
                     out
                 )
             )
@@ -2169,7 +2171,7 @@ unsafe impl poll_done<bytes::Bytes>(*AsyncTcpRead op, *bytes::Bytes out) {
     usize @cap = 0;
     c::c_int rc = unsafe {
         ciel_async_finish_read(
-            unsafe { raw_op as *CielAsyncOp }, &raw, &len, &cap
+            pointer::unwrap(raw_op), &raw, &len, &cap
         )
     };
     if ((rc as i64) == 0) {
@@ -2177,7 +2179,7 @@ unsafe impl poll_done<bytes::Bytes>(*AsyncTcpRead op, *bytes::Bytes out) {
             return 5 as c::c_int;
         }
         []u8 view = unsafe {
-            storage::raw_from_ptr<u8>(unsafe { raw as *void }, len)
+            storage::raw_from_ptr<u8>(pointer::unwrap(raw) as *void, len)
         };
         storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
         *out = unsafe {
@@ -2220,7 +2222,7 @@ unsafe impl poll_done<ReadIntoResult>(
     usize @cap = 0;
     c::c_int rc = unsafe {
         ciel_async_finish_read(
-            unsafe { raw_op as *CielAsyncOp }, &raw, &len, &cap
+            pointer::unwrap(raw_op), &raw, &len, &cap
         )
     };
     if ((rc as i64) == 0) {
@@ -2228,7 +2230,7 @@ unsafe impl poll_done<ReadIntoResult>(
             return 5 as c::c_int;
         }
         []u8 view = unsafe {
-            storage::raw_from_ptr<u8>(unsafe { raw as *void }, cap)
+            storage::raw_from_ptr<u8>(pointer::unwrap(raw) as *void, cap)
         };
         storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
         out->buffer = unsafe {
@@ -2257,7 +2259,7 @@ unsafe impl poll_done<bytes::Bytes>(*AsyncBufferedRead op, *bytes::Bytes out) {
     usize @cap = 0;
     c::c_int rc = unsafe {
         ciel_async_finish_read(
-            unsafe { raw_op as *CielAsyncOp }, &raw, &len, &cap
+            pointer::unwrap(raw_op), &raw, &len, &cap
         )
     };
     if ((rc as i64) == 0) {
@@ -2265,7 +2267,7 @@ unsafe impl poll_done<bytes::Bytes>(*AsyncBufferedRead op, *bytes::Bytes out) {
             return 5 as c::c_int;
         }
         []u8 view = unsafe {
-            storage::raw_from_ptr<u8>(unsafe { raw as *void }, len)
+            storage::raw_from_ptr<u8>(pointer::unwrap(raw) as *void, len)
         };
         storage::RawStorage<u8> raw_storage = unsafe { { storage: view } };
         *out = unsafe {
@@ -2303,7 +2305,7 @@ unsafe impl poll_done<usize>(*AsyncTcpWrite op, *usize out) {
     }
     usize @written = 0;
     c::c_int rc = unsafe {
-        ciel_async_finish_write(unsafe { raw_op as *CielAsyncOp }, &written)
+        ciel_async_finish_write(pointer::unwrap(raw_op), &written)
     };
     if ((rc as i64) == 0) {
         *out = written;

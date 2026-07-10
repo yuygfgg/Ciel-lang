@@ -4,6 +4,7 @@ import /std/bytes as bytes;
 import /std/message;
 import /std/meta as meta;
 import /std/panic;
+import /std/pointer as pointer;
 import /std/storage as storage;
 import /std/text as text;
 
@@ -168,7 +169,7 @@ MapError map_runtime_error() {
     if (node == null) {
         return null;
     }
-    *Node<K, V> typed = unsafe { node as *Node<K, V> };
+    *Node<K, V> typed = pointer::unwrap(node);
     return typed as ?*void;
 }
 
@@ -176,21 +177,25 @@ MapError map_runtime_error() {
     if (raw == null) {
         return null;
     }
-    return unsafe { raw as *Node<K, V> };
+    return unsafe {
+        pointer::unwrap(raw) as *Node<K, V>
+    };
 }
 
 *Node<K, V> expect_node<K, V>(?*Node<K, V> node) {
     if (node == null) {
         panic("hash map internal null node");
     }
-    return unsafe { node as *Node<K, V> };
+    return pointer::unwrap(node);
 }
 
 *Node<K, V> expect_raw_node<K, V>(?*void raw) {
     if (raw == null) {
         panic("hash map internal null node");
     }
-    return unsafe { raw as *Node<K, V> };
+    return unsafe {
+        pointer::unwrap(raw) as *Node<K, V>
+    };
 }
 
 ?*Node<K, V> bucket_head<K, V>(
@@ -227,7 +232,10 @@ Result<*Node<K, V>, MapError> make_node<K, V>(
     if (raw == null) {
         return Err(map_runtime_error());
     }
-    return Ok(unsafe { raw as *Node<K, V> });
+    return Ok(unsafe {
+        pointer::unwrap(raw) as *Node<K, V>
+    }
+    );
 }
 
 Result<void, MapError> hash_map_rehash<K: map_key, V>(

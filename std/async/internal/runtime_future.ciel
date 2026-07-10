@@ -2,6 +2,7 @@ import /std/c as c;
 import /std/message;
 import /std/meta as meta;
 import /std/panic as panic;
+import /std/pointer as pointer;
 
 export unsafe extern "C" {
     opaque struct CielActor;
@@ -114,7 +115,7 @@ export unsafe Future<Out> new<Out, Ctx>(
     if (raw_future == null) {
         panic::panic("future allocation failed");
     }
-    return unsafe { { handle: raw_future as *void } };
+    return unsafe { { handle: pointer::unwrap(raw_future) as *void } };
 }
 
 export unsafe *T alloc_slot<T>() {

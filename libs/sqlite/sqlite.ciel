@@ -3,6 +3,7 @@ export import /std/result;
 import /std/bytes as bytes;
 import /std/c as c;
 import /std/message;
+import /std/pointer as pointer;
 import /std/resource;
 import /std/resource as resource;
 import /std/storage as storage;
@@ -490,7 +491,7 @@ Result<*CielSqliteConnection, SqliteError> raw_connection(
     if (raw == null) {
         return Err(InvalidState);
     }
-    return Ok(unsafe { raw as *CielSqliteConnection });
+    return Ok(pointer::unwrap(raw));
 }
 
 Result<*CielSqliteStatement, SqliteError> raw_statement(
@@ -512,7 +513,7 @@ Result<*CielSqliteStatement, SqliteError> raw_statement(
     if (raw == null) {
         return Err(InvalidState);
     }
-    return Ok(unsafe { raw as *CielSqliteStatement });
+    return Ok(pointer::unwrap(raw));
 }
 
 c::c_int open_mode_code(OpenMode mode) {

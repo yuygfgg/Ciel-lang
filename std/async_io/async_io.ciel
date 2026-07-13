@@ -572,12 +572,12 @@ export Result<void, AsyncIoError> cancel_write(
 }
 
 unsafe impl abort_future(*AsyncRead op) {
-    cancel_read(*op)?;
+    cancel_read(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncWrite op) {
-    cancel_write(*op)?;
+    cancel_write(unsafe { *op })?;
     return Ok;
 }
 

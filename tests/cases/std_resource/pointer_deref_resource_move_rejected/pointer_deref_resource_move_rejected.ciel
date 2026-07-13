@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: cannot move resource subvalue of type `File`
+
+import /std/io as io;
+import /std/result;
+
+Result<void, Error> duplicate(io::File file) {
+    *const io::File pointer = &file;
+    io::File copied = *pointer;
+    io::close(file)?;
+    io::close(copied)?;
+    return Ok;
+}
+
+i32 main() {
+    return 0;
+}

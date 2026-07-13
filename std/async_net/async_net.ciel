@@ -2027,32 +2027,32 @@ export Result<void, AsyncNetError> cancel_buffered_read(
 }
 
 unsafe impl abort_future(*AsyncAccept op) {
-    cancel_accept(*op)?;
+    cancel_accept(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncConnect op) {
-    cancel_connect(*op)?;
+    cancel_connect(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpRead op) {
-    cancel_read(*op)?;
+    cancel_read(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpReadInto op) {
-    cancel_read_into(*op)?;
+    cancel_read_into(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncTcpWrite op) {
-    cancel_write(*op)?;
+    cancel_write(unsafe { *op })?;
     return Ok;
 }
 
 unsafe impl abort_future(*AsyncBufferedRead op) {
-    cancel_buffered_read(*op)?;
+    cancel_buffered_read(unsafe { *op })?;
     return Ok;
 }
 

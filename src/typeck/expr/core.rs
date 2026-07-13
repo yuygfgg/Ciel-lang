@@ -104,6 +104,17 @@ impl TypeChecker {
                     }
                 }
             }
+            TExprKind::Unary {
+                op: UnaryOp::Deref, ..
+            } => {
+                if self.unsafe_depth == 0 {
+                    self.diagnostics.push(Diagnostic::new(
+                        expr.span,
+                        format!("cannot move resource subvalue of type `{}`", expr.ty),
+                    ));
+                }
+                expr
+            }
             TExprKind::Move(_) => expr,
             _ => expr,
         }

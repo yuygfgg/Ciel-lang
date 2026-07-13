@@ -796,11 +796,13 @@ constructing it with a struct literal or projecting one of its fields requires
 `unsafe { ... }`.
 
 A `resource struct` declares an owning resource wrapper. It is resource-affine.
-A concrete `resource struct` must contain an owning resource field, unless it
-is the canonical `/std/resource::Handle` leaf. A concrete non-resource struct
-cannot store a resource-affine field. The `unsafe` modifier is independent:
-`resource unsafe struct` is used when the wrapper representation itself has
-unsafe invariants, such as a raw runtime handle field.
+A concrete safe `resource struct` must contain an owning resource field, unless
+it is the canonical `/std/resource::Handle` leaf. This field requirement is
+waived for a `resource unsafe struct`, whose representation may use raw fields
+that the type checker does not recognize as owning. Such a declaration remains
+resource-affine, and its unsafe implementation is responsible for upholding
+ownership and uniqueness. A concrete non-resource struct cannot store a
+resource-affine field.
 
 Generic parameters may be written as `resource T` to require a resource-affine
 type argument. Ordinary `T` parameters can still be instantiated with resources

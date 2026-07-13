@@ -225,7 +225,7 @@ export Result<void, AsyncTimeError> cancel_sleep(
 }
 
 unsafe impl abort_future(*AsyncSleep op) {
-    cancel_sleep(*op)?;
+    cancel_sleep(unsafe { *op })?;
     return Ok;
 }
 

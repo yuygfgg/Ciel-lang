@@ -39,8 +39,7 @@ impl TypeChecker {
                 .push(Diagnostic::new(span, "`select` requires at least one case"));
         }
 
-        let mut checked_arms = Vec::new();
-        let mut output_ty = expected.cloned();
+        let mut checked_futures = Vec::new();
         let mut affine_state = false;
         let mut future_state = Vec::new();
         for arm in arms {
@@ -103,11 +102,19 @@ impl TypeChecker {
             let future = self.consume_affine_expr(scopes, future, false);
             affine_state |= self.type_is_affine(&future.ty);
             future_state.push((
-                format!("select arm {}", checked_arms.len()),
+                format!("select arm {}", checked_futures.len()),
                 future.ty.clone(),
             ));
 
-            let mut arm_scopes = scopes.clone();
+            checked_futures.push((arm, future, future_output_ty));
+        }
+
+        let before_bodies = scopes.clone();
+        let mut checked_arms = Vec::new();
+        let mut arm_flows = Vec::new();
+        let mut output_ty = expected.cloned();
+        for (arm, future, future_output_ty) in checked_futures {
+            let mut arm_scopes = before_bodies.clone();
             arm_scopes.push();
             let (binding_ty, flow_ty) =
                 self.external_storage_and_flow_ty(&future_output_ty, "binding");
@@ -143,6 +150,7 @@ impl TypeChecker {
                 output_ty = Some(body.ty.clone());
             }
             arm_scopes.pop();
+            arm_flows.push(arm_scopes);
 
             checked_arms.push(TSelectArm {
                 binding_local: arm.binding_local,
@@ -152,6 +160,7 @@ impl TypeChecker {
                 body,
             });
         }
+        scopes.merge_reachable_flows(&arm_flows);
 
         let output_ty = output_ty.unwrap_or(Ty::Unknown);
         Some(TExpr {

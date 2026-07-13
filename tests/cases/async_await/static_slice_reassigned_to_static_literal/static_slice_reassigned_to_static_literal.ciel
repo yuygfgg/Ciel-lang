@@ -1,0 +1,15 @@
+// ciel-test: compile
+
+import /std/async_time as async_time;
+import /std/result;
+
+async Result<usize, Error> keep_static() {
+    []const u8 @view = "PING";
+    view = "PONG";
+    await async_time::sleep_ms(0)?;
+    return Ok(view[0] as usize);
+}
+
+i32 main() {
+    return 0;
+}

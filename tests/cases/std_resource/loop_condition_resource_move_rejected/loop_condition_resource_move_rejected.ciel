@@ -1,0 +1,26 @@
+// ciel-test: error
+// expect-error: resource `while_token` is declared outside this loop and cannot be moved inside it
+// expect-error: resource `for_token` is declared outside this loop and cannot be moved inside it
+
+resource unsafe struct RawToken {
+    i64 value;
+}
+
+bool consume(RawToken token) {
+    return unsafe { token.value } != 0;
+}
+
+void while_bad(bool keep_running) {
+    RawToken while_token = unsafe { { value: 1 } };
+    while (keep_running && consume(while_token)) {}
+}
+
+void for_bad(bool keep_running) {
+    RawToken for_token = unsafe { { value: 2 } };
+    for (; keep_running && consume(for_token);
+    ) {}
+}
+
+i32 main() {
+    return 0;
+}

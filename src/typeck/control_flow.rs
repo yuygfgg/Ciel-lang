@@ -234,7 +234,10 @@ impl TypeChecker {
                 )
             }
             StmtKind::While { cond, body } => {
-                let cond = self.check_expr(scopes, cond, Some(&Ty::Bool))?;
+                self.current_loop_depth += 1;
+                let cond = self.check_expr(scopes, cond, Some(&Ty::Bool));
+                self.current_loop_depth -= 1;
+                let cond = cond?;
                 self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
                 let mut body_scopes = scopes.clone();
                 self.push_control_context(ControlContextKind::Loop);
@@ -266,6 +269,7 @@ impl TypeChecker {
                 let init = init
                     .as_ref()
                     .and_then(|init| self.check_for_init(scopes, init));
+                self.current_loop_depth += 1;
                 let cond = cond
                     .as_ref()
                     .and_then(|expr| self.check_expr(scopes, expr, Some(&Ty::Bool)));
@@ -273,7 +277,6 @@ impl TypeChecker {
                     self.require_assignable(&Ty::Bool, &cond.ty, cond.span);
                 }
                 let mut loop_scopes = scopes.clone();
-                self.current_loop_depth += 1;
                 let step = step
                     .as_ref()
                     .and_then(|step| self.check_for_step(&mut loop_scopes, step));

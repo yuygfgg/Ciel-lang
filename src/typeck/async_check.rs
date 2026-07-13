@@ -1501,6 +1501,31 @@ impl AsyncLocalInfoWalker<'_, '_> {
             },
         );
     }
+
+    fn record_assignment(&mut self, target: &TExpr, value: &TExpr) {
+        let Some((local_id, _)) = lvalue_root_local(target) else {
+            return;
+        };
+        let assigned_static = self.infos.get(&local_id).is_some_and(|info| {
+            self.checker
+                .async_is_static_const_slice_init(&info.ty, Some(value))
+        });
+        if assigned_static {
+            return;
+        }
+        if let Some(info) = self.infos.get_mut(&local_id) {
+            info.static_const_slice = false;
+        }
+    }
+
+    fn invalidate_static_const_slice(&mut self, target: &TExpr) {
+        let Some((local_id, _)) = lvalue_root_local(target) else {
+            return;
+        };
+        if let Some(info) = self.infos.get_mut(&local_id) {
+            info.static_const_slice = false;
+        }
+    }
 }
 
 impl ThirVisitor for AsyncLocalInfoWalker<'_, '_> {
@@ -1516,6 +1541,11 @@ impl ThirVisitor for AsyncLocalInfoWalker<'_, '_> {
                 if let Some(init) = init {
                     self.visit_expr(init);
                 }
+            }
+            TStmtKind::Assign { target, value } => {
+                self.record_assignment(target, value);
+                self.visit_expr(target);
+                self.visit_expr(value);
             }
             TStmtKind::Switch {
                 expr,
@@ -1552,6 +1582,11 @@ impl ThirVisitor for AsyncLocalInfoWalker<'_, '_> {
                     self.visit_expr(init);
                 }
             }
+            TForInit::Assign { target, value } => {
+                self.record_assignment(target, value);
+                self.visit_expr(target);
+                self.visit_expr(value);
+            }
             _ => walk_for_init(self, init),
         }
     }
@@ -1559,6 +1594,20 @@ impl ThirVisitor for AsyncLocalInfoWalker<'_, '_> {
     fn visit_expr(&mut self, expr: &TExpr) {
         if matches!(expr.kind, TExprKind::Closure { .. }) {
             return;
+        }
+        if let TExprKind::Unary {
+            op: UnaryOp::Addr,
+            expr: inner,
+        } = &expr.kind
+            && matches!(
+                expr.ty,
+                Ty::Pointer {
+                    mutability: ViewMutability::Writable,
+                    ..
+                }
+            )
+        {
+            self.invalidate_static_const_slice(inner);
         }
         walk_expr(self, expr);
     }

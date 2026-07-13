@@ -1,0 +1,33 @@
+// ciel-test: error
+// expect-error: use of moved resource `spare`
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/result;
+
+async Result<usize, Error> after(u64 ms, usize value) {
+    await async_time::sleep_ms(ms)?;
+    return Ok(value);
+}
+
+bool consume_future(
+    async::Future<Result<usize, Error>> future
+) {
+    return true;
+}
+
+async Result<bool, Error> bad() {
+    async::Future<Result<usize, Error>> spare = after(2, 7);
+    bool picked = await biased select {
+        case first = async_time::sleep_ms(0):
+            consume_future(spare);
+        case second = async_time::sleep_ms(1):
+            true;
+    };
+    bool consumed = consume_future(spare);
+    return Ok(picked || consumed);
+}
+
+i32 main() {
+    return 0;
+}

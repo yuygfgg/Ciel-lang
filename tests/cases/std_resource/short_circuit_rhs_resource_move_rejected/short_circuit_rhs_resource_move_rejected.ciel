@@ -1,0 +1,34 @@
+// ciel-test: error
+// expect-error: use of moved resource `executed`
+// expect-error: use of moved resource `conditional_and`
+// expect-error: use of moved resource `conditional_or`
+
+resource unsafe struct RawToken {
+    i64 value;
+}
+
+bool consume(RawToken token) {
+    return unsafe { token.value } != 0;
+}
+
+void executed_and_bad() {
+    RawToken executed = unsafe { { value: 1 } };
+    bool consumed = true && consume(executed);
+    RawToken reused = executed;
+}
+
+void conditional_and_bad(bool condition) {
+    RawToken conditional_and = unsafe { { value: 2 } };
+    bool consumed = condition && consume(conditional_and);
+    RawToken reused = conditional_and;
+}
+
+void conditional_or_bad(bool condition) {
+    RawToken conditional_or = unsafe { { value: 3 } };
+    bool consumed = condition || consume(conditional_or);
+    RawToken reused = conditional_or;
+}
+
+i32 main() {
+    return 0;
+}

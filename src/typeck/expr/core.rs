@@ -626,11 +626,23 @@ impl TypeChecker {
                 }
             }
             ExprKind::Binary { op, left, right } => {
-                let (left, right) = if matches!(op, BinaryOp::And) {
+                let (left, right) = if matches!(op, BinaryOp::And | BinaryOp::Or) {
                     let left = self.check_expr(scopes, left, Some(&Ty::Bool))?;
                     self.require_assignable(&Ty::Bool, &left.ty, left.span);
-                    let mut right_scopes = scopes.clone();
+                    let before_right = scopes.clone();
+                    let mut right_scopes = before_right.clone();
                     let right = self.check_expr(&mut right_scopes, right, Some(&Ty::Bool))?;
+                    match (*op, &left.kind) {
+                        (BinaryOp::And, TExprKind::Literal(Literal::Bool(true)))
+                        | (BinaryOp::Or, TExprKind::Literal(Literal::Bool(false))) => {
+                            scopes.replace_flow_from(&right_scopes);
+                        }
+                        (BinaryOp::And, TExprKind::Literal(Literal::Bool(false)))
+                        | (BinaryOp::Or, TExprKind::Literal(Literal::Bool(true))) => {}
+                        _ => {
+                            scopes.merge_assigned_intersection(&before_right, &right_scopes);
+                        }
+                    }
                     (left, right)
                 } else if op.is_equality() && matches!(left.kind, ExprKind::Literal(Literal::Null))
                 {

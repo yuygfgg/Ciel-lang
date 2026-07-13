@@ -1,0 +1,31 @@
+// ciel-test: run
+// expect-exit: 0
+
+resource unsafe struct RawToken {
+    i64 value;
+}
+
+bool consume(RawToken token) {
+    return unsafe { token.value } != 0;
+}
+
+i32 main() {
+    RawToken left = unsafe { { value: 7 } };
+    bool and_result = false && consume(left);
+    RawToken moved_left = left;
+
+    RawToken right = unsafe { { value: 9 } };
+    bool or_result = true || consume(right);
+    RawToken moved_right = right;
+
+    if (and_result || !or_result) {
+        return 1;
+    }
+    if (unsafe { moved_left.value } != 7) {
+        return 2;
+    }
+    if (unsafe { moved_right.value } != 9) {
+        return 3;
+    }
+    return 0;
+}

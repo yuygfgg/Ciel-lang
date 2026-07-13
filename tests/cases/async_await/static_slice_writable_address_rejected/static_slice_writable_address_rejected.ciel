@@ -1,0 +1,22 @@
+// ciel-test: error
+// expect-error: `view` is not async-frame-safe across `await`
+// expect-error: non-static borrowed read-only slice type `[]const u8`
+
+import /std/async_time as async_time;
+import /std/result;
+
+void replace(*[]const u8 target, []const u8 value) {
+    *target = value;
+}
+
+async Result<usize, Error> bad() {
+    [4]u8 @buffer = [7, 8, 9, 10];
+    []const u8 @view = "PING";
+    replace(&view, buffer[..]);
+    await async_time::sleep_ms(0)?;
+    return Ok(view[0] as usize);
+}
+
+i32 main() {
+    return 0;
+}

@@ -1,0 +1,14 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+import ./qualified_meta_symbols as symbols;
+
+i64 main() {
+    symbols::Packet input = { id: 41 };
+    meta::Schema<symbols::Packet> schema = meta::schema<symbols::Packet>();
+    meta::RefRepr<symbols::Packet> borrowed = meta::as_ref_repr<symbols::Packet>(&input);
+    meta::Repr<symbols::Packet> owned = meta::into_repr<symbols::Packet>(&input);
+    symbols::Packet output = meta::from_repr<symbols::Packet>(owned);
+    return output.id - 41;
+}

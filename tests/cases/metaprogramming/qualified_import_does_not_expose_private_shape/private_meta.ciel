@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: meta schema reflection cannot inspect private shape of `Secret` from this module
+
+import /std/meta as meta;
+import ./private_meta_symbols as symbols;
+
+meta::Schema<T> reflect<T>(T value) {
+    return meta::schema<T>();
+}
+
+i32 main() {
+    _ secret = symbols::make_secret();
+    _ schema = reflect(secret);
+    return 0;
+}

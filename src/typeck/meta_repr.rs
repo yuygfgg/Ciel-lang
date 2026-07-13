@@ -166,11 +166,30 @@ impl TypeChecker {
                 {
                     return true;
                 }
-                matches!(
-                    self.ctx.resolved
-                        .lookup_bare(current_module, &def.name, std::slice::from_ref(&def.kind)),
+                let kinds = std::slice::from_ref(&def.kind);
+                if matches!(
+                    self.ctx
+                        .resolved
+                        .lookup_bare(current_module, &def.name, kinds),
                     Ok(Some(visible_def_id)) if visible_def_id == def_id
-                )
+                ) {
+                    return true;
+                }
+                self.ctx
+                    .resolved
+                    .visible_import_aliases(current_module)
+                    .into_iter()
+                    .any(|alias| {
+                        matches!(
+                            self.ctx.resolved.lookup_qualified(
+                                current_module,
+                                &alias,
+                                &def.name,
+                                kinds,
+                            ),
+                            Ok(Some(visible_def_id)) if visible_def_id == def_id
+                        )
+                    })
             }
             Ty::Array { elem, .. } | Ty::Slice { elem, .. } => {
                 self.meta_repr_source_visible_from_current_module(elem)

@@ -1,0 +1,9 @@
+// ciel-test: dependency
+
+struct Secret {
+    i64 hidden;
+}
+
+export Secret make_secret() {
+    return { hidden: 1 };
+}

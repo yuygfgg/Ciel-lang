@@ -11,7 +11,7 @@ resource struct Bad {
     *const i64 ptr;
 }
 
-async Result<void, Error> later(Bad bad) {
+async Result<void, Report> later(Bad bad) {
     return Ok;
 }
 
@@ -21,7 +21,7 @@ i32 main() {
         { owner_id: 0, resource_id: 0, generation: 0 }
     };
     Bad bad = { handle: handle, ptr: &local };
-    async::Future<Result<void, Error>> future = later(bad);
+    async::Future<Result<void, Report>> future = later(bad);
     async::spawn<void>(future);
     return 0;
 }

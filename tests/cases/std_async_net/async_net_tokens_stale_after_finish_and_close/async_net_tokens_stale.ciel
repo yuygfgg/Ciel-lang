@@ -90,7 +90,7 @@ bool addr_is_err(
     }
 }
 
-async Result<void, Error> accept_once(
+async Result<void, Report> accept_once(
     anet::AsyncTcpListener listener
 ) {
     anet::AsyncTcpStream server = await anet::accept(&listener)?;
@@ -103,7 +103,9 @@ async Result<usize, Error> drive() {
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<void, Error> server = async::spawn<void>(accept_once(listener))?;
+    async::Task<void, Report> server = async::spawn<void>(
+        accept_once(listener)
+    )?;
 
     anet::AsyncConnect op = anet::connect_async(bound)?;
     HandleParts op_parts = parts_from_connect(&op);

@@ -37,6 +37,7 @@ impl<'a> CGenerator<'a> {
                 if self
                     .impl_for_dynamic(&interface, &dynamic_use.concrete_ty)
                     .is_some()
+                    || self.is_compiler_erased_error_ref_interface(&interface)
                 {
                     let ret = self.dynamic_interface_ret(&interface);
                     let params = self.dynamic_interface_params(&interface);
@@ -65,12 +66,13 @@ impl<'a> CGenerator<'a> {
         let uses = self.plan.dynamic_impls.clone();
         for (_, dynamic_use) in uses {
             for interface in self.dynamic_use_interfaces(&dynamic_use) {
-                let Some(implementation) = self
+                let implementation = self
                     .impl_for_dynamic(&interface, &dynamic_use.concrete_ty)
-                    .cloned()
-                else {
+                    .cloned();
+                let is_erased_error_ref = self.is_compiler_erased_error_ref_interface(&interface);
+                if implementation.is_none() && !is_erased_error_ref {
                     continue;
-                };
+                }
                 let ret = self.dynamic_interface_ret(&interface);
                 let params = self.dynamic_interface_params(&interface);
                 let params_decl = params
@@ -89,34 +91,47 @@ impl<'a> CGenerator<'a> {
                     "{} {{",
                     self.c_static_return_decl(&ret, &format!("{shim_name}({params_decl})"))
                 ));
-                let mut args = Vec::new();
-                let first_param = implementation
-                    .params
-                    .first()
-                    .cloned()
-                    .unwrap_or(Ty::Unknown);
-                if matches!(first_param, Ty::Pointer { .. }) {
-                    args.push(format!("({})arg0", self.c_type(&first_param)));
+                if is_erased_error_ref {
+                    let receiver_ty = receiver_ty_from_value_ty(&dynamic_use.concrete_ty);
+                    self.line_indent(
+                        1,
+                        &format!(
+                            "return ({}){{ .type_id = {}, .data = (const void *)arg0 }};",
+                            self.c_type(&ret),
+                            self.type_id_literal(&receiver_ty)
+                        ),
+                    );
                 } else {
-                    args.push(format!("*({} *)arg0", self.c_type(&first_param)));
-                }
-                let mut physical_idx = 1;
-                for param in implementation.params.iter().skip(1) {
-                    if param.is_erased_value() {
-                        continue;
+                    let implementation = implementation.expect("checked above");
+                    let mut args = Vec::new();
+                    let first_param = implementation
+                        .params
+                        .first()
+                        .cloned()
+                        .unwrap_or(Ty::Unknown);
+                    if matches!(first_param, Ty::Pointer { .. }) {
+                        args.push(format!("({})arg0", self.c_type(&first_param)));
+                    } else {
+                        args.push(format!("*({} *)arg0", self.c_type(&first_param)));
                     }
-                    args.push(format!("arg{physical_idx}"));
-                    physical_idx += 1;
-                }
-                let call = format!(
-                    "{}({})",
-                    self.c_name(implementation.function_def),
-                    args.join(", ")
-                );
-                if ret.is_erased_value() {
-                    self.line_indent(1, &format!("{call};"));
-                } else {
-                    self.line_indent(1, &format!("return {call};"));
+                    let mut physical_idx = 1;
+                    for param in implementation.params.iter().skip(1) {
+                        if param.is_erased_value() {
+                            continue;
+                        }
+                        args.push(format!("arg{physical_idx}"));
+                        physical_idx += 1;
+                    }
+                    let call = format!(
+                        "{}({})",
+                        self.c_name(implementation.function_def),
+                        args.join(", ")
+                    );
+                    if ret.is_erased_value() {
+                        self.line_indent(1, &format!("{call};"));
+                    } else {
+                        self.line_indent(1, &format!("return {call};"));
+                    }
                 }
                 self.line("}");
             }

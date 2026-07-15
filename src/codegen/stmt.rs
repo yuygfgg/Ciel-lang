@@ -38,7 +38,6 @@ impl<'a> CGenerator<'a> {
                 }
             })
             .collect();
-        self.current_closure_owner = Some(function.def_id);
         let falls_through = self.gen_block_inner(body, 1)?;
         if falls_through && function.ret.is_never() {
             self.line_indent(1, "ciel_panic(NULL, 0);");
@@ -52,7 +51,6 @@ impl<'a> CGenerator<'a> {
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
         self.current_owned_resource_roots.clear();
-        self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.line("}");
         Ok(())
@@ -177,7 +175,6 @@ impl<'a> CGenerator<'a> {
                 }
             })
             .collect();
-        self.current_closure_owner = Some(function.def_id);
         self.line_indent(
             1,
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
@@ -207,7 +204,6 @@ impl<'a> CGenerator<'a> {
         self.current_heap_locals.clear();
         self.current_param_locals.clear();
         self.current_owned_resource_roots.clear();
-        self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.current_async_output = None;
         self.current_async_context = None;

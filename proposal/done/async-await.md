@@ -1,5 +1,22 @@
 # Async/Await Proposal
 
+## Historical Status
+
+This document records the original async/await design and its pre-generalized
+task API. `typed-task-errors` later replaced `Task<T>` and `TaskGroup<T>` with
+`Task<T, E>` and `TaskGroup<T, E>`. `error-downcast` then made `Error` a local,
+downcastable erased value that does not implement `Message`; an erased error
+that crosses a task boundary is now `Report`, while concrete messageable error
+types remain preferred. References below to `Task<T>`, `TaskGroup<T>`, or
+cross-task `Error` results are historical sketches, not the current API.
+Local async functions may still return `Result<T, Error>` when their errors do
+not cross an ownership boundary. `design.md` is normative.
+
+Current channel endpoint aliases are freely discardable and close only through
+explicit `close` or `close_receiver` calls. `SendPermit<T>` is now an affine
+resource lease whose cleanup returns unused capacity. The refcounted endpoint
+lifetime and ordinary-struct permit sketches below are historical.
+
 This proposal adds stackless async/await to Ciel. The implementation is
 actor-backed, but the normal user-facing API should look like mainstream
 async/await in languages such as Python and Rust:

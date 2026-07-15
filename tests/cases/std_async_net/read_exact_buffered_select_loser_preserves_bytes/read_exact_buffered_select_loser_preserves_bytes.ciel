@@ -40,7 +40,7 @@ Result<usize, Error> read_loser(
     return Ok(2);
 }
 
-async Result<void, Error> write_once(
+async Result<void, Report> write_once(
     anet::AsyncTcpListener listener,
     async::Sender<usize> write_done
 ) {
@@ -59,7 +59,7 @@ async Result<usize, Error> drive() {
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::ChannelPair<usize> write_done = async::channel<usize>(1)?;
-    async::Task<void, Error> server = async::spawn<void>(
+    async::Task<void, Report> server = async::spawn<void>(
         write_once(listener, write_done.sender)
     )?;
 

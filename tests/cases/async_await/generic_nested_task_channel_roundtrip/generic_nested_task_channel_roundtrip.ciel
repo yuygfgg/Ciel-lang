@@ -19,7 +19,7 @@ unsafe impl<T: Message> clone_message(*const Weighted<T> value) {
     return Ok({ value: inner, weight: value->weight });
 }
 
-async Result<void, Error> send_value<T: Message>(
+async Result<void, Report> send_value<T: Message>(
     async::Sender<T> sender, T value
 ) {
     await async_time::sleep_ms(0)?;
@@ -27,11 +27,11 @@ async Result<void, Error> send_value<T: Message>(
     return Ok;
 }
 
-async Result<T, Error> roundtrip<T: Message>(
+async Result<T, Report> roundtrip<T: Message>(
     T value
 ) {
     async::ChannelPair<T> pair = async::channel<T>(1)?;
-    async::Task<void, Error> task = async::spawn<void>(
+    async::Task<void, Report> task = async::spawn<void>(
         send_value<T>(pair.sender, value)
     )?;
     T received = await async::recv<T>(pair.receiver)?;
@@ -41,16 +41,16 @@ async Result<T, Error> roundtrip<T: Message>(
     return Ok(received);
 }
 
-async Result<T, Error> relay_twice<T: Message>(
+async Result<T, Report> relay_twice<T: Message>(
     T value
 ) {
     T first = await roundtrip<T>(value)?;
     return await roundtrip<T>(first);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     Weighted<usize> seed = { value: 4, weight: 3 };
-    async::Task<Weighted<usize>, Error> task = async::spawn<Weighted<usize>>(
+    async::Task<Weighted<usize>, Report> task = async::spawn<Weighted<usize>>(
         relay_twice<Weighted<usize>>(seed)
     )?;
     Weighted<usize> weighted = await task?;

@@ -428,6 +428,8 @@ bool matches_async() {
                     return false;
                 case async::ChannelClosed:
                     return false;
+                case async::ChannelFull:
+                    return false;
                 case async::MessageClone(_):
                     return false;
                 case async::Operation(_):

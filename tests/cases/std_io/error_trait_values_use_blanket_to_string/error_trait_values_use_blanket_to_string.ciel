@@ -1,0 +1,55 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stderr-contains: concrete format
+// expect-stderr-contains: concrete value
+// expect-stderr-contains: error format
+// expect-stderr-contains: error value
+// expect-stderr-contains: report format
+// expect-stderr-contains: report value
+
+import /std/error;
+import /std/io as io;
+import /std/result;
+
+enum PrintableError {
+    ConcreteFormat,
+    ConcreteValue,
+    ErrorFormat,
+    ErrorValue,
+    ReportFormat,
+    ReportValue,
+}
+
+impl format_error(*const PrintableError error) {
+    switch (*error) {
+        case ConcreteFormat:
+            return "concrete format";
+        case ConcreteValue:
+            return "concrete value";
+        case ErrorFormat:
+            return "error format";
+        case ErrorValue:
+            return "error value";
+        case ReportFormat:
+            return "report format";
+        case ReportValue:
+            return "report value";
+    }
+}
+
+i32 main() {
+    PrintableError concrete_format = PrintableError::ConcreteFormat;
+    PrintableError concrete_value = PrintableError::ConcreteValue;
+    Error error_format = PrintableError::ErrorFormat;
+    Error error_value = PrintableError::ErrorValue;
+    Report report_format = PrintableError::ReportFormat;
+    Report report_value = PrintableError::ReportValue;
+
+    must(io::eprintln("{}", [concrete_format]));
+    must(io::eprintln_value(concrete_value));
+    must(io::eprintln("{}", [error_format]));
+    must(io::eprintln_value(error_value));
+    must(io::eprintln("{}", [report_format]));
+    must(io::eprintln_value(report_value));
+    return 0;
+}

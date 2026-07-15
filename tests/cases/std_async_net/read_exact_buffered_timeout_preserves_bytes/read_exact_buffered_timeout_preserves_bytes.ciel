@@ -15,7 +15,7 @@ enum ProbeError {
     Bytes([]const char, bytes::BytesError),
     Io([]const char, io::IoError),
     NetAddr([]const char, net::NetError),
-    Task([]const char, Error),
+    Task([]const char, Report),
     Logic([]const char),
     Runtime(i64),
 }
@@ -65,7 +65,7 @@ Result<T, ProbeError> async_step<T>(
 }
 
 Result<T, ProbeError> task_step<T>(
-    []const char stage, Result<T, Error> result
+    []const char stage, Result<T, Report> result
 ) {
     switch (result) {
         case Ok(value):
@@ -89,7 +89,7 @@ bool same_bytes([]u8 got, []const u8 want) {
     return true;
 }
 
-async Result<void, Error> write_delayed_chunks(
+async Result<void, Report> write_delayed_chunks(
     anet::AsyncTcpListener listener,
     async::Sender<usize> first_chunk_written,
     async::Receiver<usize> write_rest
@@ -122,7 +122,7 @@ async Result<usize, ProbeError> drive() {
     async::ChannelPair<usize> write_rest = async_step(
         "write rest channel", async::channel<usize>(1)
     )?;
-    async::Task<void, Error> server = async_step(
+    async::Task<void, Report> server = async_step(
         "spawn server",
         async::spawn<void>(
             write_delayed_chunks(
@@ -153,6 +153,8 @@ async Result<usize, ProbeError> drive() {
                 case async::Runtime(_):
                     return Err(Async("timeout wrapper", error));
                 case async::ChannelClosed:
+                    return Err(Async("timeout wrapper", error));
+                case async::ChannelFull:
                     return Err(Async("timeout wrapper", error));
                 case async::MessageClone(_):
                     return Err(Async("timeout wrapper", error));
@@ -218,15 +220,20 @@ Result<void, io::IoError> print_async_error(
                 "read_exact_buffered_timeout_preserves_bytes failed: async channel closed at {}",
                 [stage]
             );
+        case async::ChannelFull:
+            return io::eprintln(
+                "read_exact_buffered_timeout_preserves_bytes failed: async channel full at {}",
+                [stage]
+            );
         case async::MessageClone(inner):
             return io::eprintln(
                 "read_exact_buffered_timeout_preserves_bytes failed: async message clone at {}: {}",
-                [stage, error_message(&inner)]
+                [stage, report_message(&inner)]
             );
         case async::Operation(inner):
             return io::eprintln(
                 "read_exact_buffered_timeout_preserves_bytes failed: async operation at {}: {}",
-                [stage, error_message(&inner)]
+                [stage, report_message(&inner)]
             );
     }
 }
@@ -299,7 +306,7 @@ Result<void, io::IoError> print_async_net_error(
         case anet::MessageClone(inner):
             return io::eprintln(
                 "read_exact_buffered_timeout_preserves_bytes failed: async_net message clone at {}: {}",
-                [stage, error_message(&inner)]
+                [stage, report_message(&inner)]
             );
         case anet::Async(inner):
             return print_async_error(stage, &inner);
@@ -336,7 +343,7 @@ Result<void, io::IoError> print_probe_error(
         case Task(stage, inner):
             return io::eprintln(
                 "read_exact_buffered_timeout_preserves_bytes failed: task at {}: {}",
-                [stage, error_message(&inner)]
+                [stage, report_message(&inner)]
             );
         case Logic(message):
             return io::eprintln(

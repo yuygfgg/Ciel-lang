@@ -1,0 +1,35 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: channel report
+
+import /std/async as async;
+import /std/error;
+import /std/error/basic as basic;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> send_report(
+    async::Sender<Report> sender
+) {
+    Error local = basic::text_error("channel report");
+    Report report = error_report(&local);
+    await async::send<Report>(sender, report)?;
+    return Ok;
+}
+
+async Result<Report, Report> roundtrip() {
+    async::ChannelPair<Report> pair = async::channel<Report>(1)?;
+    async::Task<void, Report> sender = async::spawn<void>(
+        send_report(pair.sender)
+    )?;
+    Report report = await async::recv<Report>(pair.receiver)?;
+    await sender?;
+    return Ok(report);
+}
+
+i32 main() {
+    Report report = must(async::block_on(roundtrip()));
+    must(print_value(report));
+    return 0;
+}

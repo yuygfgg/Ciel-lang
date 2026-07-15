@@ -1,7 +1,7 @@
 // ciel-test: error
 // expect-error: generic constraint not satisfied
 // expect-error: `Envelope` does not implement `clone_message`
-// expect-error: `closure#0<i64 |()|>` does not implement `clone_message`
+// expect-error: <i64 |()|>` does not implement `clone_message`
 
 import /std/message;
 

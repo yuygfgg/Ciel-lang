@@ -7,7 +7,7 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> wait_closed(
+async Result<usize, Report> wait_closed(
     async::Receiver<usize> receiver,
     async::Sender<usize> ready
 ) {
@@ -20,10 +20,10 @@ async Result<usize, Error> wait_closed(
     }
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::ChannelPair<usize> ready = async::channel<usize>(1)?;
-    async::Task<usize, Error> waiter = async::spawn<usize>(
+    async::Task<usize, Report> waiter = async::spawn<usize>(
         wait_closed(pair.receiver, ready.sender)
     )?;
     _ waiter_ready = await async::recv<usize>(ready.receiver)?;

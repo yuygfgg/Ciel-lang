@@ -8,13 +8,18 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
+Result<usize, Error> fail_locally() {
+    return Err(basic::code_error(77));
+}
+
+async Result<usize, Report> fail_in_task() {
+    usize value = fail_locally()?;
+    return Ok(value);
+}
+
 i32 main() {
-    async::Task<usize, Error> task = must(
-        async::spawn<usize, Error>(
-            async || {
-                return Err(basic::code_error(77));
-            }
-        )
+    async::Task<usize, Report> task = must(
+        async::spawn<usize, Report>(fail_in_task())
     );
     switch (async::block_on(task)) {
         case Err(_):

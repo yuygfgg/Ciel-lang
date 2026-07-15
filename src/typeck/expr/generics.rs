@@ -517,6 +517,9 @@ impl TypeChecker {
             ));
             return None;
         }
+        let closure_owner = self
+            .closure_owners
+            .intern_generic_instance(template.def_id, instance_args);
         let subst = template
             .generics
             .iter()
@@ -598,7 +601,13 @@ impl TypeChecker {
             let previous_module = self.current_module;
             self.current_module = template.module;
             self.type_subst_stack.push(subst.clone());
-            let checked_body = self.check_function_body(&instance_sig, &body_params, body);
+            let checked_body = self.check_function_body_with_closure_owner(
+                &instance_sig,
+                &body_params,
+                body,
+                closure_owner,
+                format!("function `{}`", instance_sig.name),
+            );
             self.type_subst_stack.pop();
             self.current_module = previous_module;
             checked_body

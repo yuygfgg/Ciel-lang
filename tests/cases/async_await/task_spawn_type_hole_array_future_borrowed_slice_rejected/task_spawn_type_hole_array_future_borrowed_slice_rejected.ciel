@@ -5,21 +5,21 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async Result<usize, Error> keep_array(
-    [1]async::Future<Result<usize, Error>> futures
+async Result<usize, Report> keep_array(
+    [1]async::Future<Result<usize, Report>> futures
 ) {
     return Ok(0);
 }
 
 i32 main() {
     [3]i64 values = [1, 2, 3];
-    [1]async::Future<Result<_, Error>> futures = [len_later(values[..])];
+    [1]async::Future<Result<_, Report>> futures = [len_later(values[..])];
     _ task = must(async::spawn<usize>(keep_array(futures)));
     return 0;
 }

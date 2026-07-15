@@ -11,6 +11,19 @@ export usize type_align<T>();
 // scanned storage.
 export bool type_needs_gc_scan<T>();
 
+// Opaque process-local identity for one concrete semantic type.
+export unsafe struct TypeId {
+    *const void token;
+}
+
+// Compiler-recognized intrinsic returning the canonical runtime identity for T.
+export TypeId type_id<T>();
+
+// Compares process-local type identities.
+export bool type_id_eq(TypeId left, TypeId right) {
+    return unsafe { left.token == right.token };
+}
+
 // Zero-sized type witness used by APIs that need a type as an input value.
 // The compiler treats std meta::Type<T> as a phantom ABI witness: the type
 // checker keeps T, but generated code uses one shared representation.

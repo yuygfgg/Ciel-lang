@@ -399,10 +399,10 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
     fn collect_closures(&mut self) {
         self.collect_program_types_and_bodies(
             |this, ty| this.collect_ty_closure(ty),
-            |this, body, owner| {
+            |this, body, function_def| {
                 let mut visitor = ClosureVisitor {
                     builder: this,
-                    owner,
+                    function_def,
                 };
                 visitor.visit_block(body);
             },
@@ -656,26 +656,61 @@ impl<'a, 'b> CodegenPlanBuilder<'a, 'b> {
         }
     }
 
-    fn collect_standard_error_code_dynamic(&mut self) {
-        let dyn_ty = self.generator.std_error_trait_ty();
-        let code_ty = std_error_code_ty(&self.generator.program.checked.resolved);
-        self.collect_ty_dynamic(&dyn_ty);
-        self.collect_ty_dynamic(&code_ty);
+    fn collect_type_id(&mut self, ty: &Ty) {
+        let ty = canonical_type_identity_ty(ty);
+        if !self.plan.type_ids.contains(&ty) {
+            self.plan.type_ids.push(ty);
+        }
+    }
+
+    fn collect_dynamic_error_witness_type_id(&mut self, dyn_ty: &Ty, concrete_ty: &Ty) {
+        let Ty::DynamicInterface { def_id, args, .. } = dyn_ty else {
+            return;
+        };
+        let has_witness = self
+            .generator
+            .dynamic_view_interfaces(*def_id, args)
+            .iter()
+            .any(|interface| {
+                std_id::is_std_error_interface(
+                    &self.generator.program.checked.resolved,
+                    interface.def_id,
+                    "erased_error_ref",
+                )
+            });
+        if has_witness {
+            self.collect_type_id(&receiver_ty_from_value_ty(concrete_ty));
+        }
+    }
+
+    fn collect_dynamic_impl_use(&mut self, dyn_ty: &Ty, concrete_ty: &Ty) {
+        self.collect_ty_dynamic(dyn_ty);
+        self.collect_ty_dynamic(concrete_ty);
+        if matches!(concrete_ty, Ty::DynamicInterface { .. }) {
+            return;
+        }
+        self.collect_dynamic_error_witness_type_id(dyn_ty, concrete_ty);
         self.plan.dynamic_impls.insert(
-            self.generator.dynamic_impl_key(&dyn_ty, &code_ty),
+            self.generator.dynamic_impl_key(dyn_ty, concrete_ty),
             DynamicImplUse {
-                dyn_ty,
-                concrete_ty: code_ty,
+                dyn_ty: dyn_ty.clone(),
+                concrete_ty: concrete_ty.clone(),
             },
         );
     }
 
-    fn error_box_try_err_ty<'t>(
+    fn collect_standard_error_code_dynamic(&mut self) {
+        let dyn_ty = self.generator.std_error_trait_ty();
+        let code_ty = std_error_code_ty(&self.generator.program.checked.resolved);
+        self.collect_dynamic_impl_use(&dyn_ty, &code_ty);
+    }
+
+    fn erased_box_try_err_ty<'t>(
         &self,
         inner: &'t TExpr,
         propagation: &TryPropagation,
     ) -> Option<&'t Ty> {
-        if !matches!(propagation, TryPropagation::ErrorBox) {
+        if matches!(propagation, TryPropagation::Exact) {
             return None;
         }
         result_args(&self.generator.program.checked.resolved, &inner.ty).map(|(_, err_ty)| err_ty)
@@ -891,7 +926,8 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
                 walk_expr(self, expr);
             }
             TExprKind::MakeDynamicInterface { concrete_ty, .. }
-            | TExprKind::ErrorBox { concrete_ty, .. } => {
+            | TExprKind::ErrorBox { concrete_ty, .. }
+            | TExprKind::ReportBox { concrete_ty, .. } => {
                 self.builder.collect_ty_array_returns(concrete_ty);
                 walk_expr(self, expr);
             }
@@ -969,7 +1005,8 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
             }
             TExprKind::TypeSize { ty }
             | TExprKind::TypeAlign { ty }
-            | TExprKind::TypeNeedsGcScan { ty } => {
+            | TExprKind::TypeNeedsGcScan { ty }
+            | TExprKind::TypeId { ty } => {
                 self.builder.collect_ty_array_returns(ty);
             }
             TExprKind::MetaSchema { source_ty } => {
@@ -982,7 +1019,7 @@ impl ThirVisitor for ArrayReturnVisitor<'_, '_, '_> {
 
 struct ClosureVisitor<'a, 'b, 'c> {
     builder: &'a mut CodegenPlanBuilder<'b, 'c>,
-    owner: DefId,
+    function_def: DefId,
 }
 
 impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
@@ -1025,10 +1062,10 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                 self.builder
                     .plan
                     .closure_defs
-                    .entry((self.owner.0, *id))
+                    .entry(*id)
                     .or_insert_with(|| ClosureDef {
                         id: *id,
-                        owner: self.owner,
+                        function_def: self.function_def,
                         ty: expr.ty.clone(),
                         is_async: *is_async,
                         async_facts: async_facts.clone(),
@@ -1118,7 +1155,8 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
                 walk_expr(self, expr);
             }
             TExprKind::MakeDynamicInterface { concrete_ty, .. }
-            | TExprKind::ErrorBox { concrete_ty, .. } => {
+            | TExprKind::ErrorBox { concrete_ty, .. }
+            | TExprKind::ReportBox { concrete_ty, .. } => {
                 self.builder.collect_ty_closure(concrete_ty);
                 walk_expr(self, expr);
             }
@@ -1172,7 +1210,8 @@ impl ThirVisitor for ClosureVisitor<'_, '_, '_> {
             }
             TExprKind::TypeSize { ty }
             | TExprKind::TypeAlign { ty }
-            | TExprKind::TypeNeedsGcScan { ty } => {
+            | TExprKind::TypeNeedsGcScan { ty }
+            | TExprKind::TypeId { ty } => {
                 self.builder.collect_ty_closure(ty);
             }
             _ => walk_expr(self, expr),
@@ -1213,52 +1252,31 @@ impl ThirVisitor for DynamicVisitor<'_, '_, '_> {
         self.builder.collect_ty_dynamic(&expr.ty);
         match &expr.kind {
             TExprKind::MakeDynamicInterface { concrete_ty, .. } => {
-                self.builder.collect_ty_dynamic(concrete_ty);
-                if !matches!(concrete_ty, Ty::DynamicInterface { .. }) {
-                    self.builder.plan.dynamic_impls.insert(
-                        self.builder
-                            .generator
-                            .dynamic_impl_key(&expr.ty, concrete_ty),
-                        DynamicImplUse {
-                            dyn_ty: expr.ty.clone(),
-                            concrete_ty: concrete_ty.clone(),
-                        },
-                    );
-                }
+                self.builder.collect_dynamic_impl_use(&expr.ty, concrete_ty);
                 walk_expr(self, expr);
             }
             TExprKind::ErrorBox { concrete_ty, .. } => {
                 let dyn_ty = self.builder.generator.std_error_trait_ty();
-                self.builder.collect_ty_dynamic(&dyn_ty);
-                self.builder.collect_ty_dynamic(concrete_ty);
-                self.builder.plan.dynamic_impls.insert(
-                    self.builder
-                        .generator
-                        .dynamic_impl_key(&dyn_ty, concrete_ty),
-                    DynamicImplUse {
-                        dyn_ty,
-                        concrete_ty: concrete_ty.clone(),
-                    },
-                );
+                self.builder.collect_dynamic_impl_use(&dyn_ty, concrete_ty);
+                walk_expr(self, expr);
+            }
+            TExprKind::ReportBox { concrete_ty, .. } => {
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_dynamic_impl_use(&dyn_ty, concrete_ty);
                 walk_expr(self, expr);
             }
             TExprKind::Try {
                 expr: inner,
                 propagation,
             } => {
-                if let Some(err_ty) = self.builder.error_box_try_err_ty(inner, propagation) {
+                if let Some(err_ty) = self.builder.erased_box_try_err_ty(inner, propagation) {
                     let dyn_ty = self.builder.generator.std_error_trait_ty();
-                    self.builder.collect_ty_dynamic(&dyn_ty);
-                    self.builder.collect_ty_dynamic(err_ty);
-                    self.builder.plan.dynamic_impls.insert(
-                        self.builder.generator.dynamic_impl_key(&dyn_ty, err_ty),
-                        DynamicImplUse {
-                            dyn_ty,
-                            concrete_ty: err_ty.clone(),
-                        },
-                    );
+                    self.builder.collect_dynamic_impl_use(&dyn_ty, err_ty);
                 }
                 walk_expr(self, expr);
+            }
+            TExprKind::TypeId { ty } => {
+                self.builder.collect_type_id(ty);
             }
             TExprKind::Await { .. } | TExprKind::AsyncBlockOn { .. } => {
                 self.builder.collect_standard_error_code_dynamic();
@@ -1373,7 +1391,7 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 expr: inner,
                 propagation,
             } => {
-                if let Some(err_ty) = self.builder.error_box_try_err_ty(inner, propagation) {
+                if let Some(err_ty) = self.builder.erased_box_try_err_ty(inner, propagation) {
                     let dyn_ty = self.builder.generator.std_error_trait_ty();
                     self.builder.collect_ty_slice(&dyn_ty);
                     self.builder.collect_ty_slice(err_ty);
@@ -1457,6 +1475,12 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
                 self.builder.collect_ty_slice(concrete_ty);
                 walk_expr(self, expr);
             }
+            TExprKind::ReportBox { concrete_ty, .. } => {
+                let dyn_ty = self.builder.generator.std_error_trait_ty();
+                self.builder.collect_ty_slice(&dyn_ty);
+                self.builder.collect_ty_slice(concrete_ty);
+                walk_expr(self, expr);
+            }
             TExprKind::MetaAsRefRepr { source_ty, .. }
             | TExprKind::MetaIntoRepr { source_ty, .. } => {
                 self.builder.collect_ty_slice(source_ty);
@@ -1490,7 +1514,8 @@ impl ThirVisitor for SliceVisitor<'_, '_, '_> {
             }
             TExprKind::TypeSize { ty }
             | TExprKind::TypeAlign { ty }
-            | TExprKind::TypeNeedsGcScan { ty } => {
+            | TExprKind::TypeNeedsGcScan { ty }
+            | TExprKind::TypeId { ty } => {
                 self.builder.collect_ty_slice(ty);
             }
             _ => walk_expr(self, expr),

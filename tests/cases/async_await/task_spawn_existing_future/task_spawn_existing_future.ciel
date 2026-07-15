@@ -8,14 +8,14 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> compute(usize base) {
+async Result<usize, Report> compute(usize base) {
     await async_time::sleep_ms(1)?;
     return Ok(base + 11);
 }
 
 i32 main() {
-    async::Future<Result<usize, Error>> future = compute(7);
-    async::Task<usize, Error> task = must(async::spawn<usize>(future));
+    async::Future<Result<usize, Report>> future = compute(7);
+    async::Task<usize, Report> task = must(async::spawn<usize>(future));
     must(print_value(must(async::block_on(task))));
     return 0;
 }

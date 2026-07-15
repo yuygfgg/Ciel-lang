@@ -1,5 +1,5 @@
-// Re-exports the standard Error type used by clone_message.
-export import /std/error;
+// Re-exports local Error and transferable Report used by message policies.
+export import /std/error/core;
 
 // Re-exports Result for marker interface signatures.
 export import /std/result;
@@ -8,7 +8,8 @@ import /std/meta as meta;
 
 // Unsafe interface hole: clones a value for transfer across actor, task,
 // channel, or shared-handle boundaries. Implementations must produce an
-// independent safe message and must not duplicate affine resources.
+// independent, freely discardable message and must not duplicate affine or
+// deterministically released resources.
 export unsafe interface<T> Result<T, Error> clone_message(
     *const T value
 );
@@ -109,9 +110,12 @@ unsafe impl clone_message(*const f64 value) {
     return Ok(*value);
 }
 
-unsafe impl clone_message(*const Error value) {
+unsafe impl clone_message(*const Report value) {
     return Ok(*value);
 }
+
+// Report owns immutable diagnostic storage and is safe to retain across await.
+unsafe derive async_frame_opt_in_marker<Report>;
 
 unsafe derive<T: ShareHandle> async_frame_opt_in_marker<T>;
 
@@ -133,16 +137,7 @@ unsafe derivable unsafe impl<T> async_frame_opt_in_marker(*const T value) {
     return true;
 }
 
-unsafe impl<T: Message, E: Message> clone_message(*const Result<T, E> value) {
-    switch (*value) {
-        case Ok(ok):
-            T copied = clone_message(&ok)?;
-            return Ok(Ok(copied));
-        case Err(err):
-            E copied = clone_message(&err)?;
-            return Ok(Err(copied));
-    }
-}
+derive<T: Message, E: Message> Message<Result<T, E>>;
 
 unsafe impl<F: CielFnValue> clone_message(*const F value) {
     return Ok(*value);

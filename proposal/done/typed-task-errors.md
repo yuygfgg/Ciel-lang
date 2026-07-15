@@ -1,5 +1,15 @@
 # Typed Task Errors Proposal
 
+## Historical Status
+
+This proposal established `Task<T, E>` and `TaskGroup<T, E>`. The later
+`error-downcast` design supersedes only its erased cross-owner carrier policy:
+`Error` is local-only and does not implement `Message`; erased task failures use
+`Report`, and task carriers use `MessageClone(Report)`. Concrete messageable
+error types remain unchanged. The pre-proposal `Task<T>` baseline and references
+to `Task<T, Error>` are retained where they explain the migration, but they do
+not describe the current API. `design.md` is normative.
+
 This proposal lets spawned async tasks preserve concrete application error
 types instead of forcing task bodies through the standard boxed `Error` type.
 
@@ -98,14 +108,14 @@ panic path for task failures, or a new carrier protocol for arbitrary `Out`;
 that is a broader future design and not the right primary task API.
 
 The API is `Task<T, E>` only until the language grows default generic
-arguments. Code that wants erased task errors must still write the error type
-explicitly as `Task<T, Error>`.
+arguments. Code that wants erased transferable task errors writes the error
+type explicitly as `Task<T, Report>`.
 
 If default generic arguments exist by the time this lands, the standard library
 may use a defaulted parameter:
 
 ```ciel
-export struct Task<T, E = Error> {
+export struct Task<T, E = Report> {
     *void handle;
 }
 ```
@@ -129,7 +139,7 @@ export async Result<T, E> group_next<T, E>(*const TaskGroup<T, E> group);
 ```
 
 Heterogeneous task errors should be modeled explicitly by the application, for
-example with an application error enum or `TaskGroup<T, Error>`. The standard
+example with an application error enum or `TaskGroup<T, Report>`. The standard
 library should not provide a separate erased heterogeneous task-group path,
 because that would reintroduce the same implicit error-erasure boundary this
 proposal removes.
@@ -144,11 +154,11 @@ are:
    transfer failures through the awaited output. A fully general `Task<Out>`
    needs a broader carrier protocol and should not block this feature.
 2. Keep `spawn` as the primary API and do not add `spawn_result` as the model.
-   Error erasure can be provided by explicit helper functions, but it must be
-   visible at the call site.
+   Transferable error erasure uses `Report` through explicit result types or
+   helper functions, and remains visible at the call site.
 3. Do not provide a `Task<T>` compatibility path before default generic
    arguments exist. All task handle types must be spelled `Task<T, E>`, with
-   erased task errors written explicitly as `Task<T, Error>`.
+   erased transferable task errors written explicitly as `Task<T, Report>`.
 4. Make task groups homogeneous in their error type: `TaskGroup<T, E>` accepts
    only `Task<T, E>`. Heterogeneous groups must use an application enum or an
    explicit erased error type.
@@ -173,19 +183,18 @@ concrete error type `E`.
 fail before the body has started. Cancellation APIs and task status APIs keep
 using `AsyncError` for task-runtime operation failures.
 
-Typed task errors do not add implicit conversion. Code that wants to erase a
-task's error must do so explicitly:
+Code that wants a transferable erased task error chooses `Report` explicitly:
 
 ```ciel
-async Result<T, Error> erase_task_error<T, E: ErrorTrait>(
+async Result<T, Report> erase_task_error<T, E: ErrorTrait>(
     Future<Result<T, E>> body
 ) {
     return await body?;
 }
 ```
 
-That helper should be an explicit erasure tool, not the model encouraged by new
-application code.
+The enclosing result type makes the report conversion visible. Application code
+that needs structured recovery should keep a concrete messageable `E` instead.
 
 ## Type Checking
 
@@ -212,30 +221,30 @@ For task await, the carrier rule must also cover message-clone failure. The
 task-compatible check is the conjunction of two abilities:
 
 1. `E` can represent async runtime failure, using the existing carriers:
-   `/std/error.Error`, `async::AsyncError`, or a concrete enum with a
+   `/std/error.Report`, `async::AsyncError`, or a concrete enum with a
    `Runtime(i64)`, `Async(async::AsyncError)`,
    `TaskGroupAsync(async::AsyncError)`, or applicable
    `Resource(resource::ResourceError)` variant.
-2. `E` can represent task-boundary clone failure, using `/std/error.Error`,
-   `async::AsyncError`, or a concrete enum with a `MessageClone(Error)`,
+2. `E` can represent task-boundary clone failure, using `/std/error.Report`,
+   `async::AsyncError`, or a concrete enum with a `MessageClone(Report)`,
    `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)` variant.
 
 A single `Async(async::AsyncError)` or
 `TaskGroupAsync(async::AsyncError)`-style carrier satisfies both checks because
-`AsyncError` already contains `MessageClone(Error)`. A standalone
-`MessageClone(Error)` carrier is not enough because it cannot represent runtime
+`AsyncError` already contains `MessageClone(Report)`. A standalone
+`MessageClone(Report)` carrier is not enough because it cannot represent runtime
 failures. This follows the existing generated error synthesis paths for async
 runtime failures and task-boundary clone failures.
 
 ## Lowering And Runtime
 
 Task result storage must be parameterized by the full result type
-`Result<T, E>`, not just `Result<T, Error>`.
+`Result<T, E>`, not one erased carrier such as `Result<T, Report>`.
 
 The runtime task handle may remain an opaque pointer, but the compiler and
 stdlib must agree on the result layout for each `Task<T, E>` instance. Awaiting
 a task copies or moves the stored `Result<T, E>` out of the completed task using
-the same result-transfer policy used by the current `Task<T>` implementation.
+the same result-transfer policy used by the original `Task<T>` implementation.
 
 The C runtime does not need to understand `E` semantically. It only needs enough
 typed size, alignment, run, cleanup, and result-copy/move hooks from generated
@@ -271,7 +280,8 @@ Add fixtures that cover:
 2. propagating the awaited task's concrete `Err(LocalError)` with `?`;
 3. rejecting non-transferable success payloads;
 4. rejecting non-transferable error payloads;
-5. preserving existing `Task<T, Error>` behavior;
+5. accepting `Task<T, Report>` and rejecting `Task<T, Error>` with a targeted
+   replacement diagnostic;
 6. task cancellation and runtime setup failures still reporting `AsyncError`;
 7. `TaskGroup<T, E>` preserving typed task errors;
 8. rejecting `group_add` when the task error type differs from the group error

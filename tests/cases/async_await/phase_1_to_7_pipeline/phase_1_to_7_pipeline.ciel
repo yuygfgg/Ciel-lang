@@ -15,21 +15,21 @@ struct Packet {
 
 derive Message<Packet>;
 
-Result<usize, Error> packet_value(
+Result<usize, Report> packet_value(
     Result<Packet, async::AsyncError> result
 ) {
     Packet packet = result?;
     return Ok(packet.value);
 }
 
-async Result<Packet, Error> build_packet(
+async Result<Packet, Report> build_packet(
     usize seed
 ) {
     await async_time::sleep_ms(0)?;
     return Ok({ value: seed + 1 });
 }
 
-async Result<usize, Error> produce(
+async Result<usize, Report> produce(
     async::Sender<Packet> sender, usize seed
 ) {
     Packet packet = await build_packet(seed)?;
@@ -37,14 +37,14 @@ async Result<usize, Error> produce(
     return Ok(packet.value + 10);
 }
 
-async Result<usize, Error> delayed(
+async Result<usize, Report> delayed(
     usize value, u64 ms
 ) {
     await async_time::sleep_ms(ms)?;
     return Ok(value);
 }
 
-async Result<usize, Error> controlled(
+async Result<usize, Report> controlled(
     async::Sender<usize> ready,
     async::Receiver<usize> release,
     usize value
@@ -54,17 +54,17 @@ async Result<usize, Error> controlled(
     return Ok(value);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     async::ChannelPair<Packet> pair = async::channel<Packet>(1)?;
-    async::Task<usize, Error> producer = async::spawn<usize>(
+    async::Task<usize, Report> producer = async::spawn<usize>(
         produce(pair.sender, 5)
     )?;
 
     Packet first = await async::recv<Packet>(pair.receiver)?;
     usize producer_value = await producer?;
 
-    async::Task<usize, Error> fast = async::spawn<usize>(delayed(7, 1))?;
-    Result<usize, Error> picked = await select {
+    async::Task<usize, Report> fast = async::spawn<usize>(delayed(7, 1))?;
+    Result<usize, Report> picked = await select {
         case packet = async::recv<Packet>(pair.receiver):
             packet_value(packet);
         case done = fast:
@@ -75,15 +75,15 @@ async Result<usize, Error> drive() {
     async::try_send<Packet>(pair.sender, { value: 8 })?;
     Packet second = await async::recv<Packet>(pair.receiver)?;
 
-    async::TaskGroup<usize, Error> group = async::task_group<usize, Error>()?;
+    async::TaskGroup<usize, Report> group = async::task_group<usize, Report>()?;
     async::ChannelPair<usize> slow_ready = async::channel<usize>(1)?;
     async::ChannelPair<usize> quick_ready = async::channel<usize>(1)?;
     async::ChannelPair<usize> slow_release = async::channel<usize>(1)?;
     async::ChannelPair<usize> quick_release = async::channel<usize>(1)?;
-    async::Task<usize, Error> slow = async::spawn<usize>(
+    async::Task<usize, Report> slow = async::spawn<usize>(
         controlled(slow_ready.sender, slow_release.receiver, 4)
     )?;
-    async::Task<usize, Error> quick = async::spawn<usize>(
+    async::Task<usize, Report> quick = async::spawn<usize>(
         controlled(quick_ready.sender, quick_release.receiver, 3)
     )?;
     async::group_add<usize>(&group, slow)?;

@@ -24,7 +24,7 @@ impl<'a> CGenerator<'a> {
             if closure.captures.is_empty() {
                 continue;
             }
-            let env_name = self.closure_env_name(closure.owner, closure.id);
+            let env_name = self.closure_env_name(closure.id);
             self.line(&format!("struct {env_name} {{"));
             let mut emitted_capture = false;
             for (idx, capture) in closure.captures.iter().enumerate() {
@@ -176,10 +176,7 @@ impl<'a> CGenerator<'a> {
         };
         self.c_static_return_decl(
             &ret,
-            &format!(
-                "{}({params})",
-                self.closure_thunk_name(closure.owner, closure.id)
-            ),
+            &format!("{}({params})", self.closure_thunk_name(closure.id)),
         )
     }
 

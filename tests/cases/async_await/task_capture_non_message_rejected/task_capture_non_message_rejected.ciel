@@ -12,12 +12,13 @@ struct BadConfig {
 i32 main() {
     usize value = 5;
     BadConfig config = { ptr: &value };
-    Result<async::Task<usize, Error>, Error> task = async::spawn<usize, Error>(
-        async || {
-            usize snapshot = unsafe { *config.ptr };
-            await async_time::sleep_ms(1)?;
-            return Ok(snapshot);
-        }
-    );
+    Result<async::Task<usize, Report>, Report> task =
+        async::spawn<usize, Report>(
+            async || {
+                usize snapshot = unsafe { *config.ptr };
+                await async_time::sleep_ms(1)?;
+                return Ok(snapshot);
+            }
+        );
     return 0;
 }

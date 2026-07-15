@@ -14,8 +14,8 @@ struct OuterResult {
 }
 
 i32 main() {
-    Result<async::Task<OuterResult, Error>, Error> task =
-        async::spawn<OuterResult, Error>(
+    Result<async::Task<OuterResult, Report>, Report> task =
+        async::spawn<OuterResult, Report>(
             async || {
                 usize value = 9;
                 return Ok({ inner: { ptr: &value } });

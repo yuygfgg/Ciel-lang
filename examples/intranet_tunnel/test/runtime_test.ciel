@@ -1,5 +1,8 @@
+import /std/async as async;
 import /std/async_net as anet;
+import /std/async_time as async_time;
 import /std/bytes as bytes;
+import /std/error;
 import /std/result;
 import ../protocol/codec as tunnel_codec;
 import ../protocol/frame as frame;
@@ -55,6 +58,20 @@ bool frame_matches(
                 }
                 i = i + 1;
             }
+            return true;
+    }
+}
+
+async Result<void, Report> pending_stream_worker() {
+    await async_time::sleep_ms(60000)?;
+    return Ok;
+}
+
+bool task_was_cancelled(async::Task<void, Report> task) {
+    switch (async::block_on(task)) {
+        case Ok:
+            return false;
+        case Err(_):
             return true;
     }
 }
@@ -148,6 +165,255 @@ i32 main() {
     }
     if (!read_result_need_more(must(rt::frame_reader_next(&reader)))) {
         return 10;
+    }
+
+    rt::StreamRegistry registry = must(rt::stream_registry_new());
+    async::ChannelPair<rt::AsyncFrame> frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle worker_abort = async::task_abort_handle(&worker);
+    u64 first_lease = must(
+        rt::stream_registry_insert(
+            registry, 99 as u32, frames.sender, worker_abort
+        )
+    );
+    rt::AsyncFrame routed = {
+        kind: frame::Data,
+        stream_id: 99 as u32,
+        payload: must(rt::empty_bytes())
+    };
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamDelivered:
+            {}
+        default:
+            return 11;
+    }
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamBackpressured:
+            {}
+        default:
+            return 12;
+    }
+    if (!task_was_cancelled(worker)) {
+        return 13;
+    }
+    switch (async::block_on(async::recv<rt::AsyncFrame>(frames.receiver))) {
+        case Ok(_):
+            {}
+        case Err(_):
+            return 14;
+    }
+    switch (async::block_on(async::recv<rt::AsyncFrame>(frames.receiver))) {
+        case Err(async::ChannelClosed):
+            {}
+        case Err(_):
+            return 15;
+        case Ok(_):
+            return 15;
+    }
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamMissing:
+            {}
+        default:
+            return 16;
+    }
+
+    async::ChannelPair<rt::AsyncFrame> replacement = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> replacement_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle replacement_abort = async::task_abort_handle(
+        &replacement_worker
+    );
+    u64 replacement_lease = must(
+        rt::stream_registry_insert(
+            registry, 99 as u32, replacement.sender, replacement_abort
+        )
+    );
+    if (replacement_lease == first_lease) {
+        return 17;
+    }
+    must(
+        rt::stream_registry_remove_close(
+            registry, 99 as u32, first_lease
+        )
+    );
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamDelivered:
+            {}
+        default:
+            return 18;
+    }
+    switch (async::block_on(
+        async::recv<rt::AsyncFrame>(replacement.receiver)
+    )) {
+        case Ok(_):
+            {}
+        case Err(_):
+            return 19;
+    }
+    must(
+        rt::stream_registry_cancel_remove(
+            registry, 99 as u32, replacement_lease
+        )
+    );
+    if (!task_was_cancelled(replacement_worker)) {
+        return 20;
+    }
+
+    async::ChannelPair<rt::AsyncFrame> final_frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> final_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle final_abort = async::task_abort_handle(
+        &final_worker
+    );
+    u64 final_lease = must(
+        rt::stream_registry_insert(
+            registry, 99 as u32, final_frames.sender, final_abort
+        )
+    );
+    if (final_lease == replacement_lease) {
+        return 21;
+    }
+    must(
+        rt::stream_registry_remove_close(
+            registry, 99 as u32, replacement_lease
+        )
+    );
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamDelivered:
+            {}
+        default:
+            return 22;
+    }
+    switch (async::block_on(
+        async::recv<rt::AsyncFrame>(final_frames.receiver)
+    )) {
+        case Ok(_):
+            {}
+        case Err(_):
+            return 23;
+    }
+    must(
+        rt::stream_registry_cancel_remove(
+            registry, 99 as u32, final_lease
+        )
+    );
+    if (!task_was_cancelled(final_worker)) {
+        return 24;
+    }
+
+    async::ChannelPair<rt::AsyncFrame> duplicate_frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> duplicate_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle duplicate_abort = async::task_abort_handle(
+        &duplicate_worker
+    );
+    u64 active_lease = must(
+        rt::stream_registry_insert(
+            registry, 99 as u32, duplicate_frames.sender, duplicate_abort
+        )
+    );
+    async::ChannelPair<rt::AsyncFrame> rejected_frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> rejected_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle rejected_abort = async::task_abort_handle(
+        &rejected_worker
+    );
+    switch (rt::stream_registry_insert(
+        registry, 99 as u32, rejected_frames.sender, rejected_abort
+    )) {
+        case Err(_):
+            {}
+        case Ok(_):
+            return 25;
+    }
+    if (!task_was_cancelled(rejected_worker)) {
+        return 26;
+    }
+    switch (must(rt::stream_registry_try_route(registry, routed))) {
+        case rt::StreamDelivered:
+            {}
+        default:
+            return 27;
+    }
+    must(
+        rt::stream_registry_cancel_remove(
+            registry, 99 as u32, active_lease
+        )
+    );
+    if (!task_was_cancelled(duplicate_worker)) {
+        return 28;
+    }
+
+    async::ChannelPair<rt::AsyncFrame> closed_frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> closed_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle closed_abort = async::task_abort_handle(
+        &closed_worker
+    );
+    u64 closed_lease = must(
+        rt::stream_registry_insert(
+            registry, 100 as u32, closed_frames.sender, closed_abort
+        )
+    );
+    must(async::close_receiver<rt::AsyncFrame>(closed_frames.receiver));
+    rt::AsyncFrame closed_routed = {
+        kind: frame::Data,
+        stream_id: 100 as u32,
+        payload: must(rt::empty_bytes())
+    };
+    switch (must(rt::stream_registry_try_route(registry, closed_routed))) {
+        case rt::StreamMissing:
+            {}
+        default:
+            return 29;
+    }
+    if (!task_was_cancelled(closed_worker)) {
+        return 30;
+    }
+
+    async::ChannelPair<rt::AsyncFrame> reopened_frames = must(
+        async::channel<rt::AsyncFrame>(1)
+    );
+    async::Task<void, Report> reopened_worker = must(
+        async::spawn<void, Report>(pending_stream_worker())
+    );
+    async::TaskAbortHandle reopened_abort = async::task_abort_handle(
+        &reopened_worker
+    );
+    u64 reopened_lease = must(
+        rt::stream_registry_insert(
+            registry, 100 as u32, reopened_frames.sender, reopened_abort
+        )
+    );
+    if (reopened_lease == closed_lease) {
+        return 31;
+    }
+    must(
+        rt::stream_registry_cancel_remove(
+            registry, 100 as u32, reopened_lease
+        )
+    );
+    if (!task_was_cancelled(reopened_worker)) {
+        return 32;
     }
 
     return 0;

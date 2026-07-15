@@ -1,0 +1,24 @@
+// ciel-test: compile
+// expect-c-count: static unsigned char ciel_type_id_ => 1
+
+import /std/error;
+import /std/meta as meta;
+
+struct TokenError {
+    i64 code;
+}
+
+impl format_error(*const TokenError error) {
+    return "token";
+}
+
+i64 main() {
+    meta::TypeId first = meta::type_id<TokenError>();
+    meta::TypeId second = meta::type_id<TokenError>();
+    TokenError concrete = { code: 1 };
+    Error boxed = concrete;
+    if (!meta::type_id_eq(first, second) || !error_is<TokenError>(&boxed)) {
+        return 1;
+    }
+    return 0;
+}

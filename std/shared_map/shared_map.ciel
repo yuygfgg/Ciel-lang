@@ -26,6 +26,12 @@ export enum SharedMapPop<K, V> {
     Empty,
 }
 
+// Result of inserting only when a key is absent.
+export enum InsertIfAbsentResult {
+    Inserted,
+    Occupied,
+}
+
 // Errors produced by SharedMap operations.
 export enum SharedMapError {
     Map(map::MapError),
@@ -33,6 +39,12 @@ export enum SharedMapError {
 }
 
 derive Message<SharedMapError>;
+derive Message<InsertIfAbsentResult>;
+
+// Tests whether a stored value still belongs to a caller-provided generation.
+export interface<P, V> bool remove_match(
+    *const P policy, *const V value
+);
 
 impl format_error(*const SharedMapError error) {
     switch (*error) {
@@ -101,6 +113,12 @@ SharedMapError sync_map_error(
     }
 }
 
+SharedMapError message_clone_error(
+    Error error
+) {
+    return Map(map::MessageClone(error_report(&error)));
+}
+
 // Creates an empty shared map whose keys and values are Message values.
 export Result<SharedMap<K, V>, SharedMapError> shared_map_new<K: shared_map_key, V: Message>() {
     map::HashMap<K, V> @inner;
@@ -127,13 +145,27 @@ export Result<map::InsertResult<V>, SharedMapError> shared_map_insert<K: shared_
     K key,
     V value
 ) = .insert {
+    K @stored_key;
+    switch (clone_message(&key)) {
+        case Ok(copied):
+            stored_key = copied;
+        case Err(error):
+            return Err(message_clone_error(error));
+    }
+    V @stored_value;
+    switch (clone_message(&value)) {
+        case Ok(copied):
+            stored_value = copied;
+        case Err(error):
+            return Err(message_clone_error(error));
+    }
     switch (
         sync::mutex_with<SharedMapState<K, V>, map::InsertResult<V>, map::MapError>(
             &shared.state,
             |state| {
                 return Ok(
                     map::hash_map_insert<K, V>(
-                        unsafe { &state->inner }, key, value
+                        unsafe { &state->inner }, stored_key, stored_value
                     )?
                 );
             }
@@ -141,6 +173,49 @@ export Result<map::InsertResult<V>, SharedMapError> shared_map_insert<K: shared_
     ) {
         case Ok(value):
             return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
+}
+
+// Inserts value only when key is absent, atomically under the map lock.
+export Result<InsertIfAbsentResult, SharedMapError> shared_map_insert_if_absent<K: shared_map_key, V: Message>(
+    SharedMap<K, V> shared,
+    K key,
+    V value
+) = .insert_if_absent {
+    K @stored_key;
+    switch (clone_message(&key)) {
+        case Ok(copied):
+            stored_key = copied;
+        case Err(error):
+            return Err(message_clone_error(error));
+    }
+    V @stored_value;
+    switch (clone_message(&value)) {
+        case Ok(copied):
+            stored_value = copied;
+        case Err(error):
+            return Err(message_clone_error(error));
+    }
+    switch (
+        sync::mutex_with<SharedMapState<K, V>, InsertIfAbsentResult, map::MapError>(
+            &shared.state,
+            |state| {
+                if (map::hash_map_contains_key<K, V>(
+                    unsafe { &state->inner }, stored_key
+                )?) {
+                    return Ok(InsertIfAbsentResult::Occupied);
+                }
+                _ inserted = map::hash_map_insert<K, V>(
+                    unsafe { &state->inner }, stored_key, stored_value
+                )?;
+                return Ok(InsertIfAbsentResult::Inserted);
+            }
+        )
+    ) {
+        case Ok(result):
+            return Ok(result);
         case Err(error):
             return Err(sync_map_error(error));
     }
@@ -199,6 +274,42 @@ export Result<SharedMapGet<V>, SharedMapError> shared_map_remove<K: shared_map_k
     ) {
         case Ok(value):
             return Ok(value);
+        case Err(error):
+            return Err(sync_map_error(error));
+    }
+}
+
+// Removes key only when policy matches the current stored value.
+export Result<SharedMapGet<V>, SharedMapError> shared_map_remove_if<K: shared_map_key, V: Message, P: remove_match<V>>(
+    SharedMap<K, V> shared,
+    K key,
+    P policy
+) = .remove_if {
+    switch (
+        sync::mutex_with<SharedMapState<K, V>, SharedMapGet<V>, map::MapError>(
+            &shared.state,
+            |state| {
+                _ removed = map::hash_map_remove_if<K, V, P>(
+                    unsafe { &state->inner },
+                    key,
+                    policy,
+                    | match_policy, stored| {
+                        return remove_match(match_policy, stored);
+                    }
+                )?;
+                switch (
+                    removed
+                ) {
+                    case map::RemoveResult::Removed(value):
+                        return Ok(SharedMapGet::Found(value));
+                    case map::RemoveResult::Missing:
+                        return Ok(SharedMapGet::Missing);
+                }
+            }
+        )
+    ) {
+        case Ok(result):
+            return Ok(result);
         case Err(error):
             return Err(sync_map_error(error));
     }

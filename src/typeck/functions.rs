@@ -314,7 +314,7 @@ impl TypeChecker {
                     ));
                     continue;
                 }
-                if self.is_compiler_provided_meta_marker_def(interface_def) {
+                if self.is_compiler_provided_interface_def(interface_def) {
                     self.diagnostics.push(Diagnostic::new(
                         decl.name.span,
                         format!(
@@ -443,7 +443,7 @@ impl TypeChecker {
             ));
             return;
         }
-        if self.is_compiler_provided_meta_marker_def(interface_def) {
+        if self.is_compiler_provided_interface_def(interface_def) {
             self.diagnostics.push(Diagnostic::new(
                 impl_decl.name.span,
                 format!(
@@ -653,7 +653,19 @@ impl TypeChecker {
         receiver_ty: &Ty,
         capability: &InterfaceRefTy,
     ) {
-        if self.is_compiler_provided_meta_marker_def(capability.def_id) {
+        if self.is_std_message_clone_interface_def(capability.def_id)
+            && let Some(path) =
+                self.message_derivation_error_path(receiver_ty, "", &mut HashSet::new())
+        {
+            self.diagnostics.push(Diagnostic::new(
+                decl.name.span,
+                format!(
+                    "Message derivation blocked at {path}: downcastable erased errors are local-only; use `Report` for transfer"
+                ),
+            ));
+            return;
+        }
+        if self.is_compiler_provided_interface_def(capability.def_id) {
             self.diagnostics.push(Diagnostic::new(
                 decl.name.span,
                 format!(
@@ -797,6 +809,98 @@ impl TypeChecker {
                         body_subst,
                     },
                 });
+        }
+    }
+
+    fn message_derivation_error_path(
+        &mut self,
+        ty: &Ty,
+        path: &str,
+        visiting: &mut HashSet<Ty>,
+    ) -> Option<String> {
+        if self.is_std_error_ty(ty) {
+            return Some(if path.is_empty() {
+                "`Error`".to_string()
+            } else {
+                format!("{path} (`Error`)")
+            });
+        }
+        match ty {
+            Ty::Array { elem, .. } => {
+                let next = if path.is_empty() {
+                    "array element".to_string()
+                } else {
+                    format!("{path} -> array element")
+                };
+                self.message_derivation_error_path(elem, &next, visiting)
+            }
+            Ty::OpaqueState { base, state } => {
+                if let Some(found) = self.message_derivation_error_path(base, path, visiting) {
+                    return Some(found);
+                }
+                for (name, state_ty) in state {
+                    let next = if name.is_empty() {
+                        "opaque state".to_string()
+                    } else {
+                        format!("opaque state `{name}`")
+                    };
+                    if let Some(found) =
+                        self.message_derivation_error_path(state_ty, &next, visiting)
+                    {
+                        return Some(found);
+                    }
+                }
+                None
+            }
+            Ty::Named { def_id, name, args } => {
+                if !visiting.insert(ty.clone()) {
+                    return None;
+                }
+                let named = named_ty(*def_id, name.clone(), args.clone());
+                self.ensure_struct_instance(&named);
+                let instance_name = enum_instance_name(name, args);
+                if let Some(fields) = self.ctx.structs.get(&instance_name).cloned() {
+                    for (field, field_ty) in fields {
+                        let next = if path.is_empty() {
+                            format!("field `{field}`")
+                        } else {
+                            format!("{path} -> field `{field}`")
+                        };
+                        if let Some(found) =
+                            self.message_derivation_error_path(&field_ty, &next, visiting)
+                        {
+                            visiting.remove(ty);
+                            return Some(found);
+                        }
+                    }
+                }
+                self.ensure_enum_instance(&named);
+                if let Some(enm) = self.ctx.checked_enums.get(&instance_name).cloned() {
+                    for variant in enm.variants {
+                        for (index, payload_ty) in variant.payload.iter().enumerate() {
+                            let variant_path = if path.is_empty() {
+                                format!("variant `{}`", variant.name)
+                            } else {
+                                format!("{path} -> variant `{}`", variant.name)
+                            };
+                            let next = if variant.payload.len() == 1 {
+                                variant_path
+                            } else {
+                                format!("{variant_path} payload #{index}")
+                            };
+                            if let Some(found) =
+                                self.message_derivation_error_path(payload_ty, &next, visiting)
+                            {
+                                visiting.remove(ty);
+                                return Some(found);
+                            }
+                        }
+                    }
+                }
+                visiting.remove(ty);
+                None
+            }
+            _ => None,
         }
     }
 
@@ -2312,10 +2416,11 @@ impl TypeChecker {
         params: &[(LocalId, String, Ty, BindingMutability)],
         body: &Block,
     ) -> Option<CheckedFunctionBody> {
-        self.check_function_body_with_return_context(
+        self.check_function_body_with_closure_owner(
             sig,
             params,
             body,
+            ClosureOwnerId::Function(sig.def_id),
             format!("function `{}`", sig.name),
         )
     }
@@ -2327,9 +2432,27 @@ impl TypeChecker {
         body: &Block,
         return_context: String,
     ) -> Option<CheckedFunctionBody> {
+        self.check_function_body_with_closure_owner(
+            sig,
+            params,
+            body,
+            ClosureOwnerId::Function(sig.def_id),
+            return_context,
+        )
+    }
+
+    pub(in crate::typeck) fn check_function_body_with_closure_owner(
+        &mut self,
+        sig: &FunctionSig,
+        params: &[(LocalId, String, Ty, BindingMutability)],
+        body: &Block,
+        closure_owner: ClosureOwnerId,
+        return_context: String,
+    ) -> Option<CheckedFunctionBody> {
         let previous_return_ty = std::mem::replace(&mut self.current_return_ty, sig.ret.clone());
         let previous_return_context =
             std::mem::replace(&mut self.current_return_context, Some(return_context));
+        let previous_closure_owner = self.current_closure_owner.replace(closure_owner);
         let previous_opaque_return = std::mem::replace(
             &mut self.current_opaque_return,
             matches!(sig.ret, Ty::OpaqueReturn { .. }).then(|| OpaqueReturnState {
@@ -2431,6 +2554,7 @@ impl TypeChecker {
         }
         self.current_return_ty = previous_return_ty;
         self.current_return_context = previous_return_context;
+        self.current_closure_owner = previous_closure_owner;
         self.current_opaque_return = previous_opaque_return;
         self.control_contexts = previous_control_contexts;
         self.unsafe_depth = previous_unsafe_depth;
@@ -2464,7 +2588,9 @@ impl TypeChecker {
             .note(
                 "custom async Result error types need a carrier such as `Runtime(i64)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
             )
-            .note("alternatively return `Result<_, Error>` or `Result<_, async::AsyncError>`"),
+            .note(
+                "alternatively return `Result<_, Error>`, `Result<_, Report>`, or `Result<_, async::AsyncError>`",
+            ),
         );
     }
 }

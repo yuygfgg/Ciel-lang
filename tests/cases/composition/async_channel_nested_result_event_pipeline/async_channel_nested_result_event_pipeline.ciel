@@ -5,7 +5,7 @@ import /std/lib;
 
 enum Event<T> {
     Value(T),
-    Ack(Result<void, Error>),
+    Ack(Result<void, Report>),
 }
 
 unsafe impl<T: Message> clone_message(*const Event<T> value) {

@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: constructing unsafe struct `TypeId` requires unsafe block
+
+import /std/meta as meta;
+
+i64 main() {
+    i64 value = 0;
+    meta::TypeId forged = {
+        token: unsafe { &value as *const void } };
+    forged;
+    return 0;
+}

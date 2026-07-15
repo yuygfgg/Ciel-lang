@@ -5,10 +5,11 @@ import /std/async as async;
 import /std/result;
 
 i32 main() {
-    Result<async::Task<usize, Error>, Error> task = async::spawn<usize, Error>(
-        async |usize value| {
-            return Ok(value);
-        }
-    );
+    Result<async::Task<usize, Report>, Report> task =
+        async::spawn<usize, Report>(
+            async |usize value| {
+                return Ok(value);
+            }
+        );
     return 0;
 }

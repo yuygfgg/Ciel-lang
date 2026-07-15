@@ -7,10 +7,10 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> drive() {
-    async::TaskGroup<usize, Error> group = async::task_group<usize, Error>()?;
+async Result<usize, Report> drive() {
+    async::TaskGroup<usize, Report> group = async::task_group<usize, Report>()?;
     async::group_close<usize>(&group)?;
-    Result<usize, Error> next = await async::group_next<usize>(&group);
+    Result<usize, Report> next = await async::group_next<usize>(&group);
     switch (next) {
         case Err(_):
             return Ok(6);

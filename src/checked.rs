@@ -9,12 +9,13 @@ use crate::{
         CheckedInterfaceAlias, CheckedOpaqueStruct, CheckedStruct,
     },
     typeck::env::TyCtx,
-    types::{OpaqueReturnKey, Ty},
+    types::{ClosureOwnerTable, OpaqueReturnKey, Ty},
 };
 
 #[derive(Clone, Debug)]
 pub struct CheckedProgram {
     pub ty_ctx: TyCtx,
+    pub(crate) closure_owners: ClosureOwnerTable,
     pub resolved: ResolvedProgram,
     pub hir_modules: Vec<Module>,
     pub hir_locals: Vec<Local>,

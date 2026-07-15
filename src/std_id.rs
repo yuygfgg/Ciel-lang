@@ -15,6 +15,7 @@ const STD_ERROR_EXPORT: &str = "/std/error";
 const STD_ERROR_CORE_EXPORT: &str = "/std/error/core";
 const STD_MESSAGE_EXPORT: &str = "/std/message";
 const STD_RESOURCE_EXPORT: &str = "/std/resource";
+const STD_RESOURCE_CORE_EXPORT: &str = "/std/resource/core";
 const STD_ACTOR_EXPORT: &str = "/std/actor";
 const STD_META_EXPORT: &str = "/std/meta";
 const STD_STORAGE_EXPORT: &str = "/std/storage";
@@ -105,6 +106,32 @@ pub fn is_std_error_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
         )
 }
 
+pub fn is_std_report_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::Struct,
+        "Report",
+        STD_ERROR_EXPORT,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Struct,
+        "Report",
+        STD_ERROR_CORE_EXPORT,
+    )
+}
+
+pub fn is_std_error_function(
+    resolved: &ResolvedProgram,
+    module: ModuleId,
+    name: &str,
+    expected_name: &str,
+) -> bool {
+    name == expected_name
+        && module_export_matches_any(resolved, module, &[STD_ERROR_EXPORT, STD_ERROR_CORE_EXPORT])
+}
+
 pub fn module_can_see_std_error(resolved: &ResolvedProgram, module: ModuleId) -> bool {
     if module_export_matches_any(resolved, module, &[STD_ERROR_EXPORT, STD_ERROR_CORE_EXPORT]) {
         return true;
@@ -130,6 +157,26 @@ pub fn is_std_error_interface(
         resolved,
         def_id,
         DefKind::Interface,
+        expected_name,
+        STD_ERROR_CORE_EXPORT,
+    )
+}
+
+pub fn is_std_error_interface_alias(
+    resolved: &ResolvedProgram,
+    def_id: DefId,
+    expected_name: &str,
+) -> bool {
+    def_matches(
+        resolved,
+        def_id,
+        DefKind::InterfaceAlias,
+        expected_name,
+        STD_ERROR_EXPORT,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::InterfaceAlias,
         expected_name,
         STD_ERROR_CORE_EXPORT,
     )
@@ -169,6 +216,7 @@ pub fn is_std_message_clone_interface(resolved: &ResolvedProgram, def_id: DefId)
 
 pub fn is_std_resource_handle_type_name(resolved: &ResolvedProgram, ty_name: &str) -> bool {
     is_std_exported_struct_type_name(resolved, ty_name, STD_RESOURCE_EXPORT, "Handle")
+        || is_std_exported_struct_type_name(resolved, ty_name, STD_RESOURCE_CORE_EXPORT, "Handle")
 }
 
 pub fn is_std_resource_handle_struct(resolved: &ResolvedProgram, def_id: DefId) -> bool {
@@ -178,6 +226,12 @@ pub fn is_std_resource_handle_struct(resolved: &ResolvedProgram, def_id: DefId) 
         DefKind::Struct,
         "Handle",
         STD_RESOURCE_EXPORT,
+    ) || def_matches(
+        resolved,
+        def_id,
+        DefKind::Struct,
+        "Handle",
+        STD_RESOURCE_CORE_EXPORT,
     )
 }
 

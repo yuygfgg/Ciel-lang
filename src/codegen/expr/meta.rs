@@ -867,8 +867,8 @@ impl<'a> CGenerator<'a> {
             let (_, literal) = self.meta_named_product_literal(&[], "FieldRef")?;
             return Ok(literal);
         }
-        let (owner, id) = self.closure_instance_owner_id(expr.span, source_ty)?;
-        let env_name = self.closure_env_name(owner, id);
+        let id = self.closure_instance_id(expr.span, source_ty)?;
+        let env_name = self.closure_env_name(id);
         let env_temp = self.next_temp("meta_ref_env");
         self.line_indent(
             indent,
@@ -899,8 +899,8 @@ impl<'a> CGenerator<'a> {
             let (_, literal) = self.meta_named_product_literal(&[], "Field")?;
             return Ok(literal);
         }
-        let (owner, id) = self.closure_instance_owner_id(span, source_ty)?;
-        let env_name = self.closure_env_name(owner, id);
+        let id = self.closure_instance_id(span, source_ty)?;
+        let env_name = self.closure_env_name(id);
         let env_temp = self.next_temp("meta_owned_env");
         self.line_indent(
             indent,
@@ -934,15 +934,15 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let captures = self.meta_capture_fields_for_ty(span, target_ty)?;
-        let (owner, id) = self.closure_instance_owner_id(span, target_ty)?;
+        let id = self.closure_instance_id(span, target_ty)?;
         if captures.is_empty() {
             return Ok(format!(
                 "({}){{ .call = {}, .env = NULL }}",
                 self.c_type(target_ty),
-                self.closure_thunk_name(owner, id)
+                self.closure_thunk_name(id)
             ));
         }
-        let env_name = self.closure_env_name(owner, id);
+        let env_name = self.closure_env_name(id);
         let env_temp = self.next_temp("meta_closure_env");
         self.line_indent(
             indent,
@@ -963,7 +963,7 @@ impl<'a> CGenerator<'a> {
         Ok(format!(
             "({}){{ .call = {}, .env = (void *){} }}",
             self.c_type(target_ty),
-            self.closure_thunk_name(owner, id),
+            self.closure_thunk_name(id),
             env_temp
         ))
     }
@@ -1494,36 +1494,17 @@ impl<'a> CGenerator<'a> {
             .collect())
     }
 
-    pub(super) fn closure_instance_owner_id(
+    pub(super) fn closure_instance_id(
         &self,
         span: crate::span::Span,
         ty: &Ty,
-    ) -> DiagResult<(DefId, usize)> {
+    ) -> DiagResult<ClosureInstanceId> {
         let Ty::ClosureInstance { id, .. } = ty else {
             return Err(vec![Diagnostic::new(
                 span,
                 format!("internal error: expected concrete closure type, got `{ty}`"),
             )]);
         };
-        let matches = self
-            .plan
-            .closure_defs
-            .values()
-            .filter(|closure| closure.id == *id && &closure.ty == ty)
-            .collect::<Vec<_>>();
-        if let Some(owner) = self.current_closure_owner
-            && let Some(closure) = matches.iter().find(|closure| closure.owner == owner)
-        {
-            return Ok((closure.owner, closure.id));
-        }
-        matches
-            .first()
-            .map(|closure| (closure.owner, closure.id))
-            .ok_or_else(|| {
-                vec![Diagnostic::new(
-                    span,
-                    format!("internal error: missing closure metadata for `{ty}`"),
-                )]
-            })
+        Ok(*id)
     }
 }

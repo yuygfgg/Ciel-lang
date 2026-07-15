@@ -1,0 +1,8 @@
+// ciel-test: host
+// host: task_group_try_next_drains_completed_queue.host.c
+// expect-exit: 0
+// warning-clean: true
+
+export extern "C" i32 task_group_try_next_fixture_marker() {
+    return 0;
+}

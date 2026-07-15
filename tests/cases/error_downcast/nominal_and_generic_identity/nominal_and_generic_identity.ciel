@@ -1,0 +1,57 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/meta as meta;
+
+struct LeftError {
+    i64 code;
+}
+
+struct RightError {
+    i64 code;
+}
+
+struct GenericError<T> {
+    T value;
+}
+
+impl format_error(*const LeftError error) {
+    return "left";
+}
+
+impl format_error(*const RightError error) {
+    return "right";
+}
+
+impl<T> format_error(*const GenericError<T> error) {
+    return "generic";
+}
+
+i64 main() {
+    LeftError left = { code: 1 };
+    Error nominal = left;
+    if (!error_is<LeftError>(&nominal) || error_is<RightError>(&nominal)) {
+        return 1;
+    }
+    if (meta::type_id_eq(
+        meta::type_id<LeftError>(), meta::type_id<RightError>()
+    )) {
+        return 2;
+    }
+    GenericError<i64> concrete_generic = { value: 3 };
+    Error generic = concrete_generic;
+    if (!error_is<GenericError<i64>>(&generic)) {
+        return 3;
+    }
+    if (error_is<GenericError<u8>>(&generic)) {
+        return 4;
+    }
+    if (meta::type_id_eq(
+        meta::type_id<GenericError<i64>>(),
+        meta::type_id<GenericError<u8>>()
+    )) {
+        return 5;
+    }
+    return 0;
+}

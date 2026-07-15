@@ -11,7 +11,7 @@ import /std/net as net;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> read_until_cancelled(
+async Result<usize, Report> read_until_cancelled(
     anet::AsyncTcpListener listener
 ) {
     anet::AsyncTcpStream @stream = await anet::accept(&listener)?;
@@ -24,7 +24,7 @@ async Result<usize, Error> read_until_cancelled(
     return Ok(bytes::bytes_len(inbound));
 }
 
-async Result<anet::AsyncTcpStream, Error> connect_and_wait_ready(
+async Result<anet::AsyncTcpStream, Report> connect_and_wait_ready(
     net::SocketAddr bound
 ) {
     anet::AsyncTcpStream client = await anet::connect(bound)?;
@@ -35,11 +35,11 @@ async Result<anet::AsyncTcpStream, Error> connect_and_wait_ready(
     return Ok(client);
 }
 
-Result<usize, Error> drive() {
+Result<usize, Report> drive() {
     net::SocketAddr requested = net::parse_addr("127.0.0.1:0")?;
     anet::AsyncTcpListener listener = anet::listen_async(requested)?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize, Error> task = async::spawn<usize>(
+    async::Task<usize, Report> task = async::spawn<usize>(
         read_until_cancelled(listener)
     )?;
     anet::AsyncTcpStream client = async::block_on(
@@ -51,7 +51,7 @@ Result<usize, Error> drive() {
     if (!async::is_finished<usize>(&task)?) {
         return Err(code_error(71));
     }
-    Result<usize, Error> result = async::block_on(task);
+    Result<usize, Report> result = async::block_on(task);
     _ close_client = anet::close_stream(client);
     switch (result) {
         case Err(_):

@@ -1,0 +1,8 @@
+// ciel-test: host
+// host: task_group_close_preserves_settled_failure.host.c
+// expect-exit: 0
+// warning-clean: true
+
+export extern "C" i32 task_group_settled_failure_fixture_marker() {
+    return 0;
+}

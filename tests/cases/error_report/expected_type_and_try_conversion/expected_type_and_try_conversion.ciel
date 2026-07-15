@@ -1,0 +1,51 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+enum ParseError {
+    Invalid,
+}
+
+impl format_error(*const ParseError error) {
+    return "invalid";
+}
+
+Result<void, ParseError> parse() {
+    return Err(ParseError::Invalid);
+}
+
+Result<void, Report> propagate() {
+    parse()?;
+    return Ok;
+}
+
+bool is_invalid(Report report) {
+    []const char message = report_message(&report);
+    return message.len == 7 && message[0] == 'i';
+}
+
+i64 main() {
+    Report direct = ParseError::Invalid;
+    if (!is_invalid(direct)) {
+        return 1;
+    }
+    Result<void, Report> expected = Err(ParseError::Invalid);
+    switch (expected) {
+        case Ok:
+            return 2;
+        case Err(report):
+            if (!is_invalid(report)) {
+                return 3;
+            }
+    }
+    switch (propagate()) {
+        case Ok:
+            return 4;
+        case Err(report):
+            if (!is_invalid(report)) {
+                return 5;
+            }
+    }
+    return 0;
+}

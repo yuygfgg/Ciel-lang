@@ -55,7 +55,7 @@ unsafe derive async_frame_opt_in_marker<AsyncWrite>;
 // Errors produced by async file-descriptor operation-token APIs.
 export enum AsyncIoError {
     Runtime(i64),
-    MessageClone(Error),
+    MessageClone(Report),
     Async(AsyncError),
 }
 
@@ -441,19 +441,16 @@ export async Result<usize, AsyncIoError> write_bytes(
     return async_result(await async_core::future_from_op(op));
 }
 
-// Sends message to actor_handle when a read operation completes.
-export Result<void, AsyncIoError> notify_read_done<M: Message>(
-    *const AsyncRead op,
-    *const actor::Actor<M> actor_handle,
+Result<*void, AsyncIoError> box_message<M: Message>(
     M message
-) = .notify_done {
+) {
     M local = message;
     M @cloned;
     switch (clone_message(&local)) {
         case Ok(value):
             cloned = value;
         case Err(error):
-            return Err(MessageClone(error));
+            return Err(MessageClone(error_report(&error)));
     }
     ?*void boxed = unsafe {
         c::ciel_actor_box_copy(
@@ -463,11 +460,22 @@ export Result<void, AsyncIoError> notify_read_done<M: Message>(
     if (boxed == null) {
         return Err(Runtime(5));
     }
+    return Ok(pointer::unwrap(boxed));
+}
+
+// Sends message to actor_handle when a read operation completes.
+export Result<void, AsyncIoError> notify_read_done<M: Message>(
+    *const AsyncRead op,
+    *const actor::Actor<M> actor_handle,
+    M message
+) = .notify_done {
+    *CielAsyncOp raw = raw_async_read(op)?;
+    *void boxed = box_message(message)?;
     c::c_int rc = unsafe {
         ciel_async_notify_read(
-            raw_async_read(op)?,
+            raw,
             actor_handle->handle as *CielActor,
-            pointer::unwrap(boxed)
+            boxed
         )
     };
     if ((rc as i64) != 0) {
@@ -482,27 +490,13 @@ export Result<void, AsyncIoError> notify_write_done<M: Message>(
     *const actor::Actor<M> actor_handle,
     M message
 ) = .notify_done {
-    M local = message;
-    M @cloned;
-    switch (clone_message(&local)) {
-        case Ok(value):
-            cloned = value;
-        case Err(error):
-            return Err(MessageClone(error));
-    }
-    ?*void boxed = unsafe {
-        c::ciel_actor_box_copy(
-            type_size<M>(), type_align<M>(), &cloned as *const void
-        )
-    };
-    if (boxed == null) {
-        return Err(Runtime(5));
-    }
+    *CielAsyncOp raw = raw_async_write(op)?;
+    *void boxed = box_message(message)?;
     c::c_int rc = unsafe {
         ciel_async_notify_write(
-            raw_async_write(op)?,
+            raw,
             actor_handle->handle as *CielActor,
-            pointer::unwrap(boxed)
+            boxed
         )
     };
     if ((rc as i64) != 0) {

@@ -5,19 +5,19 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> read_later(
+async Result<usize, Report> read_later(
     *const usize ptr
 ) {
     return Ok(unsafe { *ptr });
 }
 
-async::Future<Result<usize, Error>> pass(
-    async::Future<Result<usize, Error>> future
+async::Future<Result<usize, Report>> pass(
+    async::Future<Result<usize, Report>> future
 ) {
     return future;
 }
 
-async::Task<usize, Error> spawn_dangling() {
+async::Task<usize, Report> spawn_dangling() {
     usize local = 12345;
     return must(async::spawn<usize>(pass(read_later(&local))));
 }

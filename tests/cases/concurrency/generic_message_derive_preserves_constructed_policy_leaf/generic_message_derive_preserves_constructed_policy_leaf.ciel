@@ -1,0 +1,16 @@
+// ciel-test: compile
+
+import /std/message;
+import /std/sync as sync;
+
+struct Envelope<T> {
+    sync::Mutex<T> value;
+}
+
+derive<T: Message> Message<Envelope<T>>;
+
+void require_message<T: Message>() {}
+
+void check() {
+    require_message<Envelope<i64>>();
+}

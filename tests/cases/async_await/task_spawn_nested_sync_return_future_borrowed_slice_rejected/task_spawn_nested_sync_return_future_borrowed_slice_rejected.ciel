@@ -5,25 +5,25 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async Result<usize, Error> ready() {
+async Result<usize, Report> ready() {
     return Ok(0);
 }
 
-Result<async::Future<Result<usize, Error>>, Error> wrap(
-    async::Future<Result<usize, Error>> future
+Result<async::Future<Result<usize, Report>>, Report> wrap(
+    async::Future<Result<usize, Report>> future
 ) {
     return Ok(future);
 }
 
-async::Task<usize, Error> spawn_wrapped_future() {
+async::Task<usize, Report> spawn_wrapped_future() {
     [3]i64 values = [1, 2, 3];
-    Result<async::Future<Result<usize, Error>>, Error> result = wrap(
+    Result<async::Future<Result<usize, Report>>, Report> result = wrap(
         len_later(values[..])
     );
     switch (result) {

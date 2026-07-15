@@ -1,12 +1,14 @@
 // ciel-test: error
-// expect-error: `async::spawn` capture `future` of type `Future<Result<usize, Error>>` does not implement `Message`
+// expect-error: `async::spawn` capture `future` of type `Future<Result<usize, Report>>` does not implement `Message`
 
 import /std/async as async;
 import /std/io as io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> read_one(io::File file) {
+async Result<usize, Report> read_one(
+    io::File file
+) {
     [1]u8 @buffer = [0;];
     usize n = io::read(&file, buffer[..])?;
     io::close(file)?;
@@ -16,7 +18,7 @@ async Result<usize, Error> read_one(io::File file) {
 i32 main() {
     io::File file = must(io::open_read("unused"));
     _ future = read_one(file);
-    _ task = async::spawn<usize, Error>(async || {
+    _ task = async::spawn<usize, Report>(async || {
         return await future;
     });
     return 0;

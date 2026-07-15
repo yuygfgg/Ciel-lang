@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: generic constraint not satisfied
+// expect-error: `i64` does not implement `format_error`
+
+import /std/error;
+
+i64 main() {
+    Error error = code_error(1);
+    error_downcast_ref<i64>(&error);
+    return 0;
+}

@@ -1,0 +1,33 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+interface<T> i64 error_code(*const T error);
+interface RichError = ErrorTrait + error_code;
+
+struct ServiceError {
+    i64 code;
+}
+
+impl format_error(*const ServiceError error) {
+    return "service";
+}
+
+impl error_code(*const ServiceError error) {
+    return error->code;
+}
+
+ErrorTrait narrow(RichError error) {
+    return error;
+}
+
+i64 main() {
+    ServiceError concrete = { code: 23 };
+    RichError rich = &concrete;
+    Error boxed = error_box(narrow(rich));
+    if (!error_is<ServiceError>(&boxed)) {
+        return 1;
+    }
+    return 0;
+}

@@ -1,0 +1,32 @@
+// ciel-test: error
+// expect-error: cannot erase resource-affine type `FileError` into `Report`
+// expect-error: erasing this value would hide ownership and cleanup requirements
+
+import /std/error;
+import /std/io as io;
+import /std/resource as resource;
+
+resource struct FileError {
+    io::File file;
+}
+
+impl format_error(*const FileError error) {
+    return "file error";
+}
+
+Report erase(io::File @file) {
+    FileError error = { file: file };
+    return error;
+}
+
+io::File dummy_file() {
+    resource::Handle handle = unsafe {
+        { owner_id: 0, resource_id: 0, generation: 0 }
+    };
+    return unsafe { { handle: handle } };
+}
+
+i64 main() {
+    erase(dummy_file());
+    return 0;
+}

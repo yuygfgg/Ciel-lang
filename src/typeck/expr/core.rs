@@ -20,16 +20,28 @@ impl TypeChecker {
         if let TExprKind::ErrorBox {
             expr: inner,
             concrete_ty,
+        }
+        | TExprKind::ReportBox {
+            expr: inner,
+            concrete_ty,
         } = expr.kind.clone()
         {
             let inner = self.consume_affine_expr(scopes, *inner, allow_loop_move);
+            let kind = if self.is_std_report_ty(&expr.ty) {
+                TExprKind::ReportBox {
+                    expr: Box::new(inner),
+                    concrete_ty,
+                }
+            } else {
+                TExprKind::ErrorBox {
+                    expr: Box::new(inner),
+                    concrete_ty,
+                }
+            };
             return TExpr {
                 span: expr.span,
                 ty: expr.ty,
-                kind: TExprKind::ErrorBox {
-                    expr: Box::new(inner),
-                    concrete_ty,
-                },
+                kind,
             };
         }
         if !self.type_is_affine(&expr.ty) {
@@ -511,11 +523,13 @@ impl TypeChecker {
                 }
             }
             ExprKind::Closure {
+                origin,
                 is_async,
                 params,
                 body,
-            } => self
-                .check_closure_expr(scopes, expr.span, *is_async, params, body, expected, false)?,
+            } => self.check_closure_expr(
+                scopes, expr.span, *origin, *is_async, params, body, expected, false,
+            )?,
             ExprKind::Unary { op, expr: inner } => {
                 if matches!(op, UnaryOp::Neg)
                     && let ExprKind::Literal(Literal::Integer(raw)) = &inner.kind
@@ -669,6 +683,7 @@ impl TypeChecker {
             ExprKind::Cast { expr: inner, ty } => {
                 let target = self.lower_type(ty);
                 if let ExprKind::Closure {
+                    origin,
                     is_async,
                     params,
                     body,
@@ -678,6 +693,7 @@ impl TypeChecker {
                     let checked = self.check_closure_expr(
                         scopes,
                         inner.span,
+                        *origin,
                         *is_async,
                         params,
                         body,
@@ -1066,16 +1082,21 @@ impl TypeChecker {
                 };
                 let propagation = if err_ty == return_err_ty {
                     TryPropagation::Exact
-                } else if self.is_std_error_ty(&return_err_ty)
+                } else if (self.is_std_error_ty(&return_err_ty)
+                    || self.is_std_report_ty(&return_err_ty))
                     && self.type_implements_std_error_trait(&err_ty)
                 {
-                    if self.reject_affine_error_erasure(expr.span, &err_ty, &return_err_ty) {
+                    if self.reject_error_erasure(expr.span, &err_ty, &return_err_ty) {
                         TryPropagation::Exact
+                    } else if self.is_std_report_ty(&return_err_ty) {
+                        TryPropagation::ReportBox
                     } else {
                         TryPropagation::ErrorBox
                     }
                 } else {
-                    let mut diagnostic = if self.is_std_error_ty(&return_err_ty) {
+                    let mut diagnostic = if self.is_std_error_ty(&return_err_ty)
+                        || self.is_std_report_ty(&return_err_ty)
+                    {
                         Diagnostic::new(
                             expr.span,
                             format!(
@@ -1285,17 +1306,28 @@ impl TypeChecker {
                 kind: expr.kind,
             };
         }
-        if self.is_std_error_ty(&expected) && self.type_implements_std_error_trait(&expr_ty) {
-            if self.reject_affine_error_erasure(expr.span, &expr_ty, &expected) {
+        if (self.is_std_error_ty(&expected) || self.is_std_report_ty(&expected))
+            && self.type_implements_std_error_trait(&expr_ty)
+        {
+            if self.reject_error_erasure(expr.span, &expr_ty, &expected) {
                 return expr;
             }
-            return TExpr {
-                span: expr.span,
-                ty: expected,
-                kind: TExprKind::ErrorBox {
+            let span = expr.span;
+            let kind = if self.is_std_report_ty(&expected) {
+                TExprKind::ReportBox {
                     concrete_ty: expr_ty,
                     expr: Box::new(expr),
-                },
+                }
+            } else {
+                TExprKind::ErrorBox {
+                    concrete_ty: expr_ty,
+                    expr: Box::new(expr),
+                }
+            };
+            return TExpr {
+                span,
+                ty: expected,
+                kind,
             };
         }
         if let (
@@ -1319,7 +1351,11 @@ impl TypeChecker {
         if let Ty::DynamicInterface { def_id, name, args } = &expected
             && self.type_satisfies_dynamic_view(*def_id, name, args, &expr_ty)
         {
-            if self.type_is_affine(&expr_ty) {
+            if self.dynamic_type_implements_std_error_trait(&expected) {
+                if self.reject_error_erasure(expr.span, &expr_ty, &expected) {
+                    return expr;
+                }
+            } else if self.type_is_affine(&expr_ty) {
                 self.diagnostics.push(Diagnostic::new(
                     expr.span,
                     format!(

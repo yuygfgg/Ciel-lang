@@ -1,16 +1,54 @@
 import /std/async as async;
 import /std/async_net as anet;
 import /std/bytes as bytes;
+import /std/error;
 import /std/io as io;
 import /std/message as message;
 import /std/net as net;
 import /std/result;
 import ./cli as cli;
-import ./error as app_error;
 import ./protocol/auth as auth;
 import ./protocol/codec as tunnel_codec;
 import ./protocol/frame as frame;
 import ./runtime as rt;
+
+enum AgentError {
+    AuthRejected,
+    ExpectedHelloOkOrError,
+    MalformedOpenStream,
+    IllegalControlFrame,
+}
+
+enum AgentTaskOutcome {
+    AgentControlReaderStopped(Result<void, Report>),
+    AgentControlWriterStopped(Result<void, Report>),
+    AgentStreamWorkerStopped(u32, Result<void, Report>),
+}
+
+derive message::Message<AgentTaskOutcome>;
+
+enum AgentStreamWorkerEvent {
+    AgentStreamFrameReceived(Result<rt::AsyncFrame, async::AsyncError>),
+    AgentLocalRead(Result<bytes::Bytes, anet::AsyncNetError>),
+}
+
+enum AgentTaskObservation {
+    AgentTaskContinue,
+    AgentTaskStopControl,
+}
+
+impl format_error(*const AgentError error) {
+    switch (*error) {
+        case AuthRejected:
+            return "tunnel-agent failed to authenticate";
+        case ExpectedHelloOkOrError:
+            return "protocol error: expected HelloOk or Error";
+        case MalformedOpenStream:
+            return "protocol error: malformed OpenStream";
+        case IllegalControlFrame:
+            return "protocol error: illegal agent control frame";
+    }
+}
 
 struct AgentControlState {
     async::Sender<bytes::Bytes> writer;
@@ -20,7 +58,7 @@ struct AgentControlState {
 
 derive message::Message<AgentControlState>;
 
-async Result<void, app_error::TunnelError> agent_control_writer_inner(
+async Result<void, Report> agent_control_writer_inner(
     anet::AsyncTcpWriteHalf write,
     async::Receiver<bytes::Bytes> receiver
 ) {
@@ -28,99 +66,89 @@ async Result<void, app_error::TunnelError> agent_control_writer_inner(
         _ next = await async::recv<bytes::Bytes>(receiver);
         switch (next) {
             case Ok(bytes):
-                _ wrote = await anet::write_half(&write, bytes);
-                switch (wrote) {
-                    case Ok(written):
-                        if (written == 0) {
-                            return Err(app_error::TcpWriteZero);
-                        }
-                    case Err(error):
-                        return Err(app_error::StdAsyncNet(error));
-                }
-            case Err(_):
+                await anet::write_all_half_ref(&write, bytes)?;
+            case Err(async::ChannelClosed):
                 return Ok;
+            case Err(error):
+                return Err(error);
         }
     }
     return Ok;
 }
 
-async Result<void, Error> agent_control_writer(
+async Result<AgentTaskOutcome, Report> agent_control_writer_task(
     anet::AsyncTcpWriteHalf write,
     async::Receiver<bytes::Bytes> receiver
 ) {
-    await agent_control_writer_inner(write, receiver)?;
-    return Ok;
+    defer async::close_receiver<bytes::Bytes>(receiver);
+    Result<void, Report> result = await agent_control_writer_inner(
+        write, receiver
+    );
+    return Ok(AgentControlWriterStopped(result));
 }
 
-async Result<void, app_error::TunnelError> send_agent_handshake(
-    async::Sender<bytes::Bytes> writer,
+async Result<anet::AsyncTcpWriteHalf, Error> send_agent_handshake(
+    anet::AsyncTcpWriteHalf @write,
     rt::AuthConfig auth_config
 ) {
-    app_error::tunnel(io::eprintln_value("tunnel-agent: sending hello"))?;
+    io::eprintln_value("tunnel-agent: sending hello")?;
     []const char route = rt::auth_config_route(&auth_config)?;
     []u8 psk = rt::auth_config_psk(&auth_config)?;
-    []u8 hello_payload = app_error::tunnel(auth::encode_hello(
-        route,
-        psk
-    ))?;
-    app_error::tunnel(
-        io::eprintln(
-            "tunnel-agent: hello payload {} bytes", [hello_payload.len]
-        )
+    []u8 hello_payload = auth::encode_hello(route, psk)?;
+    io::eprintln(
+        "tunnel-agent: hello payload {} bytes", [hello_payload.len]
     )?;
     bytes::Bytes hello_frame = rt::encode_frame_from_slice(
         frame::Hello, 0 as u32, hello_payload
     )?;
-    await rt::send_control_bytes(writer, hello_frame)?;
-    return Ok;
+    await anet::write_all_half_ref(&write, hello_frame)?;
+    return Ok(write);
 }
 
-Result<void, app_error::TunnelError> verify_agent_handshake_response(
+Result<void, Error> verify_agent_handshake_response(
     rt::AsyncFrame response
 ) {
     if (rt::kind_is(response.kind, frame::HelloOk)) {
         []u8 payload = rt::bytes_to_slice(response.payload)?;
-        app_error::tunnel(auth::decode_hello_ok(payload))?;
-        app_error::tunnel(io::eprintln_value("tunnel-agent: authenticated"))?;
+        auth::decode_hello_ok(payload)?;
+        io::eprintln_value("tunnel-agent: authenticated")?;
         return Ok;
     }
     if (rt::kind_is(response.kind, frame::ErrorFrame)) {
-        app_error::tunnel(
-            io::eprintln_value("tunnel-agent: authentication rejected")
-        )?;
-        return Err(app_error::AgentAuthRejected);
+        io::eprintln_value("tunnel-agent: authentication rejected")?;
+        return Err(AgentError::AuthRejected);
     }
-    return Err(app_error::ExpectedHelloOkOrError);
+    return Err(AgentError::ExpectedHelloOkOrError);
 }
 
 void agent_stream_cleanup(
     u32 stream_id,
+    u64 lease,
     AgentControlState control
 ) {
-    rt::stream_registry_remove_close(control.streams, stream_id);
+    _ cleanup = rt::stream_registry_remove_close(
+        control.streams, stream_id, lease
+    );
 }
 
-Result<void, app_error::TunnelError> remove_agent_stream(
-    AgentControlState control, u32 stream_id
+void agent_control_cleanup(
+    AgentControlState control
 ) {
-    return rt::stream_registry_remove_close(control.streams, stream_id);
+    _ writer_closed = async::close<bytes::Bytes>(control.writer);
+    _ streams_closed = rt::stream_registry_close_all(control.streams);
 }
 
-async Result<void, app_error::TunnelError> send_agent_open_result_error(
+async Result<void, Error> send_agent_open_result_error(
     AgentControlState control,
     u32 stream_id,
     u16 code,
     []const char message
 ) {
-    []u8 failure = app_error::tunnel(
-        tunnel_codec::encode_open_result_error(code, message)
-    )?;
+    []u8 failure = tunnel_codec::encode_open_result_error(code, message)?;
     bytes::Bytes failure_frame = rt::encode_frame_from_slice(
         frame::OpenResult, stream_id, failure
     )?;
-    []u8 close_payload = app_error::tunnel(
-        tunnel_codec::encode_close_reason(code, message)
-    )?;
+    []u8 close_payload = tunnel_codec::encode_close_reason(code, message)?;
     bytes::Bytes close_frame = rt::encode_frame_from_slice(
         frame::CloseStream, stream_id, close_payload
     )?;
@@ -129,301 +157,483 @@ async Result<void, app_error::TunnelError> send_agent_open_result_error(
     return Ok;
 }
 
-async Result<void, app_error::TunnelError> agent_stream_worker_inner(
+async Result<void, Report> agent_stream_forward(
     u32 stream_id,
     AgentControlState control,
-    async::Receiver<rt::StreamEvent> receiver,
-    async::Sender<rt::StreamEvent> local_events
+    async::Receiver<rt::AsyncFrame> receiver,
+    anet::BufferedStreamReader reader,
+    anet::AsyncTcpWriteHalf write
+) {
+    bool @remote_write_closed = false;
+    bool @local_write_closed = false;
+    bool @done = false;
+    Result<void, Report> @result = Ok;
+    while (!done) {
+        Result<AgentStreamWorkerEvent, Report> selected;
+        if (local_write_closed) {
+            _ incoming = await async::recv<rt::AsyncFrame>(receiver);
+            selected = Ok(AgentStreamFrameReceived(incoming));
+        } else {
+            selected = await select {
+                case incoming = async::recv<rt::AsyncFrame>(receiver):
+                    Ok(AgentStreamFrameReceived(incoming));
+                case read = anet::read_buffered(&reader, 16384):
+                    Ok(AgentLocalRead(read));
+            };
+        }
+        switch (selected) {
+            case Err(report):
+                result = Err(report);
+                done = true;
+            case Ok(event):
+                switch (event) {
+                    case AgentLocalRead(read):
+                        switch (read) {
+                            case Ok(bytes):
+                                usize len = bytes::bytes_len(bytes);
+                                if (len != 0) {
+                                    _ sent = await rt::send_control_frame_bytes(
+                                        control.writer,
+                                        frame::Data,
+                                        stream_id,
+                                        bytes
+                                    );
+                                    switch (sent) {
+                                        case Ok:
+                                            {}
+                                        case Err(error):
+                                            result = Err(report_box(error));
+                                            done = true;
+                                    }
+                                } else {
+                                    local_write_closed = true;
+                                    _ sent = await rt::send_control_empty(
+                                        control.writer,
+                                        frame::CloseWrite,
+                                        stream_id
+                                    );
+                                    switch (sent) {
+                                        case Ok:
+                                            if (remote_write_closed) {
+                                                done = true;
+                                            }
+                                        case Err(error):
+                                            result = Err(report_box(error));
+                                            done = true;
+                                    }
+                                }
+                            case Err(error):
+                                result = Err(report_box(error));
+                                done = true;
+                        }
+                    case AgentStreamFrameReceived(Ok(incoming)):
+                        if (rt::kind_is(incoming.kind, frame::Data)) {
+                            _ wrote = await anet::write_all_half_ref(
+                                &write, incoming.payload
+                            );
+                            switch (wrote) {
+                                case Ok:
+                                    {}
+                                case Err(error):
+                                    result = Err(report_box(error));
+                                    done = true;
+                            }
+                        } else if (rt::kind_is(
+                            incoming.kind, frame::CloseWrite
+                        )) {
+                            remote_write_closed = true;
+                            write.anet::shutdown_write();
+                            if (local_write_closed) {
+                                done = true;
+                            }
+                        } else {
+                            done = true;
+                        }
+                    case AgentStreamFrameReceived(Err(async::ChannelClosed)):
+                        done = true;
+                    case AgentStreamFrameReceived(Err(error)):
+                        result = Err(report_box(error));
+                        done = true;
+                }
+        }
+    }
+    return result;
+}
+
+async Result<void, Report> agent_stream_worker_inner(
+    u32 stream_id,
+    AgentControlState control,
+    async::Receiver<rt::AsyncFrame> receiver
 ) {
     _ connected = await control.target_addr.anet::connect_timeout(2000);
     switch (connected) {
         case Ok(target):
-            defer agent_stream_cleanup(stream_id, control);
-            anet::AsyncTcpBufferedSplit @split = app_error::tunnel(
-                target.anet::buffered_split(frame::max_payload_len())
+            anet::AsyncTcpBufferedSplit @split = target.anet::buffered_split(
+                frame::max_payload_len()
             )?;
-            anet::BufferedStreamReader reader = app_error::tunnel(
-                anet::take_buffered_split_reader(&split)
-            )?;
-            anet::AsyncTcpWriteHalf write = app_error::tunnel(
-                anet::take_buffered_split_write(&split)
+            anet::BufferedStreamReader reader =
+                anet::take_buffered_split_reader(&split)?;
+            anet::AsyncTcpWriteHalf write = anet::take_buffered_split_write(
+                &split
             )?;
 
-            []u8 success = app_error::tunnel(
-                tunnel_codec::encode_open_result_success()
-            )?;
+            []u8 success = tunnel_codec::encode_open_result_success()?;
             bytes::Bytes success_frame = rt::encode_frame_from_slice(
                 frame::OpenResult, stream_id, success
             )?;
             await rt::send_control_bytes(control.writer, success_frame)?;
-            _ reader_task = rt::spawn_local_reader(
-                stream_id, reader, control.writer, local_events
-            )?;
-
-            bool @remote_write_closed = false;
-            bool @local_write_closed = false;
-            while (true) {
-                _ next = await async::recv<rt::StreamEvent>(receiver);
-                switch (next) {
-                    case Ok(event):
-                        switch (event) {
-                            case rt::StreamLocalFailed(message):
-                                await rt::send_close_stream_text(
-                                    control.writer,
-                                    stream_id,
-                                    102 as u16,
-                                    message
-                                )?;
-                                return Ok;
-                            case rt::StreamLocalClosed:
-                                local_write_closed = true;
-                                await rt::send_control_empty(
-                                    control.writer,
-                                    frame::CloseWrite,
-                                    stream_id
-                                )?;
-                                if (remote_write_closed) {
-                                    return Ok;
-                                }
-                            case rt::StreamFrame(incoming):
-                                if (rt::kind_is(incoming.kind, frame::Data)) {
-                                    _ wrote = await anet::write_half(
-                                        &write, incoming.payload
-                                    );
-                                    switch (wrote) {
-                                        case Ok(written):
-                                            if (written == 0) {
-                                                await rt::send_close_stream(
-                                                    control.writer,
-                                                    stream_id,
-                                                    101 as u16,
-                                                    "target write failed"
-                                                )?;
-                                                return Ok;
-                                            }
-                                        case Err(_):
-                                            await rt::send_close_stream(
-                                                control.writer,
-                                                stream_id,
-                                                101 as u16,
-                                                "target write failed"
-                                            )?;
-                                            return Ok;
-                                    }
-                                } else if (rt::kind_is(
-                                    incoming.kind, frame::CloseWrite
-                                )) {
-                                    remote_write_closed = true;
-                                    write.anet::shutdown_write();
-                                    if (local_write_closed) {
-                                        return Ok;
-                                    }
-                                } else if (rt::kind_is(
-                                    incoming.kind, frame::CloseStream
-                                )) {
-                                    return Ok;
-                                } else {
-                                    return Ok;
-                                }
-                        }
-                    case Err(_):
-                        return Ok;
-                }
-            }
-        case Err(_):
-            app_error::tunnel(
-                io::eprintln(
-                    "tunnel-agent: stream {} target connect failed", [stream_id]
-                )
+            return await agent_stream_forward(
+                stream_id,
+                control,
+                receiver,
+                reader,
+                write
+            );
+        case Err(error):
+            io::eprintln(
+                "tunnel-agent: stream {} target connect failed: {}",
+                [stream_id, error]
             )?;
             await send_agent_open_result_error(
                 control,
                 stream_id,
                 100 as u16,
-                "target dial failed"
+                io::to_string(&error)
             )?;
-            remove_agent_stream(control, stream_id)?;
             return Ok;
     }
     return Ok;
 }
 
-async Result<void, Error> agent_stream_worker(
+async Result<AgentTaskOutcome, Report> agent_stream_worker_task(
     u32 stream_id,
     AgentControlState control,
-    async::Receiver<rt::StreamEvent> receiver,
-    async::Sender<rt::StreamEvent> local_events
+    async::Receiver<rt::AsyncFrame> receiver,
+    async::Receiver<u64> start
 ) {
-    await agent_stream_worker_inner(stream_id, control, receiver, local_events)?;
-    return Ok;
+    defer rt::close_stream_frames(receiver);
+    defer async::close_receiver<u64>(start);
+    u64 lease;
+    switch (await async::recv<u64>(start)) {
+        case Ok(value):
+            lease = value;
+        case Err(error):
+            return Ok(
+                AgentStreamWorkerStopped(stream_id, Err(report_box(error)))
+            );
+    }
+    defer agent_stream_cleanup(stream_id, lease, control);
+    Result<void, Report> result = await agent_stream_worker_inner(
+        stream_id, control, receiver
+    );
+    return Ok(AgentStreamWorkerStopped(stream_id, result));
 }
 
-async Result<void, app_error::TunnelError> agent_control_reader(
+void close_agent_stream_start(
+    async::Sender<u64> start
+) {
+    _ closed = async::close<u64>(start);
+}
+
+Result<void, Report> spawn_agent_stream_worker(
+    u32 stream_id,
+    AgentControlState control,
+    async::TaskRegistrar<AgentTaskOutcome, Report> tasks
+) {
+    async::ChannelPair<rt::AsyncFrame> frames = async::channel<rt::AsyncFrame>(
+        64
+    )?;
+    async::ChannelPair<u64> gate = async::channel<u64>(1)?;
+    defer close_agent_stream_start(gate.sender);
+
+    async::Task<AgentTaskOutcome, Report> task =
+        async::spawn<AgentTaskOutcome, Report>(
+            agent_stream_worker_task(
+                stream_id, control, frames.receiver, gate.receiver
+            )
+        )?;
+    async::TaskAbortHandle worker = async::task_abort_handle(&task);
+    u64 lease = rt::stream_registry_insert(
+        control.streams, stream_id, frames.sender, worker
+    )?;
+    switch (async::supervisor_register<AgentTaskOutcome, Report>(tasks, task)) {
+        case Ok:
+            {}
+        case Err(error):
+            rt::stream_registry_cancel_remove(
+                control.streams, stream_id, lease
+            )?;
+            return Err(report_box(error));
+    }
+    switch (async::try_send<u64>(gate.sender, lease)) {
+        case Ok:
+            return Ok;
+        case Err(error):
+            rt::stream_registry_cancel_remove(
+                control.streams, stream_id, lease
+            )?;
+            return Err(report_box(error));
+    }
+}
+
+async Result<void, Report> agent_control_reader_inner(
     anet::BufferedStreamReader reader,
-    AgentControlState control
+    AgentControlState control,
+    async::TaskRegistrar<AgentTaskOutcome, Report> tasks
 ) {
     while (true) {
-        Result<bytes::Bytes, app_error::TunnelError> header_read =
-            rt::map_exact_frame_read(
-                await reader.anet::read_exact(frame::header_len())
-            );
+        _ header_read = await reader.anet::read_exact(frame::header_len());
+        bytes::Bytes header_exact;
         switch (header_read) {
-            case Ok(header_exact):
-                []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
-                frame::FrameHeader header = app_error::tunnel(
-                    tunnel_codec::decode_header(header_bytes)
-                )?;
-                Result<bytes::Bytes, app_error::TunnelError> payload_read =
-                    rt::map_exact_frame_read(
-                        await reader.anet::read_exact(header.length as usize)
-                    );
-                bytes::Bytes payload;
-                switch (payload_read) {
-                    case Ok(value):
-                        payload = value;
-                    case Err(error):
-                        app_error::tunnel(
-                            io::eprintln(
-                                "tunnel-agent: control read error: {}",
-                                [error]
-                            )
-                        )?;
-                        app_error::tunnel(
-                            async::close<bytes::Bytes>(control.writer)
-                        )?;
-                        rt::stream_registry_close_all(control.streams)?;
-                        return Ok;
-                }
-                rt::AsyncFrame incoming = {
-                    kind: header.kind,
-                    stream_id: header.stream_id,
-                    payload: payload
-                };
-                if (rt::kind_is(incoming.kind, frame::OpenStream)) {
-                    if (bytes::bytes_len(incoming.payload) != 0) {
-                        app_error::tunnel(
-                            async::close<bytes::Bytes>(control.writer)
-                        )?;
-                        rt::stream_registry_close_all(control.streams)?;
-                        return Err(app_error::MalformedOpenStream);
-                    }
-                    _ events = app_error::tunnel(
-                        async::channel<rt::StreamEvent>(64)
-                    )?;
-                    rt::stream_registry_insert(
-                        control.streams, incoming.stream_id, events.sender
-                    )?;
-                    _ worker_future = agent_stream_worker(
-                        incoming.stream_id,
-                        control,
-                        events.receiver,
-                        events.sender
-                    );
-                    _ worker = app_error::tunnel(
-                        async::spawn<void>(worker_future)
-                    )?;
-                } else if (rt::kind_is(incoming.kind, frame::Data) ||
-                rt::kind_is(incoming.kind, frame::CloseWrite) ||
-                rt::kind_is(incoming.kind, frame::CloseStream)) {
-                    rt::StreamRegistryGet found = rt::stream_registry_get(
-                        control.streams, incoming.stream_id
-                    )?;
-                    switch (found) {
-                        case rt::StreamRegistryFound(sender):
-                            await rt::send_stream_event(
-                                sender, rt::StreamFrame(incoming)
-                            )?;
-                        case rt::StreamRegistryMissing:
-                            if (rt::kind_is(incoming.kind, frame::Data)) {
-                                await rt::send_close_stream(
-                                    control.writer,
-                                    incoming.stream_id,
-                                    20 as u16,
-                                    "unknown stream"
-                                )?;
-                            }
-                    }
-                } else if (rt::kind_is(incoming.kind, frame::Ping)) {
-                    await rt::send_control_empty(
-                        control.writer, frame::Pong, 0 as u32
-                    )?;
-                } else if (rt::kind_is(incoming.kind, frame::Pong)) {
-                    {}
-                } else {
-                    app_error::tunnel(
-                        io::eprintln_value(
-                            "tunnel-agent: protocol error: illegal control frame"
-                        )
-                    )?;
-                    app_error::tunnel(
-                        async::close<bytes::Bytes>(control.writer)
-                    )?;
-                    rt::stream_registry_close_all(control.streams)?;
-                    return Err(app_error::IllegalAgentControlFrame);
-                }
+            case Ok(value):
+                header_exact = value;
             case Err(error):
-                app_error::tunnel(
-                    io::eprintln(
-                        "tunnel-agent: control read error: {}",
-                        [error]
-                    )
+                io::eprintln(
+                    "tunnel-agent: control header read failed: {}", [error]
                 )?;
-                app_error::tunnel(async::close<bytes::Bytes>(control.writer))?;
-                rt::stream_registry_close_all(control.streams)?;
-                return Ok;
+                return Err(error);
+        }
+        []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
+        frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
+        _ payload_read = await reader.anet::read_exact(header.length as usize);
+        bytes::Bytes payload;
+        switch (payload_read) {
+            case Ok(value):
+                payload = value;
+            case Err(error):
+                io::eprintln(
+                    "tunnel-agent: control payload read failed: {}", [error]
+                )?;
+                return Err(error);
+        }
+        rt::AsyncFrame incoming = {
+            kind: header.kind,
+            stream_id: header.stream_id,
+            payload: payload
+        };
+        if (rt::kind_is(incoming.kind, frame::OpenStream)) {
+            if (bytes::bytes_len(incoming.payload) != 0) {
+                return Err(AgentError::MalformedOpenStream);
+            }
+            spawn_agent_stream_worker(
+                incoming.stream_id,
+                control,
+                tasks,
+            )?;
+        } else if (rt::kind_is(incoming.kind, frame::Data) ||
+            rt::kind_is(incoming.kind, frame::CloseWrite) ||
+            rt::kind_is(incoming.kind, frame::CloseStream)) {
+            u32 stream_id = incoming.stream_id;
+            bool is_data = rt::kind_is(incoming.kind, frame::Data);
+            switch (rt::stream_registry_try_route(control.streams, incoming)?) {
+                case rt::StreamDelivered:
+                    {}
+                case rt::StreamMissing:
+                    if (is_data) {
+                        await rt::send_close_stream(
+                            control.writer,
+                            stream_id,
+                            20 as u16,
+                            "unknown stream"
+                        )?;
+                    }
+                case rt::StreamBackpressured:
+                    await rt::send_close_stream(
+                        control.writer,
+                        stream_id,
+                        21 as u16,
+                        "stream backpressured"
+                    )?;
+            }
+        } else if (rt::kind_is(incoming.kind, frame::Ping)) {
+            await rt::send_control_empty(
+                control.writer, frame::Pong, 0 as u32
+            )?;
+        } else if (rt::kind_is(incoming.kind, frame::Pong)) {
+            {}
+        } else {
+            return Err(AgentError::IllegalControlFrame);
         }
     }
     return Ok;
 }
 
-async Result<void, app_error::TunnelError> run_agent_async(
+async Result<AgentTaskOutcome, Report> agent_control_reader_task(
+    anet::BufferedStreamReader reader,
+    AgentControlState control,
+    async::TaskRegistrar<AgentTaskOutcome, Report> tasks
+) {
+    Result<void, Report> result = await agent_control_reader_inner(
+        reader, control, tasks
+    );
+    return Ok(AgentControlReaderStopped(result));
+}
+
+async Result<AgentTaskObservation, Report> observe_agent_task(
+    AgentControlState control,
+    async::Task<AgentTaskOutcome, Report> task,
+    bool shutting_down
+) {
+    if (async::is_cancelled<AgentTaskOutcome, Report>(&task)?) {
+        return Ok(AgentTaskContinue);
+    }
+    switch (await task) {
+        case Ok(AgentControlReaderStopped(task_result)):
+            task_result?;
+            return Ok(AgentTaskStopControl);
+        case Ok(AgentControlWriterStopped(task_result)):
+            task_result?;
+            return Ok(AgentTaskContinue);
+        case Ok(AgentStreamWorkerStopped(stream_id, task_result)):
+            switch (task_result) {
+                case Ok:
+                    return Ok(AgentTaskContinue);
+                case Err(report):
+                    io::eprintln(
+                        "tunnel-agent: stream {} failed: {}",
+                        [stream_id, report]
+                    )?;
+                    if (!shutting_down) {
+                        await rt::send_close_stream(
+                            control.writer,
+                            stream_id,
+                            102 as u16,
+                            io::to_string(&report)
+                        )?;
+                    }
+                    return Ok(AgentTaskContinue);
+            }
+        case Err(report):
+            return Err(report);
+    }
+}
+
+async Result<void, Report> agent_control_coordinator(
+    AgentControlState control,
+    async::TaskSupervisor<AgentTaskOutcome, Report> @tasks
+) {
+    bool @done = false;
+    Result<void, Report> @outcome = Ok;
+    while (!done) {
+        async::Task<AgentTaskOutcome, Report> task =
+            await async::supervisor_completion<AgentTaskOutcome, Report>(
+                &tasks
+            );
+        switch (await observe_agent_task(control, task, false)) {
+            case Ok(AgentTaskContinue):
+                {}
+            case Ok(AgentTaskStopControl):
+                done = true;
+            case Err(report):
+                outcome = Err(report);
+                done = true;
+        }
+    }
+    _ shutdown =
+        await async::supervisor_shutdown_and_join_drain<AgentTaskOutcome, Report>(
+            tasks
+        );
+    async::TaskCompletionDrain<AgentTaskOutcome, Report> drain;
+    switch (shutdown) {
+        case Ok(value):
+            drain = value;
+        case Err(error):
+            switch (outcome) {
+                case Err(report):
+                    return Err(report);
+                case Ok:
+                    return Err(report_box(error));
+            }
+    }
+    bool @drained = false;
+    while (!drained) {
+        switch (async::completion_drain_try_next<AgentTaskOutcome, Report>(
+            &drain
+        )?) {
+            case async::TaskReady(task):
+                switch (await observe_agent_task(control, task, true)) {
+                    case Ok(_):
+                        {}
+                    case Err(report):
+                        switch (outcome) {
+                            case Ok:
+                                outcome = Err(report);
+                            case Err(_):
+                                _ logged = io::eprintln(
+                                    "tunnel-agent: additional task failure: {}",
+                                    [report]
+                                );
+                        }
+                }
+            case async::NoTaskReady:
+                return Err(code_error(5));
+            case async::TaskGroupClosed:
+                drained = true;
+        }
+    }
+    switch (outcome) {
+        case Err(report):
+            return Err(report);
+        case Ok:
+            return Ok;
+    }
+}
+
+async Result<void, Error> agent_control_scope(
+    anet::BufferedStreamReader reader,
+    anet::AsyncTcpWriteHalf write,
+    net::SocketAddr target_addr
+) {
+    async::ChannelPair<bytes::Bytes> control_channel =
+        async::channel<bytes::Bytes>(128)?;
+    async::TaskSupervisor<AgentTaskOutcome, Report> @tasks =
+        async::task_supervisor<AgentTaskOutcome, Report>()?;
+    async::TaskRegistrar<AgentTaskOutcome, Report> registrar =
+        async::supervisor_registrar<AgentTaskOutcome, Report>(&tasks);
+    AgentControlState control = {
+        writer: control_channel.sender,
+        streams: rt::stream_registry_new()?,
+        target_addr: target_addr
+    };
+    defer agent_control_cleanup(control);
+
+    async::supervisor_spawn<AgentTaskOutcome, Report>(
+        registrar,
+        agent_control_writer_task(write, control_channel.receiver)
+    )?;
+    async::supervisor_spawn<AgentTaskOutcome, Report>(
+        registrar,
+        agent_control_reader_task(reader, control, registrar)
+    )?;
+    await agent_control_coordinator(control, tasks)?;
+    return Ok;
+}
+
+async Result<void, Error> run_agent_async(
     net::SocketAddr server_addr,
     net::SocketAddr target_addr,
     rt::AuthConfig auth_config
 ) {
-    anet::AsyncTcpStream control_stream = app_error::tunnel(
-        await anet::connect(server_addr)
+    anet::AsyncTcpStream control_stream = await anet::connect(server_addr)?;
+    anet::AsyncTcpBufferedSplit @split = control_stream.anet::buffered_split(
+        frame::max_payload_len()
     )?;
-    anet::AsyncTcpBufferedSplit @split = app_error::tunnel(
-        control_stream.anet::buffered_split(frame::max_payload_len())
+    anet::BufferedStreamReader reader = anet::take_buffered_split_reader(
+        &split
     )?;
-    anet::BufferedStreamReader reader = app_error::tunnel(
-        anet::take_buffered_split_reader(&split)
-    )?;
-    anet::AsyncTcpWriteHalf write = app_error::tunnel(
-        anet::take_buffered_split_write(&split)
-    )?;
-    async::ChannelPair<bytes::Bytes> control_channel = app_error::tunnel(
-        async::channel<bytes::Bytes>(128)
-    )?;
-    _ control_writer = app_error::tunnel(
-        async::spawn<void>(
-            agent_control_writer(write, control_channel.receiver)
-        )
-    )?;
+    anet::AsyncTcpWriteHalf write = anet::take_buffered_split_write(&split)?;
 
-    app_error::tunnel(io::eprintln_value("tunnel-agent: control connected"))?;
-    _ sent_hello = await send_agent_handshake(
-        control_channel.sender, auth_config
-    );
-    switch (sent_hello) {
-        case Ok:
-            {}
-        case Err(error):
-            app_error::tunnel(
-                async::close<bytes::Bytes>(control_channel.sender)
-            )?;
-            return Err(error);
-    }
-    bytes::Bytes header_exact = rt::map_exact_frame_read(
-        await reader.anet::read_exact(frame::header_len())
+    io::eprintln_value("tunnel-agent: control connected")?;
+    anet::AsyncTcpWriteHalf handshaken_write = await send_agent_handshake(
+        write, auth_config
+    )?;
+    bytes::Bytes header_exact = await reader.anet::read_exact(
+        frame::header_len()
     )?;
     []u8 header_bytes = rt::bytes_to_slice(header_exact)?;
-    frame::FrameHeader header = app_error::tunnel(
-        tunnel_codec::decode_header(header_bytes)
-    )?;
-    bytes::Bytes payload = rt::map_exact_frame_read(
-        await reader.anet::read_exact(header.length as usize)
+    frame::FrameHeader header = tunnel_codec::decode_header(header_bytes)?;
+    bytes::Bytes payload = await reader.anet::read_exact(
+        header.length as usize
     )?;
     rt::AsyncFrame response = {
         kind: header.kind,
@@ -435,22 +645,14 @@ async Result<void, app_error::TunnelError> run_agent_async(
         case Ok:
             {}
         case Err(error):
-            app_error::tunnel(
-                async::close<bytes::Bytes>(control_channel.sender)
-            )?;
             return Err(error);
     }
-
-    AgentControlState control = {
-        writer: control_channel.sender,
-        streams: rt::stream_registry_new()?,
-        target_addr: target_addr
-    };
-    return await agent_control_reader(reader, control);
+    return await agent_control_scope(reader, handshaken_write, target_addr);
 }
 
-export Result<void, app_error::TunnelError> run_agent() {
-    cli::AgentConfig config = cli::parse_agent_args()?;
+export Result<void, Error> run_agent(
+    cli::AgentConfig config
+) {
     rt::AuthConfig auth_config = rt::auth_config_new(config.route, config.psk)?;
     return async::block_on(
         run_agent_async(

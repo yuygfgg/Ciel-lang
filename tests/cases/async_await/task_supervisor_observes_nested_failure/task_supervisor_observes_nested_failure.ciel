@@ -1,0 +1,86 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: supervised failure
+
+import /std/async as async;
+import /std/error;
+import /std/io as io;
+import /std/panic;
+import /std/result;
+
+enum WorkerError {
+    Failed,
+}
+
+impl format_error(*const WorkerError error) {
+    switch (*error) {
+        case Failed:
+            return "supervised failure";
+    }
+}
+
+async Result<void, Report> fail() {
+    return Err(WorkerError::Failed);
+}
+
+async Result<void, Report> spawn_child(
+    async::TaskRegistrar<void, Report> registrar
+) {
+    async::supervisor_spawn<void, Report>(registrar, fail())?;
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    async::TaskSupervisor<void, Report> @supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::TaskRegistrar<void, Report> registrar =
+        async::supervisor_registrar<void, Report>(&supervisor);
+
+    switch (await async::timeout(
+        async::supervisor_completion<void, Report>(&supervisor),
+        5
+    )) {
+        case Err(async::Timeout):
+            {}
+        case Err(_):
+            return Err(code_error(1));
+        case Ok(_):
+            return Err(code_error(2));
+    }
+
+    async::supervisor_spawn<void, Report>(
+        registrar, spawn_child(registrar)
+    )?;
+
+    usize @completed = 0;
+    usize @failed = 0;
+    while (completed < 2) {
+        async::Task<void, Report> task;
+        switch (await async::timeout(
+            async::supervisor_completion<void, Report>(&supervisor),
+            1000
+        )) {
+            case Err(_):
+                return Err(code_error(4));
+            case Ok(completed_task):
+                task = completed_task;
+        }
+        completed = completed + 1;
+        switch (await task) {
+            case Ok:
+                {}
+            case Err(report):
+                failed = failed + 1;
+                io::print_value(report)?;
+        }
+    }
+    if (failed != 1) {
+        return Err(code_error(3));
+    }
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

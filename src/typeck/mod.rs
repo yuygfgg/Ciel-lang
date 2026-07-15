@@ -10,23 +10,25 @@ use crate::{
     std_id, suggest,
     thir::*,
     types::{
-        ConstraintBounds, ConstraintRef, META_ARRAY_EXPANSION_BUDGET, OpaqueReturnKey,
-        STD_ASYNC_ABORT_FUTURE_INTERFACE, STD_ASYNC_AWAITABLE_FUTURE_INTERFACE,
-        STD_ASYNC_CANCEL_SAFE_INTERFACE, STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE,
-        STD_ERROR_FORMAT_INTERFACE, STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE,
-        STD_MESSAGE_CLONE_INTERFACE, STD_MESSAGE_SHARE_HANDLE_INTERFACE,
-        STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty, aggregate_instance_name, callable_ret_params_ty,
-        closure_instance_satisfies_signature, contains_any_generic_name, contains_generic,
-        contains_type_hole, display_constraint_bounds, display_constraint_ref,
-        generated_future_output_ty, generated_future_ty, generated_future_ty_with_state,
-        is_opaque_future_state_marker_ty, mangle_ty_fragment, map_ty_children, meta_named,
-        meta_product_ty, meta_ref_array_repr_ty, meta_repr_borrowed_array_leaf_ty,
-        meta_repr_marker_name, meta_repr_marker_source, meta_schema_marker_name,
-        meta_schema_marker_source, meta_schema_product_ty, meta_schema_sum_ty, meta_sum_ty,
-        named_ty, named_ty_identity_eq, opaque_future_state_marker_ty, opaque_state_ty,
-        pointer_view_can_weaken, receiver_ty_from_value_ty, retained_closure_proves_capability,
-        std_actor_ty, std_async_error_ty, std_error_ty, std_future_ty,
-        std_meta_repr_marker_ty_with_def_id, std_meta_schema_marker_ty_with_def_id,
+        ClosureInstanceId, ClosureOwnerId, ClosureOwnerTable, ConstraintBounds, ConstraintRef,
+        META_ARRAY_EXPANSION_BUDGET, OpaqueReturnKey, STD_ASYNC_ABORT_FUTURE_INTERFACE,
+        STD_ASYNC_AWAITABLE_FUTURE_INTERFACE, STD_ASYNC_CANCEL_SAFE_INTERFACE,
+        STD_ASYNC_SPAWNABLE_FUTURE_INTERFACE, STD_ERROR_ERASED_REF_INTERFACE,
+        STD_ERROR_FORMAT_INTERFACE, STD_ERROR_TRAIT_ALIAS,
+        STD_MESSAGE_ASYNC_FRAME_OPT_IN_INTERFACE, STD_MESSAGE_CLONE_INTERFACE,
+        STD_MESSAGE_SHARE_HANDLE_INTERFACE, STD_MESSAGE_THREAD_LOCAL_INTERFACE, Ty,
+        aggregate_instance_name, callable_ret_params_ty, closure_instance_satisfies_signature,
+        contains_any_generic_name, contains_generic, contains_type_hole, display_constraint_bounds,
+        display_constraint_ref, generated_future_output_ty, generated_future_ty,
+        generated_future_ty_with_state, is_opaque_future_state_marker_ty, mangle_ty_fragment,
+        map_ty_children, meta_named, meta_product_ty, meta_ref_array_repr_ty,
+        meta_repr_borrowed_array_leaf_ty, meta_repr_marker_name, meta_repr_marker_source,
+        meta_schema_marker_name, meta_schema_marker_source, meta_schema_product_ty,
+        meta_schema_sum_ty, meta_sum_ty, named_ty, named_ty_identity_eq,
+        opaque_future_state_marker_ty, opaque_state_ty, pointer_view_can_weaken,
+        receiver_ty_from_value_ty, retained_closure_proves_capability, std_actor_ty,
+        std_async_error_ty, std_error_ty, std_future_ty, std_meta_repr_marker_ty_with_def_id,
+        std_meta_schema_marker_ty_with_def_id, std_meta_type_id_ty, std_report_ty,
         std_resource_error_ty, std_result_ty, std_task_ty, substitute_constraint_bounds,
         substitute_ty, ty_from_primitive, ty_has_hidden_state, unify_ty,
     },
@@ -710,6 +712,7 @@ pub struct CheckedGenericInstance {
     pub generated_functions: Vec<CheckedFunction>,
     pub impls: Vec<CheckedImpl>,
     pub opaque_returns: HashMap<OpaqueReturnKey, Ty>,
+    pub(crate) closure_owners: ClosureOwnerTable,
 }
 
 fn collect_policy_marker_templates(ctx: &TyCtx, interface_name: &str) -> Vec<Ty> {
@@ -752,6 +755,7 @@ pub fn type_check_generic_instance(
     let mut checker =
         TypeChecker::for_generic_instance(&checked.ty_ctx, &checked.impls, next_synthetic_def);
     checker.opaque_returns = checked.opaque_returns.clone();
+    checker.closure_owners = checked.closure_owners.clone();
     let base_generated = checker.generated_functions.len();
     let base_impls = checker.ctx.impls.len();
     let function = checker.instantiate_generic_template_for_mono(
@@ -788,11 +792,13 @@ pub fn type_check_generic_instance(
             })
             .collect::<Vec<_>>();
         let opaque_returns = checker.opaque_returns;
+        let closure_owners = checker.closure_owners;
         Ok(CheckedGenericInstance {
             function,
             generated_functions,
             impls,
             opaque_returns,
+            closure_owners,
         })
     } else {
         Err(checker.diagnostics)
@@ -821,6 +827,7 @@ struct TypeChecker {
     generic_env_stack: Vec<Vec<GenericInfo>>,
     meta_reflection_module_stack: Vec<ModuleId>,
     opaque_returns: HashMap<OpaqueReturnKey, Ty>,
+    closure_owners: ClosureOwnerTable,
     current_opaque_return: Option<OpaqueReturnState>,
     opaque_return_probe_stack: HashSet<OpaqueReturnKey>,
     resource_generic_stack: Vec<HashSet<String>>,
@@ -828,9 +835,9 @@ struct TypeChecker {
     current_module: ModuleId,
     current_return_ty: Ty,
     current_return_context: Option<String>,
+    current_closure_owner: Option<ClosureOwnerId>,
     current_async_depth: usize,
     control_contexts: Vec<ControlContext>,
-    next_closure_id: usize,
     next_type_hole_id: usize,
     type_hole_solutions: HashMap<usize, Ty>,
     type_hole_spans: HashMap<usize, crate::span::Span>,
@@ -878,6 +885,7 @@ impl TypeChecker {
             generic_env_stack: Vec::new(),
             meta_reflection_module_stack: Vec::new(),
             opaque_returns: HashMap::new(),
+            closure_owners: ClosureOwnerTable::default(),
             current_opaque_return: None,
             opaque_return_probe_stack: HashSet::new(),
             resource_generic_stack: Vec::new(),
@@ -885,9 +893,9 @@ impl TypeChecker {
             current_module: ModuleId(0),
             current_return_ty: Ty::Void,
             current_return_context: None,
+            current_closure_owner: None,
             current_async_depth: 0,
             control_contexts: Vec::new(),
-            next_closure_id: 0,
             next_type_hole_id: 0,
             type_hole_solutions: HashMap::new(),
             type_hole_spans: HashMap::new(),
@@ -1188,6 +1196,7 @@ impl TypeChecker {
         WithDiagnostics {
             value: CheckedProgram {
                 ty_ctx,
+                closure_owners: self.closure_owners,
                 resolved: self.ctx.resolved.clone(),
                 hir_modules: self.ctx.hir_modules.clone(),
                 hir_locals: self.ctx.hir_locals.clone(),

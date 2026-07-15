@@ -425,22 +425,42 @@ impl<'a> CGenerator<'a> {
         concrete_ty: &Ty,
         indent: usize,
     ) -> DiagResult<String> {
-        let Ty::DynamicInterface { def_id, args, .. } = &expr.ty else {
+        let source_code = self.gen_expr_in_stmt(inner, indent)?;
+        self.emit_dynamic_interface_reerasure_from_code(
+            &expr.ty,
+            concrete_ty,
+            &source_code,
+            indent,
+            expr.span,
+        )
+    }
+
+    pub(super) fn emit_dynamic_interface_reerasure_from_code(
+        &mut self,
+        target_ty: &Ty,
+        source_ty: &Ty,
+        source_code: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let Ty::DynamicInterface { def_id, args, .. } = target_ty else {
             return Err(vec![Diagnostic::new(
-                expr.span,
+                span,
                 "internal error: dynamic re-erasure target is not dynamic",
             )]);
         };
-        let source_code = self.gen_expr_in_stmt(inner, indent)?;
+        if !matches!(source_ty, Ty::DynamicInterface { .. }) {
+            return Err(vec![Diagnostic::new(
+                span,
+                "internal error: dynamic re-erasure source is not dynamic",
+            )]);
+        }
         let source_temp = self.next_temp("dyn_source");
         self.line_indent(
             indent,
-            &format!(
-                "{} = {source_code};",
-                self.c_decl(concrete_ty, &source_temp)
-            ),
+            &format!("{} = {source_code};", self.c_decl(source_ty, &source_temp)),
         );
-        let vtable_ty = self.dynamic_vtable_name(&expr.ty);
+        let vtable_ty = self.dynamic_vtable_name(target_ty);
         let vtable_temp = self.next_temp("dyn_vtable");
         self.line_indent(
             indent,
@@ -458,7 +478,7 @@ impl<'a> CGenerator<'a> {
                 ),
             );
         }
-        let dyn_c = self.c_type(&expr.ty);
+        let dyn_c = self.c_type(target_ty);
         Ok(format!(
             "({dyn_c}){{ .data = ({source_temp}).data, .vtable = {vtable_temp} }}"
         ))
@@ -467,18 +487,12 @@ impl<'a> CGenerator<'a> {
     pub(super) fn emit_closure_value(
         &mut self,
         expr: &TExpr,
-        id: usize,
+        id: ClosureInstanceId,
         captures: &[TClosureCapture],
         stmt_indent: Option<usize>,
     ) -> DiagResult<String> {
-        let owner = self.current_closure_owner.ok_or_else(|| {
-            vec![Diagnostic::new(
-                expr.span,
-                "internal error: closure emitted outside a function",
-            )]
-        })?;
         if matches!(expr.ty, Ty::Function { .. }) {
-            return Ok(self.closure_thunk_name(owner, id));
+            return Ok(self.closure_thunk_name(id));
         }
         let (Ty::Closure { .. } | Ty::ClosureInstance { .. }) = expr.ty else {
             return Err(vec![Diagnostic::new(
@@ -495,7 +509,7 @@ impl<'a> CGenerator<'a> {
                     "capturing closure needs statement lowering",
                 )]);
             };
-            let env_name = self.closure_env_name(owner, id);
+            let env_name = self.closure_env_name(id);
             let temp = self.next_temp("closure_env");
             self.line_indent(
                 indent,
@@ -521,7 +535,7 @@ impl<'a> CGenerator<'a> {
         Ok(format!(
             "({}){{ .call = {}, .env = {env} }}",
             self.c_type(&expr.ty),
-            self.closure_thunk_name(owner, id)
+            self.closure_thunk_name(id)
         ))
     }
 

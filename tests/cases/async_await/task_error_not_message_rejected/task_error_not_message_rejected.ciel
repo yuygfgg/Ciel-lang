@@ -1,0 +1,17 @@
+// ciel-test: error
+// expect-error: task error type `Error` is local-only and does not implement `Message`
+// expect-error: use a concrete messageable error type or `Report`
+
+import /std/async as async;
+import /std/error;
+import /std/error/basic as basic;
+import /std/result;
+
+async Result<usize, Error> fail_locally() {
+    return Err(basic::code_error(77));
+}
+
+i32 main() {
+    _ task = async::spawn<usize, Error>(fail_locally());
+    return 0;
+}

@@ -5,13 +5,13 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-void spawn_future(async::Future<Result<usize, Error>> future) {
+void spawn_future(async::Future<Result<usize, Report>> future) {
     _ task = must(async::spawn<usize>(future));
 }
 

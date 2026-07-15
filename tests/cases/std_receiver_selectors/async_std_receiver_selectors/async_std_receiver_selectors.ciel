@@ -145,6 +145,7 @@ async Result<void, Error> use_async_tcp(
     half_write.cancel()?;
     await write_half.write(data)?;
     write_half = await write_half.write_all(data)?;
+    await write_all_half_ref(&write_half, data)?;
     write_half.shutdown_write()?;
     return Ok;
 }

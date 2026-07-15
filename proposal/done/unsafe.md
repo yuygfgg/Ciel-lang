@@ -1,5 +1,12 @@
 # Unsafe Boundary Proposal
 
+## Historical Status
+
+The later `error-downcast` proposal removes the trusted `Message` policy from
+`Error` and assigns it to the immutable diagnostic `Report` type. References
+below to standard message implementations should be read with that replacement.
+`design.md` is normative.
+
 This proposal adds an explicit unsafe boundary for operations whose safety
 depends on contracts outside the Ciel type checker. It does not make unsafe code
 unchecked Ciel. Ordinary type checking, definite assignment, nullability, view
@@ -176,7 +183,7 @@ is on implementation, not on asking whether a type satisfies the capability.
 An implementation of an unsafe interface must write `unsafe impl`; an
 implementation of a safe interface must not write `unsafe impl`.
 
-Standard-library impls for primitives, `Error`, `Result<T, E>`, owned
+Standard-library impls for primitives, `Report`, `Result<T, E>`, owned
 `/std/meta` SOP nodes, actor handles, channels, atomics, mutexes, and async
 runtime handles are written as `unsafe impl` inside the standard library. User
 impls of the same unsafe interfaces must also use `unsafe impl`.

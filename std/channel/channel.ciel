@@ -34,7 +34,7 @@ export struct Channel<T> {
 // Errors produced by blocking channel operations.
 export enum ChannelError {
     Runtime(i64),
-    MessageClone(Error),
+    MessageClone(Report),
 }
 
 derive Message<ChannelError>;
@@ -83,7 +83,7 @@ export Result<void, ChannelError> channel_send<T: Message>(
         case Ok(value):
             cloned = value;
         case Err(error):
-            return Err(MessageClone(error));
+            return Err(MessageClone(error_report(&error)));
     }
     c::c_int rc = unsafe {
         ciel_channel_send(

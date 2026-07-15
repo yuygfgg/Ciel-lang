@@ -148,7 +148,8 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::Literal(_)
         | TExprKind::TypeSize { .. }
         | TExprKind::TypeAlign { .. }
-        | TExprKind::TypeNeedsGcScan { .. } => {}
+        | TExprKind::TypeNeedsGcScan { .. }
+        | TExprKind::TypeId { .. } => {}
         TExprKind::StructLiteral { fields, .. } => {
             for (_, value) in fields {
                 visitor.visit_expr(value);
@@ -176,7 +177,8 @@ pub fn walk_expr<V: ThirVisitor + ?Sized>(visitor: &mut V, expr: &TExpr) {
         | TExprKind::ArrayToSlice(inner)
         | TExprKind::SliceToConst(inner)
         | TExprKind::MakeDynamicInterface { expr: inner, .. }
-        | TExprKind::ErrorBox { expr: inner, .. } => visitor.visit_expr(inner),
+        | TExprKind::ErrorBox { expr: inner, .. }
+        | TExprKind::ReportBox { expr: inner, .. } => visitor.visit_expr(inner),
         TExprKind::RawSliceFromPtr { ptr, len, .. } => {
             visitor.visit_expr(ptr);
             visitor.visit_expr(len);

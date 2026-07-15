@@ -229,12 +229,27 @@ impl<'a> CGenerator<'a> {
         error: &str,
         span: crate::span::Span,
     ) -> DiagResult<String> {
+        let report = self.report_from_error_expr(error, span)?;
         self.enum_variant_literal(
             &std_async_error_ty(&self.program.checked.resolved),
             "MessageClone",
-            &[error.to_string()],
+            &[report],
             span,
         )
+    }
+
+    pub(super) fn report_from_error_expr(
+        &self,
+        error: &str,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let Some(error_report) = self.std_error_function_name("error_report") else {
+            return Err(vec![Diagnostic::new(
+                span,
+                "internal error: missing /std/error error_report",
+            )]);
+        };
+        Ok(format!("{error_report}(&({error}))"))
     }
 
     pub(super) fn resource_error_runtime_literal(
@@ -284,6 +299,9 @@ impl<'a> CGenerator<'a> {
         };
         if err_ty == &std_error_ty(&self.program.checked.resolved) {
             return Ok(self.error_code_literal(code));
+        }
+        if err_ty == &std_report_ty(&self.program.checked.resolved) {
+            return self.report_from_error_expr(&self.error_code_literal(code), span);
         }
         if err_ty == &std_async_error_ty(&self.program.checked.resolved) {
             return self.async_error_runtime_literal(code, span);
@@ -340,15 +358,19 @@ impl<'a> CGenerator<'a> {
         if err_ty == &std_error_ty(&self.program.checked.resolved) {
             return Ok(error.to_string());
         }
+        if err_ty == &std_report_ty(&self.program.checked.resolved) {
+            return self.report_from_error_expr(error, span);
+        }
         if err_ty == &std_async_error_ty(&self.program.checked.resolved) {
             return self.async_error_message_clone_literal(error, span);
         }
         if self.enum_has_variant_with_payload(
             err_ty,
             "MessageClone",
-            &[std_error_ty(&self.program.checked.resolved)],
+            &[std_report_ty(&self.program.checked.resolved)],
         ) {
-            return self.enum_variant_literal(err_ty, "MessageClone", &[error.to_string()], span);
+            let report = self.report_from_error_expr(error, span)?;
+            return self.enum_variant_literal(err_ty, "MessageClone", &[report], span);
         }
         if self.enum_has_variant_with_payload(
             err_ty,
@@ -384,7 +406,7 @@ impl<'a> CGenerator<'a> {
         Ok(self.result_err_from_error_literal(layout, &payload))
     }
 
-    pub(super) fn result_err_from_message_clone_literal(
+    pub(in crate::codegen) fn result_err_from_message_clone_literal(
         &self,
         layout: &ResultLayout,
         error: &str,
@@ -411,6 +433,30 @@ impl<'a> CGenerator<'a> {
             span,
         )?;
         Ok(self.error_value_literal(&error_ty, &trait_value, "\"\"", "NULL"))
+    }
+
+    pub(super) fn emit_report_boxed_value(
+        &mut self,
+        value: &str,
+        concrete_ty: &Ty,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<String> {
+        let trait_ty = self.std_error_trait_ty();
+        let trait_value = self.emit_dynamic_interface_value_from_code(
+            &trait_ty,
+            concrete_ty,
+            value,
+            indent,
+            span,
+        )?;
+        let Some(report_box) = self.std_error_function_name("report_box") else {
+            return Err(vec![Diagnostic::new(
+                span,
+                "internal error: missing /std/error report_box",
+            )]);
+        };
+        Ok(format!("{report_box}({trait_value})"))
     }
 
     pub(super) fn error_code_literal(&self, code: &str) -> String {
@@ -452,6 +498,15 @@ impl<'a> CGenerator<'a> {
         indent: usize,
         span: crate::span::Span,
     ) -> DiagResult<String> {
+        if matches!(concrete_ty, Ty::DynamicInterface { .. }) {
+            return self.emit_dynamic_interface_reerasure_from_code(
+                dyn_ty,
+                concrete_ty,
+                value,
+                indent,
+                span,
+            );
+        }
         let data_ptr = if matches!(concrete_ty, Ty::Pointer { .. }) {
             format!("(void *)({value})")
         } else {

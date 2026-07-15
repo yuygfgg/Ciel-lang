@@ -1,0 +1,45 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/meta as meta;
+
+struct Tag {
+    i64 value;
+}
+
+struct Collision<T> {
+    T value;
+}
+
+// This name collides with the general-purpose mangle for Collision<Tag>.
+struct Collision_Tag {
+    i64 code;
+}
+
+impl<T> format_error(*const Collision<T> error) {
+    return "generic";
+}
+
+impl format_error(*const Collision_Tag error) {
+    return "nominal";
+}
+
+i64 main() {
+    if (meta::type_id_eq(
+        meta::type_id<Collision<Tag>>(),
+        meta::type_id<Collision_Tag>()
+    )) {
+        return 1;
+    }
+
+    Collision_Tag concrete = { code: 17 };
+    Error boxed = concrete;
+    if (!error_is<Collision_Tag>(&boxed)) {
+        return 2;
+    }
+    if (error_is<Collision<Tag>>(&boxed)) {
+        return 3;
+    }
+    return 0;
+}

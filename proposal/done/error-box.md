@@ -1,5 +1,13 @@
 # Owned Error Box Proposal
 
+## Historical Status
+
+The later `error-downcast` proposal extends this design with exact local
+downcast and separates transferable diagnostics into `Report`. `Error` is now
+local-only and does not implement `Message`; the open actor-message question
+below is resolved in favor of using `Report` or a concrete messageable error.
+`design.md` is normative.
+
 This proposal defines an application-level error model for Ciel that keeps
 precise error enums usable in libraries while making `?` ergonomic across
 different error types at application boundaries.
@@ -379,8 +387,8 @@ erasure and `?` propagation rule.
    functions once Ciel has better opaque standard-library types?
 3. Should `format_error(*Error)` return only the top-level message, while
    `error_message(*Error)` formats the whole chain?
-4. Should erased errors be allowed in actor messages? The safe default is to
-   require an explicit `Message` implementation for `Error`.
+4. Resolved by `error-downcast`: downcastable `Error` values remain local;
+   actor messages use `Report` or a concrete messageable error.
 
 Automatic `format_error` for simple enums is intentionally not an open question
 in this proposal. It is deferred to metaprogramming.

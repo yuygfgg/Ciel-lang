@@ -13,16 +13,16 @@ struct Config {
     usize extra;
 }
 
-async Result<usize, Error> join_task(
-    async::Task<usize, Error> task
+async Result<usize, Report> join_task(
+    async::Task<usize, Report> task
 ) {
     return await task;
 }
 
 i32 main() {
     Config config = { base: 20, extra: 7 };
-    async::Task<usize, Error> task = must(
-        async::spawn<usize, Error>(
+    async::Task<usize, Report> task = must(
+        async::spawn<usize, Report>(
             async || {
                 await async_time::sleep_ms(1)?;
                 return Ok(config.base + config.extra + 2);

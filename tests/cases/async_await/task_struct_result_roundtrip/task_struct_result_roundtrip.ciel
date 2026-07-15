@@ -13,8 +13,8 @@ struct Config {
     usize extra;
 }
 
-async Result<usize, Error> collect(
-    async::Task<Config, Error> task
+async Result<usize, Report> collect(
+    async::Task<Config, Report> task
 ) {
     Config first = await task?;
     Config second = await task?;
@@ -22,8 +22,8 @@ async Result<usize, Error> collect(
 }
 
 i32 main() {
-    async::Task<Config, Error> task = must(
-        async::spawn<Config, Error>
+    async::Task<Config, Report> task = must(
+        async::spawn<Config, Report>
         (async || {
             await async_time::sleep_ms(1)?;
             return Ok({ base: 5, extra: 7 });

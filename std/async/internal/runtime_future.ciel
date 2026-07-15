@@ -38,6 +38,12 @@ export unsafe extern "C" {
     c::c_int ciel_future_poll_trampoline(
         *CielFuture future, *void out
     );
+    void ciel_future_adopt_pending_operation(
+        *CielFuture future, *CielFuture child
+    );
+    void ciel_future_clear_pending_operation(
+        *CielFuture future
+    );
     *CielFuture ciel_task_future_from_handle(
         *void handle
     );
@@ -47,10 +53,14 @@ export unsafe extern "C" {
     c::c_int ciel_async_cancel(*CielAsyncOp op);
     c::c_int ciel_async_close(*CielAsyncFd fd);
     c::c_int ciel_async_notify_read(
-        *CielAsyncOp op, *CielActor actor, *void message
+        *CielAsyncOp op,
+        *CielActor actor,
+        *void message
     );
     c::c_int ciel_async_notify_write(
-        *CielAsyncOp op, *CielActor actor, *void message
+        *CielAsyncOp op,
+        *CielActor actor,
+        *void message
     );
     c::c_int ciel_async_finish_read(
         *CielAsyncOp op, *?*u8 out, *usize len, *usize cap
@@ -124,6 +134,14 @@ export unsafe *T alloc_slot<T>() {
         size = 1;
     }
     return unsafe { ciel_alloc(size) as *T };
+}
+
+// Initializes a runtime-owned output slot exactly once. The caller must prove
+// that slot does not contain a live value and that value is moved only here.
+export unsafe void initialize_slot<T>(
+    *T slot, T @value
+) {
+    unsafe { *slot = value; };
 }
 
 export unsafe c::c_int abort<T>(*Future<T> future) {

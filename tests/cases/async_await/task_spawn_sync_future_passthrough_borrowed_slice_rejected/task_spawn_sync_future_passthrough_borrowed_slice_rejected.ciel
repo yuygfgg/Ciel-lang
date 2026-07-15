@@ -5,19 +5,19 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async::Future<Result<usize, Error>> pass(
-    async::Future<Result<usize, Error>> future
+async::Future<Result<usize, Report>> pass(
+    async::Future<Result<usize, Report>> future
 ) {
     return future;
 }
 
-async::Task<usize, Error> spawn_borrowed_slice() {
+async::Task<usize, Report> spawn_borrowed_slice() {
     [3]i64 values = [1, 2, 3];
     return must(async::spawn<usize>(pass(len_later(values[..]))));
 }

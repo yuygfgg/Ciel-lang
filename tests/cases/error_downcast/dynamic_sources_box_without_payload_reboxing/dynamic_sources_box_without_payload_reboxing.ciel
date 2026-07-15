@@ -1,0 +1,64 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-c-contains: .data = (ciel_dyn_source_
+// expect-c-not-contains: ciel_dyn_data
+
+import /std/error;
+
+interface<T> i64 error_code(*const T error);
+interface RichError = ErrorTrait + error_code;
+
+struct ServiceError {
+    i64 code;
+}
+
+impl format_error(*const ServiceError error) {
+    return "service";
+}
+
+impl error_code(*const ServiceError error) {
+    return error->code;
+}
+
+Error error_from_trait(ErrorTrait error) {
+    return error;
+}
+
+Error error_from_rich(RichError error) {
+    return error;
+}
+
+Report report_from_trait(ErrorTrait error) {
+    return error;
+}
+
+Report report_from_rich(RichError error) {
+    return error;
+}
+
+i64 main() {
+    ServiceError concrete = { code: 23 };
+    RichError rich = &concrete;
+    ErrorTrait narrow = rich;
+
+    Error narrow_error = error_from_trait(narrow);
+    if (!error_is<ServiceError>(&narrow_error)) {
+        return 1;
+    }
+
+    Error rich_error = error_from_rich(rich);
+    if (!error_is<ServiceError>(&rich_error)) {
+        return 2;
+    }
+
+    Report narrow_report = report_from_trait(narrow);
+    if (report_message(&narrow_report).len != 7) {
+        return 3;
+    }
+
+    Report rich_report = report_from_rich(rich);
+    if (report_message(&rich_report).len != 7) {
+        return 4;
+    }
+    return 0;
+}

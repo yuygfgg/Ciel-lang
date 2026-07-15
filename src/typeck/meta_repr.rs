@@ -69,6 +69,7 @@ impl TypeChecker {
         let ty = match &template.target {
             TypeAliasTarget::Type(ty) => self.lower_type_with_subst_inner(ty, &subst, allow_holes),
             TypeAliasTarget::CSpelling { abi, spelling } => Ty::CSpelling {
+                def_id,
                 abi: abi.clone(),
                 spelling: spelling.clone(),
             },
@@ -413,10 +414,7 @@ impl TypeChecker {
                     );
                 }
                 let instance_ty = named_ty(*def_id, name.clone(), args.clone());
-                if !contains_generic(&instance_ty)
-                    && !borrowed
-                    && self.is_owned_meta_policy_leaf(&instance_ty, root)
-                {
+                if !borrowed && self.is_owned_meta_policy_leaf(&instance_ty, root) {
                     return Some(self.meta_repr_policy_leaf_ty(&instance_ty, root));
                 }
                 if !expanding.insert(instance_ty.clone()) {
@@ -1855,7 +1853,9 @@ impl TypeChecker {
     }
 
     pub(super) fn is_owned_meta_policy_leaf(&mut self, ty: &Ty, root: Option<&Ty>) -> bool {
-        if contains_generic(ty) || contains_type_hole(ty) {
+        if contains_type_hole(ty)
+            || (contains_generic(ty) && self.symbolic_impl_resolution_depth == 0)
+        {
             return false;
         }
         let leaf_ty = self.meta_repr_policy_leaf_ty(ty, root);

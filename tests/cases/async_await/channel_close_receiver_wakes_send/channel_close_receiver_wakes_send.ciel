@@ -7,7 +7,7 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> pending_send(
+async Result<usize, Report> pending_send(
     async::Sender<usize> sender,
     async::Sender<usize> ready
 ) {
@@ -16,16 +16,16 @@ async Result<usize, Error> pending_send(
     return Ok(1);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
     async::ChannelPair<usize> ready = async::channel<usize>(1)?;
     async::try_send<usize>(pair.sender, 1)?;
-    async::Task<usize, Error> task = async::spawn<usize>(
+    async::Task<usize, Report> task = async::spawn<usize>(
         pending_send(pair.sender, ready.sender)
     )?;
     _ sender_ready = await async::recv<usize>(ready.receiver)?;
     async::close_receiver<usize>(pair.receiver)?;
-    Result<usize, Error> result = await task;
+    Result<usize, Report> result = await task;
     switch (result) {
         case Err(_):
             return Ok(5);

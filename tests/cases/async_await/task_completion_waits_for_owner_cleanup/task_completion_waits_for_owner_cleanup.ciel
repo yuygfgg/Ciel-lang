@@ -1,0 +1,8 @@
+// ciel-test: host
+// host: task_completion_waits_for_owner_cleanup.host.c
+// expect-exit: 0
+// warning-clean: true
+
+export extern "C" i32 task_cleanup_barrier_fixture_marker() {
+    return 0;
+}

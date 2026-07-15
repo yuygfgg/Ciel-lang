@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: Message derivation blocked
+
+import /std/error;
+import /std/message;
+
+enum Envelope {
+    Internal(Error),
+}
+
+derive Message<Envelope>;
+
+i64 main() {
+    return 0;
+}

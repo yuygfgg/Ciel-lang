@@ -31,7 +31,7 @@ impl<'a> CGenerator<'a> {
         let closure_heap_locals = self
             .escapes
             .functions
-            .get(&closure.owner)
+            .get(&closure.function_def)
             .map(|escape| escape.heap_locals.clone())
             .unwrap_or_default();
         let previous_heap_locals =
@@ -77,7 +77,6 @@ impl<'a> CGenerator<'a> {
             closure_resource_roots,
         );
         let previous_capture_locals = std::mem::take(&mut self.current_capture_locals);
-        let previous_closure_owner = self.current_closure_owner.replace(closure.owner);
         self.defer_stack.clear();
         self.temporary_resource_cleanup_depth = 0;
         self.temporary_resource_cleanup_frames.clear();
@@ -87,7 +86,7 @@ impl<'a> CGenerator<'a> {
         if matches!(closure.ty, Ty::Closure { .. } | Ty::ClosureInstance { .. })
             && !closure.captures.is_empty()
         {
-            let env_name = self.closure_env_name(closure.owner, closure.id);
+            let env_name = self.closure_env_name(closure.id);
             self.line_indent(1, &format!("{env_name} *env = ({env_name} *)env_raw;"));
             self.current_capture_locals = closure
                 .captures
@@ -148,7 +147,6 @@ impl<'a> CGenerator<'a> {
         self.current_param_locals = previous_param_locals;
         self.current_owned_resource_roots = previous_owned_resource_roots;
         self.current_capture_locals = previous_capture_locals;
-        self.current_closure_owner = previous_closure_owner;
         self.defer_stack.clear();
         self.temporary_resource_cleanup_depth = 0;
         self.temporary_resource_cleanup_frames.clear();
@@ -246,7 +244,7 @@ impl<'a> CGenerator<'a> {
                     "internal error: async closure copy init requires an environment",
                 )]
             })?;
-            let env_name = self.closure_env_name(closure.owner, closure.id);
+            let env_name = self.closure_env_name(closure.id);
             self.line_indent(
                 indent,
                 &format!("{env_name} *env = ({env_name} *){env_raw};"),
@@ -422,7 +420,7 @@ impl<'a> CGenerator<'a> {
         self.current_heap_locals = self
             .escapes
             .functions
-            .get(&closure.owner)
+            .get(&closure.function_def)
             .map(|escape| escape.heap_locals.clone())
             .unwrap_or_default();
         self.current_param_locals = closure
@@ -458,7 +456,6 @@ impl<'a> CGenerator<'a> {
                     }),
             )
             .collect();
-        self.current_closure_owner = Some(closure.owner);
         self.line_indent(
             1,
             &format!("{} *ctx = ({} *)ctx_raw;", names.context, names.context),
@@ -498,7 +495,6 @@ impl<'a> CGenerator<'a> {
         self.current_param_locals.clear();
         self.current_owned_resource_roots.clear();
         self.current_capture_locals.clear();
-        self.current_closure_owner = None;
         self.current_return_ty = Ty::Void;
         self.current_async_output = None;
         self.current_async_context = None;

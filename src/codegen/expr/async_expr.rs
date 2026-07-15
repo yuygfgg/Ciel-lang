@@ -22,10 +22,11 @@ impl<'a> CGenerator<'a> {
             &format!("if ({temp}.tag == {}) {{", inner_layout.err_index),
         );
         self.emit_all_defers(indent + 1);
-        let err_payload = if matches!(propagation, TryPropagation::ErrorBox) {
-            Some(self.emit_error_boxed_value(
+        let concrete_err_ty = inner_layout.err_payload_ty.as_ref();
+        let err_payload = match propagation {
+            TryPropagation::ErrorBox => Some(self.emit_error_boxed_value(
                 &format!("{temp}.as.{}._0", inner_layout.err_name),
-                inner_layout.err_payload_ty.as_ref().ok_or_else(|| {
+                concrete_err_ty.ok_or_else(|| {
                     vec![Diagnostic::new(
                         expr.span,
                         "internal error: error-box `?` requires an Err payload",
@@ -33,9 +34,19 @@ impl<'a> CGenerator<'a> {
                 })?,
                 indent + 1,
                 expr.span,
-            )?)
-        } else {
-            None
+            )?),
+            TryPropagation::ReportBox => Some(self.emit_report_boxed_value(
+                &format!("{temp}.as.{}._0", inner_layout.err_name),
+                concrete_err_ty.ok_or_else(|| {
+                    vec![Diagnostic::new(
+                        expr.span,
+                        "internal error: report-box `?` requires an Err payload",
+                    )]
+                })?,
+                indent + 1,
+                expr.span,
+            )?),
+            TryPropagation::Exact => None,
         };
         let err_value = if let Some(err_payload) = err_payload.as_deref() {
             self.result_err_from_error_literal(&return_layout, err_payload)
@@ -238,6 +249,22 @@ impl<'a> CGenerator<'a> {
         Ok(())
     }
 
+    fn emit_task_runtime_failure_result(
+        &mut self,
+        output: &str,
+        output_ty: &Ty,
+        rc: &str,
+        indent: usize,
+        span: crate::span::Span,
+    ) -> DiagResult<()> {
+        let layout = self.result_layout(output_ty, span)?;
+        let err_value = self.result_err_from_runtime_literal(&layout, rc, span)?;
+        self.line_indent(indent, &format!("if ({rc} != 0) {{"));
+        self.line_indent(indent + 1, &format!("{output} = {err_value};"));
+        self.line_indent(indent, "}");
+        Ok(())
+    }
+
     fn emit_task_await_payload_clone(
         &mut self,
         output: &str,
@@ -325,8 +352,8 @@ impl<'a> CGenerator<'a> {
         indent: usize,
     ) -> DiagResult<String> {
         let (output, rc) = self.emit_future_run(future, &expr.ty, "await", indent)?;
-        self.emit_async_error_return_from_rc(&rc, expr.span, indent)?;
         if let Some((task_output_ty, task_error_ty)) = self.task_tys_for_codegen(&future.ty) {
+            self.emit_task_runtime_failure_result(&output, &expr.ty, &rc, indent, expr.span)?;
             self.emit_task_await_output_clone(
                 &output,
                 &expr.ty,
@@ -336,6 +363,8 @@ impl<'a> CGenerator<'a> {
                 indent,
                 expr.span,
             )?;
+        } else {
+            self.emit_async_error_return_from_rc(&rc, expr.span, indent)?;
         }
         Ok(output)
     }
@@ -474,17 +503,29 @@ impl<'a> CGenerator<'a> {
             );
             cname.clone()
         };
-        self.emit_value_copy(
-            &binding_expr,
-            &format!("*{value_ptr}"),
-            &arm.future_output_ty,
-            indent,
-        );
-        if self.type_is_affine(&arm.future_output_ty) {
-            self.emit_resource_zero_expr(&arm.future_output_ty, &format!("*{value_ptr}"), indent);
-        }
-        self.push_resource_cleanup_defer(&arm.future_output_ty, &binding_expr);
         if let Some((task_output_ty, task_error_ty)) = self.task_tys_for_codegen(&arm.future.ty) {
+            self.emit_task_runtime_failure_result(
+                &binding_expr,
+                &arm.future_output_ty,
+                rc,
+                indent,
+                span,
+            )?;
+            self.line_indent(indent, &format!("if ({rc} == 0) {{"));
+            self.emit_value_copy(
+                &binding_expr,
+                &format!("*{value_ptr}"),
+                &arm.future_output_ty,
+                indent + 1,
+            );
+            if self.type_is_affine(&arm.future_output_ty) {
+                self.emit_resource_zero_expr(
+                    &arm.future_output_ty,
+                    &format!("*{value_ptr}"),
+                    indent + 1,
+                );
+            }
+            self.line_indent(indent, "}");
             self.emit_task_await_output_clone(
                 &binding_expr,
                 &arm.future_output_ty,
@@ -494,7 +535,22 @@ impl<'a> CGenerator<'a> {
                 indent,
                 span,
             )?;
+        } else {
+            self.emit_value_copy(
+                &binding_expr,
+                &format!("*{value_ptr}"),
+                &arm.future_output_ty,
+                indent,
+            );
+            if self.type_is_affine(&arm.future_output_ty) {
+                self.emit_resource_zero_expr(
+                    &arm.future_output_ty,
+                    &format!("*{value_ptr}"),
+                    indent,
+                );
+            }
         }
+        self.push_resource_cleanup_defer(&arm.future_output_ty, &binding_expr);
         Ok(())
     }
 
@@ -556,7 +612,9 @@ impl<'a> CGenerator<'a> {
         let select_out = self.next_temp("select_out");
         self.line_indent(
             indent,
-            &format!("CielSelectResult {select_out} = (CielSelectResult){{0}};"),
+            &format!(
+                "CielSelectResult {select_out} = (CielSelectResult){{ .index = SIZE_MAX, .arm_rc = 0 }};"
+            ),
         );
         let rc = self.next_temp("select_rc");
         let run_fn = if async_await {
@@ -582,11 +640,40 @@ impl<'a> CGenerator<'a> {
             self.line_indent(indent, "ciel_future_clear_pending_operation(future);");
         }
         self.emit_async_error_return_from_rc(&rc, expr.span, indent)?;
+        let task_arm_indexes = arms
+            .iter()
+            .enumerate()
+            .filter_map(|(index, arm)| {
+                self.task_tys_for_codegen(&arm.future.ty)
+                    .is_some()
+                    .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let arm_rc = self.next_temp("select_arm_rc");
+        self.line_indent(indent, &format!("int32_t {arm_rc} = {select_out}.arm_rc;"));
+        if !task_arm_indexes.is_empty() {
+            let outer_rc = self.next_temp("select_outer_rc");
+            self.line_indent(indent, &format!("int32_t {outer_rc} = {arm_rc};"));
+            self.line_indent(indent, &format!("if ({arm_rc} != 0) {{"));
+            self.line_indent(indent + 1, &format!("switch ({select_out}.index) {{"));
+            for index in task_arm_indexes {
+                self.line_indent(indent + 2, &format!("case {index}:"));
+            }
+            self.line_indent(indent + 3, &format!("{outer_rc} = 0;"));
+            self.line_indent(indent + 3, "break;");
+            self.line_indent(indent + 2, "default:");
+            self.line_indent(indent + 3, "break;");
+            self.line_indent(indent + 1, "}");
+            self.line_indent(indent, "}");
+            self.emit_async_error_return_from_rc(&outer_rc, expr.span, indent)?;
+        } else {
+            self.emit_async_error_return_from_rc(&arm_rc, expr.span, indent)?;
+        }
         self.line_indent(indent, &format!("switch ({select_out}.index) {{"));
         for (index, arm) in arms.iter().enumerate() {
             self.line_indent(indent + 1, &format!("case {index}: {{"));
             self.defer_stack.push(Vec::new());
-            self.emit_select_arm_binding(arm, &set, index, &rc, indent + 2, expr.span)?;
+            self.emit_select_arm_binding(arm, &set, index, &arm_rc, indent + 2, expr.span)?;
             if let Some(result_temp) = result_temp.as_ref() {
                 self.emit_expr_store(result_temp, &arm.body, indent + 2)?;
             } else {
@@ -781,22 +868,12 @@ impl<'a> CGenerator<'a> {
                 "internal error: expected async closure expression",
             )]);
         };
-        let owner = self.current_closure_owner.ok_or_else(|| {
+        self.plan.closure_defs.get(id).cloned().ok_or_else(|| {
             vec![Diagnostic::new(
                 expr.span,
-                "internal error: async closure emitted outside a function",
+                "internal error: async closure definition was not planned",
             )]
-        })?;
-        self.plan
-            .closure_defs
-            .get(&(owner.0, *id))
-            .cloned()
-            .ok_or_else(|| {
-                vec![Diagnostic::new(
-                    expr.span,
-                    "internal error: async closure definition was not planned",
-                )]
-            })
+        })
     }
 
     pub(super) fn emit_async_task_cancel_expr(

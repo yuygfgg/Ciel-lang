@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Report> value_after_release(
+    async::Receiver<usize> release
+) {
+    _ released = await async::recv<usize>(release)?;
+    return Ok(1);
+}
+
+async Result<void, Report> drive() {
+    async::ChannelPair<usize> release = async::channel<usize>(1)?;
+    async::Task<usize, Report> task = async::spawn<usize, Report>(
+        value_after_release(release.receiver)
+    )?;
+    async::TaskAbortHandle abort = async::task_abort_handle(&task);
+    async::abort_task(abort)?;
+    switch (await async::timeout(task, 1000)) {
+        case Err(_):
+            return Err(code_error(2));
+        case Ok(result):
+            switch (result) {
+                case Ok(_):
+                    return Err(code_error(1));
+                case Err(_):
+                    return Ok;
+            }
+    }
+    return Err(code_error(3));
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

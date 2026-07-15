@@ -23,7 +23,7 @@ bool same_prefix([]u8 got, []const u8 want) {
     return true;
 }
 
-async Result<usize, Error> serve_once(
+async Result<usize, Report> serve_once(
     anet::AsyncTcpListener listener
 ) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
@@ -40,7 +40,7 @@ async Result<usize, Error> serve_once(
     return Ok(eof_len);
 }
 
-async Result<usize, Error> run_client(
+async Result<usize, Report> run_client(
     net::SocketAddr bound
 ) {
     anet::AsyncTcpStream @client = await anet::connect(bound)?;
@@ -63,13 +63,13 @@ async Result<usize, Error> run_client(
     return Ok(copied);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     anet::AsyncTcpListener listener = anet::listen_async(
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
 
-    async::Task<usize, Error> server = async::spawn<usize>(
+    async::Task<usize, Report> server = async::spawn<usize>(
         serve_once(listener)
     )?;
     usize copied = await run_client(bound)?;

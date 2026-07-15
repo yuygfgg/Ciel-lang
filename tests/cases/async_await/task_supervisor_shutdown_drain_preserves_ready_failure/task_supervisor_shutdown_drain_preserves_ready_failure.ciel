@@ -1,0 +1,73 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> fail_now() {
+    return Err(code_error(7));
+}
+
+async Result<void, Report> stay_pending(
+    async::Receiver<usize> release
+) {
+    _ released = await async::recv<usize>(release)?;
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    async::ChannelPair<usize> release = async::channel<usize>(1)?;
+    async::TaskSupervisor<void, Report> @supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::Task<void, Report> failed = async::spawn<void, Report>(fail_now())?;
+    async::supervisor_add<void, Report>(&supervisor, failed)?;
+    async::supervisor_spawn<void, Report>(
+        async::supervisor_registrar<void, Report>(&supervisor),
+        stay_pending(release.receiver)
+    )?;
+
+    bool @failure_ready = false;
+    switch (await failed) {
+        case Ok:
+            {}
+        case Err(_):
+            failure_ready = true;
+    }
+
+    async::TaskCompletionDrain<void, Report> drain =
+        await async::supervisor_shutdown_and_join_drain<void, Report>(
+            supervisor
+        )?;
+    if (!failure_ready) {
+        return Err(code_error(7));
+    }
+    switch (async::completion_drain_try_next<void, Report>(&drain)?) {
+        case async::TaskReady(task):
+            switch (await task) {
+                case Ok:
+                    return Err(code_error(1));
+                case Err(_):
+                    {}
+            }
+        case async::NoTaskReady:
+            return Err(code_error(2));
+        case async::TaskGroupClosed:
+            return Err(code_error(3));
+    }
+    switch (async::completion_drain_try_next<void, Report>(&drain)?) {
+        case async::TaskGroupClosed:
+            return Ok;
+        case async::TaskReady(_):
+            return Err(code_error(4));
+        case async::NoTaskReady:
+            return Err(code_error(5));
+    }
+    return Err(code_error(6));
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/message;
+
+struct FailingMessage {
+    i64 value;
+}
+
+unsafe impl clone_message(*const FailingMessage value) {
+    return Err(text_error("clone failed"));
+}
+
+async Result<FailingMessage, Report> produce() {
+    return Ok({ value: 7 });
+}
+
+i64 main() {
+    Result<async::Task<FailingMessage, Report>, async::AsyncError> spawned =
+        async::spawn<FailingMessage, Report>(produce());
+    async::Task<FailingMessage, Report> task;
+    switch (spawned) {
+        case Ok(value):
+            task = value;
+        case Err(_):
+            return 1;
+    }
+    switch (async::block_on(task)) {
+        case Ok(_):
+            return 2;
+        case Err(report):
+            []const char message = report_message(&report);
+            if (message.len != 12 || message[0] != 'c') {
+                return 3;
+            }
+    }
+    return 0;
+}

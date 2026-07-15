@@ -1,0 +1,25 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+struct HiddenError {
+    i64 code;
+}
+
+impl format_error(*const HiddenError error) {
+    return "hidden";
+}
+
+_: ErrorTrait make_error() {
+    HiddenError error = { code: 41 };
+    return error;
+}
+
+i64 main() {
+    Error boxed = make_error();
+    if (!error_is<HiddenError>(&boxed)) {
+        return 1;
+    }
+    return 0;
+}

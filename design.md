@@ -522,6 +522,44 @@ i64 fn(i64) |()|   // closure taking no arguments and returning i64 fn(i64)
 i64 |(i64)| fn()   // function taking no arguments and returning a closure
 ```
 
+### Runtime Type Identity
+
+Every concrete semantic type has a process-local runtime identity available
+through the canonical `/std/meta.type_id<T>()` intrinsic. The type argument
+must be concrete after monomorphization. Runtime identity follows these rules:
+
+1. transparent aliases have the identity of their normalized target;
+2. distinct nominal structs and enums have distinct identities even when their
+   layouts are equal;
+3. generic arguments participate in identity, so `Box<i64>` and `Box<u8>` are
+   distinct;
+4. C spelling types retain the identity of their Ciel declarations instead of
+   collapsing to a width-equivalent primitive;
+5. erasing a `T` value or a pointer receiver view of that value through the
+   same capability records the receiver identity `T`;
+6. an opaque return value records the hidden concrete identity chosen by its
+   defining generic instance, although callers cannot name an inaccessible
+   hidden type; and
+7. resource-affine types have runtime identities, but remain ineligible for
+   standard error or report boxing.
+
+The opaque-return rule does not merge or expose static opaque source types.
+Their compile-time identity remains keyed by the defining function and generic
+arguments; `TypeId` uses the hidden concrete receiver selected for the realized
+value.
+
+`meta::TypeId` is an opaque `unsafe struct`. Safe code can obtain a token with
+`type_id<T>()`, copy it, and compare it with `type_id_eq`; it cannot construct
+or inspect the token. `type_id_eq` compares canonical token addresses. A
+`TypeId` is not a type name, numeric tag, package key, serialization identifier,
+or cross-process ABI. Its equality is stable only within one linked program
+execution. Runtime type identity does not add a general `Any` value, reflection
+API, or cast operator; exact recovery remains confined to `/std/error.Error`.
+
+`meta::Type<T>` remains a zero-sized compile-time witness with one shared
+physical representation. It is not a runtime identity and cannot substitute
+for `TypeId`.
+
 ### Slice Semantics
 
 `[]T` and `[]const T` are built-in slice view types. A writable slice value
@@ -1634,6 +1672,14 @@ Dynamic interface types require fixed non-receiver arguments and cannot contain
 `Name = _` hidden bindings. Hidden bindings are compile-time generic
 parameters, not dynamic interface payload.
 
+The canonical `/std/error.erased_error_ref` capability is a reserved
+compiler-owned interface. The compiler supplies it for every concrete receiver
+that participates in `ErrorTrait`; source code cannot implement or override it.
+Its dynamic-interface entry returns the exact receiver `TypeId` together with
+the receiver data pointer. Re-erasing a dynamic interface to another view that
+retains `ErrorTrait` must retain this entry and the original receiver identity.
+Vtable addresses are not type identities and must not be used for downcast.
+
 Examples:
 
 ```ciel
@@ -2012,10 +2058,10 @@ type PacketMessage = meta::Repr<Packet>;
 `/std/message` implements `clone_message` for owned SOP nodes such as `HNil`,
 `HCons`, `Field`, `CoNil`, `Coproduct`, `Variant`, and `Payload`. If a field or
 payload leaf lacks `Message`, or has a capability forbidden by `Message`,
-ordinary generic constraint checking rejects the representation. Code that wants
-the original nominal type itself to cross an actor or channel boundary derives
-or writes an explicit `clone_message(*const T)` policy and must not mark the
-type with a capability excluded by `Message`.
+ordinary generic constraint checking rejects the representation. Code that
+wants the original nominal type itself to cross an actor or channel boundary
+derives or writes an explicit `clone_message(*const T)` policy and must not mark
+the type with a capability excluded by `Message`.
 
 Owned representation recursively expands structs, enums, concrete closures, and
 fixed-size arrays where no nominal policy boundary exists. A named field or
@@ -2026,7 +2072,7 @@ types are not owned policy leaves; they are rejected instead of copied into
 through `meta::Repr<T>`. For example, a `ThreadLocal` handle inside
 `meta::Repr<Event>` still blocks `Event` from satisfying `Message`. Concrete
 closure instances are not opaque policy leaves; their standard-library
-`clone_message` impl reflects captures through `meta::Repr<C>`.
+`clone_message` impls reflect captures through `meta::Repr<C>`.
 
 Type normalization still preserves nominal resource-affine boundaries, including
 compiler futures and resource-backed async values, so generic impl identity does
@@ -2129,17 +2175,103 @@ switch (event) {
 ## 13. Error Handling and Panic
 
 The `?` operator works only on the `Result<T, E>` type exported by
-`/std/result`, or aliases of that type. The surrounding function must return
-`Result<U, E>` with exactly the same error type `E`, or `Result<U, Error>` where
-`Error` is the standard error type exported by `/std/error` and `E` implements
-the standard `ErrorTrait` formatting capability. In the latter case, `?` boxes
-the concrete error through `error_box`. No general implicit conversion graph is
-searched.
+`/std/result`, or aliases of that type. The surrounding function's error type
+selects one of three propagation modes:
+
+1. `Result<T, E>` propagates exactly into `Result<U, E>`;
+2. `Result<T, E>` propagates into `Result<U, Error>` when `E: ErrorTrait`,
+   preserving the concrete receiver through `error_box`; and
+3. `Result<T, E>` propagates into `Result<U, Report>` when `E: ErrorTrait`,
+   converting the diagnostic through `report_box`.
+
+No general implicit conversion graph is searched. The same target-directed
+rules apply when an expected `Error` or `Report` type is supplied by a local
+initializer, function argument, nested result payload, or return expression:
+
+```ciel
+Error local = io::IoError::WriteZero;
+Report transferable = io::IoError::WriteZero;
+
+return Err(io::IoError::WriteZero); // target result error type decides boxing
+```
+
+`Error` and `Report` define different erasure boundaries:
+
+```text
+Error   = owned typed erasure, exact read-only downcast, not Message
+Report  = owned diagnostic representation, no source-value downcast, Message
+```
+
+`Result<T, Error>` preserves an open set of concrete errors for local
+inspection within one ownership domain. `Result<T, Report>` commits to a
+transferable diagnostic. `Error` has no alternate report representation;
+converting an `Error` to `Report` produces a distinct value.
+
+`ErrorTrait` combines the public `format_error` capability with the hidden
+compiler-owned `erased_error_ref` witness. The witness couples the exact
+receiver `TypeId` with the receiver storage pointer. Error authors implement
+only `format_error`; the compiler supplies the witness. User implementations of
+`erased_error_ref` are rejected.
+
+`error_box` stores the concrete receiver behind `ErrorTrait`. Erasing a
+non-pointer value allocates rooted receiver storage when required. Erasing a
+pointer receiver relies on escape analysis to keep the pointed-to receiver
+alive. Resource-affine receivers cannot be boxed into either `Error` or
+`Report`, because erasure would hide their move and cleanup requirements.
+
+`error_downcast_ref<T>` compares the stored receiver identity with
+`meta::type_id<T>()` and returns `Option<*const T>`. The pointer cast occurs only
+after exact identity equality. Downcast honors transparent aliases, but does
+not inspect enum variants, search source chains, invoke conversion capabilities,
+match interfaces, or unwrap an `Error` boxed inside another `Error`.
+`error_is<T>` performs the same exact test without returning a pointer. A
+mismatch returns `None` and is not a diagnostic.
+
+The downcast result is read-only. Copies of an `Error` may share receiver
+storage, so consuming one copy does not prove unique ownership and there is no
+owning or mutable downcast. `error_source` returns only the immediate source;
+callers may traverse the chain and test each source explicitly.
+
+`error_with_context` preserves the erased receiver and its `TypeId` while
+adding an immediate source. Downcast therefore continues to recover the same
+concrete receiver after context is attached. Context strings may remain rooted
+local slices because `Error` cannot cross a safe `Message` boundary.
+
+`Report` owns every diagnostic byte it exposes. `report_box` formats a concrete
+`ErrorTrait` value while that value remains available and copies the diagnostic
+into immutable GC-managed storage. `error_report` converts an `Error` and its
+complete context/source chain. `report_with_context` copies its context and
+preserves the report source chain. Supplying an `Error` to `report_box` has the
+same chain-preserving behavior as `error_report`; supplying a `Report` preserves
+its immutable report graph.
+
+`Report` implements `format_error` and `Message`, but has no downcast API.
+Converting a `Report` to `Error` boxes the `Report` value itself, so a later
+downcast can recover `Report`, not the concrete value from which the diagnostic
+was originally produced.
 
 Application and library code should model its own recoverable failure domain
-with concrete error enums and explicit adapter functions. Use the standard
-boxed `Error` only at boundaries that require type erasure, and use ordinary
-status enums instead of nesting `Result` solely to carry non-fatal outcomes.
+with concrete error enums and explicit adapter functions. Use `Error` for local
+typed erasure and `Report` for transferable diagnostic erasure. Ordinary status
+enums should represent non-fatal outcomes instead of nested `Result` values.
+
+```ciel
+enum ServiceError {
+    Config(config::ConfigError),
+    Internal(Error),
+}
+
+enum ServiceTaskError {
+    Config(config::ConfigError),
+    Internal(Report),
+}
+```
+
+`ServiceError` is local-only. `ServiceTaskError` can derive `Message` when its
+other payloads are messageable, but its erased branch retains diagnostics rather
+than a recoverable hidden value. Compile-time enum adaptation remains preferable
+when the source failure set is part of the API contract; downcast serves an
+intentionally open local error set.
 
 `must` and `expect` are standard-library generic functions. They are not
 special syntax. On error, they call a runtime panic function.
@@ -2284,7 +2416,7 @@ non-awaiting cleanup before the frame is released.
 `async::spawn` starts an awaitable body as an independent task:
 
 ```ciel
-Task<usize, Error> task = async::spawn<usize>(async || compute_size(path))?;
+Task<usize, Report> task = async::spawn<usize>(async || compute_size(path))?;
 usize size = await task?;
 ```
 
@@ -2297,8 +2429,9 @@ task handle does not cancel the running task; it unregisters the waiter.
 `async::cancel` requests task termination through the task's abort path.
 
 Until the language has default generic arguments, the standard task handle has
-no `Task<T>` compatibility spelling. Code that wants erased task errors must
-write `Task<T, Error>` explicitly.
+no `Task<T>` compatibility spelling. Code that wants erased transferable task
+errors writes `Task<T, Report>` explicitly. `Task<T, Error>` is rejected because
+`Error` is local-only and does not implement `Message`.
 
 Spawning is a task-ownership boundary. Values captured by a directly spawned
 async closure, the task result `T`, and the task error `E` must satisfy hidden
@@ -2313,16 +2446,24 @@ that fact is local to the boundary. It does not make the original nominal type
 implement `Message` for explicit low-level actor APIs or for any API spelling a
 public `T: Message` bound.
 
-Task error type `E` must also be able to represent failures synthesized while
-awaiting the task. `/std/error.Error` and `async::AsyncError` satisfy this
-directly. A concrete enum satisfies the runtime-failure side with a carrier such
-as `Runtime(i64)`, `Async(async::AsyncError)`,
+Task error type `E` must also represent failures synthesized while awaiting the
+task. `Report` and `async::AsyncError` satisfy both carrier requirements. A
+concrete enum satisfies the runtime-failure side with a carrier such as
+`Runtime(i64)`, `Async(async::AsyncError)`,
 `TaskGroupAsync(async::AsyncError)`, or `Resource(resource::ResourceError)`.
 It satisfies the task-boundary clone-failure side with
-`MessageClone(Error)`, `Async(async::AsyncError)`, or
+`MessageClone(Report)`, `Async(async::AsyncError)`, or
 `TaskGroupAsync(async::AsyncError)`. A single `Async(async::AsyncError)` or
 `TaskGroupAsync(async::AsyncError)` carrier covers both sides because
-`AsyncError` includes `MessageClone(Error)`.
+`AsyncError` contains `MessageClone(Report)`. Its `Operation(Report)` variant
+also carries an owned diagnostic instead of a local erased value.
+
+A concrete messageable error type remains the preferred task API when callers
+need to branch on structured failures. `Report` is the erased task carrier when
+only diagnostics must cross ownership. A future returning `Result<T, Error>`
+may be awaited locally, but moving it into `spawn` fails the task error
+`Message` obligation. The diagnostic must identify `Report` and a concrete
+messageable error type as the replacement choices.
 
 `spawn(existing_future)` is valid. `async::Future<Out>` is an opaque future
 handle, not a type erasure boundary for safety facts. Storing a
@@ -2393,7 +2534,7 @@ Async tasks communicate through bounded async channels:
 
 ```ciel
 ChannelPair<bytes::Bytes> ch = async::channel<bytes::Bytes>(1024)?;
-Task<void, Error> writer = async::spawn<void>(async || write_loop(ch.receiver))?;
+Task<void, Report> writer = async::spawn<void>(async || write_loop(ch.receiver))?;
 await async::send(ch.sender, payload)?;
 await writer?;
 ```
@@ -2405,19 +2546,56 @@ cancellation: waiting for capacity through `reserve` is cancellation-safe, but
 dropping a pending `send(value)` may otherwise discard a value that was moved
 into the send operation.
 
-Channel payloads cross task ownership and therefore the async channel API
-requires `T: Message` on payload send, reservation, permit-send, and receive
-operations. Channel endpoint liveness is
-deterministic: closing or destroying the last sender wakes receivers after the
-buffer is drained, and closing or destroying the last receiver wakes blocked
-senders and reservations with `channel_closed_error()`. Task cleanup must
-release channel endpoints stored in async frames before the task is considered
-finished; GC finalization is not a scheduling guarantee.
+Channel payloads cross task ownership and therefore channel construction and
+all payload operations require `T: Message`. A successful enqueue transfers
+the clone returned by `clone_message` into channel storage; a successful receive
+transfers that same value from channel storage to the receiver. A failed send,
+cancelled pending send, removed map entry, or closed receiver may simply abandon
+the cloned value because every successful `clone_message` result is required to
+be freely discardable. Ordinary memory then becomes unreachable and is reclaimed
+by GC; Message cannot hide a file, socket, permit, reference-count decrement, or
+other deterministic cleanup obligation.
+
+Sender and receiver values are aliases of one explicit capability per channel
+half. Discarding an alias has no semantic effect. `close(sender)` closes the
+sender half for all aliases; receivers may drain values already buffered and
+then observe `ChannelClosed`. `close_receiver(receiver)` closes the receiver
+half for all aliases, abandons buffered values, and wakes blocked senders and
+reservations. `SendPermit<T>` is not a Message: it is an affine resource lease,
+and its resource cleanup returns unused reserved capacity.
 
 `select` handles a static set of futures known at compile time. Dynamic
 concurrency uses task groups. `group_next` waits for the next task in the group
 to finish and does not cancel the remaining tasks. `group_cancel_all` aborts
-unfinished tasks through their task abort paths.
+unfinished tasks through their task abort paths. An open group remains a valid
+wait source when it is empty: `group_next_task` stays pending until a later
+`group_add` task completes or the group is closed. This makes the cancel-safe
+future suitable for event loops that accept tasks dynamically.
+
+`group_join` waits until the group's active task set is empty without consuming
+completed task handles. On an open group this establishes only current
+quiescence because a later `group_add` may add more work; callers that require a
+terminal join close registration first. A task remains active until its poll has
+actually exited and task completion has been published, so cancellation of a
+currently running poll does not let `group_join` return early.
+
+`TaskSupervisor<T, E>` is the structured single-owner facade for long-lived
+dynamic task sets. Its affine owner observes completions, while a shareable
+`TaskRegistrar<T, E>` grants only the ability to add matching tasks to the same
+thread-safe group. `supervisor_spawn` performs spawn plus registration as one
+library ownership operation. Registration either succeeds or requests task
+cancellation, so a failed handoff cannot leave a silently detached task. The
+owner may put `supervisor_completion` directly in `select`, even before the
+first task is registered, then await every yielded handle to observe its
+`Result<T, E>`.
+
+`supervisor_shutdown_and_join` synchronously closes registration, requests
+cancellation of every task still owned by the supervisor, and then awaits
+terminal quiescence. It does not aggregate task errors: centralized failure
+observation remains the responsibility of the open supervisor's
+`supervisor_completion` loop, which preserves each task's typed `Result<T, E>`.
+Shutdown-and-join is the lifecycle barrier for tasks that remain after that
+observation loop decides to stop.
 
 ### Select and Timeout
 
@@ -2682,10 +2860,35 @@ unsafe derive message::async_frame_opt_in_marker<FrameLocalBuffer>;
 
 `clone_message` constructs the value that will be owned by the receiver. It may
 copy fields, allocate fresh backing storage, serialize and decode, duplicate a
-shareable synchronized handle, intern immutable data, or report an error. It
-must not duplicate affine resources. Implementing it is a safety contract, so
-each implementation uses `unsafe impl`. Calling safe APIs that require
-`T: Message` does not require an unsafe block.
+shareable synchronized capability, intern immutable data, or report an error.
+A successful clone must be freely discardable: losing reachability to it cannot
+require a close call, reference-count decrement, capacity return, cancellation,
+or any other deterministic action. It must not duplicate affine resources or
+smuggle resource ownership behind a copyable wrapper. Implementing it is a
+safety contract, so each implementation uses `unsafe impl`. Calling safe APIs
+that require `T: Message` does not require an unsafe block.
+
+This discardability rule is what makes clone failure compositional. If cloning
+a later field, element, or variant component fails, earlier successful clones
+may be abandoned; GC reclaims their memory when unreachable. A conversion that
+would acquire a file descriptor, socket, reservation, native lease, or manually
+released reference is not a valid `clone_message` implementation. Such values
+must remain actor-local, move through an explicit resource-transfer API, or be
+reconstructed under a new resource owner at the destination.
+
+`clone_message` continues to return local `Result<T, Error>` because the clone
+failure is first observed in the source owner. If that failure is stored in a
+messageable error carrier, the source owner converts it to `Report` before the
+carrier crosses the boundary. Standard `MessageClone` variants carry `Report`
+rather than `Error`.
+
+`Report` has an explicit standard-library `clone_message` implementation that
+may share its immutable owned diagnostic graph. `Error` has no `Message`
+implementation. An aggregate containing `Error` cannot derive `Message`; it
+must use a concrete messageable error, `Report`, or another explicit
+message-safe representation. Diagnostics for a blocked derivation must retain
+the structural field or variant path and identify `Report` as the transferable
+erased replacement.
 
 Cross-domain standard-library APIs are ordinary functions that require
 `Message` and call `clone_message` explicitly:
@@ -2762,7 +2965,7 @@ closures with that signature can capture different values. A retained signature
 such as `Result<S, Error> |(S, M): Message|` carries the witness explicitly.
 
 `Message` is implemented per concrete type. `/std/message` provides unsafe
-impls for primitive values, `Error`, `Result<T, E>`, and owned `/std/meta` SOP
+impls for primitive values, `Report`, `Result<T, E>`, and owned `/std/meta` SOP
 nodes. Standard-library handle modules provide their own unsafe impls for actor
 handles, channels, mutexes, atomics, and other synchronized handles.
 
@@ -2961,9 +3164,12 @@ messageable, shareable handles, or actor-local resources. Opaque C handles
 start as `ThreadLocal`; because the public aliases make `ThreadLocal`
 incompatible with `Message` and `ShareHandle`, those handles cannot cross actor
 or channel boundaries through either the nominal type or `meta::Repr<T>`.
-Wrappers implement `Message` by explicitly duplicating, reconnecting, or
-otherwise constructing an independent receiver value; wrappers implement
-`ShareHandle` only when operations are internally synchronized or immutable.
+Wrappers implement `Message` by copying GC-owned state or constructing an
+independent, freely discardable receiver value. Host resources that require
+close remain resource-affine and are reconstructed or transferred explicitly
+instead. Wrappers implement `ShareHandle` only when
+operations are internally synchronized or immutable and discarding an alias has
+no semantic effect.
 
 The compiler recognizes canonical `/std/message` interface names only for
 generic constraint lookup, retained closure witnesses, coherence checks, and
@@ -2978,7 +3184,7 @@ surface as normal missing or forbidden capability constraints.
 The compiler work is intentionally small and generic. `T: Message` is checked by
 the existing interface-constraint machinery. Monomorphized code calls ordinary
 `clone_message` functions where the standard library writes those calls.
-Whole-program coherence rejects duplicate concrete `clone_message` impls and
+Whole-program coherence rejects duplicate concrete policy impls and
 overlapping standard policy impls. At capability use sites, multiple usable
 generic impls for any interface are reported as ambiguity rather than being
 treated as a missing capability.
@@ -3062,9 +3268,13 @@ enum payload, result payload, selected future output, or returned value
 consumes the source slot; later reads are rejected. Safe code cannot copy a
 resource-affine value, use an array repeat to duplicate it, move only a
 resource subvalue out of an aggregate, replace a resource subfield in place,
-erase it into a dynamic interface or boxed error, or send it through
-clone-based task, actor, and channel boundaries. Unsafe code may use the raw
+erase it into a dynamic interface, box it into `Error` or `Report`, or send it
+through clone-based task, actor, and channel boundaries. Resource-affine types
+may still be used with `meta::type_id<T>()`; obtaining an identity token does
+not copy, erase, or transfer a value. Unsafe code may use the raw
 standard-library holes, but those holes must document and uphold uniqueness.
+An attempted `Error` or `Report` box reports the hidden ownership and cleanup
+violation; the availability of a `TypeId` does not weaken that diagnostic.
 
 A by-value use of a resource-affine local is a source move. The compiler marks
 the source slot as moved and rejects later reads, borrows, and cleanup-sensitive
@@ -3304,12 +3514,18 @@ use typed wrappers such as `io::close`, `resource::transfer_to_parent`, and
 ## 19. Standard Library Boundary
 
 The compiler treats the standard library as ordinary Ciel source except for the
-generic `/std/meta` helpers and runtime hooks explicitly named in this
-specification. `Error`, `must`, `expect`, `Message`, actor handles, channels,
-atomics, and synchronization handles are library surface, not syntax. The `?`
-operator is syntax, and it recognizes the `Result` type exported by
-`/std/result` when it is visible through a direct import or a re-export such as
-`/std/lib`.
+canonical `/std/meta` intrinsics, the compiler-owned erased-error witness, and
+runtime hooks explicitly named in this specification. `Error`, `Report`,
+`must`, `expect`, `Message`, actor handles, channels, atomics, and
+synchronization handles remain library surface rather than syntax. The `?`
+operator is syntax. It recognizes the `Result` type exported by `/std/result`
+and the canonical `Error` and `Report` propagation targets when those names are
+visible through a direct import or a re-export such as `/std/lib`.
+
+The type checker identifies `/std/meta.TypeId`, `/std/error.Error`,
+`/std/error.Report`, and the hidden erased-error witness by their resolved
+standard-library definitions, not by source spelling. User declarations with
+the same names receive no intrinsic behavior.
 
 There is no prelude. Every standard-library module must be imported explicitly:
 
@@ -3355,19 +3571,73 @@ export import /std/error/context;
 
 ```ciel
 // /std/error/core
-export interface<T> []const char format_error(*const T error);
-export interface ErrorTrait = format_error;
+import /std/meta as meta;
+import /std/option/core as option;
 
-export struct Error {
+export interface<T> []const char format_error(*const T error);
+
+unsafe struct ErasedErrorRef {
+    meta::TypeId type_id;
+    *const void data;
+}
+
+unsafe interface<T> ErasedErrorRef erased_error_ref(*const T error);
+export interface ErrorTrait = format_error + erased_error_ref;
+
+export unsafe struct Error {
     ErrorTrait value;
     []const char context;
     ?*const Error source;
 }
 
+unsafe struct DiagnosticText {
+    []const char text;
+}
+
+export unsafe struct Report {
+    DiagnosticText message;
+    ?*const Report source;
+}
+
 export Error error_box(ErrorTrait error);
 export Error error_with_context(Error source, []const char context) = .with_context;
 export []const char error_message(*const Error error) = .message;
+
+export option::Option<*const T> error_downcast_ref<T: ErrorTrait>(
+    *const Error error
+) = .downcast_ref;
+export bool error_is<T: ErrorTrait>(*const Error error) = .is;
+export option::Option<*const Error> error_source(*const Error error) = .source;
+
+export Report error_report(*const Error error) = .report;
+export Report report_box(ErrorTrait error);
+export Report report_with_context(
+    Report source,
+    []const char context
+) = .with_context;
+export []const char report_message(*const Report report) = .message;
 ```
+
+`ErasedErrorRef` and `erased_error_ref` are compiler-owned implementation
+surface. They are not exported, user impls are rejected, and the compiler
+provides the witness whenever a concrete receiver implements `format_error`.
+The witness remains attached when an `ErrorTrait` dynamic interface is
+re-erased to another view that retains `ErrorTrait`.
+
+`Error` and `Report` are `unsafe struct`s so safe code cannot forge dynamic
+payloads, source cycles, borrowed report text, or internal pointers. Their field
+layouts are standard-library details. Safe code uses the exported helpers.
+`error_downcast_ref` and `error_is` compare exact runtime identity; they do not
+walk `error_source`. `error_with_context` preserves the original downcastable
+receiver.
+
+`DiagnosticText` owns an immutable copy of its characters. `error_report`
+copies the full `Error` diagnostic chain into `Report` nodes, while `report_box`
+directly formats any `ErrorTrait` value. `report_box(Error)` preserves the
+complete chain, and `report_box(Report)` preserves the existing immutable report
+graph. `report_message` returns the top-level owned diagnostic. `Report`
+implements `format_error` and has the standard transferable `Message` policy.
+`Error` implements `format_error` but not `Message`.
 
 ```ciel
 // /std/error/basic
@@ -3383,12 +3653,13 @@ export Error text_error([]const char text);
 export Error code_error(i64 code);
 ```
 
-Any concrete type that implements `format_error` can be converted to
-`/std/error.Error` in an expected-type context. The compiler inserts the
-erasing conversion for `?`, `return Err(concrete)`, nested `Result` payloads,
-function arguments, and local initializers. Ordinary source code should prefer
-returning concrete error enums from reusable APIs and let the compiler erase
-them only at application boundaries.
+Any concrete type that implements `ErrorTrait` can be converted to
+`/std/error.Error` or `/std/error.Report` in an expected-type context. The
+compiler inserts the selected conversion for `?`, `return Err(concrete)`,
+nested `Result` payloads, function arguments, and local initializers. Conversion
+to `Error` retains the concrete receiver for exact downcast. Conversion to
+`Report` copies diagnostics and discards the source receiver identity. Reusable
+APIs should return concrete error enums when callers need structured recovery.
 
 ```ciel
 // /std/error/context
@@ -3623,6 +3894,12 @@ export T option_unwrap_or<T>(Option<T> value, T fallback);
 it because optional values are baseline data modeling vocabulary. Format
 libraries may attach their own policies to it; JSON maps `None` to `null` and
 `Some(value)` to the value's ordinary JSON representation.
+
+`/std/option/core` contains `Option<T>` and the dependency-free query helpers.
+The `/std/option` facade re-exports that core and adds the `Message`
+implementation. Low-level modules such as `/std/error/core` import
+`/std/option/core` when importing `/std/message` would create a dependency
+cycle.
 
 ```ciel
 // /std/pointer
@@ -4254,8 +4531,9 @@ implement `to_string`; printing functions convert values to `[]const char`
 first, then write through a `File`.
 
 `/std/io` provides `to_string` implementations for `[]const char`, `char`,
-`bool`, all integer primitive widths, `usize`, `f32`, `f64`, and `/std/error`
-`Error`. User code should prefer the `to_string` interface and `printable`
+`bool`, all integer primitive widths, `usize`, `f32`, and `f64`, plus a generic
+implementation for `ErrorTrait` values such as `Error`, `Report`, and concrete
+error enums. User code should prefer the `to_string` interface and `printable`
 alias over calling decimal helper functions directly; fixed-width hexadecimal
 formatting remains in `/std/format`.
 
@@ -4323,11 +4601,35 @@ export interface ShareHandle = ShareHandleInternal + Message + !ThreadLocalInter
 export interface ThreadLocal = ThreadLocalInternal + !MessageInternal + !ShareHandleInternal;
 ```
 
+`clone_message` returns `Result<T, Error>` because cloning is performed and its
+failure is observed in the source owner. `/std/message` provides an explicit
+implementation for `Report` and no implementation for `Error`. A messageable
+carrier converts a clone failure with `error_report` before storing it in a
+`MessageClone(Report)` payload.
+
+Every successful `clone_message` result must be freely discardable. Structural
+and container implementations may abandon earlier cloned components when a
+later component fails because those components own only GC-managed memory or
+aliases whose discard has no semantic effect. Values that require deterministic
+close, cancellation, reservation return, or native reference release are
+resource-affine values or leases and cannot implement `Message`.
+
+The standard messageable carriers `AsyncError`, `AsyncIoError`,
+`AsyncNetError`, `AsyncTimeError`, `ChannelError`, `MapError`, and `SyncError`
+use `MessageClone(Report)`. `AsyncError::Operation` also carries `Report`.
+
 ```ciel
 // /std/meta
 export usize type_size<T>();
 export usize type_align<T>();
 export bool type_needs_gc_scan<T>();
+
+export unsafe struct TypeId {
+    *const void token;
+}
+
+export TypeId type_id<T>();
+export bool type_id_eq(TypeId left, TypeId right);
 
 export struct Type<T> {}
 
@@ -4507,6 +4809,12 @@ export T from_repr<T>(Repr<T> value);
 export Schema<T> schema<T>();
 ```
 
+`type_id<T>()` requires a concrete runtime type after monomorphization and
+returns the canonical process-local identity described in
+[Runtime Type Identity](#runtime-type-identity). `type_id_eq` is the only safe
+inspection operation. `Type<T>` and `type_tag<T>()` remain phantom type-directed
+API witnesses and do not carry runtime identity.
+
 ```ciel
 // /std/actor
 import /std/result;
@@ -4544,6 +4852,10 @@ export Result<void, ChannelError> channel_send<T: Message>(*const Channel<T> ch,
 export Result<T, ChannelError> channel_recv<T: Message>(*const Channel<T> ch) = .recv;
 export Result<void, ChannelError> channel_close<T: Message>(*const Channel<T> ch) = .close;
 ```
+
+`channel_close` is terminal: it rejects later sends, releases every queued
+message clone that was not received, and wakes blocked receivers with
+`ChannelError`. Callers that need queued values must receive them before close.
 
 ```ciel
 // /std/atomic
@@ -4970,19 +5282,20 @@ and returns `VecError::NotFound` when the needle is absent. `vec_equal`
 compares initialized prefixes by element equality.
 
 `VecError` implements `/std/error::ErrorTrait` through `format_error`, so a
-`Result<T, VecError>` can be propagated with `?` into a `Result<U, Error>` by
-the standard error-boxing rule. The initial messages are
+`Result<T, VecError>` can be propagated with `?` into `Result<U, Error>` or
+`Result<U, Report>` by the target-directed error-boxing rules. The initial
+messages are
 `"vector capacity overflow"`, `"vector index out of bounds"`,
 `"vector is empty"`, `"vector item not found"`, and `"vector runtime error"`.
 New standard-library containers that need structured failures should prefer
 exported module-specific enum errors with `ErrorTrait` implementations; the
 enum variants preserve inspectable details, while callers can still erase them
-into `/std/error::Error` at API boundaries.
+into `/std/error::Error` locally or `/std/error::Report` at transfer boundaries.
 
 `Vec<T>` implements `Message` exactly when `T: Message`. Its `clone_message`
-implementation allocates a fresh vector and clones each initialized element
-with `clone_message`; `Vec<T>` for non-`Message` element types does not satisfy
-`Message`.
+implementation allocates a fresh vector and clones each initialized element.
+Partially cloned vectors are safely abandoned to GC on failure. `Vec<T>` for
+non-`Message` element types does not satisfy `Message`.
 
 `Vec<T>` is the first standard target collection for `/std/iter::collect`.
 Collection uses the generic `CollectTarget<Item, E>` capability: `collect_new`
@@ -5092,6 +5405,10 @@ alpha surface. A borrowed map iterator would need borrow/lifetime enforcement
 to prevent `insert`, `remove`, or `clear` from invalidating outstanding entry
 references. A snapshot iterator or entry-list API is possible, but it is a
 separate fallible cloning design rather than a borrowed iteration entrypoint.
+Ownership-preserving `insert_entry` and `remove_entry` primitives return the
+complete displaced entry, including its stored key. They exist for synchronized
+or container wrappers that must transfer or release every owned component;
+the ordinary value-only `insert` and `remove` APIs retain their smaller surface.
 
 ```ciel
 // /std/shared_map
@@ -5118,6 +5435,16 @@ export enum SharedMapPop<K, V> {
     Empty,
 }
 
+export enum InsertIfAbsentResult {
+    Inserted,
+    Occupied,
+}
+
+export interface<P, V> bool remove_match(
+    *const P policy,
+    *const V value
+);
+
 export interface shared_map_key = map::map_key + Message;
 
 export Result<SharedMap<K, V>, SharedMapError> shared_map_new<K: shared_map_key, V: Message>();
@@ -5126,6 +5453,10 @@ export Result<map::InsertResult<V>, SharedMapError> shared_map_insert<K: shared_
     K key,
     V value
 ) = .insert;
+export Result<InsertIfAbsentResult, SharedMapError> shared_map_insert_if_absent<
+    K: shared_map_key,
+    V: Message
+>(SharedMap<K, V> shared, K key, V value) = .insert_if_absent;
 export Result<SharedMapGet<V>, SharedMapError> shared_map_get<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared,
     K key
@@ -5134,6 +5465,11 @@ export Result<SharedMapGet<V>, SharedMapError> shared_map_remove<K: shared_map_k
     SharedMap<K, V> shared,
     K key
 ) = .remove;
+export Result<SharedMapGet<V>, SharedMapError> shared_map_remove_if<
+    K: shared_map_key,
+    V: Message,
+    P: remove_match<V>
+>(SharedMap<K, V> shared, K key, P policy) = .remove_if;
 export Result<SharedMapPop<K, V>, SharedMapError> shared_map_pop_any<K: shared_map_key, V: Message>(
     SharedMap<K, V> shared
 ) = .pop_any;
@@ -5144,12 +5480,20 @@ export Result<usize, SharedMapError> shared_map_len<K: shared_map_key, V: Messag
 
 `/std/shared_map` wraps an actor-local `HashMap` in a shareable `Mutex` handle.
 Keys must be both `map_key` and `Message`, and values must be `Message`, because
-operations clone values across the synchronized boundary. It is intended for
-registries and routing tables shared by async tasks or actors, while
-`/std/map` remains the cheaper actor-local storage primitive. It also does not
-expose `.iter()` in the alpha surface: a live iterator would need to hold or
-leak a mutex guard lifetime, while a snapshot iterator requires explicit
-cloning semantics.
+entries cross an ownership boundary when they enter synchronized storage.
+`insert` and `insert_if_absent` transactionally clone the key and then the value
+before attempting the locked mutation. A clone failure, lock or map error, or
+an occupied `insert_if_absent` may abandon completed clones because Message
+results are freely discardable. Successful replacement lets the displaced
+stored key become unreachable and transfers the displaced value to the caller.
+`remove` and successful `remove_if` likewise abandon the stored key and transfer
+the stored value; `pop_any` transfers both. The predicate check and removal
+performed by `remove_if` remain one locked operation. SharedMap is intended for
+registries and routing tables shared by async tasks or actors, while `/std/map`
+remains the cheaper actor-local storage primitive. It also does not expose
+`.iter()` in the alpha surface: a live iterator would need to hold or leak a
+mutex guard lifetime, while a snapshot iterator requires explicit cloning
+semantics.
 
 ```ciel
 // /std/iter
@@ -5606,6 +5950,17 @@ export import /std/async/core;
 import /std/async/internal/adapter as adapter;
 import /std/async/internal/runtime_future;
 
+export enum AsyncError {
+    Runtime(i64),
+    Timeout,
+    ChannelClosed,
+    ChannelFull,
+    MessageClone(Report),
+    Operation(Report),
+}
+
+derive Message<AsyncError>;
+
 export resource unsafe struct Future<T> {
     *void handle;
 }
@@ -5639,11 +5994,22 @@ export struct Task<T, E> {
     *void handle;
 }
 
+export unsafe struct TaskAbortHandle {
+    *void handle;
+}
+
 export Result<Task<T, E>, AsyncError> spawn<T, E, A: Awaitable<Result<T, E>> + Abortable>(
     A body
 );
 export Result<void, AsyncError> cancel<T, E>(*const Task<T, E> task) = .cancel;
 export Result<bool, AsyncError> is_finished<T, E>(*const Task<T, E> task) = .is_finished;
+export Result<bool, AsyncError> is_cancelled<T, E>(*const Task<T, E> task) = .is_cancelled;
+export TaskAbortHandle task_abort_handle<T, E>(
+    *const Task<T, E> task
+) = .abort_handle;
+export Result<void, AsyncError> abort_task(
+    TaskAbortHandle task
+) = .abort;
 
 export struct Sender<T> {
     *void handle;
@@ -5653,8 +6019,9 @@ export struct Receiver<T> {
     *void handle;
 }
 
-export struct SendPermit<T> {
+export resource unsafe struct SendPermit<T> {
     *void handle;
+    resource::Handle lease;
 }
 
 export struct ChannelPair<T> {
@@ -5674,11 +6041,11 @@ export resource unsafe struct ChannelRecvFuture<T> {
     Future<Result<T, AsyncError>> inner;
 }
 
-export Result<ChannelPair<T>, AsyncError> channel<T>(usize capacity);
+export Result<ChannelPair<T>, AsyncError> channel<T: Message>(usize capacity);
 export ChannelSendFuture<T> send<T: Message>(Sender<T> sender, T value);
 export Result<void, AsyncError> try_send<T: Message>(Sender<T> sender, T value) = .try_send;
 export ChannelReserveFuture<T> reserve<T: Message>(Sender<T> sender);
-export Result<void, AsyncError> permit_send<T: Message>(SendPermit<T> permit, T value) = .send;
+export Result<void, AsyncError> permit_send<T: Message>(SendPermit<T> @permit, T value) = .send;
 export ChannelRecvFuture<T> recv<T: Message>(Receiver<T> receiver);
 export Result<void, AsyncError> close<T>(Sender<T> sender) = .close;
 export Result<void, AsyncError> close_receiver<T>(Receiver<T> receiver) = .close;
@@ -5687,11 +6054,23 @@ export struct TaskGroup<T, E> {
     *void handle;
 }
 
+export enum TaskGroupTryNext<T, E> {
+    TaskReady(Task<T, E>),
+    NoTaskReady,
+    TaskGroupClosed,
+}
+
 export Result<TaskGroup<T, E>, AsyncError> task_group<T, E>();
 export Result<void, AsyncError> group_add<T, E>(
     *const TaskGroup<T, E> group,
     Task<T, E> task
 ) = .add;
+export TaskGroupNextFuture<T, E> group_next_task<T, E>(
+    *const TaskGroup<T, E> group
+) = .next_task;
+export Result<TaskGroupTryNext<T, E>, AsyncError> group_try_next_task<T, E>(
+    *const TaskGroup<T, E> group
+);
 export async Result<T, E> group_next<T: Message, E: Message>(
     *const TaskGroup<T, E> group
 ) = .next;
@@ -5701,6 +6080,52 @@ export Result<void, AsyncError> group_cancel_all<T, E>(
 export Result<void, AsyncError> group_close<T, E>(
     *const TaskGroup<T, E> group
 ) = .close;
+
+export unsafe struct TaskRegistrar<T, E> {
+    TaskGroup<T, E> group;
+}
+
+export resource unsafe struct TaskSupervisor<T, E> {
+    TaskGroup<T, E> group;
+    resource::Handle handle;
+}
+
+export unsafe struct TaskCompletionDrain<T, E> {
+    TaskGroup<T, E> group;
+}
+
+export Result<TaskSupervisor<T, E>, AsyncError> task_supervisor<T, E>();
+export TaskRegistrar<T, E> supervisor_registrar<T, E>(
+    *const TaskSupervisor<T, E> supervisor
+) = .registrar;
+export Result<void, AsyncError> supervisor_register<T, E>(
+    TaskRegistrar<T, E> registrar,
+    Task<T, E> task
+) = .register;
+export Result<void, AsyncError> supervisor_spawn<
+    T,
+    E,
+    A: SpawnableFuture<Result<T, E>>
+>(TaskRegistrar<T, E> registrar, A body) = .spawn;
+export Result<void, AsyncError> supervisor_add<T, E>(
+    *const TaskSupervisor<T, E> supervisor,
+    Task<T, E> task
+) = .add;
+export TaskGroupNextFuture<T, E> supervisor_completion<T, E>(
+    *const TaskSupervisor<T, E> supervisor
+) = .completion;
+export Result<void, AsyncError> supervisor_shutdown<T, E>(
+    TaskSupervisor<T, E> @supervisor
+) = .shutdown;
+export async Result<TaskCompletionDrain<T, E>, AsyncError> supervisor_shutdown_and_join_drain<T, E>(
+    TaskSupervisor<T, E> @supervisor
+) = .shutdown_and_join_drain;
+export Result<TaskGroupTryNext<T, E>, AsyncError> completion_drain_try_next<T, E>(
+    *const TaskCompletionDrain<T, E> drain
+) = .try_next;
+export async Result<void, AsyncError> supervisor_shutdown_and_join<T, E>(
+    TaskSupervisor<T, E> @supervisor
+) = .shutdown_and_join;
 
 export enum TaskGroupError<E> {
     TaskGroupAsync(AsyncError),
@@ -5752,30 +6177,58 @@ future returns. Async bodies should use `await` instead of nested `block_on`.
 awaitable body whose output is `Result<T, E>`. The compiler attaches hidden
 `Message` obligations to spawned-task captures, to `T`, and to `E`, because
 those values cross task ownership. `E` must also be able to represent async
-runtime failures and task-boundary message-clone failures, using either
-`Error`, `AsyncError`, or a concrete enum carrier. There is no `Task<T>`
+runtime failures and task-boundary message-clone failures, using `Report`,
+`AsyncError`, or a concrete messageable enum carrier. `Error` is rejected as a
+task error type because it does not implement `Message`. There is no `Task<T>`
 standard-library compatibility spelling before default generic arguments.
 `cancel` aborts the task's current suspended operation and runs deterministic
 cleanup; awaiting a cancelled task produces the stable runtime cancellation
 error through `E`. `is_finished` reports whether the task has reached a terminal
-state.
+state, and `is_cancelled` distinguishes terminal cancellation from an ordinary
+success or body error. `TaskAbortHandle` is an opaque, result-type-erased,
+message-safe capability derived from a task handle. It can request termination
+but cannot await the task, inspect its result, or manufacture a task of another
+type. This is the standard capability for registries and routers that must stop
+owned work without depending on its result type.
 
-Async channels are bounded. `send` waits for capacity, `try_send` reports full
-or closed without suspension, `reserve` waits for capacity and returns a
-permit, and `permit_send` commits a value into a reserved slot. Sender and
-receiver lifetimes wake the opposite side: the last sender wakes receivers, and
-the last receiver wakes senders and outstanding reservations with
-`channel_closed_error()`. Channel payloads must satisfy the standard-library
-`Message` interface on `send`, `try_send`, `reserve`, `permit_send`, and `recv`.
+For a concrete task error enum, runtime failures use `Runtime(i64)`,
+`Async(AsyncError)`, `TaskGroupAsync(AsyncError)`, or the relevant resource
+carrier. Clone failures use `MessageClone(Report)`, `Async(AsyncError)`, or
+`TaskGroupAsync(AsyncError)`. `Report` is the canonical erased carrier for both
+cases. `AsyncError` stores only transferable diagnostics in its
+`MessageClone(Report)` and `Operation(Report)` variants.
+
+Async channels are bounded. `send` waits for capacity, while `try_send` returns
+`ChannelFull` when no unreserved slot is available and `ChannelClosed` when the
+channel cannot accept values. `reserve` waits for capacity and returns a permit,
+and `permit_send` consumes that affine lease while committing a value into the
+reserved slot. If a permit is not consumed, structural resource cleanup returns
+its capacity. Sender and receiver values are freely discardable aliases; alias
+lifetime does not close a channel. `close(sender)` explicitly closes the sender
+half for every alias, wakes receivers, and still allows buffered values to drain.
+`close_receiver(receiver)` explicitly closes the receiver half, abandons any
+buffered values, and wakes blocked sends and reservations with
+`channel_closed_error()`.
+
+Channel construction and payload operations require the standard-library
+`Message` interface. Enqueue success transfers the cloned payload into channel
+storage, and receive success transfers it to the receiver. Failed sends,
+cancellation, or receiver close may abandon unobserved clones because Message
+requires them to be freely discardable; GC reclaims unreachable storage.
 The async `send`, `reserve`, and `recv` functions are ordinary standard-library
 functions returning awaitable adapter newtypes; they are not compiler-generated
 future variants. Structural payloads become usable channel messages through
-ordinary `derive Message`, explicit `clone_message` implementations, or direct
+ordinary `derive Message`, an explicit `clone_message` implementation, or direct
 `meta::Repr<T>` payload types.
 
 Task groups support dynamic concurrency with a homogeneous success and error
 type. `TaskGroup<T, E>` accepts only `Task<T, E>` values. `group_next` returns
 completed task results in completion order without cancelling unfinished tasks.
+`group_next_task` is its cancel-safe selectable form. An open empty group keeps
+this future pending so tasks may be registered later; closing the group wakes
+the waiter with the closed-group error. `group_try_next_task` synchronously pops
+an already queued completion, distinguishes an open group with no ready task
+from an exhausted closed group, and never waits.
 `group_cancel_all` aborts unfinished tasks through `Abortable`, and
 `group_close` releases the remaining group handle state. `with_task_group`
 creates a group for an async body and closes it on return or cancellation,
@@ -5783,6 +6236,34 @@ cancelling unfinished tasks before closing the group. On normal return paths it
 reports group creation and async runtime failures as `TaskGroupAsync`, body
 failures as `TaskGroupBody`, cleanup failures as `TaskGroupCleanup`, and the
 combination of body plus cleanup failure as `TaskGroupBodyCleanup`.
+
+`TaskSupervisor<T, E>` owns one task group and is resource-affine so completion
+consumption has one coordinator. `TaskRegistrar<T, E>` is an opaque,
+message-safe, add-only capability backed by that same synchronized group; it
+does not expose close, cancel, or completion operations. `supervisor_register`
+and `supervisor_add` transfer an existing task into the supervisor and request
+cancellation if the group has already closed. `supervisor_spawn` is the
+preferred operation for background work because it combines spawn and the
+add-or-cancel transfer without an intervening suspension point.
+
+The owner observes failures by selecting or awaiting `supervisor_completion`,
+then awaiting every returned task handle. Empty supervisors need no special
+branch because their completion future remains pending. `TaskSupervisor` owns a
+runtime resource entry, so lexical resource cleanup, async cancellation, and
+explicit `supervisor_shutdown` all first close the group against new
+registrations and then cancel every task whose registration won the close race.
+Concurrent registration therefore has only two outcomes: the task entered the
+group and is covered by cancellation, or registration saw the closed group and
+cancelled the task itself.
+
+`supervisor_shutdown_and_join` closes registration, cancels every remaining
+task, and returns only after each running poll and deterministic owner cleanup
+has completed. `supervisor_shutdown_and_join_drain` additionally returns a
+`TaskCompletionDrain` containing tasks whose bodies crossed the settlement
+point before the atomic close, even when their deterministic cleanup completed
+afterward. Cancellation completions caused by that close are not enqueued. The
+coordinator can therefore drain and report every pre-shutdown background
+failure without mistaking teardown cancellation for a new business failure.
 
 `timeout` races a selectable future with a timer. Timing out cancels only the
 waiter future; it does not assume that an arbitrary underlying protocol can
@@ -6011,6 +6492,7 @@ export async Result<ReadIntoResult, AsyncNetError> read_into(*const AsyncTcpStre
 export async Result<usize, AsyncNetError> write(*const AsyncTcpStream stream, bytes::Bytes data) = .write;
 export async Result<usize, AsyncNetError> write_half(*const AsyncTcpWriteHalf half, bytes::Bytes data) = .write;
 export async Result<AsyncTcpStream, AsyncNetError> write_all(AsyncTcpStream @stream, bytes::Bytes data) = .write_all;
+export async::Future<Result<void, AsyncNetError>> write_all_half_ref(*const AsyncTcpWriteHalf half, bytes::Bytes data);
 export async Result<AsyncTcpWriteHalf, AsyncNetError> write_all_half(AsyncTcpWriteHalf @half, bytes::Bytes data) = .write_all;
 
 export Result<BufferedStreamReader, AsyncNetError> buffered_reader(
@@ -6328,6 +6810,12 @@ the target platform C ABI as written. By-value `void` parameters are invalid in
 parameters. Opaque constrained returns are also invalid for C ABI declarations
 because the C signature must expose a concrete source return type.
 
+`meta::TypeId` is a Ciel internal ABI value. It is not a stable C ABI contract,
+and native C code cannot interpret its token as a type name or persistent
+identifier. An explicit Ciel wrapper may pass a `TypeId` through native code
+only as an opaque value whose equality is used within the same linked process.
+No runtime type registry is part of the ABI.
+
 Imported C declarations cannot be generic. Exported C ABI functions cannot be
 generic because their source name is the stable C symbol. Non-exported
 `extern "C"` function bodies may be generic templates when their C-visible
@@ -6428,12 +6916,44 @@ does not escape; otherwise the environment is GC-managed. Noncapturing
 closures used as `fn` values lower directly to generated helper functions
 without an environment pointer.
 
+`meta::type_id<T>()` lowers to the address of one canonical token object for the
+normalized concrete semantic type `T`. The token needs no runtime
+initialization. The current single-translation-unit backend may emit a static
+object for each used identity. A multi-unit backend must arrange one definition
+and shared references for the same canonical type key, using a descriptor unit,
+link-once definition, or another mechanism that preserves pointer equality.
+Duplicate per-unit tokens for one type are invalid. A future canonical type
+descriptor may serve as the token without changing the source semantics.
+
+The compiler-owned `erased_error_ref` witness lowers like a dynamic interface
+method. Its shim returns the concrete receiver token and the receiver data
+pointer already used by the dynamic call. Dynamic interface re-erasure must
+copy or otherwise preserve that witness entry. Downcast compares the stored
+token with the requested token and emits the pointer cast only on the equal
+branch. It allocates nothing and does not depend on a vtable address.
+
+The pointer returned by `error_downcast_ref` addresses the start of the
+concrete receiver storage and is a GC root like any other typed pointer. A
+precise collector must keep both the returned root and the boxed payload
+descriptor visible at safepoints.
+
+Target-directed conversion distinguishes typed `Error` erasure from diagnostic
+`Report` conversion in checked IR and lowering. Converting to `Report` calls
+`format_error` while the typed source is live, copies the returned characters
+into immutable `DiagnosticText`, and copies every required context/source node.
+Downcast identity is not retained. `DiagnosticText` and `Report` are ordinary
+GC-managed values whose pointers and source links must be exactly traceable by a
+precise collector. Allocation failure follows the runtime's GC allocation
+policy.
+
 Generated C first emits requested `#c_include` directives and runtime includes.
 Then it is printed in dependency-safe phases:
 
-1. typedefs and struct/enum forward declarations
-2. struct/enum layout definitions
-3. function prototypes
-4. function bodies
+1. runtime and metadata support objects, including canonical type-identity
+   tokens
+2. typedefs and struct/enum forward declarations
+3. struct/enum layout definitions
+4. function prototypes
+5. function bodies
 
 The generated C does not depend on source declaration order.

@@ -1,0 +1,11 @@
+// ciel-test: error
+// expect-error: expected `closure#
+
+T same<T>(T left, T right) {
+    return left;
+}
+
+i64 main() {
+    _ closure = same(|| 1, || 2);
+    return closure();
+}

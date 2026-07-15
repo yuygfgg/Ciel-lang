@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: infinite dynamic interface signature expansion involving `grow`
+// expect-error: signature expansion chain:
+// expect-error: grow<i64> -> grow<*const i64>
+
+interface<T, U> grow<*const U> grow(*const T value);
+
+i64 main() {
+    ?*grow<i64> value = null;
+    value;
+    return 0;
+}

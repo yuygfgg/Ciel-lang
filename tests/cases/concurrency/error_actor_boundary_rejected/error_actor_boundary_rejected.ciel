@@ -1,0 +1,15 @@
+// ciel-test: error
+// expect-error: actor message type `Error` is local-only and does not implement `Message`
+// expect-error: use a concrete messageable error type or `Report`
+
+import /std/actor;
+import /std/error;
+
+Result<i64, Error> handle(i64 state, Error message) {
+    return Ok(state);
+}
+
+i64 main() {
+    spawn_actor_cloned<i64, Error>(0, handle);
+    return 0;
+}

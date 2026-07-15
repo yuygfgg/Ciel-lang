@@ -1,0 +1,120 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/channel as channel;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> run_until_released(
+    async::Sender<usize> ready,
+    channel::Channel<usize> release
+) {
+    async::try_send<usize>(ready, 1)?;
+    // Keep the task poll active without burning a CPU core.
+    _ released = channel::channel_recv<usize>(&release)?;
+    return Ok;
+}
+
+async Result<void, Report> finish_immediately() {
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    channel::Channel<usize> release = channel::make_channel<usize>()?;
+    async::ChannelPair<usize> ready = async::channel<usize>(1)?;
+    async::TaskSupervisor<void, Report> @supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::TaskRegistrar<void, Report> registrar =
+        async::supervisor_registrar<void, Report>(&supervisor);
+
+    async::Task<void, Report> worker = async::spawn<void>(
+        run_until_released(ready.sender, release)
+    )?;
+    async::supervisor_register<void, Report>(registrar, worker)?;
+    _ started = await async::recv<usize>(ready.receiver)?;
+
+    async::Task<void, async::AsyncError> shutdown =
+        async::spawn<void, async::AsyncError>(
+            async::supervisor_shutdown_and_join<void, Report>(supervisor)
+        )?;
+
+    bool @registration_closed = false;
+    bool @registration_probe_failed = false;
+    usize @registration_attempts = 0;
+    usize max_registration_attempts = 256;
+    while (
+        !registration_closed &&
+        registration_attempts < max_registration_attempts
+    ) {
+        switch (async::supervisor_spawn<void, Report>(
+            registrar,
+            finish_immediately()
+        )) {
+            case Ok:
+                switch (await async_time::sleep_ms(0)) {
+                    case Ok:
+                        {}
+                    case Err(_):
+                        registration_probe_failed = true;
+                        registration_closed = true;
+                }
+            case Err(_):
+                registration_closed = true;
+        }
+        registration_attempts = registration_attempts + 1;
+    }
+    bool registration_did_not_close = !registration_closed;
+
+    Result<void, async::AsyncError> cancel_result =
+        async::cancel<void, Report>(&worker);
+    Result<bool, async::AsyncError> worker_running_status =
+        async::is_finished<void, Report>(&worker);
+    Result<bool, async::AsyncError> shutdown_running_status =
+        async::is_finished<void, async::AsyncError>(&shutdown);
+
+    Result<void, channel::ChannelError> release_result =
+        channel::channel_send<usize>(&release, 1);
+    Result<void, channel::ChannelError> close_result =
+        channel::channel_close<usize>(&release);
+    Result<void, async::AsyncError> shutdown_result = await shutdown;
+    Result<bool, async::AsyncError> worker_shutdown_status =
+        async::is_finished<void, Report>(&worker);
+
+    cancel_result?;
+    bool worker_finished_while_running = worker_running_status?;
+    bool shutdown_finished_while_running = shutdown_running_status?;
+    release_result?;
+    close_result?;
+    shutdown_result?;
+    bool worker_finished_after_shutdown = worker_shutdown_status?;
+    if (registration_probe_failed) {
+        return Err(code_error(7));
+    }
+    if (registration_did_not_close) {
+        return Err(code_error(6));
+    }
+    if (worker_finished_while_running) {
+        return Err(code_error(1));
+    }
+    if (shutdown_finished_while_running) {
+        return Err(code_error(2));
+    }
+    if (!worker_finished_after_shutdown) {
+        return Err(code_error(3));
+    }
+    switch (await worker) {
+        case Err(_):
+            return Ok;
+        case Ok:
+            return Err(code_error(4));
+    }
+    return Err(code_error(5));
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

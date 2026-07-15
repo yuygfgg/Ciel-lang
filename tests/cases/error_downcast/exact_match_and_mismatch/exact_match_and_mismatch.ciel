@@ -1,0 +1,45 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/option as option;
+
+enum AlphaError {
+    Code(i64),
+}
+
+enum BetaError {
+    Code(i64),
+}
+
+impl format_error(*const AlphaError error) {
+    return "alpha";
+}
+
+impl format_error(*const BetaError error) {
+    return "beta";
+}
+
+i64 main() {
+    Error error = AlphaError::Code(17);
+    if (!error_is<AlphaError>(&error) || error_is<BetaError>(&error)) {
+        return 1;
+    }
+    switch (error_downcast_ref<AlphaError>(&error)) {
+        case option::Some(value):
+            switch (*value) {
+                case AlphaError::Code(code):
+                    if (code != 17) {
+                        return 2;
+                    }
+            }
+        case option::None:
+            return 3;
+    }
+    switch (error_downcast_ref<BetaError>(&error)) {
+        case option::Some(_):
+            return 4;
+        case option::None:
+            return 0;
+    }
+}

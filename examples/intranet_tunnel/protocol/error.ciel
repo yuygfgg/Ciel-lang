@@ -11,6 +11,7 @@ export enum ProtocolError {
     UnknownFrameKind(u16),
     OversizedPayload(usize),
     InvalidStreamId(u16, u32),
+    DuplicateStreamId(u32),
     InvalidTransition,
     MalformedPayload,
 }
@@ -60,6 +61,8 @@ impl format_error(*const ProtocolError error) {
             return "payload length exceeds maximum";
         case InvalidStreamId(_, _):
             return "invalid stream id for frame kind";
+        case DuplicateStreamId(_):
+            return "duplicate active stream id";
         case InvalidTransition:
             return "invalid stream state transition";
         case MalformedPayload:

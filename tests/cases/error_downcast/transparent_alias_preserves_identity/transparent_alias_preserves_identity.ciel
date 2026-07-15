@@ -1,0 +1,29 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/meta as meta;
+
+enum ParseError {
+    Invalid,
+}
+
+type LocalParseError = ParseError;
+
+impl format_error(*const ParseError error) {
+    return "invalid";
+}
+
+i64 main() {
+    Error error = ParseError::Invalid;
+    if (!error_is<LocalParseError>(&error)) {
+        return 1;
+    }
+    if (!meta::type_id_eq(
+        meta::type_id<ParseError>(),
+        meta::type_id<LocalParseError>()
+    )) {
+        return 2;
+    }
+    return 0;
+}

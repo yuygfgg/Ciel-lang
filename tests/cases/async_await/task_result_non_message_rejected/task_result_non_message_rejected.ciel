@@ -9,8 +9,8 @@ struct BadResult {
 }
 
 i32 main() {
-    Result<async::Task<BadResult, Error>, Error> task =
-        async::spawn<BadResult, Error>(
+    Result<async::Task<BadResult, Report>, Report> task =
+        async::spawn<BadResult, Report>(
             async || {
                 usize value = 9;
                 return Ok({ ptr: &value });

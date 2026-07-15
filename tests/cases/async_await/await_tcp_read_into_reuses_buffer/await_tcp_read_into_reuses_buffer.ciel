@@ -24,7 +24,7 @@ bool same_prefix([]const u8 got, []const u8 want) {
     return true;
 }
 
-async Result<usize, Error> write_payload(
+async Result<usize, Report> write_payload(
     anet::AsyncTcpListener listener
 ) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
@@ -37,7 +37,7 @@ async Result<usize, Error> write_payload(
     return Ok(3);
 }
 
-async Result<usize, Error> read_with_reused_buffer(
+async Result<usize, Report> read_with_reused_buffer(
     net::SocketAddr bound
 ) {
     anet::AsyncTcpStream client = await anet::connect(bound)?;
@@ -71,12 +71,12 @@ async Result<usize, Error> read_with_reused_buffer(
     return Ok(cap);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     anet::AsyncTcpListener listener = anet::listen_async(
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize, Error> server = async::spawn<usize>(
+    async::Task<usize, Report> server = async::spawn<usize>(
         write_payload(listener)
     )?;
     usize cap = await read_with_reused_buffer(bound)?;

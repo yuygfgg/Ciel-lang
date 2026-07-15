@@ -5,7 +5,7 @@
 import /std/lib;
 
 enum Route<T> {
-    Deliver(Result<T, Error>),
+    Deliver(Result<T, Report>),
     Flush(void),
 }
 
@@ -28,7 +28,7 @@ i64 main() {
                 Channel<i64> local_out = out;
                 switch (msg) {
                     case Deliver(result):
-                        i64 value = result?;
+                        i64 value = must(result);
                         return Ok(state + value);
                     case Flush(marker):
                         marker;

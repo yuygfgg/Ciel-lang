@@ -1,0 +1,50 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> slow() {
+    await async_time::sleep_ms(10000)?;
+    return Ok;
+}
+
+Result<usize, Report> cancelled_value(
+    Result<void, Report> result
+) {
+    switch (result) {
+        case Ok:
+            return Err(code_error(1));
+        case Err(_):
+            return Ok(7);
+    }
+    return Err(code_error(2));
+}
+
+Result<usize, Report> timer_must_lose(
+    Result<void, async::AsyncError> result
+) {
+    result?;
+    return Err(code_error(3));
+}
+
+async Result<usize, Report> drive() {
+    async::Task<void, Report> task = async::spawn<void>(slow())?;
+    async::cancel<void, Report>(&task)?;
+    return await biased select {
+        case result = task:
+            cancelled_value(result);
+        case slept = async_time::sleep_ms(10000):
+            timer_must_lose(slept);
+    };
+}
+
+i32 main() {
+    if (must(async::block_on(drive())) != 7) {
+        return 1;
+    }
+    return 0;
+}

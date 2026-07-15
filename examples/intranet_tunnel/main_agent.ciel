@@ -1,15 +1,14 @@
+import /std/error;
 import /std/io as io;
 import /std/result;
 import ./agent as agent;
 import ./cli as cli;
-import ./error as app_error;
 
 i32 main() {
-    Result<cli::AgentConfig, app_error::TunnelError> parsed =
-        cli::parse_agent_args();
+    Result<cli::AgentConfig, Error> parsed = cli::parse_agent_args();
     switch (parsed) {
-        case Ok(_):
-            Result<void, app_error::TunnelError> run = agent::run_agent();
+        case Ok(config):
+            Result<void, Error> run = agent::run_agent(config);
             switch (run) {
                 case Ok:
                     return 0;
@@ -18,7 +17,7 @@ i32 main() {
                     return 1;
             }
         case Err(error):
-            io::eprintln("{}", [error]);
+            io::eprintln_value(error);
             io::eprintln_value(cli::agent_usage());
             return 2;
     }

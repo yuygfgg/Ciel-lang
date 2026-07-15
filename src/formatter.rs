@@ -2541,11 +2541,11 @@ mod tests {
 
     #[test]
     fn keeps_inline_closure_call_argument_closing_stable() {
-        let input = "async::Task<usize,Error> f(){return must(async::spawn<usize,Error>(async ||{return Ok(0);}));}";
+        let input = "async::Task<usize,Report> f(){return must(async::spawn<usize,Report>(async ||{return Ok(0);}));}";
         let formatted = format_source(input, FormatOptions::default()).unwrap();
         assert_eq!(
             formatted,
-            "async::Task<usize, Error> f() {\n    return must(async::spawn<usize, Error>(async || {\n        return Ok(0);\n    }));\n}\n"
+            "async::Task<usize, Report> f() {\n    return must(async::spawn<usize, Report>(async || {\n        return Ok(0);\n    }));\n}\n"
         );
         let second = format_source(&formatted, FormatOptions::default()).unwrap();
         assert_eq!(formatted, second);

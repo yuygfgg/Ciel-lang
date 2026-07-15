@@ -284,6 +284,7 @@ impl TypeChecker {
         let handler = if let Some(handler) = prechecked_handler {
             self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
         } else if let ExprKind::Closure {
+            origin,
             is_async: false,
             params,
             body,
@@ -292,6 +293,7 @@ impl TypeChecker {
             let handler = self.check_closure_expr(
                 scopes,
                 args[1].span,
+                *origin,
                 false,
                 params,
                 body,
@@ -317,10 +319,19 @@ impl TypeChecker {
             ));
         }
         if !self.type_implements_message(&message_ty) {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!("actor message type `{message_ty}` does not implement `Message`"),
-            ));
+            let diagnostic = if self.is_std_error_ty(&message_ty) {
+                Diagnostic::new(
+                    span,
+                    "actor message type `Error` is local-only and does not implement `Message`",
+                )
+                .note("use a concrete messageable error type or `Report`")
+            } else {
+                Diagnostic::new(
+                    span,
+                    format!("actor message type `{message_ty}` does not implement `Message`"),
+                )
+            };
+            self.diagnostics.push(diagnostic);
         }
         let ret = std_result_ty(
             &self.ctx.resolved,
@@ -498,6 +509,7 @@ impl TypeChecker {
         let handler = if let Some(handler) = prechecked_handler {
             self.coerce_expr_to_expected(scopes, handler, Some(&expected_handler_ty))
         } else if let ExprKind::Closure {
+            origin,
             is_async: false,
             params,
             body,
@@ -506,6 +518,7 @@ impl TypeChecker {
             let handler = self.check_closure_expr(
                 scopes,
                 args[1].span,
+                *origin,
                 false,
                 params,
                 body,
@@ -526,10 +539,19 @@ impl TypeChecker {
         );
 
         if !self.type_implements_message(&message_ty) {
-            self.diagnostics.push(Diagnostic::new(
-                span,
-                format!("actor message type `{message_ty}` does not implement `Message`"),
-            ));
+            let diagnostic = if self.is_std_error_ty(&message_ty) {
+                Diagnostic::new(
+                    span,
+                    "actor message type `Error` is local-only and does not implement `Message`",
+                )
+                .note("use a concrete messageable error type or `Report`")
+            } else {
+                Diagnostic::new(
+                    span,
+                    format!("actor message type `{message_ty}` does not implement `Message`"),
+                )
+            };
+            self.diagnostics.push(diagnostic);
         }
         let ret = std_result_ty(
             &self.ctx.resolved,
@@ -594,10 +616,19 @@ impl TypeChecker {
             self.normalize_meta_repr_markers(&handle_message_ty, span)
         };
         if !self.type_implements_message(&message_ty) {
-            self.diagnostics.push(Diagnostic::new(
-                value.span,
-                format!("actor message type `{message_ty}` does not implement `Message`"),
-            ));
+            let diagnostic = if self.is_std_error_ty(&message_ty) {
+                Diagnostic::new(
+                    value.span,
+                    "actor message type `Error` is local-only and does not implement `Message`",
+                )
+                .note("use a concrete messageable error type or convert the value to `Report`")
+            } else {
+                Diagnostic::new(
+                    value.span,
+                    format!("actor message type `{message_ty}` does not implement `Message`"),
+                )
+            };
+            self.diagnostics.push(diagnostic);
         }
         let ret = std_result_ty(
             &self.ctx.resolved,
@@ -988,6 +1019,11 @@ impl TypeChecker {
             "type_size" => (Ty::Usize, TExprKind::TypeSize { ty }),
             "type_align" => (Ty::Usize, TExprKind::TypeAlign { ty }),
             "type_needs_gc_scan" => (Ty::Bool, TExprKind::TypeNeedsGcScan { ty }),
+            "type_id" => {
+                let ret_ty = std_meta_type_id_ty(&self.ctx.resolved);
+                self.ensure_struct_instance(&ret_ty);
+                (ret_ty, TExprKind::TypeId { ty })
+            }
             _ => return None,
         };
         Some(TExpr {
@@ -1246,6 +1282,7 @@ impl TypeChecker {
                 &sig.name,
                 "type_needs_gc_scan",
             )
+            || std_id::is_std_meta_function(&self.ctx.resolved, sig.module, &sig.name, "type_id")
         {
             return self.check_type_metadata_call(span, type_args, args, &sig.name);
         }
@@ -1391,16 +1428,13 @@ impl TypeChecker {
         &mut self,
         scopes: &mut LocalScopes,
         span: crate::span::Span,
+        origin: ClosureOriginId,
         is_async: bool,
         params: &[ClosureParam],
         body: &ClosureBody,
         expected: Option<&Ty>,
         allow_resource_captures: bool,
     ) -> Option<TExpr> {
-        let expected_closure_instance_id = match expected {
-            Some(Ty::ClosureInstance { id, .. }) => Some(*id),
-            _ => None,
-        };
         let expected_sig = match expected {
             Some(Ty::Closure { ret, params, .. })
             | Some(Ty::ClosureInstance { ret, params, .. }) => {
@@ -1645,13 +1679,14 @@ impl TypeChecker {
             }
         }
 
-        let id = if let Some(id) = expected_closure_instance_id {
-            id
-        } else {
-            let id = self.next_closure_id;
-            self.next_closure_id += 1;
-            id
+        let Some(owner) = self.current_closure_owner else {
+            self.diagnostics.push(Diagnostic::new(
+                span,
+                "internal error: closure checked outside a function body",
+            ));
+            return None;
         };
+        let id = ClosureInstanceId { owner, origin };
         let capture_tys = captures
             .iter()
             .map(|capture| capture.ty.clone())
@@ -2388,12 +2423,14 @@ impl TypeChecker {
     ) -> Option<TExpr> {
         match &arg.kind {
             ExprKind::Closure {
+                origin,
                 is_async,
                 params,
                 body,
             } => self.check_closure_expr(
                 scopes,
                 arg.span,
+                *origin,
                 *is_async,
                 params,
                 body,
@@ -2402,6 +2439,7 @@ impl TypeChecker {
             ),
             ExprKind::Cast { expr, ty } => {
                 let ExprKind::Closure {
+                    origin,
                     is_async,
                     params,
                     body,
@@ -2414,6 +2452,7 @@ impl TypeChecker {
                 let checked = self.check_closure_expr(
                     scopes,
                     expr.span,
+                    *origin,
                     *is_async,
                     params,
                     body,
@@ -2616,11 +2655,14 @@ impl TypeChecker {
         if let Some(reason) =
             self.task_boundary_message_violation(&err_ty, "task error", &mut HashSet::new())
         {
-            self.diagnostics.push(self.diagnostic_with_reason_note(
-                body.span,
-                format!("`async::spawn` task error type `{err_ty}` does not implement `Message`"),
-                reason,
-            ));
+            let message = if self.is_std_error_ty(&err_ty) {
+                "`async::spawn` task error type `Error` is local-only and does not implement `Message`; use a concrete messageable error type or `Report`"
+                    .to_string()
+            } else {
+                format!("`async::spawn` task error type `{err_ty}` does not implement `Message`")
+            };
+            self.diagnostics
+                .push(self.diagnostic_with_reason_note(body.span, message, reason));
         }
         self.check_task_error_carriers(&err_ty, body.span);
         if !matches!(body.kind, TExprKind::Closure { .. }) {

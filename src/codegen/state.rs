@@ -9,7 +9,6 @@ pub(super) struct CGenerator<'a> {
     pub(super) current_heap_locals: HashSet<LocalId>,
     pub(super) current_param_locals: HashMap<LocalId, String>,
     pub(super) current_capture_locals: HashMap<LocalId, String>,
-    pub(super) current_closure_owner: Option<DefId>,
     pub(super) defer_stack: Vec<Vec<String>>,
     pub(super) temporary_resource_cleanup_depth: usize,
     pub(super) temporary_resource_cleanup_frames: Vec<usize>,
@@ -43,7 +42,7 @@ pub(super) struct CodegenPlanData {
     pub(super) dynamic_types: BTreeMap<String, Ty>,
     pub(super) dynamic_impls: BTreeMap<String, DynamicImplUse>,
     pub(super) closure_types: BTreeMap<String, Ty>,
-    pub(super) closure_defs: BTreeMap<(usize, usize), ClosureDef>,
+    pub(super) closure_defs: BTreeMap<ClosureInstanceId, ClosureDef>,
     pub(super) function_closure_wrappers: BTreeMap<String, FunctionClosureWrapper>,
     pub(super) retained_closure_wrappers: BTreeMap<String, RetainedClosureWrapper>,
     pub(super) retained_closure_witnesses: BTreeMap<String, RetainedClosureWitness>,
@@ -53,6 +52,7 @@ pub(super) struct CodegenPlanData {
     pub(super) string_literals: BTreeMap<(usize, usize, usize), String>,
     pub(super) string_literal_names: HashMap<(usize, usize, usize), String>,
     pub(super) source_locations: BTreeMap<(usize, usize), SourceLocation>,
+    pub(super) type_ids: Vec<Ty>,
     pub(super) name_map: HashMap<DefId, String>,
 }
 
@@ -64,8 +64,8 @@ pub(super) struct DynamicImplUse {
 
 #[derive(Clone, Debug)]
 pub(super) struct ClosureDef {
-    pub(super) id: usize,
-    pub(super) owner: DefId,
+    pub(super) id: ClosureInstanceId,
+    pub(super) function_def: DefId,
     pub(super) ty: Ty,
     pub(super) is_async: bool,
     pub(super) async_facts: Option<AsyncFacts>,
@@ -192,7 +192,6 @@ impl<'a> CGenerator<'a> {
             current_heap_locals: HashSet::new(),
             current_param_locals: HashMap::new(),
             current_capture_locals: HashMap::new(),
-            current_closure_owner: None,
             defer_stack: Vec::new(),
             temporary_resource_cleanup_depth: 0,
             temporary_resource_cleanup_frames: Vec::new(),

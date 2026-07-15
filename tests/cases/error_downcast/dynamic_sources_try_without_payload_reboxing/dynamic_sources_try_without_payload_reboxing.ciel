@@ -1,0 +1,104 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-c-contains: .data = (ciel_dyn_source_
+// expect-c-not-contains: ciel_dyn_data
+
+import /std/error;
+
+interface<T> i64 error_code(*const T error);
+interface RichError = ErrorTrait + error_code;
+
+struct ServiceError {
+    i64 code;
+}
+
+impl format_error(*const ServiceError error) {
+    return "service";
+}
+
+impl error_code(*const ServiceError error) {
+    return error->code;
+}
+
+Result<void, ErrorTrait> fail_trait(
+    ErrorTrait error
+) {
+    return Err(error);
+}
+
+Result<void, RichError> fail_rich(
+    RichError error
+) {
+    return Err(error);
+}
+
+Result<void, Error> error_from_trait(
+    ErrorTrait error
+) {
+    fail_trait(error)?;
+    return Ok;
+}
+
+Result<void, Error> error_from_rich(
+    RichError error
+) {
+    fail_rich(error)?;
+    return Ok;
+}
+
+Result<void, Report> report_from_trait(
+    ErrorTrait error
+) {
+    fail_trait(error)?;
+    return Ok;
+}
+
+Result<void, Report> report_from_rich(
+    RichError error
+) {
+    fail_rich(error)?;
+    return Ok;
+}
+
+i64 main() {
+    ServiceError concrete = { code: 23 };
+    RichError rich = &concrete;
+    ErrorTrait narrow = rich;
+
+    switch (error_from_trait(narrow)) {
+        case Ok:
+            return 1;
+        case Err(error):
+            if (!error_is<ServiceError>(&error)) {
+                return 2;
+            }
+    }
+
+    switch (error_from_rich(rich)) {
+        case Ok:
+            return 3;
+        case Err(error):
+            if (!error_is<ServiceError>(&error)) {
+                return 4;
+            }
+    }
+
+    switch (report_from_trait(narrow)) {
+        case Ok:
+            return 5;
+        case Err(report):
+            if (report_message(&report).len != 7) {
+                return 6;
+            }
+    }
+
+    switch (report_from_rich(rich)) {
+        case Ok:
+            return 7;
+        case Err(report):
+            if (report_message(&report).len != 7) {
+                return 8;
+            }
+    }
+    return 0;
+}

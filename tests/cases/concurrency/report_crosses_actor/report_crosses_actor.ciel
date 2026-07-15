@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/actor;
+import /std/error;
+
+enum ActorError {
+    Failed,
+}
+
+impl format_error(*const ActorError error) {
+    return "failed";
+}
+
+Result<i64, Error> handle(i64 state, Report report) {
+    return Ok(state + (report_message(&report).len as i64));
+}
+
+i64 main() {
+    Result<Actor<Report>, Error> spawned = spawn_actor_cloned<i64, Report>(
+        0, handle
+    );
+    Actor<Report> actor;
+    switch (spawned) {
+        case Ok(value):
+            actor = value;
+        case Err(_):
+            return 1;
+    }
+    Report report = ActorError::Failed;
+    switch (send(&actor, report)) {
+        case Ok:
+            {}
+        case Err(_):
+            return 2;
+    }
+    switch (join(&actor)) {
+        case Ok:
+            return 0;
+        case Err(_):
+            return 3;
+    }
+}

@@ -1,0 +1,43 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/panic;
+import /std/result;
+import /std/shared_map as shared_map;
+
+Result<void, Error> drive() {
+    shared_map::SharedMap<u32, i64> values =
+        shared_map::shared_map_new<u32, i64>()?;
+    switch (values.shared_map::insert_if_absent(7 as u32, 10)) {
+        case Ok(shared_map::InsertIfAbsentResult::Inserted):
+            {}
+        case Ok(shared_map::InsertIfAbsentResult::Occupied):
+            return Err(code_error(1));
+        case Err(error):
+            return Err(error);
+    }
+    switch (values.shared_map::insert_if_absent(7 as u32, 20)) {
+        case Ok(shared_map::InsertIfAbsentResult::Occupied):
+            {}
+        case Ok(shared_map::InsertIfAbsentResult::Inserted):
+            return Err(code_error(2));
+        case Err(error):
+            return Err(error);
+    }
+    switch (values.shared_map::get(7 as u32)?) {
+        case shared_map::SharedMapGet::Found(value):
+            if (value == 10) {
+                return Ok;
+            }
+            return Err(code_error(3));
+        case shared_map::SharedMapGet::Missing:
+            return Err(code_error(4));
+    }
+    return Err(code_error(5));
+}
+
+i32 main() {
+    must(drive());
+    return 0;
+}

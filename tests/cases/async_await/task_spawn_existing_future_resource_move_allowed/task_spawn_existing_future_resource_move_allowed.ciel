@@ -9,7 +9,9 @@ import /std/panic;
 import /std/result;
 import /std/text as text;
 
-async Result<usize, Error> read_one(io::File file) {
+async Result<usize, Report> read_one(
+    io::File file
+) {
     [1]u8 @buffer = [0;];
     usize n = io::read(&file, buffer[..])?;
     io::close(file)?;
@@ -29,8 +31,8 @@ i32 main() {
 
     text::Text owned_path = must(text::text_copy(path));
     io::File file = must(io::open_read(must(text::text_to_slice(owned_path))));
-    async::Future<Result<usize, Error>> future = read_one(file);
-    async::Task<usize, Error> task = must(async::spawn<usize>(future));
+    async::Future<Result<usize, Report>> future = read_one(file);
+    async::Task<usize, Report> task = must(async::spawn<usize>(future));
     if (must(async::block_on(task)) != 1) {
         return 1;
     }

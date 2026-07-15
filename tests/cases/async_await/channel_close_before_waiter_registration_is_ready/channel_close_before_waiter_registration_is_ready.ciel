@@ -1,0 +1,8 @@
+// ciel-test: host
+// host: channel_close_before_waiter_registration_is_ready.host.c
+// expect-exit: 0
+// warning-clean: true
+
+export extern "C" i32 channel_close_registration_fixture_marker() {
+    return 0;
+}

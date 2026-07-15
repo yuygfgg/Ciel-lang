@@ -16,6 +16,9 @@ pub use ast::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct LocalId(pub usize);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClosureOriginId(pub usize);
+
 #[derive(Clone, Debug)]
 pub struct HirProgram {
     pub resolved: ResolvedProgram,
@@ -453,6 +456,7 @@ pub enum ExprKind {
         len: Option<usize>,
     },
     Closure {
+        origin: ClosureOriginId,
         is_async: bool,
         params: Vec<ClosureParam>,
         body: ClosureBody,
@@ -562,6 +566,7 @@ pub fn lower_to_hir_lossy(resolved: ResolvedProgram) -> WithDiagnostics<HirProgr
             resolved: &resolved,
             diagnostics: Vec::new(),
             locals: Vec::new(),
+            next_closure_origin: 0,
         };
         let hir_modules = modules
             .iter()
@@ -589,6 +594,7 @@ struct Lowerer<'a> {
     resolved: &'a ResolvedProgram,
     diagnostics: Vec<Diagnostic>,
     locals: Vec<Local>,
+    next_closure_origin: usize,
 }
 
 struct ModuleLowerer<'a, 'b> {
@@ -1408,6 +1414,8 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 params,
                 body,
             } => {
+                let origin = ClosureOriginId(self.lowerer.next_closure_origin);
+                self.lowerer.next_closure_origin += 1;
                 self.push_scope();
                 let params = params
                     .iter()
@@ -1433,6 +1441,7 @@ impl<'a, 'b> ModuleLowerer<'a, 'b> {
                 };
                 self.pop_scope();
                 ExprKind::Closure {
+                    origin,
                     is_async: *is_async,
                     params,
                     body,

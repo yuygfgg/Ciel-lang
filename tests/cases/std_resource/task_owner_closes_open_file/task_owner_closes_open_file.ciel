@@ -41,7 +41,7 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-async Result<HandleParts, Error> open_in_task(
+async Result<HandleParts, Report> open_in_task(
     text::Text path
 ) {
     io::File file = io::open_read(text::text_to_slice(path)?)?;
@@ -60,7 +60,7 @@ i32 main() {
     );
 
     text::Text owned_path = must(text::text_copy(path));
-    async::Task<HandleParts, Error> task = must(
+    async::Task<HandleParts, Report> task = must(
         async::spawn<HandleParts>(open_in_task(owned_path))
     );
     HandleParts parts = must(async::block_on(task));

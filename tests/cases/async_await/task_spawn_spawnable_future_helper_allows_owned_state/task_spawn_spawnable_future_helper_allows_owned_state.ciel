@@ -5,18 +5,18 @@ import /std/async as async;
 import /std/message;
 import /std/result;
 
-async Result<usize, Error> compute(usize value) {
+async Result<usize, Report> compute(usize value) {
     return Ok(value + 1);
 }
 
-async::Task<T, Error> spawn_future<T: Message, A: async::SpawnableFuture<Result<T, Error>>>(
+async::Task<T, Report> spawn_future<T: Message, A: async::SpawnableFuture<Result<T, Report>>>(
     A future
 ) {
     return must(async::spawn<T>(future));
 }
 
 i32 main() {
-    async::Task<usize, Error> task = spawn_future<usize>(compute(40));
+    async::Task<usize, Report> task = spawn_future<usize>(compute(40));
     if (must(async::block_on(task)) != 41) {
         return 1;
     }

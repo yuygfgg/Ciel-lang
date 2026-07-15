@@ -6,8 +6,63 @@ use std::{
 use crate::{
     ast::{PrimitiveType, Type, TypeKind, ViewMutability},
     common::nominal_type_name,
+    hir::ClosureOriginId,
     resolve::{DefId, DefKind, ResolvedProgram},
 };
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum ClosureOwnerId {
+    Function(DefId),
+    GenericInstance { template: DefId, id: usize },
+}
+
+impl fmt::Display for ClosureOwnerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Function(def_id) => write!(f, "function_{}", def_id.0),
+            Self::GenericInstance { template, id } => {
+                write!(f, "generic_{}_{}", template.0, id)
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ClosureInstanceId {
+    pub owner: ClosureOwnerId,
+    pub origin: ClosureOriginId,
+}
+
+impl fmt::Display for ClosureInstanceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}_closure_{}", self.owner, self.origin.0)
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ClosureOwnerTable {
+    generic_instances: HashMap<(DefId, Vec<Ty>), usize>,
+    next_generic_instance: usize,
+}
+
+impl ClosureOwnerTable {
+    pub(crate) fn intern_generic_instance(
+        &mut self,
+        template: DefId,
+        instance_args: &[Ty],
+    ) -> ClosureOwnerId {
+        let key = (template, instance_args.to_vec());
+        let id = if let Some(id) = self.generic_instances.get(&key) {
+            *id
+        } else {
+            let id = self.next_generic_instance;
+            self.next_generic_instance += 1;
+            self.generic_instances.insert(key, id);
+            id
+        };
+        ClosureOwnerId::GenericInstance { template, id }
+    }
+}
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub struct ConstraintBounds {
@@ -29,6 +84,7 @@ pub struct OpaqueReturnKey {
 }
 
 pub const STD_ERROR_FORMAT_INTERFACE: &str = "format_error";
+pub const STD_ERROR_ERASED_REF_INTERFACE: &str = "erased_error_ref";
 pub const STD_ERROR_TRAIT_ALIAS: &str = "ErrorTrait";
 pub const STD_ERROR_CODE_TYPE: &str = "CodeError";
 pub const STD_MESSAGE_CLONE_INTERFACE: &str = "clone_message";
@@ -84,6 +140,7 @@ pub enum Ty {
     F32,
     F64,
     CSpelling {
+        def_id: DefId,
         abi: String,
         spelling: String,
     },
@@ -139,7 +196,7 @@ pub enum Ty {
         constraints: ConstraintBounds,
     },
     ClosureInstance {
-        id: usize,
+        id: ClosureInstanceId,
         ret: Box<Ty>,
         params: Vec<Ty>,
         captures: Vec<Ty>,
@@ -1471,6 +1528,13 @@ pub fn receiver_ty_from_value_ty(ty: &Ty) -> Ty {
     }
 }
 
+pub fn canonical_type_identity_ty(ty: &Ty) -> Ty {
+    match ty {
+        Ty::OpaqueState { base, .. } => canonical_type_identity_ty(base),
+        _ => map_ty_children(ty, |child| canonical_type_identity_ty(child)),
+    }
+}
+
 fn std_nominal_ty(
     resolved: &ResolvedProgram,
     name: &str,
@@ -1502,6 +1566,26 @@ pub fn std_error_ty(resolved: &ResolvedProgram) -> Ty {
         "Error",
         DefKind::Struct,
         &["/std/error", "/std/error/core"],
+        Vec::new(),
+    )
+}
+
+pub fn std_report_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "Report",
+        DefKind::Struct,
+        &["/std/error", "/std/error/core"],
+        Vec::new(),
+    )
+}
+
+pub fn std_meta_type_id_ty(resolved: &ResolvedProgram) -> Ty {
+    std_nominal_ty(
+        resolved,
+        "TypeId",
+        DefKind::Struct,
+        &["/std/meta"],
         Vec::new(),
     )
 }
@@ -1539,7 +1623,7 @@ pub fn std_resource_error_ty(resolved: &ResolvedProgram) -> Ty {
         resolved,
         "ResourceError",
         DefKind::Enum,
-        &["/std/resource"],
+        &["/std/resource", "/std/resource/core"],
         Vec::new(),
     )
 }
@@ -2244,9 +2328,14 @@ pub fn mangle_ty_fragment(ty: &Ty) -> String {
         Ty::Usize => "usize".to_string(),
         Ty::F32 => "f32".to_string(),
         Ty::F64 => "f64".to_string(),
-        Ty::CSpelling { abi, spelling } => {
+        Ty::CSpelling {
+            def_id,
+            abi,
+            spelling,
+        } => {
             format!(
-                "c_{}_{}",
+                "c_def{}_{}_{}",
+                def_id.0,
                 mangle_abi_fragment(Some(abi)),
                 sanitize_mangle_fragment(spelling)
             )

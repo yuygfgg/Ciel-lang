@@ -1,0 +1,12 @@
+// ciel-test: error
+// expect-error: `Error` does not implement `clone_message`
+// expect-error: downcastable erased errors are local-only
+// expect-error: use a concrete messageable error type or `Report` for transfer
+
+import /std/channel as channel;
+import /std/error;
+
+i64 main() {
+    channel::make_channel<Error>();
+    return 0;
+}

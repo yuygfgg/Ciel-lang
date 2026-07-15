@@ -21,7 +21,7 @@ bool is_err_bytes(
     }
 }
 
-async Result<void, Error> write_chunks(
+async Result<void, Report> write_chunks(
     anet::AsyncTcpListener listener
 ) {
     anet::AsyncTcpStream @server = await anet::accept(&listener)?;
@@ -39,7 +39,7 @@ async Result<usize, Error> drive() {
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<void, Error> server = async::spawn<void>(
+    async::Task<void, Report> server = async::spawn<void>(
         write_chunks(listener)
     )?;
 

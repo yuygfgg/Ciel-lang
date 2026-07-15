@@ -10,7 +10,7 @@ enum Step<T> {
 }
 
 struct Envelope<T> {
-    Result<Step<T>, Error> result;
+    Result<Step<T>, Report> result;
     void marker;
 }
 

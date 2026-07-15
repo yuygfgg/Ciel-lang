@@ -23,6 +23,7 @@ typedef struct CielBufferedReader CielBufferedReader;
 
 typedef struct CielSelectResult {
     size_t index;
+    int32_t arm_rc;
 } CielSelectResult;
 
 typedef int32_t (*CielFutureRunFn)(CielFuture* future, void* ctx, void* out);
@@ -36,14 +37,15 @@ int ciel_async_again_errno(void);
 int32_t ciel_async_channel_make(size_t value_size, size_t value_align,
                                 size_t capacity, CielAsyncSender** sender_out,
                                 CielAsyncReceiver** receiver_out);
-CielAsyncSender* ciel_async_sender_clone(CielAsyncSender* sender);
-CielAsyncReceiver* ciel_async_receiver_clone(CielAsyncReceiver* receiver);
 int32_t ciel_async_sender_close(CielAsyncSender* sender);
 int32_t ciel_async_receiver_close(CielAsyncReceiver* receiver);
 int32_t ciel_async_channel_try_send(CielAsyncSender* sender, const void* value);
 int32_t ciel_async_send_permit_send(CielAsyncSendPermit* permit,
                                     const void* value);
 int32_t ciel_async_send_permit_release(CielAsyncSendPermit* permit);
+int32_t ciel_async_send_permit_register_resource_handle(
+    CielAsyncSendPermit* permit, uint64_t* out_owner_id,
+    uint64_t* out_resource_id, uint64_t* out_generation);
 int32_t ciel_async_channel_send_poll(CielFuture* future,
                                      CielAsyncSender* sender,
                                      const void* value);
@@ -131,12 +133,19 @@ int32_t ciel_future_run_to_completion_trampoline(CielFuture* future, void* out);
 void* ciel_task_spawn(CielFuture* future);
 int32_t ciel_task_cancel(void* handle);
 int32_t ciel_task_is_finished(void* handle, bool* out);
+int32_t ciel_task_is_cancelled(void* handle, bool* out);
 CielTaskGroup* ciel_task_group_new(void);
 int32_t ciel_task_group_add(CielTaskGroup* group, void* task_handle);
 int32_t ciel_task_group_next_task_poll(CielFuture* future, CielTaskGroup* group,
                                        void** out_task);
+int32_t ciel_task_group_try_next_task(CielTaskGroup* group, void** out_task);
+int32_t ciel_task_group_join_poll(CielFuture* future, CielTaskGroup* group);
 int32_t ciel_task_group_cancel_all(CielTaskGroup* group);
 int32_t ciel_task_group_close(CielTaskGroup* group);
+int32_t ciel_task_group_register_resource_handle(CielTaskGroup* group,
+                                                 uint64_t* out_owner_id,
+                                                 uint64_t* out_resource_id,
+                                                 uint64_t* out_generation);
 CielSelectSet* ciel_select_set_new(size_t capacity, int biased);
 int32_t ciel_select_set_push(CielSelectSet* set, CielFuture* future,
                              size_t result_size, size_t result_align);

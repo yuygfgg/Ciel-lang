@@ -8,7 +8,7 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> delayed_send(
+async Result<usize, Report> delayed_send(
     async::Sender<usize> sender
 ) {
     await async_time::sleep_ms(100)?;
@@ -16,11 +16,11 @@ async Result<usize, Error> delayed_send(
     return Ok(0);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    await async::with_task_group<usize, void, Error>(
+    await async::with_task_group<usize, void, Report>(
         async |group| {
-            async::Task<usize, Error> task = async::spawn<usize>(
+            async::Task<usize, Report> task = async::spawn<usize>(
                 delayed_send(pair.sender)
             )?;
             async::group_add<usize>(&group, task)?;

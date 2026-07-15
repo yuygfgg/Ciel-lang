@@ -67,7 +67,7 @@ export enum MapError {
     KeyNotFound,
     CapacityOverflow,
     Runtime(i64),
-    MessageClone(Error),
+    MessageClone(Report),
 }
 
 derive Message<MapError>;
@@ -392,7 +392,7 @@ export Result<GetResult<V>, MapError> hash_map_get<K: map_key, V: Message>(
                 case Ok(value):
                     copied = value;
                 case Err(error):
-                    return Err(MessageClone(error));
+                    return Err(MessageClone(error_report(&error)));
             }
             return Ok(GetResult::Found(copied));
         }
@@ -436,11 +436,13 @@ export Result<InsertResult<V>, MapError> hash_map_insert<K: map_key, V>(
     return Ok(InsertResult::Inserted);
 }
 
-// Removes key and returns the stored value when present.
-export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
+// Removes key when predicate accepts the stored value.
+export Result<RemoveResult<V>, MapError> hash_map_remove_if<K: map_key, V, P>(
     *HashMap<K, V> map,
-    K key
-) = .remove {
+    K key,
+    P policy,
+    bool |(*const P, *const V)| predicate
+) = .remove_if {
     usize capacity = unsafe { map->capacity };
     if (capacity == 0) {
         return Ok(RemoveResult::Missing);
@@ -456,6 +458,9 @@ export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
         }
         *Node<K, V> node = expect_node<K, V>(current);
         if (node->hash == hash && key_eq(&node->key, &key)) {
+            if (!predicate(&policy, &node->value)) {
+                return Ok(RemoveResult::Missing);
+            }
             ?*Node<K, V> next = node->next;
             if (previous == null) {
                 set_bucket_head<K, V>(map, index, next);
@@ -471,6 +476,23 @@ export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
         previous = current;
         current = node->next;
     }
+}
+
+// Removes key and returns the stored value when present.
+export Result<RemoveResult<V>, MapError> hash_map_remove<K: map_key, V>(
+    *HashMap<K, V> map,
+    K key
+) = .remove {
+    return hash_map_remove_if<K, V, bool>(
+        map,
+        key,
+        true,
+        |enabled, value| {
+            enabled;
+            value;
+            return true;
+        }
+    );
 }
 
 // Removes and returns an arbitrary entry, or Empty when the map has no entries.

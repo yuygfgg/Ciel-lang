@@ -1,5 +1,17 @@
 # Pure Library Structural Message Proposal
 
+## Historical Status
+
+The structural `Message` model in this document remains part of the language.
+`error-downcast` supersedes its policy for erased errors: `Error` is local-only
+and no longer implements `Message`, while `Report` is the transferable erased
+diagnostic type. `clone_message` still returns `Result<T, Error>` because clone
+failure is observed in the source owner. Any statement below that lists an
+explicit `clone_message` implementation for `Error` describes the earlier
+policy. A successful clone is freely discardable; Message has no user-defined
+drop operation, and deterministic cleanup belongs to resource-affine values.
+`design.md` is normative.
+
 This proposal removes compiler-derived `Message` as a special case. Structural
 message derivation becomes an ordinary standard-library policy over `/std/meta`
 owned representations.
@@ -273,8 +285,9 @@ Message derivation blocked at field `ptr` (`*i64`): raw pointer.
 
 ## Migration
 
-1. Keep explicit `clone_message` impls for primitives, `Error`, function
-   pointers, actors, channels, mutexes, and other approved handles.
+1. Keep explicit `clone_message` impls for primitives, `Report`, function
+   pointers, actors, channels, mutexes, and other approved handles. The later
+   `error-downcast` design removes this implementation from `Error`.
 2. Add standard-library `Message` impls for owned SOP nodes.
 3. Move channel, mutex, and actor examples to `meta::Repr<T>` message types when
    they want structural behavior.

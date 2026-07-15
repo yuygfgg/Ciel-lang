@@ -7,3 +7,4 @@ root = "."
 
 [ciel.exports]
 "/std/option" = "option.ciel"
+"/std/option/core" = "core.ciel"

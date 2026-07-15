@@ -7,16 +7,16 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-Result<async::Task<T, Error>, async::AsyncError> spawn_identity<T>(
+Result<async::Task<T, Report>, async::AsyncError> spawn_identity<T>(
     T value
 ) {
-    return async::spawn<T, Error>(async || {
+    return async::spawn<T, Report>(async || {
         return Ok(value);
     });
 }
 
 i32 main() {
-    async::Task<usize, Error> task = must(spawn_identity<usize>(23));
+    async::Task<usize, Report> task = must(spawn_identity<usize>(23));
     must(print_value(must(async::block_on(task))));
     return 0;
 }

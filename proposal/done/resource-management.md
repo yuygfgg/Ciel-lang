@@ -1,5 +1,14 @@
 # Owner-Based Resource Management Proposal
 
+## Historical Status
+
+The implemented model is stricter than several early capability sketches below.
+`Message` clones must be freely discardable and therefore cannot construct or
+own a file, socket, permit, native lease, or manually released reference.
+Deterministically cleaned values are resource-affine and move through resource
+transfer APIs; a `ShareHandle` alias is valid only when discarding the alias has
+no semantic cleanup effect. `design.md` is normative.
+
 This proposal adds deterministic management for non-memory resources while
 preserving Ciel's garbage-collected memory model.
 

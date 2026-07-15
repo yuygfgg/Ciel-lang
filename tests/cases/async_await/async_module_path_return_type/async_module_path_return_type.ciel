@@ -7,16 +7,16 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> ready() {
+async Result<usize, Report> ready() {
     return Ok(5);
 }
 
-async::Task<usize, Error> make_task() {
+async::Task<usize, Report> make_task() {
     return must(async::spawn<usize>(ready()));
 }
 
 i32 main() {
-    async::Task<usize, Error> task = make_task();
+    async::Task<usize, Report> task = make_task();
     must(print_value(must(async::block_on(task))));
     return 0;
 }

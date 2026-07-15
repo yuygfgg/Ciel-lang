@@ -1,0 +1,85 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/result;
+
+async Result<void, Report> slow() {
+    await async_time::sleep_ms(1000)?;
+    return Ok;
+}
+
+struct RegisteredTask {
+    async::Task<void, Report> task;
+    async::TaskRegistrar<void, Report> registrar;
+}
+
+Result<RegisteredTask, Report> register_scoped() {
+    async::TaskSupervisor<void, Report> supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::TaskRegistrar<void, Report> registrar =
+        async::supervisor_registrar<void, Report>(&supervisor);
+    async::Task<void, Report> task = async::spawn<void>(slow())?;
+    async::supervisor_register<void, Report>(registrar, task)?;
+    return Ok({ task: task, registrar: registrar });
+}
+
+Result<void, Report> expect_cancelled(
+    async::Task<void, Report> task,
+    i64 code
+) {
+    switch (async::block_on(task)) {
+        case Err(_):
+            return Ok;
+        case Ok:
+            return Err(code_error(code));
+    }
+    return Err(code_error(code + 100));
+}
+
+Result<void, Report> drive() {
+    RegisteredTask scoped = register_scoped()?;
+    expect_cancelled(scoped.task, 1)?;
+
+    async::Task<void, Report> late = async::spawn<void>(slow())?;
+    switch (async::supervisor_register<void, Report>(
+        scoped.registrar, late
+    )) {
+        case Err(_):
+            {}
+        case Ok:
+            return Err(code_error(2));
+    }
+    expect_cancelled(late, 3)?;
+
+    async::TaskSupervisor<void, Report> supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::TaskRegistrar<void, Report> registrar =
+        async::supervisor_registrar<void, Report>(&supervisor);
+
+    async::Task<void, Report> accepted = async::spawn<void>(slow())?;
+    async::supervisor_register<void, Report>(registrar, accepted)?;
+    async::supervisor_shutdown<void, Report>(supervisor)?;
+    expect_cancelled(accepted, 4)?;
+
+    async::Task<void, Report> rejected = async::spawn<void>(slow())?;
+    switch (async::supervisor_register<void, Report>(registrar, rejected)) {
+        case Err(_):
+            {}
+        case Ok:
+            return Err(code_error(5));
+    }
+    expect_cancelled(rejected, 6)?;
+    return Ok;
+}
+
+i32 main() {
+    switch (drive()) {
+        case Ok:
+            return 0;
+        case Err(_):
+            return 1;
+    }
+}

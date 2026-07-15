@@ -1,0 +1,70 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/message;
+import /std/panic;
+import /std/result;
+import /std/shared_map as shared_map;
+
+struct MatchValue {
+    u64 value;
+}
+
+derive Message<MatchValue>;
+
+impl shared_map::remove_match(*const MatchValue matcher, *const u64 value) {
+    return matcher->value == *value;
+}
+
+MatchValue match_value(u64 value) {
+    return { value: value };
+}
+
+Result<void, Error> drive() {
+    shared_map::SharedMap<u32, u64> values =
+        shared_map::shared_map_new<u32, u64>()?;
+    _ inserted = values.shared_map::insert_if_absent(
+        7 as u32, 10 as u64
+    )?;
+
+    switch (values.shared_map::remove_if(
+        7 as u32, match_value(20 as u64)
+    )?) {
+        case shared_map::SharedMapGet::Found(_):
+            return Err(code_error(1));
+        case shared_map::SharedMapGet::Missing:
+            {}
+    }
+    switch (values.shared_map::get(7 as u32)?) {
+        case shared_map::SharedMapGet::Found(value):
+            if (value != (10 as u64)) {
+                return Err(code_error(2));
+            }
+        case shared_map::SharedMapGet::Missing:
+            return Err(code_error(3));
+    }
+
+    switch (values.shared_map::remove_if(
+        7 as u32, match_value(10 as u64)
+    )?) {
+        case shared_map::SharedMapGet::Found(value):
+            if (value != (10 as u64)) {
+                return Err(code_error(4));
+            }
+        case shared_map::SharedMapGet::Missing:
+            return Err(code_error(5));
+    }
+    switch (values.shared_map::get(7 as u32)?) {
+        case shared_map::SharedMapGet::Found(_):
+            return Err(code_error(6));
+        case shared_map::SharedMapGet::Missing:
+            return Ok;
+    }
+    return Err(code_error(7));
+}
+
+i32 main() {
+    must(drive());
+    return 0;
+}

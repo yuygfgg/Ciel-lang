@@ -139,6 +139,13 @@ ciel_cstr_from_slice(const char *ptr, size_t len) {
     return out;
 }
 
+CielConstSlice_char ciel_diagnostic_text_copy(const char *ptr, size_t len) {
+    CielConstSlice_char out;
+    out.ptr = ciel_cstr_from_slice(ptr, len);
+    out.len = len;
+    return out;
+}
+
 static CIEL_MAYBE_UNUSED size_t ciel_format_float(char *out, size_t cap,
                                                   const char *fmt,
                                                   double value) {

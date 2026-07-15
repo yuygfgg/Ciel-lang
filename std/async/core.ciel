@@ -13,6 +13,7 @@ import /std/async/internal/adapter as adapter;
 import /std/meta;
 import /std/meta as meta;
 import /std/pointer as pointer;
+import /std/resource/core as resource;
 
 unsafe extern "C" {
     opaque struct CielAsyncSender;
@@ -26,12 +27,6 @@ unsafe extern "C" {
         usize capacity,
         *?*CielAsyncSender sender_out,
         *?*CielAsyncReceiver receiver_out
-    );
-    ?*CielAsyncSender ciel_async_sender_clone(
-        *CielAsyncSender sender
-    );
-    ?*CielAsyncReceiver ciel_async_receiver_clone(
-        *CielAsyncReceiver receiver
     );
     c::c_int ciel_async_sender_close(
         *CielAsyncSender sender
@@ -49,6 +44,12 @@ unsafe extern "C" {
     );
     c::c_int ciel_async_send_permit_release(
         *CielAsyncSendPermit permit
+    );
+    c::c_int ciel_async_send_permit_register_resource_handle(
+        *CielAsyncSendPermit permit,
+        *u64 out_owner_id,
+        *u64 out_resource_id,
+        *u64 out_generation
     );
     c::c_int ciel_async_channel_send_poll(
         *CielFuture future,
@@ -70,6 +71,14 @@ unsafe extern "C" {
         *CielTaskGroup group,
         *?*void out_task
     );
+    c::c_int ciel_task_group_join_poll(
+        *CielFuture future,
+        *CielTaskGroup group
+    );
+    c::c_int ciel_task_group_try_next_task(
+        *CielTaskGroup group,
+        *?*void out_task
+    );
     c::c_int ciel_task_group_add(
         *CielTaskGroup group, *void task_handle
     );
@@ -79,6 +88,11 @@ unsafe extern "C" {
     c::c_int ciel_task_group_close(
         *CielTaskGroup group
     );
+    c::c_int ciel_task_cancel(*void task_handle);
+    c::c_int ciel_task_is_cancelled(
+        *void task_handle,
+        *bool out
+    );
     ?*CielTaskGroup ciel_task_group_new();
 }
 
@@ -87,8 +101,9 @@ export enum AsyncError {
     Runtime(i64),
     Timeout,
     ChannelClosed,
-    MessageClone(Error),
-    Operation(Error),
+    ChannelFull,
+    MessageClone(Report),
+    Operation(Report),
 }
 
 derive Message<AsyncError>;
@@ -101,6 +116,8 @@ impl format_error(*const AsyncError error) {
             return "async operation timed out";
         case ChannelClosed:
             return "async channel closed";
+        case ChannelFull:
+            return "async channel full";
         case MessageClone(inner):
             return format_error(&inner);
         case Operation(inner):
@@ -181,6 +198,9 @@ AsyncError async_error_from_channel_rc(
 ) {
     if ((rc as i64) == (unsafe { ciel_async_channel_closed_errno() } as i64)) {
         return ChannelClosed;
+    }
+    if ((rc as i64) == (unsafe { ciel_async_again_errno() } as i64)) {
+        return ChannelFull;
     }
     return async_error_from_runtime_rc(rc);
 }
@@ -328,6 +348,12 @@ export struct Task<T, E> {
     *void handle;
 }
 
+// Result-type-erased capability that can only request task termination.
+// Safe code can obtain one from task_abort_handle().
+export unsafe struct TaskAbortHandle {
+    *void handle;
+}
+
 unsafe impl<T, E> awaitable_future<Result<T, E>>(*const Task<T, E> task) {
     return unsafe { ciel_task_future_from_handle(task->handle) as *void };
 }
@@ -346,6 +372,38 @@ export Result<void, AsyncError> cancel<T, E>(
 export Result<bool, AsyncError> is_finished<T, E>(
     *const Task<T, E> task
 ) = .is_finished;
+
+// Returns whether a terminal task completed through cancellation.
+export Result<bool, AsyncError> is_cancelled<T, E>(
+    *const Task<T, E> task
+) = .is_cancelled {
+    bool @cancelled = false;
+    c::c_int rc = unsafe {
+        ciel_task_is_cancelled(task->handle, &cancelled)
+    };
+    if ((rc as i64) != 0) {
+        return Err(async_error_from_runtime_rc(rc));
+    }
+    return Ok(cancelled);
+}
+
+// Erases a task's result type while retaining only cancellation authority.
+export TaskAbortHandle task_abort_handle<T, E>(
+    *const Task<T, E> task
+) = .abort_handle {
+    return unsafe { { handle: task->handle } };
+}
+
+// Requests termination through a result-type-erased task handle.
+export Result<void, AsyncError> abort_task(
+    TaskAbortHandle task
+) = .abort {
+    c::c_int rc = unsafe { ciel_task_cancel(task.handle) };
+    if ((rc as i64) != 0) {
+        return Err(async_error_from_runtime_rc(rc));
+    }
+    return Ok;
+}
 
 unsafe derive<T, E> cancel_safe_marker<Task<T, E>>;
 
@@ -367,6 +425,12 @@ unsafe impl<T, E> clone_message(*const Task<T, E> value) {
 
 unsafe derive<T, E> share_handle_marker<Task<T, E>>;
 
+unsafe impl clone_message(*const TaskAbortHandle value) {
+    return Ok(*value);
+}
+
+unsafe derive share_handle_marker<TaskAbortHandle>;
+
 // Send half of a bounded async channel.
 export struct Sender<T> {
     *void handle;
@@ -377,9 +441,10 @@ export struct Receiver<T> {
     *void handle;
 }
 
-// Reserved capacity permit for an async channel send.
-export struct SendPermit<T> {
+// Affine lease for one reserved async channel slot.
+export resource unsafe struct SendPermit<T> {
     *void handle;
+    resource::Handle lease;
 }
 
 // Pair of sender and receiver returned by channel().
@@ -397,6 +462,8 @@ struct ChannelSendCtx<T> {
 
 struct ChannelReserveCtx<T> {
     Sender<T> sender;
+    ?*CielAsyncSendPermit permit;
+    bool owns_permit;
 }
 
 struct ChannelRecvCtx<T> {
@@ -430,7 +497,7 @@ extern "C" c::c_int channel_send_run<T>(
     };
     switch (ctx->cloned) {
         case Err(error):
-            *out = Err(MessageClone(error));
+            *out = Err(MessageClone(error_report(&error)));
             return 0 as c::c_int;
         case Ok(value):
             ?*const void @value_ptr = null;
@@ -488,13 +555,62 @@ extern "C" c::c_int channel_reserve_run<T>(
     }
     if ((rc as i64) == 0) {
         if (raw_permit == null) {
-            *out = Err(Runtime(5));
+            unsafe {
+                runtime_future::initialize_slot(out, Err(Runtime(5)))
+            };
         } else {
-            SendPermit<T> permit = { handle: pointer::unwrap(raw_permit) as *void };
-            *out = Ok(permit);
+            ctx->permit = raw_permit;
+            ctx->owns_permit = true;
+            u64 @owner_id = 0;
+            u64 @resource_id = 0;
+            u64 @generation = 0;
+            c::c_int register_rc = unsafe {
+                ciel_async_send_permit_register_resource_handle(
+                    pointer::unwrap(raw_permit),
+                    &owner_id,
+                    &resource_id,
+                    &generation
+                )
+            };
+            if ((register_rc as i64) != 0) {
+                ctx->owns_permit = false;
+                unsafe {
+                    ciel_async_send_permit_release(
+                        pointer::unwrap(raw_permit)
+                    )
+                };
+                unsafe {
+                    runtime_future::initialize_slot(
+                        out,
+                        Err(async_error_from_runtime_rc(register_rc))
+                    )
+                };
+            } else {
+                resource::Handle lease = unsafe {
+                    {
+                        owner_id: owner_id,
+                        resource_id: resource_id,
+                        generation: generation
+                    }
+                };
+                SendPermit<T> permit = unsafe {
+                    {
+                        handle: pointer::unwrap(raw_permit) as *void,
+                        lease: lease
+                    }
+                };
+                unsafe {
+                    runtime_future::initialize_slot(out, Ok(permit))
+                };
+            }
         }
     } else {
-        *out = Err(async_error_from_channel_rc(rc));
+        unsafe {
+            runtime_future::initialize_slot(
+                out,
+                Err(async_error_from_channel_rc(rc))
+            )
+        };
     }
     return 0 as c::c_int;
 }
@@ -505,8 +621,17 @@ extern "C" void channel_reserve_cleanup<T>(
     c::c_int reason
 ) {
     future;
-    ctx_raw;
     reason;
+    *ChannelReserveCtx<T> ctx = unsafe {
+        ctx_raw as *ChannelReserveCtx<T>
+    };
+    if (!ctx->owns_permit || ctx->permit == null) {
+        return;
+    }
+    ctx->owns_permit = false;
+    unsafe {
+        ciel_async_send_permit_release(pointer::unwrap(ctx->permit))
+    };
 }
 
 extern "C" c::c_int channel_recv_run<T>(
@@ -591,25 +716,13 @@ unsafe impl<T> abort_future(*ChannelRecvFuture<T> future) {
 }
 
 unsafe impl<T> clone_message(*const Sender<T> value) {
-    ?*CielAsyncSender raw = unsafe {
-        ciel_async_sender_clone(value->handle as *CielAsyncSender)
-    };
-    if (raw == null) {
-        return Err(boxed_async_runtime_error());
-    }
-    return Ok({ handle: pointer::unwrap(raw) as *void });
+    return Ok(*value);
 }
 
 unsafe derive<T> share_handle_marker<Sender<T>>;
 
 unsafe impl<T> clone_message(*const Receiver<T> value) {
-    ?*CielAsyncReceiver raw = unsafe {
-        ciel_async_receiver_clone(value->handle as *CielAsyncReceiver)
-    };
-    if (raw == null) {
-        return Err(boxed_async_runtime_error());
-    }
-    return Ok({ handle: pointer::unwrap(raw) as *void });
+    return Ok(*value);
 }
 
 unsafe derive<T> share_handle_marker<Receiver<T>>;
@@ -621,7 +734,7 @@ Result<T, Error> clone_channel_payload<T: Message>(
 }
 
 // Creates a bounded async channel with the requested capacity.
-export Result<ChannelPair<T>, AsyncError> channel<T>(
+export Result<ChannelPair<T>, AsyncError> channel<T: Message>(
     usize capacity
 ) {
     ?*CielAsyncSender @raw_sender = null;
@@ -653,7 +766,10 @@ export Result<ChannelPair<T>, AsyncError> channel<T>(
 export ChannelSendFuture<T> send<T: Message>(
     Sender<T> sender, T value
 ) = .send {
-    ChannelSendCtx<T> ctx = { sender: sender, cloned: clone_channel_payload<T>(&value) };
+    ChannelSendCtx<T> ctx = {
+        sender: sender,
+        cloned: clone_channel_payload<T>(&value)
+    };
     Future<Result<void, AsyncError>> inner = unsafe {
         runtime_future::new<Result<void, AsyncError>, ChannelSendCtx<T>>(
             ctx,
@@ -673,7 +789,7 @@ export Result<void, AsyncError> try_send<T: Message>(
         case Ok(copied):
             cloned = copied;
         case Err(error):
-            return Err(MessageClone(error));
+            return Err(MessageClone(error_report(&error)));
     }
     ?*const void @value_ptr = null;
     if (meta::type_size<T>() != 0) {
@@ -694,7 +810,11 @@ export Result<void, AsyncError> try_send<T: Message>(
 export ChannelReserveFuture<T> reserve<T: Message>(
     Sender<T> sender
 ) = .reserve {
-    ChannelReserveCtx<T> ctx = { sender: sender };
+    ChannelReserveCtx<T> ctx = {
+        sender: sender,
+        permit: null,
+        owns_permit: false
+    };
     Future<Result<SendPermit<T>, AsyncError>> inner = unsafe {
         runtime_future::new<Result<SendPermit<T>, AsyncError>, ChannelReserveCtx<T>>(
             ctx,
@@ -707,19 +827,23 @@ export ChannelReserveFuture<T> reserve<T: Message>(
 
 // Sends value into a previously reserved slot.
 export Result<void, AsyncError> permit_send<T: Message>(
-    SendPermit<T> permit, T value
+    SendPermit<T> @permit, T value
 ) = .send {
     T @cloned;
     switch (clone_channel_payload<T>(&value)) {
         case Ok(copied):
             cloned = copied;
         case Err(error):
-            unsafe {
-                    ciel_async_send_permit_release(
-                        permit.handle as *CielAsyncSendPermit
-                    )
-            };
-            return Err(MessageClone(error));
+            switch (unsafe {
+                    resource::close_handle_in_place(&permit.lease)
+            }
+            ) {
+                case Ok:
+                    {}
+                case Err(resource::Runtime(code)):
+                    return Err(Runtime(code));
+            }
+            return Err(MessageClone(error_report(&error)));
     }
     ?*const void @value_ptr = null;
     if (meta::type_size<T>() != 0) {
@@ -730,8 +854,17 @@ export Result<void, AsyncError> permit_send<T: Message>(
             permit.handle as *CielAsyncSendPermit, value_ptr
         )
     };
+    Result<void, resource::ResourceError> close_result = unsafe {
+        resource::close_handle_in_place(&permit.lease)
+    };
     if ((rc as i64) != 0) {
         return Err(async_error_from_channel_rc(rc));
+    }
+    switch (close_result) {
+        case Ok:
+            {}
+        case Err(resource::Runtime(code)):
+            return Err(Runtime(code));
     }
     return Ok;
 }
@@ -782,13 +915,20 @@ export struct TaskGroup<T, E> {
     *void handle;
 }
 
+// Non-blocking state returned by group_try_next_task().
+export enum TaskGroupTryNext<T, E> {
+    TaskReady(Task<T, E>),
+    NoTaskReady,
+    TaskGroupClosed,
+}
+
 unsafe derive<T, E> async_frame_opt_in_marker<TaskGroup<T, E>>;
 
-struct TaskGroupNextCtx<T, E> {
+struct TaskGroupCtx<T, E> {
     *void group;
 }
 
-unsafe derive<T, E> async_frame_opt_in_marker<TaskGroupNextCtx<T, E>>;
+unsafe derive<T, E> async_frame_opt_in_marker<TaskGroupCtx<T, E>>;
 
 export resource unsafe struct TaskGroupNextFuture<T, E> {
     Future<Task<T, E>> inner;
@@ -796,13 +936,19 @@ export resource unsafe struct TaskGroupNextFuture<T, E> {
 
 unsafe derive<T, E> async_frame_opt_in_marker<TaskGroupNextFuture<T, E>>;
 
+resource unsafe struct TaskGroupJoinFuture<T, E> {
+    Future<Result<void, AsyncError>> inner;
+}
+
+unsafe derive<T, E> async_frame_opt_in_marker<TaskGroupJoinFuture<T, E>>;
+
 extern "C" c::c_int task_group_next_run<T, E>(
     *CielFuture future,
     *void ctx_raw,
     *void out_raw
 ) {
-    *TaskGroupNextCtx<T, E> ctx = unsafe {
-        ctx_raw as *TaskGroupNextCtx<T, E>
+    *TaskGroupCtx<T, E> ctx = unsafe {
+        ctx_raw as *TaskGroupCtx<T, E>
     };
     *Task<T, E> out = unsafe { out_raw as *Task<T, E> };
     ?*void @raw_task = null;
@@ -852,6 +998,58 @@ unsafe impl<T, E> abort_future(*TaskGroupNextFuture<T, E> future) {
     return Ok;
 }
 
+extern "C" c::c_int task_group_join_run<T, E>(
+    *CielFuture future,
+    *void ctx_raw,
+    *void out_raw
+) {
+    *TaskGroupCtx<T, E> ctx = unsafe {
+        ctx_raw as *TaskGroupCtx<T, E>
+    };
+    *Result<void, AsyncError> out = unsafe {
+        out_raw as *Result<void, AsyncError>
+    };
+    c::c_int rc = unsafe {
+        ciel_task_group_join_poll(
+            future,
+            ctx->group as *CielTaskGroup
+        )
+    };
+    if (async_rc_is_pending(rc)) {
+        return rc;
+    }
+    if ((rc as i64) == 0) {
+        *out = Ok;
+    } else {
+        *out = Err(async_error_from_runtime_rc(rc));
+    }
+    return 0 as c::c_int;
+}
+
+extern "C" void task_group_join_cleanup<T, E>(
+    *CielFuture future,
+    *void ctx_raw,
+    c::c_int reason
+) {
+    future;
+    ctx_raw;
+    reason;
+}
+
+unsafe impl<T, E> awaitable_future<Result<void, AsyncError>>(
+    *const TaskGroupJoinFuture<T, E> future
+) {
+    return awaitable_future<Result<void, AsyncError>>(
+        unsafe { &future->inner });
+}
+
+unsafe derive<T, E> cancel_safe_marker<TaskGroupJoinFuture<T, E>>;
+
+unsafe impl<T, E> abort_future(*TaskGroupJoinFuture<T, E> future) {
+    abort_future(unsafe { &future->inner })?;
+    return Ok;
+}
+
 // Creates an empty task group.
 export Result<TaskGroup<T, E>, AsyncError> task_group<T, E>() {
     ?*CielTaskGroup raw = unsafe { ciel_task_group_new() };
@@ -874,12 +1072,12 @@ export Result<void, AsyncError> group_add<T, E>(
     return Ok;
 }
 
-TaskGroupNextFuture<T, E> group_next_task<T, E>(
+TaskGroupNextFuture<T, E> task_group_next_future<T, E>(
     TaskGroup<T, E> group
 ) {
-    TaskGroupNextCtx<T, E> ctx = { group: group.handle };
+    TaskGroupCtx<T, E> ctx = { group: group.handle };
     Future<Task<T, E>> inner = unsafe {
-        runtime_future::new<Task<T, E>, TaskGroupNextCtx<T, E>>(
+        runtime_future::new<Task<T, E>, TaskGroupCtx<T, E>>(
             ctx,
             task_group_next_run<T, E>,
             task_group_next_cleanup<T, E>
@@ -888,14 +1086,76 @@ TaskGroupNextFuture<T, E> group_next_task<T, E>(
     return unsafe { { inner: inner } };
 }
 
+TaskGroupJoinFuture<T, E> task_group_join_future<T, E>(
+    TaskGroup<T, E> group
+) {
+    TaskGroupCtx<T, E> ctx = { group: group.handle };
+    Future<Result<void, AsyncError>> inner = unsafe {
+        runtime_future::new<Result<void, AsyncError>, TaskGroupCtx<T, E>>(
+            ctx,
+            task_group_join_run<T, E>,
+            task_group_join_cleanup<T, E>
+        )
+    };
+    return unsafe { { inner: inner } };
+}
+
+// Returns a cancel-safe future for the next completed task handle.
+// This is the selectable form of group_next; awaiting the yielded task
+// recovers its Result<T, E>.
+export TaskGroupNextFuture<T, E> group_next_task<T, E>(
+    *const TaskGroup<T, E> group
+) = .next_task {
+    return task_group_next_future<T, E>(unsafe { *group });
+}
+
+// Synchronously removes one already-completed task without waiting.
+export Result<TaskGroupTryNext<T, E>, AsyncError> group_try_next_task<T, E>(
+    *const TaskGroup<T, E> group
+) {
+    ?*void @raw_task = null;
+    c::c_int rc = unsafe {
+        ciel_task_group_try_next_task(
+            group->handle as *CielTaskGroup,
+            &raw_task
+        )
+    };
+    if ((rc as i64) == 0) {
+        if (raw_task == null) {
+            return Err(Runtime(5));
+        }
+        Task<T, E> task = {
+            handle: pointer::unwrap(raw_task) as *void
+        };
+        return Ok(TaskReady(task));
+    }
+    if ((rc as i64) == (unsafe { ciel_async_again_errno() } as i64)) {
+        return Ok(NoTaskReady);
+    }
+    if ((rc as i64) == (unsafe { ciel_async_channel_closed_errno() } as i64)) {
+        return Ok(TaskGroupClosed);
+    }
+    return Err(async_error_from_runtime_rc(rc));
+}
+
 // Awaits and returns the next completed task result in completion order.
 export async Result<T, E> group_next<T: Message, E: Message>(
     *const TaskGroup<T, E> group
 ) = .next {
-    TaskGroupNextFuture<T, E> next_task = group_next_task<T, E>(
+    TaskGroupNextFuture<T, E> next_task = task_group_next_future<T, E>(
         unsafe { *group });
     Task<T, E> task = await next_task;
     return await task;
+}
+
+// Waits until every task currently owned by the group has finished.
+// Close the group first when no later registration may race with the join.
+export async Result<void, AsyncError> group_join<T, E>(
+    *const TaskGroup<T, E> group
+) = .join {
+    TaskGroupJoinFuture<T, E> future = task_group_join_future<T, E>(
+        unsafe { *group });
+    return await future;
 }
 
 // Cancels all unfinished tasks in the group.

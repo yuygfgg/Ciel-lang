@@ -5,21 +5,21 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> read_later(
+async Result<usize, Report> read_later(
     *const usize ptr
 ) {
     return Ok(unsafe { *ptr });
 }
 
-async Result<usize, Error> outer(
-    async::Future<Result<usize, Error>> inner
+async Result<usize, Report> outer(
+    async::Future<Result<usize, Report>> inner
 ) {
     return await inner;
 }
 
-async::Task<usize, Error> spawn_dangling() {
+async::Task<usize, Report> spawn_dangling() {
     usize local = 12345;
-    async::Future<Result<usize, Error>> future = read_later(&local);
+    async::Future<Result<usize, Report>> future = read_later(&local);
     return must(async::spawn<usize>(outer(future)));
 }
 

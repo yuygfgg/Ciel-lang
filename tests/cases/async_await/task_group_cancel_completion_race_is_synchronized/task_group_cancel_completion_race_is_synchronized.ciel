@@ -1,0 +1,68 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> wait_for_release(
+    async::Receiver<usize> release
+) {
+    switch (await async::recv<usize>(release)) {
+        case Ok(_):
+            return Ok;
+        case Err(_):
+            return Ok;
+    }
+}
+
+async Result<void, Report> release_workers(
+    async::Sender<usize> release,
+    usize count
+) {
+    await async_time::sleep_ms(0)?;
+    usize @index = 0;
+    while (index < count) {
+        async::try_send<usize>(release, index)?;
+        index = index + 1;
+    }
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    usize rounds = 8;
+    usize task_count = 64;
+    usize @round = 0;
+    while (round < rounds) {
+        async::ChannelPair<usize> release = async::channel<usize>(task_count)?;
+        async::TaskGroup<void, Report> group = async::task_group<void, Report>()?;
+
+        usize @index = 0;
+        while (index < task_count) {
+            async::Task<void, Report> task = async::spawn<void>(
+                wait_for_release(release.receiver)
+            )?;
+            async::group_add<void, Report>(&group, task)?;
+            index = index + 1;
+        }
+
+        async::Task<void, Report> releaser = async::spawn<void>(
+            release_workers(release.sender, task_count)
+        )?;
+        async::group_cancel_all<void, Report>(&group)?;
+        await releaser?;
+        await async::group_join<void, Report>(&group)?;
+        async::group_close<void, Report>(&group)?;
+        async::close<usize>(release.sender)?;
+        async::close_receiver<usize>(release.receiver)?;
+        round = round + 1;
+    }
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

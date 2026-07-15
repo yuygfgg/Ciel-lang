@@ -8,16 +8,16 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> slow() {
+async Result<usize, Report> slow() {
     await async_time::sleep_ms(100)?;
     return Ok(1);
 }
 
 i32 main() {
-    async::TaskGroup<usize, Error> group = must(
-        async::task_group<usize, Error>()
+    async::TaskGroup<usize, Report> group = must(
+        async::task_group<usize, Report>()
     );
-    async::Task<usize, Error> task = must(async::spawn<usize>(slow()));
+    async::Task<usize, Report> task = must(async::spawn<usize>(slow()));
     must(async::group_add<usize>(&group, task));
     must(async::group_cancel_all<usize>(&group));
     must(async::group_close<usize>(&group));

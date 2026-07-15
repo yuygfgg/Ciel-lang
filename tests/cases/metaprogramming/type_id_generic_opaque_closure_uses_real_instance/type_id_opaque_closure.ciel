@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/meta as meta;
+
+interface<C> meta::TypeId closure_type_id(
+    *const C value
+);
+
+impl<C: meta::ClosureValue> closure_type_id(*const C value) {
+    return meta::type_id<C>();
+}
+
+meta::TypeId type_id_of<T>(T value) {
+    return meta::type_id<T>();
+}
+
+_: closure_type_id make_closure<T>(
+    T value, *meta::TypeId out
+) {
+    _ closure = || value;
+    *out = type_id_of(closure);
+    return closure;
+}
+
+meta::TypeId nested_owner_check<T>(
+    T value, *meta::TypeId out
+) {
+    _ closure = make_closure<T>(value, out);
+    return closure_type_id(&closure);
+}
+
+i64 main() {
+    meta::TypeId @inside = meta::type_id<i64>();
+    meta::TypeId outside = nested_owner_check<i64>(41, &inside);
+    if (!meta::type_id_eq(inside, outside)) {
+        return 1;
+    }
+    return 0;
+}

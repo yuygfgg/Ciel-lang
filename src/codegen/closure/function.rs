@@ -68,7 +68,11 @@ impl<'a> CGenerator<'a> {
         &self,
         closure: &ClosureDef,
     ) -> AsyncFunctionNames {
-        let base = format!("{}_closure_{}", self.c_name(closure.owner), closure.id);
+        let base = format!(
+            "{}_closure_{}",
+            self.c_name(closure.function_def),
+            closure.id.origin.0
+        );
         AsyncFunctionNames {
             context: format!("CielAsyncClosureCtx_{base}"),
             run: format!("CielAsyncClosureRun_{base}"),

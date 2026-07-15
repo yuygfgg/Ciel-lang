@@ -479,7 +479,10 @@ impl TypeChecker {
             {
                 named_ty(*def_id, name.clone(), args.clone())
             }
-            Some(other) if self.is_std_error_ty(other) && sig.enum_generics.is_empty() => {
+            Some(other)
+                if (self.is_std_error_ty(other) || self.is_std_report_ty(other))
+                    && sig.enum_generics.is_empty() =>
+            {
                 named_ty(Some(sig.enum_def_id), sig.enum_name.clone(), Vec::new())
             }
             Some(other) => {

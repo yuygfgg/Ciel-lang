@@ -1,0 +1,37 @@
+// ciel-test: error
+// expect-error: cannot erase resource-affine type `ResourceError` into `Error`
+// expect-error: cannot erase resource-affine type `ResourceError` into `Report`
+// expect-error: erasing this value would hide ownership and cleanup requirements
+
+import /std/error;
+import /std/io as io;
+
+resource struct ResourceError {
+    io::File file;
+}
+
+impl format_error(*const ResourceError error) {
+    return "resource error";
+}
+
+Error erase_local(*ResourceError error) {
+    return error;
+}
+
+Report erase_transferable(*ResourceError error) {
+    return error;
+}
+
+Error erase_local_explicit(*ResourceError error) {
+    return error_box(error);
+}
+
+Report erase_transferable_explicit(
+    *ResourceError error
+) {
+    return report_box(error);
+}
+
+i64 main() {
+    return 0;
+}

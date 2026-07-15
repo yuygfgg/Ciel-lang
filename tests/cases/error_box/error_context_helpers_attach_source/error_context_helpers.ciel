@@ -2,7 +2,7 @@
 // expect-exit: 0
 
 import /std/result;
-import /std/pointer as pointer;
+import /std/option as option;
 
 enum LoadError {
     Missing,
@@ -51,11 +51,12 @@ bool context_matches(Error error, []const char context) {
     if (same_text(error_message(&error), context) == false) {
         return false;
     }
-    ?*const Error source = error.source;
-    if (source == null) {
-        return false;
+    switch (error_source(&error)) {
+        case option::Some(source):
+            return same_text(error_message(source), "missing");
+        case option::None:
+            return false;
     }
-    return same_text(error_message(pointer::unwrap(source)), "missing");
 }
 
 i64 main() {

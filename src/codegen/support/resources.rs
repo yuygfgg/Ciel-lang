@@ -263,11 +263,16 @@ impl<'a> CGenerator<'a> {
                     .find(|strukt| strukt.name == instance_name)
                     .cloned()
                 {
+                    let mut emitted_cleanup = false;
                     for (field_name, field_ty) in strukt.fields.iter().rev() {
                         if self.type_is_affine(field_ty) {
+                            emitted_cleanup = true;
                             let helper = self.resource_cleanup_name(field_ty);
                             self.line_indent(indent, &format!("{helper}(&{value}->{field_name});"));
                         }
+                    }
+                    if !emitted_cleanup {
+                        self.line_indent(indent, &format!("(void){value};"));
                     }
                 } else if let Some(enm) = self
                     .program

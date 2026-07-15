@@ -9,7 +9,7 @@ import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> tag_stream(
+Result<usize, Report> tag_stream(
     Result<anet::AsyncTcpStream, anet::AsyncNetError> result, usize value
 ) {
     anet::AsyncTcpStream stream = result?;
@@ -17,25 +17,25 @@ Result<usize, Error> tag_stream(
     return Ok(value);
 }
 
-Result<usize, Error> tag_sleep(
+Result<usize, Report> tag_sleep(
     Result<void, async::AsyncError> result, usize value
 ) {
     result?;
     return Ok(value);
 }
 
-async Result<usize, Error> ready_task() {
+async Result<usize, Report> ready_task() {
     return Ok(4);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     anet::AsyncTcpListener listener = anet::listen_async(
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
-    async::Task<usize, Error> task = async::spawn<usize>(ready_task())?;
+    async::Task<usize, Report> task = async::spawn<usize>(ready_task())?;
 
-    Result<usize, Error> picked = await select {
+    Result<usize, Report> picked = await select {
         case connected = anet::connect(bound):
             tag_stream(connected, 1);
         case accepted = anet::accept(&listener):

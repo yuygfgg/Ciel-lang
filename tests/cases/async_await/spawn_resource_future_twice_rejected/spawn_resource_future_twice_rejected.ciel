@@ -5,17 +5,17 @@ import /std/async as async;
 import /std/io as io;
 import /std/result;
 
-async Result<usize, Error> close_file(
+async Result<usize, Report> close_file(
     io::File @file
 ) {
     io::close(file)?;
     return Ok(1);
 }
 
-Result<void, Error> bad([]const char path) {
+Result<void, Report> bad([]const char path) {
     io::File file = io::open_read(path)?;
     _ future = close_file(file);
-    async::Task<usize, Error> task = async::spawn<usize>(future)?;
+    async::Task<usize, Report> task = async::spawn<usize>(future)?;
     usize value = async::block_on(future)?;
     if (value == 0) {
         return Err(text_error("unreachable"));

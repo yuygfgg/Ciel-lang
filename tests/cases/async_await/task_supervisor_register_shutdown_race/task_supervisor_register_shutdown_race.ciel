@@ -1,0 +1,93 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> slow_child() {
+    await async_time::sleep_ms(10000)?;
+    return Ok;
+}
+
+async Result<void, Report> register_after_release(
+    async::TaskRegistrar<void, Report> registrar,
+    async::Sender<async::Task<void, Report>> children,
+    async::Sender<usize> ready,
+    async::Receiver<usize> release
+) {
+    async::Task<void, Report> child = async::spawn<void>(slow_child())?;
+    await async::send<async::Task<void, Report>>(children, child)?;
+    await async::send<usize>(ready, 1)?;
+    _ released = await async::recv<usize>(release)?;
+    switch (async::supervisor_register<void, Report>(registrar, child)) {
+        case Ok:
+            return Ok;
+        case Err(_):
+            return Ok;
+    }
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    usize count = 64;
+    async::TaskSupervisor<void, Report> supervisor =
+        async::task_supervisor<void, Report>()?;
+    async::TaskRegistrar<void, Report> registrar =
+        async::supervisor_registrar<void, Report>(&supervisor);
+    async::TaskGroup<void, Report> registration_tasks =
+        async::task_group<void, Report>()?;
+    async::ChannelPair<async::Task<void, Report>> children =
+        async::channel<async::Task<void, Report>>(count)?;
+    async::ChannelPair<usize> ready = async::channel<usize>(count)?;
+    async::ChannelPair<usize> release = async::channel<usize>(count)?;
+
+    usize @index = 0;
+    while (index < count) {
+        async::Task<void, Report> registration = async::spawn<void>(
+            register_after_release(
+                registrar, children.sender, ready.sender, release.receiver
+            )
+        )?;
+        async::group_add<void, Report>(&registration_tasks, registration)?;
+        index = index + 1;
+    }
+    index = 0;
+    while (index < count) {
+        _ started = await async::recv<usize>(ready.receiver)?;
+        index = index + 1;
+    }
+    index = 0;
+    while (index < count) {
+        async::try_send<usize>(release.sender, 1)?;
+        index = index + 1;
+    }
+    async::supervisor_shutdown<void, Report>(supervisor)?;
+
+    index = 0;
+    while (index < count) {
+        await async::group_next<void, Report>(&registration_tasks)?;
+        index = index + 1;
+    }
+    async::group_close<void, Report>(&registration_tasks)?;
+    index = 0;
+    while (index < count) {
+        async::Task<void, Report> child =
+            await async::recv<async::Task<void, Report>>(children.receiver)?;
+        switch (await child) {
+            case Ok:
+                return Err(code_error(10));
+            case Err(_):
+                {}
+        }
+        index = index + 1;
+    }
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

@@ -6,28 +6,30 @@ import /std/async as async;
 import /std/result;
 
 enum FutureChoice {
-    One(async::Future<Result<usize, Error>>),
+    One(async::Future<Result<usize, Report>>),
     Empty,
 }
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async::Task<usize, Error> spawn_enum_payload_future() {
+async::Task<usize, Report> spawn_enum_payload_future() {
     [3]i64 values = [1, 2, 3];
     FutureChoice choice = One(len_later(values[..]));
     switch (choice) {
         case One(future):
             return must(async::spawn<usize>(future));
         case Empty:
-            return must(async::spawn<usize, Error>(async || {
-                    return Ok(0);
-                }));
+            return must(
+                async::spawn<usize, Report>(async || {
+                        return Ok(0);
+                    })
+            );
     }
-    return must(async::spawn<usize, Error>(async || {
+    return must(async::spawn<usize, Report>(async || {
         return Ok(1);
     }));
 }

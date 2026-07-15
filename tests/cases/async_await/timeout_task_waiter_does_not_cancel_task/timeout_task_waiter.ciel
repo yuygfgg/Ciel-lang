@@ -8,14 +8,14 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> slow_value() {
+async Result<usize, Report> slow_value() {
     await async_time::sleep_ms(30)?;
     return Ok(42);
 }
 
 i32 main() {
-    async::Task<usize, Error> task = must(async::spawn<usize>(slow_value()));
-    Result<Result<usize, Error>, async::AsyncError> early = async::block_on(
+    async::Task<usize, Report> task = must(async::spawn<usize>(slow_value()));
+    Result<Result<usize, Report>, async::AsyncError> early = async::block_on(
         async::timeout(task, 1)
     );
     switch (early) {

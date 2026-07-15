@@ -15,7 +15,7 @@ enum Event {
     Value(usize),
 }
 
-async Result<void, Error> dispatch_after_yield(
+async Result<void, Report> dispatch_after_yield(
     shared_map::SharedMap<u32, async::Sender<meta::Repr<Event>>> registry,
     u32 key,
     usize value
@@ -34,7 +34,7 @@ async Result<void, Error> dispatch_after_yield(
     return Ok;
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     shared_map::SharedMap<u32, async::Sender<meta::Repr<Event>>> registry =
         shared_map::shared_map_new<u32, async::Sender<meta::Repr<Event>>>()?;
     async::ChannelPair<meta::Repr<Event>> pair =

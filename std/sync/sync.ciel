@@ -34,7 +34,7 @@ export struct Update<T, R> {
 // Errors produced by synchronized handle operations.
 export enum SyncError {
     Runtime(i64),
-    MessageClone(Error),
+    MessageClone(Report),
 }
 
 derive Message<SyncError>;
@@ -96,7 +96,7 @@ export Result<Mutex<T>, SyncError> make_mutex<T: Message>(
         case Ok(value):
             cloned = value;
         case Err(error):
-            return Err(MessageClone(error));
+            return Err(MessageClone(error_report(&error)));
     }
     ?*CielMutex raw = unsafe {
         ciel_mutex_make(
@@ -128,7 +128,7 @@ export Result<R, SyncWithError<E>> mutex_update<T: Message, F: update_value<T, R
         case Ok(value):
             current = value;
         case Err(error):
-            return Err(Sync(MessageClone(error)));
+            return Err(Sync(MessageClone(error_report(&error))));
     }
     Update<T, R> @next;
     switch (update_value<T, R, E>(updater, current)) {
@@ -143,7 +143,7 @@ export Result<R, SyncWithError<E>> mutex_update<T: Message, F: update_value<T, R
         case Ok(value):
             replacement = value;
         case Err(error):
-            return Err(Sync(MessageClone(error)));
+            return Err(Sync(MessageClone(error_report(&error))));
     }
     *slot = replacement;
     return Ok(next.result);

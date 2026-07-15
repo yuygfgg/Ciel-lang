@@ -518,6 +518,19 @@ impl<'a> CGenerator<'a> {
                 let value = self.gen_expr_in_stmt(inner, indent)?;
                 self.emit_error_boxed_value(&value, concrete_ty, indent, expr.span)?
             }
+            TExprKind::ReportBox {
+                expr: inner,
+                concrete_ty,
+            } => {
+                let Some(indent) = stmt_indent else {
+                    return Err(vec![Diagnostic::new(
+                        expr.span,
+                        "report conversion needs statement lowering",
+                    )]);
+                };
+                let value = self.gen_expr_in_stmt(inner, indent)?;
+                self.emit_report_boxed_value(&value, concrete_ty, indent, expr.span)?
+            }
             TExprKind::DynamicInterfaceCall {
                 interface_def,
                 interface_name,
@@ -843,6 +856,7 @@ impl<'a> CGenerator<'a> {
                     "false".to_string()
                 }
             }
+            TExprKind::TypeId { ty } => self.type_id_literal(ty),
         };
         Ok(code)
     }

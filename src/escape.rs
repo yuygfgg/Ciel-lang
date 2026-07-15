@@ -315,7 +315,7 @@ impl<'a> FunctionAnalyzer<'a> {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
             }
-            TExprKind::ErrorBox { expr, .. } => {
+            TExprKind::ErrorBox { expr, .. } | TExprKind::ReportBox { expr, .. } => {
                 self.scan_expr(expr);
                 self.escape_sources(expr);
             }
@@ -371,7 +371,8 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::TypeSize { .. }
             | TExprKind::TypeAlign { .. }
-            | TExprKind::TypeNeedsGcScan { .. } => {}
+            | TExprKind::TypeNeedsGcScan { .. }
+            | TExprKind::TypeId { .. } => {}
             TExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
                     self.scan_expr(value);
@@ -589,11 +590,13 @@ impl<'a> FunctionAnalyzer<'a> {
             }
             TExprKind::TypeSize { .. }
             | TExprKind::TypeAlign { .. }
-            | TExprKind::TypeNeedsGcScan { .. } => {}
+            | TExprKind::TypeNeedsGcScan { .. }
+            | TExprKind::TypeId { .. } => {}
             TExprKind::Call { .. }
             | TExprKind::UnsafeBlock { value: None, .. }
             | TExprKind::MakeDynamicInterface { .. }
             | TExprKind::ErrorBox { .. }
+            | TExprKind::ReportBox { .. }
             | TExprKind::DynamicInterfaceCall { .. }
             | TExprKind::RetainedClosureInterfaceCall { .. }
             | TExprKind::CloneMessage { .. }

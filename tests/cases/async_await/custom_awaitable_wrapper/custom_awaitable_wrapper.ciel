@@ -23,21 +23,21 @@ unsafe impl<T> abort_future(*Wrapped<T> awaitable) {
 
 unsafe derive<T> spawnable_future_marker<Wrapped<T>>;
 
-async Result<usize, Error> compute(usize value) {
+async Result<usize, Report> compute(usize value) {
     await async_time::sleep_ms(0)?;
     return Ok(value + 3);
 }
 
-async Result<usize, Error> await_wrapped(
+async Result<usize, Report> await_wrapped(
     usize value
 ) {
-    Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(value) } };
+    Wrapped<Result<usize, Report>> wrapped = unsafe { { inner: compute(value) } };
     return await wrapped;
 }
 
 i32 main() {
-    Wrapped<Result<usize, Error>> wrapped = unsafe { { inner: compute(5) } };
-    Task<usize, Error> task = must(spawn<usize>(wrapped));
+    Wrapped<Result<usize, Report>> wrapped = unsafe { { inner: compute(5) } };
+    Task<usize, Report> task = must(spawn<usize>(wrapped));
     usize from_spawn = must(block_on(task));
     usize from_await = must(block_on(await_wrapped(8)));
     must(print_value(from_spawn + from_await));

@@ -15,7 +15,7 @@ enum Event<T> {
 }
 
 struct State<T> {
-    Channel<Result<Event<T>, Error>> out;
+    Channel<Result<Event<T>, Report>> out;
     T total;
 }
 
@@ -32,8 +32,8 @@ unsafe impl<T: Message> clone_message(*const State<T> value) {
 }
 
 i64 main() {
-    Channel<Result<Event<i64>, Error>> out = must(
-        make_channel<Result<Event<i64>, Error>>()
+    Channel<Result<Event<i64>, Report>> out = must(
+        make_channel<Result<Event<i64>, Report>>()
     );
     State<i64> initial = { out: out, total: 0 };
 
@@ -48,10 +48,10 @@ i64 main() {
                         return Ok(next);
                     case Flush(marker):
                         marker;
-                        Result<Event<i64>, Error> total_event = Ok(
+                        Result<Event<i64>, Report> total_event = Ok(
                             Total(next.total)
                         );
-                        Result<Event<i64>, Error> closed_event = Ok(Closed);
+                        Result<Event<i64>, Report> closed_event = Ok(Closed);
                         channel_send(&next.out, total_event)?;
                         channel_send(&next.out, closed_event)?;
                         return Ok(next);
@@ -64,8 +64,8 @@ i64 main() {
     must(send(&actor, Add(6)));
     must(send(&actor, Flush));
 
-    Result<Event<i64>, Error> first = must(channel_recv(&out));
-    Result<Event<i64>, Error> second = must(channel_recv(&out));
+    Result<Event<i64>, Report> first = must(channel_recv(&out));
+    Result<Event<i64>, Report> second = must(channel_recv(&out));
     must(join(&actor));
     must(channel_close(&out));
 

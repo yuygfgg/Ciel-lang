@@ -1,0 +1,121 @@
+// ciel-test: run
+// expect-exit: 0
+// expect-stdout: 7
+
+import /std/async as async;
+import /std/async_time as async_time;
+import /std/error;
+import /std/io;
+import /std/panic;
+import /std/result;
+
+async Result<usize, Report> pending_send(
+    async::Sender<usize> sender,
+    async::Sender<usize> ready
+) {
+    await async::send<usize>(ready, 1)?;
+    switch (await async::send<usize>(sender, 2)) {
+        case Err(_):
+            return Ok(1);
+        case Ok:
+            return Err(code_error(11));
+    }
+}
+
+async Result<usize, Report> pending_reserve(
+    async::Sender<usize> sender,
+    async::Sender<usize> ready
+) {
+    await async::send<usize>(ready, 1)?;
+    switch (await async::reserve<usize>(sender)) {
+        case Err(_):
+            return Ok(2);
+        case Ok(permit):
+            switch (async::permit_send<usize>(permit, 3)) {
+                case Ok:
+                    {}
+                case Err(_):
+                    {}
+            }
+            return Err(code_error(12));
+    }
+}
+
+async Result<usize, Report> pending_recv(
+    async::Receiver<usize> receiver,
+    async::Sender<usize> ready
+) {
+    await async::send<usize>(ready, 1)?;
+    switch (await async::recv<usize>(receiver)) {
+        case Err(_):
+            return Ok(4);
+        case Ok(_):
+            return Err(code_error(13));
+    }
+}
+
+async Result<usize, Report> task_value(
+    async::Task<usize, Report> task,
+    i64 timeout_code
+) {
+    switch (await async::timeout(task, 1000)) {
+        case Err(_):
+            return Err(code_error(timeout_code));
+        case Ok(result):
+            switch (result) {
+                case Ok(value):
+                    return Ok(value);
+                case Err(error):
+                    return Err(error);
+            }
+    }
+}
+
+async Result<usize, Report> drive() {
+    usize @total = 0;
+
+    async::ChannelPair<usize> send_pair = async::channel<usize>(1)?;
+    async::ChannelPair<usize> send_ready = async::channel<usize>(1)?;
+    async::try_send<usize>(send_pair.sender, 10)?;
+    async::Sender<usize> send_alias = send_pair.sender;
+    async::Task<usize, Report> send_task = async::spawn<usize>(
+        pending_send(send_alias, send_ready.sender)
+    )?;
+    _ send_started = await async::recv<usize>(send_ready.receiver)?;
+    await async_time::sleep_ms(20)?;
+    async::close<usize>(send_pair.sender)?;
+    total = total + await task_value(send_task, 21)?;
+    async::close_receiver<usize>(send_pair.receiver)?;
+
+    async::ChannelPair<usize> reserve_pair = async::channel<usize>(1)?;
+    async::ChannelPair<usize> reserve_ready = async::channel<usize>(1)?;
+    async::try_send<usize>(reserve_pair.sender, 20)?;
+    async::Sender<usize> reserve_alias = reserve_pair.sender;
+    async::Task<usize, Report> reserve_task = async::spawn<usize>(
+        pending_reserve(reserve_alias, reserve_ready.sender)
+    )?;
+    _ reserve_started = await async::recv<usize>(reserve_ready.receiver)?;
+    await async_time::sleep_ms(20)?;
+    async::close<usize>(reserve_pair.sender)?;
+    total = total + await task_value(reserve_task, 22)?;
+    async::close_receiver<usize>(reserve_pair.receiver)?;
+
+    async::ChannelPair<usize> recv_pair = async::channel<usize>(1)?;
+    async::ChannelPair<usize> recv_ready = async::channel<usize>(1)?;
+    async::Receiver<usize> recv_alias = recv_pair.receiver;
+    async::Task<usize, Report> recv_task = async::spawn<usize>(
+        pending_recv(recv_alias, recv_ready.sender)
+    )?;
+    _ recv_started = await async::recv<usize>(recv_ready.receiver)?;
+    await async_time::sleep_ms(20)?;
+    async::close_receiver<usize>(recv_pair.receiver)?;
+    total = total + await task_value(recv_task, 23)?;
+    async::close<usize>(recv_pair.sender)?;
+
+    return Ok(total);
+}
+
+i32 main() {
+    must(print_value(must(async::block_on(drive()))));
+    return 0;
+}

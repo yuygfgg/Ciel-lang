@@ -49,7 +49,7 @@ impl<'a> CGenerator<'a> {
         let heap_locals = self
             .escapes
             .functions
-            .get(&closure.owner)
+            .get(&closure.function_def)
             .map(|escape| escape.heap_locals.clone())
             .unwrap_or_default();
         self.async_facts_for_closure(closure)

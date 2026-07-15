@@ -25,11 +25,21 @@ impl<'a> CGenerator<'a> {
         self.line("");
         self.emit_source_location_table();
         self.emit_meta_type_tag_type();
+        self.emit_type_id_tokens();
     }
 
     fn emit_meta_type_tag_type(&mut self) {
         self.line("typedef struct { char _ciel_empty; } CielMetaTypeTag;");
         self.line("");
+    }
+
+    fn emit_type_id_tokens(&mut self) {
+        for index in 0..self.plan.type_ids.len() {
+            self.line(&format!("static unsigned char ciel_type_id_{index};"));
+        }
+        if !self.plan.type_ids.is_empty() {
+            self.line("");
+        }
     }
 
     fn emit_string_literal_table(&mut self) {
@@ -72,7 +82,7 @@ impl<'a> CGenerator<'a> {
         }
         for closure in self.plan.closure_defs.values().cloned().collect::<Vec<_>>() {
             if !closure.captures.is_empty() {
-                let env_name = self.closure_env_name(closure.owner, closure.id);
+                let env_name = self.closure_env_name(closure.id);
                 self.line(&format!("typedef struct {env_name} {env_name};"));
             }
         }

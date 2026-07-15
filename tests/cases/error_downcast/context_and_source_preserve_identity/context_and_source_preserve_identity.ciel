@@ -1,0 +1,30 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+import /std/option as option;
+
+enum LoadError {
+    Missing,
+}
+
+impl format_error(*const LoadError error) {
+    return "missing";
+}
+
+i64 main() {
+    Error base = LoadError::Missing;
+    Error contextual = error_with_context(base, "load config");
+    if (!error_is<LoadError>(&contextual)) {
+        return 1;
+    }
+    switch (error_source(&contextual)) {
+        case option::Some(source):
+            if (!error_is<LoadError>(source)) {
+                return 2;
+            }
+        case option::None:
+            return 3;
+    }
+    return 0;
+}

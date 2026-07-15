@@ -156,12 +156,12 @@ impl<'a> CGenerator<'a> {
         )
     }
 
-    pub(in crate::codegen) fn closure_env_name(&self, owner: DefId, id: usize) -> String {
-        format!("CielClosureEnv_{}_{}", owner.0, id)
+    pub(in crate::codegen) fn closure_env_name(&self, id: ClosureInstanceId) -> String {
+        format!("CielClosureEnv_{id}")
     }
 
-    pub(in crate::codegen) fn closure_thunk_name(&self, owner: DefId, id: usize) -> String {
-        format!("ciel_closure_thunk_{}_{}", owner.0, id)
+    pub(in crate::codegen) fn closure_thunk_name(&self, id: ClosureInstanceId) -> String {
+        format!("ciel_closure_thunk_{id}")
     }
 
     pub(in crate::codegen) fn function_closure_wrapper_key(
@@ -321,6 +321,27 @@ impl<'a> CGenerator<'a> {
         )
     }
 
+    pub(in crate::codegen) fn type_id_token_name(&self, ty: &Ty) -> String {
+        let ty = canonical_type_identity_ty(ty);
+        let index = self
+            .plan
+            .type_ids
+            .iter()
+            .position(|candidate| candidate == &ty)
+            .expect("type identity token was not collected");
+        format!("ciel_type_id_{index}")
+    }
+
+    pub(in crate::codegen) fn type_id_literal(&self, ty: &Ty) -> String {
+        let ty = canonical_type_identity_ty(ty);
+        let type_id_ty = std_meta_type_id_ty(&self.program.checked.resolved);
+        format!(
+            "({}){{ .token = (const void *)&{} }}",
+            self.c_type(&type_id_ty),
+            self.type_id_token_name(&ty)
+        )
+    }
+
     pub(in crate::codegen) fn dynamic_shim_name(
         &self,
         dyn_ty: &Ty,
@@ -341,6 +362,17 @@ impl<'a> CGenerator<'a> {
         interface: &CheckedInterfaceRef,
     ) -> String {
         format!("{}_def{}", interface.name, interface.def_id.0)
+    }
+
+    pub(in crate::codegen) fn is_compiler_erased_error_ref_interface(
+        &self,
+        interface: &CheckedInterfaceRef,
+    ) -> bool {
+        std_id::is_std_error_interface(
+            &self.program.checked.resolved,
+            interface.def_id,
+            STD_ERROR_ERASED_REF_INTERFACE,
+        )
     }
 
     pub(in crate::codegen) fn dynamic_use_interfaces(
@@ -415,5 +447,22 @@ impl<'a> CGenerator<'a> {
             .functions
             .iter()
             .find(|function| function.name == "main" && function.body.is_some())
+    }
+
+    pub(in crate::codegen) fn std_error_function_name(&self, expected: &str) -> Option<String> {
+        self.program
+            .checked
+            .functions
+            .iter()
+            .find(|function| {
+                let module = self.program.checked.resolved.def(function.def_id).module;
+                std_id::is_std_error_function(
+                    &self.program.checked.resolved,
+                    module,
+                    &function.name,
+                    expected,
+                )
+            })
+            .map(|function| self.c_name(function.def_id))
     }
 }

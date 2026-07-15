@@ -1,0 +1,75 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+enum RootError {
+    Failed,
+}
+
+impl format_error(*const RootError error) {
+    return "root";
+}
+
+bool text_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @index = 0;
+    while (index < left.len) {
+        if (left[index] != right[index]) {
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    usize depth = 100000;
+    RootError root = RootError::Failed;
+    Error @error = error_box(root);
+    usize @index = 0;
+    while (index < depth) {
+        if (index == 0) {
+            error = error_with_context(error, "inner");
+        } else if ((index + 1) == depth) {
+            error = error_with_context(error, "outer");
+        } else {
+            error = error_with_context(error, "middle");
+        }
+        index = index + 1;
+    }
+
+    Report report = error_report(&error);
+    *const Report @node = &report;
+    index = 0;
+    while (true) {
+        []const char message = report_message(node);
+        if (index == 0) {
+            if (!text_eq(message, "outer")) {
+                return 1;
+            }
+        } else if (index == (depth - 1)) {
+            if (!text_eq(message, "inner")) {
+                return 2;
+            }
+        } else if (index == depth) {
+            if (!text_eq(message, "root")) {
+                return 3;
+            }
+        } else if (!text_eq(message, "middle")) {
+            return 4;
+        }
+
+        ?*const Report source = unsafe { node->source };
+        if (source == null) {
+            if (index != depth) {
+                return 5;
+            }
+            return 0;
+        }
+        node = unsafe { source as *const Report };
+        index = index + 1;
+    }
+}

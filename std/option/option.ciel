@@ -1,35 +1,5 @@
+export import /std/option/core;
 import /std/message;
-
-// Standard optional value.
-export enum Option<T> {
-    None,
-    Some(T),
-}
-
-// Returns whether the option contains a value.
-export bool option_is_some<T>(Option<T> value) = .is_some {
-    switch (value) {
-        case Some(_):
-            return true;
-        case None:
-            return false;
-    }
-}
-
-// Returns whether the option is empty.
-export bool option_is_none<T>(Option<T> value) = .is_none {
-    return !option_is_some<T>(value);
-}
-
-// Returns the contained value or fallback.
-export T option_unwrap_or<T>(Option<T> value, T fallback) = .unwrap_or {
-    switch (value) {
-        case Some(inner):
-            return inner;
-        case None:
-            return fallback;
-    }
-}
 
 unsafe impl<T: Message> clone_message(*const Option<T> value) {
     switch (*value) {

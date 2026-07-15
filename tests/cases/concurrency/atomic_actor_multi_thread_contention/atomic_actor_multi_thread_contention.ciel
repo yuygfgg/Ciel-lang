@@ -6,8 +6,8 @@ import /std/lib;
 
 struct Burst {
     Atomic<i64> counter;
-    Atomic<i64> ready;
-    Atomic<bool> start;
+    Channel<i64> ready;
+    Channel<i64> start;
     i64 repeats;
 }
 
@@ -17,12 +17,12 @@ unsafe impl clone_message(*const Burst value) {
 
 Result<i64, Error> worker(i64 state, Burst burst) {
     Atomic<i64> counter = burst.counter;
-    Atomic<i64> ready = burst.ready;
-    Atomic<bool> start = burst.start;
+    Channel<i64> ready = burst.ready;
+    Channel<i64> start = burst.start;
     i64 repeats = burst.repeats;
 
-    atomic_fetch_add(&ready, 1, SeqCst)?;
-    while (atomic_load(&start, Acquire)? == false) {}
+    channel_send(&ready, 1)?;
+    _ released = channel_recv(&start)?;
 
     i64 @i = 0;
     while (i < repeats) {
@@ -34,8 +34,8 @@ Result<i64, Error> worker(i64 state, Burst burst) {
 
 i64 main() {
     Atomic<i64> counter = must(make_atomic<i64>(0));
-    Atomic<i64> ready = must(make_atomic<i64>(0));
-    Atomic<bool> start = must(make_atomic<bool>(false));
+    Channel<i64> ready = must(make_channel<i64>());
+    Channel<i64> start = must(make_channel<i64>());
 
     Actor<Burst> a0 = must(spawn_actor_cloned<i64, Burst>(0, worker));
     Actor<Burst> a1 = must(spawn_actor_cloned<i64, Burst>(0, worker));
@@ -54,13 +54,23 @@ i64 main() {
     must(send(&a2, burst));
     must(send(&a3, burst));
 
-    while (must(atomic_load(&ready, SeqCst)) < 4) {}
-    must(atomic_store(&start, true, Release));
+    i64 @worker_index = 0;
+    while (worker_index < 4) {
+        _ ready_signal = must(channel_recv(&ready));
+        worker_index = worker_index + 1;
+    }
+    worker_index = 0;
+    while (worker_index < 4) {
+        must(channel_send(&start, 1));
+        worker_index = worker_index + 1;
+    }
 
     must(join(&a0));
     must(join(&a1));
     must(join(&a2));
     must(join(&a3));
+    must(channel_close(&ready));
+    must(channel_close(&start));
 
     i64 total = must(atomic_load(&counter, SeqCst));
     if (total != 4000) {

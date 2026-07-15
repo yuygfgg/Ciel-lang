@@ -1,0 +1,24 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+enum OriginalError {
+    Failed,
+}
+
+impl format_error(*const OriginalError error) {
+    return "failed";
+}
+
+i64 main() {
+    Report report = OriginalError::Failed;
+    Error boxed = report;
+    if (!error_is<Report>(&boxed)) {
+        return 1;
+    }
+    if (error_is<OriginalError>(&boxed)) {
+        return 2;
+    }
+    return 0;
+}

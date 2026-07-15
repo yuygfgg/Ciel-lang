@@ -89,6 +89,7 @@ pub(super) fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         | TExprKind::Move(_)
         | TExprKind::MakeDynamicInterface { .. }
         | TExprKind::ErrorBox { .. }
+        | TExprKind::ReportBox { .. }
         | TExprKind::MetaAsRefRepr { .. }
         | TExprKind::MetaIntoRepr { .. }
         | TExprKind::MetaFromRepr { .. }
@@ -142,7 +143,8 @@ pub(super) fn expr_needs_stmt_lowering(expr: &TExpr) -> bool {
         }
         TExprKind::TypeSize { .. }
         | TExprKind::TypeAlign { .. }
-        | TExprKind::TypeNeedsGcScan { .. } => false,
+        | TExprKind::TypeNeedsGcScan { .. }
+        | TExprKind::TypeId { .. } => false,
         TExprKind::StructLiteral { fields, .. } => fields
             .iter()
             .any(|(_, value)| value.ty.is_erased_value() || expr_needs_stmt_lowering(value)),

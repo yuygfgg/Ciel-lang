@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+async Result<void, Report> drive() {
+    async::ChannelPair<usize> pair = async::channel<usize>(1)?;
+    async::try_send<usize>(pair.sender, 1)?;
+    switch (async::try_send<usize>(pair.sender, 2)) {
+        case Err(async::ChannelFull):
+            {}
+        case Err(_):
+            return Err(code_error(1));
+        case Ok:
+            return Err(code_error(2));
+    }
+
+    _ first = await async::recv<usize>(pair.receiver)?;
+    async::close_receiver<usize>(pair.receiver)?;
+    switch (async::try_send<usize>(pair.sender, 3)) {
+        case Err(async::ChannelClosed):
+            return Ok;
+        case Err(_):
+            return Err(code_error(3));
+        case Ok:
+            return Err(code_error(4));
+    }
+    return Err(code_error(5));
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

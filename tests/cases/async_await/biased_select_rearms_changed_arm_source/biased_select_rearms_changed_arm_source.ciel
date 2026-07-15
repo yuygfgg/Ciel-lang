@@ -1,0 +1,198 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async;
+import /std/async as async;
+import /std/async/internal/runtime_future as runtime_future;
+import /std/async_time as async_time;
+import /std/c as c;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+resource struct SwitchingCtx {
+    usize phase;
+    async::ChannelRecvFuture<usize> first;
+    async::ChannelRecvFuture<usize> second;
+    async::Sender<usize> switched;
+}
+
+resource unsafe struct SwitchingFuture {
+    Future<Result<usize, async::AsyncError>> inner;
+}
+
+unsafe impl awaitable_future<Result<usize, async::AsyncError>>(
+    *const SwitchingFuture future
+) {
+    return awaitable_future<Result<usize, async::AsyncError>>(
+        unsafe { &future->inner });
+}
+
+unsafe derive cancel_safe_marker<SwitchingFuture>;
+
+unsafe impl abort_future(*SwitchingFuture future) {
+    abort_future(unsafe { &future->inner })?;
+    return Ok;
+}
+
+*CielFuture recv_future_raw(
+    *const async::ChannelRecvFuture<usize> future
+) {
+    return unsafe {
+        awaitable_future<Result<usize, async::AsyncError>>(future) as *CielFuture
+    };
+}
+
+extern "C" c::c_int switching_run(
+    *CielFuture future,
+    *void ctx_raw,
+    *void out_raw
+) {
+    *SwitchingCtx ctx = unsafe { ctx_raw as *SwitchingCtx };
+    *Result<usize, async::AsyncError> out = unsafe {
+        out_raw as *Result<usize, async::AsyncError>
+    };
+    *Result<usize, async::AsyncError> value = unsafe {
+        runtime_future::alloc_slot<Result<usize, async::AsyncError>>()
+    };
+    bool switching = ctx->phase == 1;
+    bool polling_second = ctx->phase != 0;
+    *CielFuture @child;
+    if (ctx->phase == 0) {
+        ctx->phase = 1;
+        child = recv_future_raw(&ctx->first);
+    } else {
+        child = recv_future_raw(&ctx->second);
+    }
+    c::c_int rc = unsafe {
+        runtime_future::ciel_future_poll_trampoline(child, value as *void)
+    };
+    if (rc == unsafe { ciel_async_again_errno() }) {
+        unsafe {
+            runtime_future::ciel_future_adopt_pending_operation(future, child)
+        };
+    } else {
+        unsafe {
+            runtime_future::ciel_future_clear_pending_operation(future)
+        };
+        *out = *value;
+        if (polling_second) {
+            _ abandoned = abort_future(&ctx->first);
+        }
+    }
+    if (switching) {
+        ctx->phase = 2;
+        switch (async::try_send<usize>(ctx->switched, 1)) {
+            case Ok:
+                return rc;
+            case Err(_):
+                return 5 as c::c_int;
+        }
+    }
+    return rc;
+}
+
+extern "C" void switching_cleanup(
+    *CielFuture future,
+    *void ctx_raw,
+    c::c_int reason
+) {
+    future;
+    reason;
+    *SwitchingCtx ctx = unsafe { ctx_raw as *SwitchingCtx };
+    _ first = abort_future(&ctx->first);
+    _ second = abort_future(&ctx->second);
+}
+
+SwitchingFuture switching_future(
+    async::Receiver<usize> first,
+    async::Receiver<usize> second,
+    async::Sender<usize> switched
+) {
+    SwitchingCtx ctx = {
+        phase: 0,
+        first: async::recv<usize>(first),
+        second: async::recv<usize>(second),
+        switched: switched,
+    };
+    Future<Result<usize, async::AsyncError>> inner = unsafe {
+        runtime_future::new<Result<usize, async::AsyncError>, SwitchingCtx>(
+            ctx, switching_run, switching_cleanup
+        )
+    };
+    return unsafe { { inner: inner } };
+}
+
+resource unsafe struct Selectable<T> {
+    Future<T> inner;
+}
+
+unsafe impl<T> awaitable_future<T>(*const Selectable<T> future) {
+    return awaitable_future<T>(unsafe { &future->inner });
+}
+
+unsafe derive<T> cancel_safe_marker<Selectable<T>>;
+
+unsafe impl<T> abort_future(*Selectable<T> future) {
+    abort_future(unsafe { &future->inner })?;
+    return Ok;
+}
+
+async Result<usize, Report> lower_arm(
+    async::Receiver<usize> trigger,
+    async::Receiver<usize> parked
+) {
+    _ released = await async::recv<usize>(trigger)?;
+    return Ok(await async::recv<usize>(parked)?);
+}
+
+async Result<void, Report> feed_sources(
+    async::Sender<usize> trigger,
+    async::Receiver<usize> switched,
+    async::Sender<usize> second
+) {
+    await async_time::sleep_ms(10)?;
+    await async::send<usize>(trigger, 1)?;
+    _ migrated = await async::recv<usize>(switched)?;
+    await async::send<usize>(second, 42)?;
+    return Ok;
+}
+
+Result<usize, Report> lift_async_result(
+    Result<usize, async::AsyncError> value
+) {
+    return Ok(value?);
+}
+
+async Result<usize, Report> drive() {
+    async::ChannelPair<usize> first = async::channel<usize>(1)?;
+    async::ChannelPair<usize> second = async::channel<usize>(1)?;
+    async::ChannelPair<usize> switched = async::channel<usize>(1)?;
+    async::ChannelPair<usize> trigger = async::channel<usize>(1)?;
+    async::ChannelPair<usize> parked = async::channel<usize>(1)?;
+
+    SwitchingFuture high = switching_future(
+        first.receiver, second.receiver, switched.sender
+    );
+    Selectable<Result<usize, Report>> low = unsafe {
+        { inner: lower_arm(trigger.receiver, parked.receiver) }
+    };
+    async::Task<void, Report> feeder = async::spawn<void>(
+        feed_sources(trigger.sender, switched.receiver, second.sender)
+    )?;
+    Result<usize, Report> selected = await biased select {
+        case value = high:
+            lift_async_result(value);
+        case value = low:
+            value;
+    };
+    await feeder?;
+    return selected;
+}
+
+i32 main() {
+    if (must(async::block_on(drive())) != 42) {
+        return 1;
+    }
+    return 0;
+}

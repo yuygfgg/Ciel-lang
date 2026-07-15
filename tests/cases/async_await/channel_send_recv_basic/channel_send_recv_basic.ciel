@@ -7,23 +7,25 @@ import /std/io;
 import /std/panic;
 import /std/result;
 
-async Result<usize, Error> producer(
+async Result<usize, Report> producer(
     async::Sender<usize> sender
 ) {
     await async::send<usize>(sender, 42)?;
     return Ok(0);
 }
 
-async Result<usize, Error> consumer(
+async Result<usize, Report> consumer(
     async::Receiver<usize> receiver
 ) {
     usize value = await async::recv<usize>(receiver)?;
     return Ok(value);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     async::ChannelPair<usize> pair = async::channel<usize>(1)?;
-    async::Task<usize, Error> task = async::spawn<usize>(producer(pair.sender))?;
+    async::Task<usize, Report> task = async::spawn<usize>(
+        producer(pair.sender)
+    )?;
     usize value = await consumer(pair.receiver)?;
     await task?;
     return Ok(value);

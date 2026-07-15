@@ -125,6 +125,18 @@ def tunnel_request(public_port, payload, timeout=8.0):
         return b"".join(chunks)
 
 
+def recv_exact(sock, size):
+    chunks = []
+    remaining = size
+    while remaining:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
+
+
 def expect_echo(public_port, payload):
     got = tunnel_request(public_port, payload)
     if got != payload:
@@ -188,10 +200,12 @@ def main():
         server_log = os.path.join(tmp, "server.log")
         wrong_agent_log = os.path.join(tmp, "wrong-agent.log")
         agent_log = os.path.join(tmp, "agent.log")
+        reconnected_agent_log = os.path.join(tmp, "reconnected-agent.log")
         logs = [
             ("server", server_log),
             ("wrong-agent", wrong_agent_log),
             ("agent", agent_log),
+            ("reconnected-agent", reconnected_agent_log),
         ]
 
         server = None
@@ -235,6 +249,39 @@ def main():
                 sock.sendall(b"client closes early")
 
             expect_echo(public_port, b"after early close")
+
+            with socket.create_connection(("127.0.0.1", public_port), timeout=5.0) as orphan:
+                orphan.settimeout(8.0)
+                payload = b"control epoch teardown"
+                orphan.sendall(payload)
+                if recv_exact(orphan, len(payload)) != payload:
+                    fail("active stream did not echo before agent shutdown")
+
+                stop_process(agent)
+                agent = None
+                wait_for_log(
+                    server_log,
+                    "tunnel-server: closing control connection",
+                    server,
+                )
+                if orphan.recv(1) != b"":
+                    fail("old control epoch left an active public stream")
+
+            expect_closed(public_port)
+
+            agent = start_process([
+                agent_exe,
+                "--server", f"127.0.0.1:{control_port}",
+                "--target", f"127.0.0.1:{target_port}",
+                "--route", "dev",
+                "--psk", "secret-tunnel-key",
+            ], reconnected_agent_log)
+            wait_for_log(
+                reconnected_agent_log,
+                "tunnel-agent: authenticated",
+                agent,
+            )
+            expect_echo(public_port, b"after control reconnect")
 
             echo.stop()
             expect_closed(public_port)

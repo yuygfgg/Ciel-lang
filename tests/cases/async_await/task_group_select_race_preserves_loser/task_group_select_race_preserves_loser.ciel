@@ -1,0 +1,105 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+enum RaceEvent {
+    GroupCompleted(async::Task<usize, Report>),
+    SignalReceived(usize),
+}
+
+async Result<usize, Report> grouped_worker(
+    async::Receiver<usize> release,
+    usize value
+) {
+    _ released = await async::recv<usize>(release)?;
+    return Ok(value);
+}
+
+async Result<void, Report> signal_worker(
+    async::Receiver<usize> release,
+    async::Sender<usize> signal,
+    usize value
+) {
+    _ released = await async::recv<usize>(release)?;
+    await async::send<usize>(signal, value)?;
+    return Ok;
+}
+
+async Result<void, Report> release_both(
+    async::Sender<usize> left,
+    async::Sender<usize> right
+) {
+    await async::send<usize>(left, 1)?;
+    await async::send<usize>(right, 1)?;
+    return Ok;
+}
+
+async Result<void, Report> run_once(usize value) {
+    async::TaskSupervisor<usize, Report> supervisor =
+        async::task_supervisor<usize, Report>()?;
+    async::TaskRegistrar<usize, Report> registrar =
+        async::supervisor_registrar<usize, Report>(&supervisor);
+    async::ChannelPair<usize> group_release = async::channel<usize>(1)?;
+    async::ChannelPair<usize> signal_release = async::channel<usize>(1)?;
+    async::ChannelPair<usize> signal = async::channel<usize>(1)?;
+
+    async::supervisor_spawn<usize, Report>(
+        registrar,
+        grouped_worker(group_release.receiver, value)
+    )?;
+    async::Task<void, Report> signal_task = async::spawn<void>(
+        signal_worker(signal_release.receiver, signal.sender, value)
+    )?;
+    async::Task<void, Report> release_task = async::spawn<void>(
+        release_both(group_release.sender, signal_release.sender)
+    )?;
+
+    Result<RaceEvent, Report> selected = await select {
+        case completed = async::supervisor_completion<usize, Report>(
+            &supervisor
+        ):
+            Ok(GroupCompleted(completed));
+        case received = async::recv<usize>(signal.receiver):
+            Ok(SignalReceived(received?));
+    };
+    switch (selected?) {
+        case GroupCompleted(task):
+            if ((await task?) != value) {
+                return Err(code_error(1));
+            }
+            if ((await async::recv<usize>(signal.receiver)?) != value) {
+                return Err(code_error(2));
+            }
+        case SignalReceived(received):
+            if (received != value) {
+                return Err(code_error(3));
+            }
+            async::Task<usize, Report> task =
+                await async::supervisor_completion<usize, Report>(&supervisor);
+            if ((await task?) != value) {
+                return Err(code_error(4));
+            }
+    }
+    await signal_task?;
+    await release_task?;
+    async::supervisor_shutdown<usize, Report>(supervisor)?;
+    return Ok;
+}
+
+async Result<void, Report> drive() {
+    usize @i = 0;
+    while (i < 200) {
+        await run_once(i)?;
+        i = i + 1;
+    }
+    return Ok;
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

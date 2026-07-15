@@ -41,10 +41,10 @@ io::File file_from_parts(HandleParts parts) {
     return unsafe { { handle: handle } };
 }
 
-async Result<void, Error> scoped_worker(
+async Result<void, Report> scoped_worker(
     async::Sender<HandleParts> sender
 ) {
-    await resource::scoped_async<void, Error>(
+    await resource::scoped_async<void, Report>(
         async || {
             []const char path = env::arg(1)?;
             io::File file = io::open_read(path)?;
@@ -70,7 +70,7 @@ i32 main() {
     );
 
     async::ChannelPair<HandleParts> pair = must(async::channel<HandleParts>(1));
-    async::Task<void, Error> task = must(
+    async::Task<void, Report> task = must(
         async::spawn<void>(scoped_worker(pair.sender))
     );
     HandleParts parts = must(

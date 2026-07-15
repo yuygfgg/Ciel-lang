@@ -19,7 +19,7 @@ unsafe extern "C" {
     c::c_int close(c::c_int fd);
 }
 
-Result<aio::AsyncFd, Error> pipe_read_end(
+Result<aio::AsyncFd, Report> pipe_read_end(
     *c::c_int write_fd_out
 ) {
     [2]c::c_int @fds = [0 as c::c_int;];
@@ -32,7 +32,7 @@ Result<aio::AsyncFd, Error> pipe_read_end(
     return Ok(unsafe { aio::async_from_raw_fd(raw)? });
 }
 
-async Result<usize, Error> read_until_cancelled(
+async Result<usize, Report> read_until_cancelled(
     aio::AsyncFd read_fd
 ) {
     bytes::Bytes inbound = await aio::read_bytes(&read_fd, 8)?;
@@ -40,10 +40,10 @@ async Result<usize, Error> read_until_cancelled(
     return Ok(bytes::bytes_len(inbound));
 }
 
-Result<usize, Error> drive() {
+Result<usize, Report> drive() {
     c::c_int @write_fd = -1 as c::c_int;
     aio::AsyncFd read_fd = pipe_read_end(&write_fd)?;
-    async::Task<usize, Error> task = async::spawn<usize>(
+    async::Task<usize, Report> task = async::spawn<usize>(
         read_until_cancelled(read_fd)
     )?;
     async::block_on(async_time::sleep_ms(10))?;

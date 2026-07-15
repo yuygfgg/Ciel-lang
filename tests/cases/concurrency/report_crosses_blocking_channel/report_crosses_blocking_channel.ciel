@@ -1,0 +1,42 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/channel as channel;
+import /std/error;
+
+enum SendError {
+    Failed,
+}
+
+impl format_error(*const SendError error) {
+    return "failed";
+}
+
+i64 main() {
+    Result<channel::Channel<Report>, channel::ChannelError> made =
+        channel::make_channel<Report>();
+    channel::Channel<Report> pipe;
+    switch (made) {
+        case Ok(value):
+            pipe = value;
+        case Err(_):
+            return 1;
+    }
+    Report report = SendError::Failed;
+    switch (channel::channel_send(&pipe, report)) {
+        case Ok:
+            {}
+        case Err(_):
+            return 2;
+    }
+    switch (channel::channel_recv(&pipe)) {
+        case Ok(received):
+            if (report_message(&received).len != 6) {
+                return 3;
+            }
+        case Err(_):
+            return 4;
+    }
+    channel::channel_close(&pipe);
+    return 0;
+}

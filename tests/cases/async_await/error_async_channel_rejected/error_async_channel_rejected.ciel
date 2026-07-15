@@ -1,0 +1,16 @@
+// ciel-test: error
+// expect-error: `Error` does not implement `clone_message`
+// expect-error: downcastable erased errors are local-only
+// expect-error: use a concrete messageable error type or `Report` for transfer
+
+import /std/async as async;
+import /std/error;
+
+i64 send_bad(async::Sender<Error> sender, Error error) {
+    async::try_send<Error>(sender, error);
+    return 0;
+}
+
+i64 main() {
+    return 0;
+}

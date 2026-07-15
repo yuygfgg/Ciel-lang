@@ -5,7 +5,7 @@ use crate::{
     hir::{ConstraintExpr, FunctionDecl, LocalId},
     resolve::{DefId, ModuleId},
     span::Span,
-    types::Ty,
+    types::{ClosureInstanceId, Ty},
 };
 
 #[derive(Clone, Debug)]
@@ -317,7 +317,7 @@ pub enum TExprKind {
     },
     Closure {
         is_async: bool,
-        id: usize,
+        id: ClosureInstanceId,
         params: Vec<(LocalId, String, Ty)>,
         captures: Vec<TClosureCapture>,
         body: TClosureBody,
@@ -361,6 +361,10 @@ pub enum TExprKind {
         concrete_ty: Ty,
     },
     ErrorBox {
+        expr: Box<TExpr>,
+        concrete_ty: Ty,
+    },
+    ReportBox {
         expr: Box<TExpr>,
         concrete_ty: Ty,
     },
@@ -477,12 +481,16 @@ pub enum TExprKind {
     TypeNeedsGcScan {
         ty: Ty,
     },
+    TypeId {
+        ty: Ty,
+    },
 }
 
 #[derive(Clone, Debug)]
 pub enum TryPropagation {
     Exact,
     ErrorBox,
+    ReportBox,
 }
 
 #[derive(Clone, Debug)]

@@ -5,21 +5,21 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async Result<usize, Error> ready() {
+async Result<usize, Report> ready() {
     return Ok(0);
 }
 
-async::Task<usize, Error> spawn_branch_assigned_future(
+async::Task<usize, Report> spawn_branch_assigned_future(
     bool flag
 ) {
     [3]i64 values = [1, 2, 3];
-    async::Future<Result<usize, Error>> future;
+    async::Future<Result<usize, Report>> future;
     if (flag) {
         future = len_later(values[..]);
     } else {

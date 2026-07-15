@@ -1,0 +1,19 @@
+// ciel-test: run
+// expect-exit: 0
+
+interface<T> next next(*const T value);
+
+struct Node {
+    i64 value;
+}
+
+impl next(*const Node value) {
+    return value;
+}
+
+i64 main() {
+    Node node = { value: 1 };
+    next current = &node;
+    current;
+    return 0;
+}

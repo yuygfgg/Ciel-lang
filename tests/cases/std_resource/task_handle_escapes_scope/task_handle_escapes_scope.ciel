@@ -6,16 +6,16 @@ import /std/async_time as async_time;
 import /std/result;
 import /std/resource as resource;
 
-async Result<usize, Error> delayed_value() {
+async Result<usize, Report> delayed_value() {
     await async_time::sleep_ms(1)?;
     return Ok(42);
 }
 
-Result<async::Task<usize, Error>, Error> spawn_inside_scope() {
-    async::Task<usize, Error> task =
-        resource::scoped<async::Task<usize, Error>>(
+Result<async::Task<usize, Report>, Error> spawn_inside_scope() {
+    async::Task<usize, Report> task =
+        resource::scoped<async::Task<usize, Report>>(
             || {
-                async::Task<usize, Error> task = async::spawn<usize>(
+                async::Task<usize, Report> task = async::spawn<usize>(
                     delayed_value()
                 )?;
                 return Ok(task);
@@ -25,7 +25,7 @@ Result<async::Task<usize, Error>, Error> spawn_inside_scope() {
 }
 
 i32 main() {
-    async::Task<usize, Error> task = must(spawn_inside_scope());
+    async::Task<usize, Report> task = must(spawn_inside_scope());
     usize value = must(async::block_on(task));
     if (value != 42) {
         return 1;

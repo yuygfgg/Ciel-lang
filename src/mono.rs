@@ -10,8 +10,9 @@ use crate::{
         VariantDecl,
     },
     interfaces::{
-        checked_interface_view, constraint_interface_view, impl_matches_dynamic_interface,
-        impl_matches_interface_receiver, retained_closure_interface_signature,
+        checked_interface_view, constraint_interface_view, dynamic_interface_signature,
+        impl_matches_dynamic_interface, impl_matches_interface_receiver,
+        retained_closure_interface_signature,
     },
     layout::check_checked_aggregate_layouts,
     resolve::{DefId, DefKind, ResolvedProgram},
@@ -68,20 +69,20 @@ struct MonoContext {
     checked: CheckedProgram,
     functions_by_def: HashMap<DefId, CheckedFunction>,
     generic_by_def: HashMap<DefId, CheckedGenericFunction>,
-    generic_chains: HashMap<DefId, Vec<GenericFrame>>,
+    generic_chains: HashMap<DefId, Vec<TypeExpansionFrame>>,
     processed: HashMap<DefId, CheckedFunction>,
     queued: HashSet<DefId>,
     worklist: VecDeque<DefId>,
     generic_instances: HashMap<(DefId, Vec<Ty>), DefId>,
-    current_stack: Vec<GenericFrame>,
+    current_stack: Vec<TypeExpansionFrame>,
     next_def: usize,
     diagnostics: Vec<Diagnostic>,
 }
 
 #[derive(Clone, Debug)]
-struct GenericFrame {
-    template_def: DefId,
-    template_name: String,
+struct TypeExpansionFrame {
+    def_id: DefId,
+    name: String,
     type_args: Vec<Ty>,
 }
 
@@ -166,8 +167,8 @@ impl MonoContext {
                         (
                             def_id,
                             GenericOrigin {
-                                template_def: frame.template_def,
-                                template_name: frame.template_name.clone(),
+                                template_def: frame.def_id,
+                                template_name: frame.name.clone(),
                                 type_args: frame.type_args.clone(),
                             },
                         )
@@ -339,6 +340,7 @@ impl MonoContext {
             generated_functions,
             impls,
             opaque_returns,
+            closure_owners,
         } = type_check_generic_instance(
             &self.checked,
             &template,
@@ -347,6 +349,7 @@ impl MonoContext {
             instance_name,
             self.next_def,
         )?;
+        self.checked.closure_owners = closure_owners;
         for implementation in impls {
             if !self.checked.impls.iter().any(|existing| {
                 existing.interface_def == implementation.interface_def
@@ -364,9 +367,9 @@ impl MonoContext {
         self.checked.opaque_returns.extend(opaque_returns);
         self.generic_instances.insert(key, instance_def);
         let mut chain = self.current_stack.clone();
-        chain.push(GenericFrame {
-            template_def: def_id,
-            template_name: template.name.clone(),
+        chain.push(TypeExpansionFrame {
+            def_id,
+            name: template.name.clone(),
             type_args: type_args.to_vec(),
         });
         self.generic_chains.insert(instance_def, chain);
@@ -383,38 +386,22 @@ impl MonoContext {
         let same_template = self
             .current_stack
             .iter()
-            .filter(|frame| frame.template_def == template.def_id)
+            .filter(|frame| frame.def_id == template.def_id)
             .collect::<Vec<_>>();
         if same_template.len() < 2 {
             return None;
         }
         let previous = same_template.last()?;
-        if !is_strict_generic_growth(&previous.type_args, type_args) {
+        if !is_strict_type_argument_growth(&previous.type_args, type_args) {
             return None;
         }
         let chain = self
             .current_stack
             .iter()
-            .map(|frame| {
-                format!(
-                    "{}<{}>",
-                    frame.template_name,
-                    frame
-                        .type_args
-                        .iter()
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                )
-            })
-            .chain(std::iter::once(format!(
-                "{}<{}>",
-                template.name,
-                type_args
-                    .iter()
-                    .map(ToString::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
+            .map(|frame| format_type_application(&frame.name, &frame.type_args))
+            .chain(std::iter::once(format_type_application(
+                &template.name,
+                type_args,
             )))
             .collect::<Vec<_>>()
             .join(" -> ");
@@ -731,6 +718,19 @@ impl MonoContext {
                     concrete_ty,
                 }
             }
+            TExprKind::ReportBox {
+                expr: inner,
+                concrete_ty,
+            } => {
+                self.mark_std_error_function("report_box");
+                let concrete_ty = self.lower_opaque_returns_in_ty(&concrete_ty);
+                let dyn_ty = self.std_error_trait_ty();
+                self.mark_dynamic_impls(&dyn_ty, &concrete_ty);
+                TExprKind::ReportBox {
+                    expr: Box::new(self.rewrite_expr(*inner)?),
+                    concrete_ty,
+                }
+            }
             TExprKind::DynamicInterfaceCall {
                 interface_def,
                 interface_name,
@@ -798,7 +798,10 @@ impl MonoContext {
                 propagation,
             } => {
                 let inner = self.rewrite_expr(*inner)?;
-                if matches!(propagation, crate::thir::TryPropagation::ErrorBox)
+                if matches!(propagation, crate::thir::TryPropagation::ReportBox) {
+                    self.mark_std_error_function("report_box");
+                }
+                if !matches!(propagation, crate::thir::TryPropagation::Exact)
                     && let Some((_, err_ty)) = result_args(&self.checked.resolved, &inner.ty)
                 {
                     let dyn_ty = self.std_error_trait_ty();
@@ -992,6 +995,9 @@ impl MonoContext {
             TExprKind::TypeNeedsGcScan { ty } => TExprKind::TypeNeedsGcScan {
                 ty: self.lower_opaque_returns_in_ty(&ty),
             },
+            TExprKind::TypeId { ty } => TExprKind::TypeId {
+                ty: self.lower_opaque_returns_in_ty(&ty),
+            },
             TExprKind::StructLiteral { type_name, fields } => {
                 let type_name = match &lowered_expr_ty {
                     Ty::Named { name, args, .. } => aggregate_instance_name(name, args),
@@ -1061,6 +1067,9 @@ impl MonoContext {
     }
 
     fn mark_dynamic_impls(&mut self, dyn_ty: &Ty, concrete_ty: &Ty) {
+        if matches!(concrete_ty, Ty::DynamicInterface { .. }) {
+            return;
+        }
         let Ty::DynamicInterface { def_id, args, .. } = dyn_ty else {
             return;
         };
@@ -1080,6 +1089,7 @@ impl MonoContext {
     }
 
     fn mark_standard_error_code_impl(&mut self) {
+        self.mark_std_error_function("error_report");
         let code_ty = std_error_code_ty(&self.checked.resolved);
         let function_def = self
             .checked
@@ -1094,6 +1104,26 @@ impl MonoContext {
                 )
             })
             .map(|implementation| implementation.function_def);
+        if let Some(function_def) = function_def {
+            self.mark_function(function_def);
+        }
+    }
+
+    fn mark_std_error_function(&mut self, expected: &str) {
+        let function_def = self
+            .checked
+            .functions
+            .iter()
+            .find(|function| {
+                let module = self.checked.resolved.def(function.def_id).module;
+                std_id::is_std_error_function(
+                    &self.checked.resolved,
+                    module,
+                    &function.name,
+                    expected,
+                )
+            })
+            .map(|function| function.def_id);
         if let Some(function_def) = function_def {
             self.mark_function(function_def);
         }
@@ -1248,6 +1278,8 @@ struct AggregateCollector<'a> {
     visiting_structs: HashSet<String>,
     emitted_enums: HashSet<String>,
     visiting_enums: HashSet<String>,
+    expanded_dynamic_interfaces: HashSet<(DefId, Vec<Ty>)>,
+    dynamic_interface_stack: Vec<TypeExpansionFrame>,
     retained_closure_interface_tys: HashSet<(Ty, ConstraintRef)>,
     checked_structs: Vec<CheckedStruct>,
     checked_enums: Vec<CheckedEnum>,
@@ -1461,6 +1493,8 @@ impl<'a> AggregateCollector<'a> {
             visiting_structs: HashSet::new(),
             emitted_enums: HashSet::new(),
             visiting_enums: HashSet::new(),
+            expanded_dynamic_interfaces: HashSet::new(),
+            dynamic_interface_stack: Vec::new(),
             retained_closure_interface_tys: HashSet::new(),
             checked_structs: Vec::new(),
             checked_enums: Vec::new(),
@@ -1624,7 +1658,7 @@ impl<'a> AggregateCollector<'a> {
             TExprKind::Unary { expr, .. } | TExprKind::Cast { expr, .. } => self.collect_expr(expr),
             TExprKind::Try { expr, propagation } => {
                 self.collect_expr(expr);
-                if matches!(propagation, crate::thir::TryPropagation::ErrorBox) {
+                if !matches!(propagation, crate::thir::TryPropagation::Exact) {
                     let dyn_ty = self.std_error_trait_ty();
                     self.collect_ty(&dyn_ty);
                     if let Some((_, err_ty)) = result_args(&self.checked.resolved, &expr.ty) {
@@ -1789,6 +1823,12 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(&dyn_ty);
                 self.collect_ty(concrete_ty);
             }
+            TExprKind::ReportBox { expr, concrete_ty } => {
+                self.collect_expr(expr);
+                let dyn_ty = self.std_error_trait_ty();
+                self.collect_ty(&dyn_ty);
+                self.collect_ty(concrete_ty);
+            }
             TExprKind::DynamicInterfaceCall { receiver, args, .. }
             | TExprKind::RetainedClosureInterfaceCall { receiver, args, .. } => {
                 self.collect_expr(receiver);
@@ -1904,7 +1944,8 @@ impl<'a> AggregateCollector<'a> {
             }
             TExprKind::TypeSize { ty }
             | TExprKind::TypeAlign { ty }
-            | TExprKind::TypeNeedsGcScan { ty } => self.collect_ty(ty),
+            | TExprKind::TypeNeedsGcScan { ty }
+            | TExprKind::TypeId { ty } => self.collect_ty(ty),
             TExprKind::StructLiteral { fields, .. } => {
                 for (_, value) in fields {
                     self.collect_expr(value);
@@ -2010,10 +2051,8 @@ impl<'a> AggregateCollector<'a> {
                     self.collect_ty(ty);
                 }
             }
-            Ty::DynamicInterface { args, .. } => {
-                for arg in args {
-                    self.collect_ty(arg);
-                }
+            Ty::DynamicInterface { def_id, args, .. } => {
+                self.collect_dynamic_interface_tys(*def_id, args);
             }
             Ty::OpaqueReturn { key, bounds } => {
                 for arg in &key.args {
@@ -2078,6 +2117,84 @@ impl<'a> AggregateCollector<'a> {
                 self.collect_ty(arg);
             }
         }
+    }
+
+    fn collect_dynamic_interface_tys(&mut self, def_id: DefId, args: &[Ty]) {
+        if !self
+            .expanded_dynamic_interfaces
+            .insert((def_id, args.to_vec()))
+        {
+            return;
+        }
+        if let Some(diagnostic) = self.dynamic_interface_growth_diagnostic(def_id, args) {
+            self.diagnostics.push(diagnostic);
+            return;
+        }
+        let name = self.checked.resolved.def(def_id).name.clone();
+        self.dynamic_interface_stack.push(TypeExpansionFrame {
+            def_id,
+            name,
+            type_args: args.to_vec(),
+        });
+        for arg in args {
+            self.collect_ty(arg);
+        }
+        for interface in checked_interface_view(
+            &self.checked.interfaces,
+            &self.checked.interface_aliases,
+            def_id,
+            args,
+        ) {
+            if let Some(signature) =
+                dynamic_interface_signature(&self.checked.interfaces, &interface)
+            {
+                self.collect_ty(&signature.ret);
+                for param in signature.params.iter().skip(1) {
+                    self.collect_ty(param);
+                }
+            }
+        }
+        self.dynamic_interface_stack.pop();
+    }
+
+    fn dynamic_interface_growth_diagnostic(
+        &self,
+        def_id: DefId,
+        type_args: &[Ty],
+    ) -> Option<Diagnostic> {
+        let same_interface = self
+            .dynamic_interface_stack
+            .iter()
+            .filter(|frame| frame.def_id == def_id)
+            .collect::<Vec<_>>();
+        if same_interface.len() < 2 {
+            return None;
+        }
+        let previous = same_interface.last()?;
+        if !is_strict_type_argument_growth(&previous.type_args, type_args) {
+            return None;
+        }
+        let interface = self.checked.resolved.def(def_id);
+        let chain = self
+            .dynamic_interface_stack
+            .iter()
+            .map(|frame| format_type_application(&frame.name, &frame.type_args))
+            .chain(std::iter::once(format_type_application(
+                &interface.name,
+                type_args,
+            )))
+            .collect::<Vec<_>>()
+            .join(" -> ");
+        Some(
+            Diagnostic::new(
+                interface.span,
+                format!(
+                    "infinite dynamic interface signature expansion involving `{}`",
+                    interface.name
+                ),
+            )
+            .note(format!("signature expansion chain: {chain}")),
+        )
     }
 
     fn collect_retained_closure_witness_tys(&mut self, target_ty: &Ty, source_ty: &Ty) {
@@ -3094,6 +3211,7 @@ impl<'a> AggregateCollector<'a> {
                             preserve_meta_repr_markers,
                         ),
                         TypeAliasTarget::CSpelling { abi, spelling } => Ty::CSpelling {
+                            def_id: def_id.expect("C spelling alias has a definition"),
                             abi: abi.clone(),
                             spelling: spelling.clone(),
                         },
@@ -3345,7 +3463,21 @@ fn task_tys(resolved: &ResolvedProgram, ty: &Ty) -> Option<(Ty, Ty)> {
         .map(|(output_ty, error_ty)| (output_ty.clone(), error_ty.clone()))
 }
 
-fn is_strict_generic_growth(previous: &[Ty], next: &[Ty]) -> bool {
+fn format_type_application(name: &str, args: &[Ty]) -> String {
+    if args.is_empty() {
+        return name.to_string();
+    }
+    format!(
+        "{}<{}>",
+        name,
+        args.iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+fn is_strict_type_argument_growth(previous: &[Ty], next: &[Ty]) -> bool {
     let previous_complexity = previous.iter().map(type_complexity).sum::<usize>();
     let next_complexity = next.iter().map(type_complexity).sum::<usize>();
     next_complexity > previous_complexity

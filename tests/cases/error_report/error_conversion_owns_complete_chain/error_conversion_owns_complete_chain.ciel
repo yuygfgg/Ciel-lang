@@ -1,0 +1,40 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/error;
+
+bool text_eq([]const char left, []const char right) {
+    if (left.len != right.len) {
+        return false;
+    }
+    usize @index = 0;
+    while (index < left.len) {
+        if (left[index] != right[index]) {
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+i64 main() {
+    [5]char @buffer = ['h', 'e', 'l', 'l', 'o'];
+    TextError concrete = { text: buffer[..] };
+    Error base = error_box(concrete);
+    Error contextual = error_with_context(base, "outer");
+    Report report = contextual;
+    buffer[0] = 'j';
+    if (!text_eq(report_message(&report), "outer")) {
+        return 1;
+    }
+    ?*const Report source = unsafe { report.source };
+    if (source == null) {
+        return 2;
+    }
+    if (!text_eq(
+        report_message(unsafe { source as *const Report }), "hello"
+    )) {
+        return 3;
+    }
+    return 0;
+}

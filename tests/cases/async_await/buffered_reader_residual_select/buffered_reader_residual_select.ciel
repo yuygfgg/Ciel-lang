@@ -10,21 +10,21 @@ import /std/io as io;
 import /std/net as net;
 import /std/result;
 
-Result<usize, Error> bytes_len_result(
+Result<usize, Report> bytes_len_result(
     Result<bytes::Bytes, anet::AsyncNetError> result
 ) {
     bytes::Bytes bytes = result?;
     return Ok(bytes::bytes_len(bytes));
 }
 
-Result<usize, Error> timeout_tag(
+Result<usize, Report> timeout_tag(
     Result<void, async::AsyncError> result
 ) {
     result?;
     return Ok(99);
 }
 
-async Result<usize, Error> write_payload(
+async Result<usize, Report> write_payload(
     anet::AsyncTcpListener listener,
     async::Sender<usize> write_done
 ) {
@@ -39,13 +39,13 @@ async Result<usize, Error> write_payload(
     return Ok(4);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     anet::AsyncTcpListener listener = anet::listen_async(
         net::parse_addr("127.0.0.1:0")?
     )?;
     net::SocketAddr bound = anet::listener_addr(&listener)?;
     async::ChannelPair<usize> write_done = async::channel<usize>(1)?;
-    async::Task<usize, Error> server = async::spawn<usize>(
+    async::Task<usize, Report> server = async::spawn<usize>(
         write_payload(listener, write_done.sender)
     )?;
 
@@ -61,7 +61,7 @@ async Result<usize, Error> drive() {
         return Err(code_error(80));
     }
 
-    Result<usize, Error> picked = await select {
+    Result<usize, Report> picked = await select {
         case bytes = anet::read_buffered(&reader, 2):
             bytes_len_result(bytes);
         case slept = async_time::sleep_ms(20):

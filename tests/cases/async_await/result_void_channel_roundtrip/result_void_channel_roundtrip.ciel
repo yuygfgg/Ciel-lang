@@ -1,0 +1,37 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/async as async;
+import /std/error;
+import /std/panic;
+import /std/result;
+
+enum ChannelFailure {
+    Failed,
+}
+
+impl format_error(*const ChannelFailure error) {
+    return "channel failure";
+}
+
+async Result<void, Report> drive() {
+    async::ChannelPair<Result<void, Report>> pair =
+        async::channel<Result<void, Report>>(1)?;
+    Result<void, Report> failure = Err(ChannelFailure::Failed);
+    await async::send<Result<void, Report>>(pair.sender, failure)?;
+    switch (await async::recv<Result<void, Report>>(pair.receiver)?) {
+        case Ok:
+            return Err(code_error(1));
+        case Err(report):
+            []const char message = report_message(&report);
+            if (message.len != 15 || message[0] != 'c') {
+                return Err(code_error(2));
+            }
+            return Ok;
+    }
+}
+
+i32 main() {
+    must(async::block_on(drive()));
+    return 0;
+}

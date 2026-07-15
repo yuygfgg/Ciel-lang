@@ -5,21 +5,21 @@
 import /std/async as async;
 import /std/result;
 
-async Result<usize, Error> len_later(
+async Result<usize, Report> len_later(
     []const i64 view
 ) {
     return Ok(view.len);
 }
 
-async Result<async::Future<Result<usize, Error>>, Error> wrap_async(
-    async::Future<Result<usize, Error>> future
+async Result<async::Future<Result<usize, Report>>, Report> wrap_async(
+    async::Future<Result<usize, Report>> future
 ) {
     return Ok(future);
 }
 
-async Result<usize, Error> drive() {
+async Result<usize, Report> drive() {
     [3]i64 values = [1, 2, 3];
-    Result<async::Future<Result<usize, Error>>, Error> result = await wrap_async(
+    Result<async::Future<Result<usize, Report>>, Report> result = await wrap_async(
         len_later(values[..])
     );
     switch (result) {

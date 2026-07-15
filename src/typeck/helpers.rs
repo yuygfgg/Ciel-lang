@@ -201,7 +201,17 @@ impl TypeChecker {
                 capability.name
             ),
         );
-        self.add_capability_constraint_notes(diagnostic, capability, generic_name, bounds)
+        let diagnostic =
+            self.add_capability_constraint_notes(diagnostic, capability, generic_name, bounds);
+        if self.is_std_error_ty(concrete)
+            && self.is_std_message_clone_interface_def(capability.def_id)
+        {
+            diagnostic.note(
+                "downcastable erased errors are local-only; use a concrete messageable error type or `Report` for transfer",
+            )
+        } else {
+            diagnostic
+        }
     }
 
     pub(super) fn negative_capability_constraint_diagnostic(

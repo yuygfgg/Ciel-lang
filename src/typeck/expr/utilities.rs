@@ -346,7 +346,7 @@ impl TypeChecker {
                 receiver_ty,
             );
         }
-        if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
+        if self.type_implements_compiler_provided_interface(interface_def, args, receiver_ty) {
             return true;
         }
         if let Ty::GeneratedFuture {
@@ -404,24 +404,29 @@ impl TypeChecker {
             ))
     }
 
-    pub(super) fn type_implements_compiler_provided_meta_marker(
+    pub(super) fn type_implements_compiler_provided_interface(
         &self,
         interface_def: DefId,
         args: &[Ty],
         receiver_ty: &Ty,
     ) -> bool {
-        args.is_empty()
-            && ((self.is_std_meta_ciel_fn_value_marker_def(interface_def)
-                && matches!(
-                    receiver_ty,
-                    Ty::Function {
-                        is_unsafe: false,
-                        abi: None,
-                        ..
-                    }
-                ))
-                || (self.is_std_meta_closure_value_marker_def(interface_def)
-                    && matches!(receiver_ty, Ty::ClosureInstance { .. })))
+        if !args.is_empty() {
+            return false;
+        }
+        if self.is_compiler_provided_error_witness_def(interface_def) {
+            return !matches!(receiver_ty, Ty::Unknown | Ty::Hole(_));
+        }
+        (self.is_std_meta_ciel_fn_value_marker_def(interface_def)
+            && matches!(
+                receiver_ty,
+                Ty::Function {
+                    is_unsafe: false,
+                    abi: None,
+                    ..
+                }
+            ))
+            || (self.is_std_meta_closure_value_marker_def(interface_def)
+                && matches!(receiver_ty, Ty::ClosureInstance { .. }))
     }
 
     pub(super) fn closure_constraints_satisfied_by_ty(
@@ -699,6 +704,11 @@ impl TypeChecker {
         }
         if self.type_implements_message(ty) {
             return None;
+        }
+        if self.is_std_error_ty(ty) {
+            return Some(format!(
+                "{path} has downcastable erased error type `Error`; downcastable erased errors are local-only, use `Report` for transfer"
+            ));
         }
         if matches!(ty, Ty::OpaqueReturn { .. }) {
             let concrete = self.lower_opaque_returns_in_ty(ty);
@@ -1582,6 +1592,14 @@ impl TypeChecker {
             .find(|def_id| std_id::is_std_error_interface(&self.ctx.resolved, *def_id, name))
     }
 
+    pub(super) fn std_error_interface_alias_def(&self, name: &str) -> Option<DefId> {
+        self.ctx
+            .interface_aliases
+            .keys()
+            .copied()
+            .find(|def_id| std_id::is_std_error_interface_alias(&self.ctx.resolved, *def_id, name))
+    }
+
     pub(in crate::typeck) fn find_impl_by_full_args(
         &self,
         interface_def: DefId,
@@ -1845,7 +1863,7 @@ impl TypeChecker {
                 receiver_ty,
             );
         }
-        if self.type_implements_compiler_provided_meta_marker(interface_def, args, receiver_ty) {
+        if self.type_implements_compiler_provided_interface(interface_def, args, receiver_ty) {
             return true;
         }
         if let Ty::GeneratedFuture {
@@ -2520,6 +2538,7 @@ impl TypeChecker {
         err_ty: &Ty,
     ) -> bool {
         if err_ty == &std_error_ty(&self.ctx.resolved)
+            || err_ty == &std_report_ty(&self.ctx.resolved)
             || err_ty == &std_async_error_ty(&self.ctx.resolved)
         {
             return true;
@@ -2559,6 +2578,7 @@ impl TypeChecker {
         err_ty: &Ty,
     ) -> bool {
         if err_ty == &std_error_ty(&self.ctx.resolved)
+            || err_ty == &std_report_ty(&self.ctx.resolved)
             || err_ty == &std_async_error_ty(&self.ctx.resolved)
         {
             return true;
@@ -2585,7 +2605,7 @@ impl TypeChecker {
                 .map(|ty| self.lower_type_with_subst(ty, &subst))
                 .collect::<Vec<_>>();
             match variant.name.as_str() {
-                "MessageClone" => payload == [std_error_ty(&self.ctx.resolved)],
+                "MessageClone" => payload == [std_report_ty(&self.ctx.resolved)],
                 "Async" | "TaskGroupAsync" => payload == [std_async_error_ty(&self.ctx.resolved)],
                 _ => false,
             }
@@ -2694,7 +2714,7 @@ impl TypeChecker {
 
     pub(super) fn async_closure_future_ty(
         &self,
-        id: usize,
+        id: ClosureInstanceId,
         output_ty: Ty,
         cancel_safe: bool,
         abortable: bool,
@@ -2868,7 +2888,7 @@ impl TypeChecker {
                     ),
                 )
                 .note(
-                    "custom task error types need a carrier such as `MessageClone(Error)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
+                    "custom task error types need a carrier such as `MessageClone(Report)`, `Async(async::AsyncError)`, or `TaskGroupAsync(async::AsyncError)`",
                 ),
             );
         }
@@ -2913,7 +2933,7 @@ impl TypeChecker {
         std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "closure_value_marker")
     }
 
-    pub(super) fn is_std_error_ty(&self, ty: &Ty) -> bool {
+    pub(in crate::typeck) fn is_std_error_ty(&self, ty: &Ty) -> bool {
         let Ty::Named { name, args, .. } = ty else {
             return false;
         };
@@ -2926,26 +2946,75 @@ impl TypeChecker {
             .is_some_and(|def_id| std_id::is_std_error_struct(&self.ctx.resolved, *def_id))
     }
 
+    pub(in crate::typeck) fn is_std_report_ty(&self, ty: &Ty) -> bool {
+        let Ty::Named { name, args, .. } = ty else {
+            return false;
+        };
+        if !args.is_empty() {
+            return false;
+        }
+        self.ctx
+            .nominal_type_defs
+            .get(name)
+            .is_some_and(|def_id| std_id::is_std_report_struct(&self.ctx.resolved, *def_id))
+    }
+
     pub(super) fn type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
+        if self.dynamic_type_implements_std_error_trait(ty) {
+            return true;
+        }
         let Some(interface_def) = self.std_error_interface_def(STD_ERROR_FORMAT_INTERFACE) else {
             return false;
         };
-        self.type_implements_capability_by_def(interface_def, STD_ERROR_FORMAT_INTERFACE, &[], ty)
+        let receiver_ty = receiver_ty_from_value_ty(ty);
+        self.type_implements_capability_by_def(
+            interface_def,
+            STD_ERROR_FORMAT_INTERFACE,
+            &[],
+            &receiver_ty,
+        )
     }
 
-    pub(super) fn reject_affine_error_erasure(
+    pub(super) fn dynamic_type_implements_std_error_trait(&mut self, ty: &Ty) -> bool {
+        let Ty::DynamicInterface { .. } = ty else {
+            return false;
+        };
+        let Some(alias_def) = self.std_error_interface_alias_def(STD_ERROR_TRAIT_ALIAS) else {
+            return false;
+        };
+        self.type_satisfies_dynamic_view(alias_def, STD_ERROR_TRAIT_ALIAS, &[], ty)
+    }
+
+    pub(super) fn reject_error_erasure(
         &mut self,
         span: crate::span::Span,
         concrete_ty: &Ty,
         target_ty: &Ty,
     ) -> bool {
-        if !self.type_is_affine(concrete_ty) {
-            return false;
+        if matches!(concrete_ty, Ty::Pointer { nullable: true, .. }) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    span,
+                    format!(
+                        "cannot erase nullable error receiver `{concrete_ty}` into `{target_ty}`"
+                    ),
+                )
+                .note("unwrap the nullable pointer before erasing the error"),
+            );
+            return true;
         }
+        let receiver_ty = receiver_ty_from_value_ty(concrete_ty);
+        let affine_ty = if self.type_is_affine(concrete_ty) {
+            concrete_ty
+        } else if self.type_is_affine(&receiver_ty) {
+            &receiver_ty
+        } else {
+            return false;
+        };
         self.diagnostics.push(
             Diagnostic::new(
                 span,
-                format!("cannot erase resource-affine type `{concrete_ty}` into `{target_ty}`"),
+                format!("cannot erase resource-affine type `{affine_ty}` into `{target_ty}`"),
             )
             .note("erasing this value would hide ownership and cleanup requirements"),
         );
@@ -2955,6 +3024,15 @@ impl TypeChecker {
     pub(in crate::typeck) fn is_compiler_provided_meta_marker_def(&self, def_id: DefId) -> bool {
         std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "ciel_fn_value_marker")
             || std_id::is_std_meta_interface(&self.ctx.resolved, def_id, "closure_value_marker")
+    }
+
+    pub(in crate::typeck) fn is_compiler_provided_error_witness_def(&self, def_id: DefId) -> bool {
+        std_id::is_std_error_interface(&self.ctx.resolved, def_id, STD_ERROR_ERASED_REF_INTERFACE)
+    }
+
+    pub(in crate::typeck) fn is_compiler_provided_interface_def(&self, def_id: DefId) -> bool {
+        self.is_compiler_provided_meta_marker_def(def_id)
+            || self.is_compiler_provided_error_witness_def(def_id)
     }
 
     pub(in crate::typeck) fn is_std_message_capability_interface_def(&self, def_id: DefId) -> bool {

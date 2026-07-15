@@ -1,3 +1,4 @@
+import /std/io as io;
 import /std/result;
 import ../protocol/error as terr;
 import ../protocol/frame as frame;
@@ -43,7 +44,7 @@ bool is_err_void(Result<void, Error> value) {
         case Ok:
             return false;
         case Err(error):
-            return error_message(&error).len > 0;
+            return io::to_string(&error).len > 0;
     }
 }
 
@@ -153,6 +154,9 @@ i32 main() {
     }
     if (!protocol_text_nonempty(terr::InvalidStreamId(8 as u16, 7 as u32))) {
         return 13;
+    }
+    if (!protocol_text_nonempty(terr::DuplicateStreamId(7 as u32))) {
+        return 24;
     }
     if (!protocol_text_nonempty(terr::InvalidTransition)) {
         return 14;

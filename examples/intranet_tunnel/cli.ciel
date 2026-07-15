@@ -1,9 +1,29 @@
 import /std/bytes as bytes;
 import /std/env as env;
+import /std/error;
 import /std/net as net;
 import /std/result;
 import /std/text as text;
-import ./error as app_error;
+
+enum CliError {
+    UnknownServerFlag,
+    UnknownAgentFlag,
+    MissingFlagValue,
+    MissingRequiredFlag,
+}
+
+impl format_error(*const CliError error) {
+    switch (*error) {
+        case UnknownServerFlag:
+            return "unknown tunnel-server flag";
+        case UnknownAgentFlag:
+            return "unknown tunnel-agent flag";
+        case MissingFlagValue:
+            return "missing flag value";
+        case MissingRequiredFlag:
+            return "missing required flag";
+    }
+}
 
 export struct ServerConfig {
     net::SocketAddr control_addr;
@@ -57,49 +77,49 @@ bool is_agent_flag([]const char flag) {
         same_text(flag, "--psk");
 }
 
-Result<void, app_error::TunnelError> validate_pairs(
+Result<void, Error> validate_pairs(
     bool server
 ) {
-    usize len = app_error::tunnel(env::args_len())?;
+    usize len = env::args_len()?;
     usize @i = 1;
     while (i < len) {
-        []const char flag = app_error::tunnel(env::arg(i))?;
+        []const char flag = env::arg(i)?;
         if (server) {
             if (!is_server_flag(flag)) {
-                return Err(app_error::CliUnknownServerFlag);
+                return Err(UnknownServerFlag);
             }
         } else {
             if (!is_agent_flag(flag)) {
-                return Err(app_error::CliUnknownAgentFlag);
+                return Err(UnknownAgentFlag);
             }
         }
         if ((i + 1) >= len) {
-            return Err(app_error::CliMissingFlagValue);
+            return Err(MissingFlagValue);
         }
-        []const char value = app_error::tunnel(env::arg(i + 1))?;
+        []const char value = env::arg(i + 1)?;
         if (value.len >= 2 && value[0] == '-' && value[1] == '-') {
-            return Err(app_error::CliMissingFlagValue);
+            return Err(MissingFlagValue);
         }
         i = i + 2;
     }
     return Ok;
 }
 
-Result<[]const char, app_error::TunnelError> required_flag(
+Result<[]const char, Error> required_flag(
     []const char flag
 ) {
-    usize len = app_error::tunnel(env::args_len())?;
+    usize len = env::args_len()?;
     usize @i = 1;
     while ((i + 1) < len) {
-        if (same_text(app_error::tunnel(env::arg(i))?, flag)) {
-            return Ok(app_error::tunnel(env::arg(i + 1))?);
+        if (same_text(env::arg(i)?, flag)) {
+            return Ok(env::arg(i + 1)?);
         }
         i = i + 2;
     }
-    return Err(app_error::CliMissingRequiredFlag);
+    return Err(MissingRequiredFlag);
 }
 
-export Result<ServerConfig, app_error::TunnelError> parse_server_args() {
+export Result<ServerConfig, Error> parse_server_args() {
     validate_pairs(true)?;
     []const char control = required_flag("--control")?;
     []const char public = required_flag("--public")?;
@@ -107,15 +127,15 @@ export Result<ServerConfig, app_error::TunnelError> parse_server_args() {
     []const char psk = required_flag("--psk")?;
     return Ok(
         {
-            control_addr: app_error::tunnel(control.net::parse_addr())?,
-            public_addr: app_error::tunnel(public.net::parse_addr())?,
-            route: app_error::tunnel(text::text_copy(route))?,
-            psk: app_error::tunnel(bytes::bytes_from_text(psk))?
+            control_addr: control.net::parse_addr()?,
+            public_addr: public.net::parse_addr()?,
+            route: text::text_copy(route)?,
+            psk: bytes::bytes_from_text(psk)?
         }
     );
 }
 
-export Result<AgentConfig, app_error::TunnelError> parse_agent_args() {
+export Result<AgentConfig, Error> parse_agent_args() {
     validate_pairs(false)?;
     []const char server = required_flag("--server")?;
     []const char target = required_flag("--target")?;
@@ -123,10 +143,10 @@ export Result<AgentConfig, app_error::TunnelError> parse_agent_args() {
     []const char psk = required_flag("--psk")?;
     return Ok(
         {
-            server_addr: app_error::tunnel(server.net::parse_addr())?,
-            target_addr: app_error::tunnel(target.net::parse_addr())?,
-            route: app_error::tunnel(text::text_copy(route))?,
-            psk: app_error::tunnel(bytes::bytes_from_text(psk))?
+            server_addr: server.net::parse_addr()?,
+            target_addr: target.net::parse_addr()?,
+            route: text::text_copy(route)?,
+            psk: bytes::bytes_from_text(psk)?
         }
     );
 }

@@ -1,0 +1,27 @@
+// ciel-test: run
+// expect-exit: 0
+
+import /std/panic;
+import /std/result;
+import /std/shared_map as shared_map;
+import /std/vec as vec;
+
+i32 main() {
+    shared_map::SharedMap<u32, vec::Vec<i64>> values = must(
+        shared_map::shared_map_new<u32, vec::Vec<i64>>()
+    );
+    vec::Vec<i64> @source = must(vec::vec_new<i64>(1));
+    must(source.vec::push(7));
+    _ inserted = must(values.shared_map::insert(1 as u32, source));
+
+    must(source.vec::push(9));
+    switch (must(values.shared_map::get(1 as u32))) {
+        case shared_map::SharedMapGet::Found(stored):
+            if (stored.vec::len() == 1 && *must(stored.vec::at(0)) == 7) {
+                return 0;
+            }
+            return 1;
+        case shared_map::SharedMapGet::Missing:
+            return 2;
+    }
+}

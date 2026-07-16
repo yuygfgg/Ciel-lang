@@ -2,6 +2,8 @@ use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output},
+    sync::OnceLock,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use cielc::{
@@ -1136,9 +1138,35 @@ fn cases_root() -> PathBuf {
 }
 
 fn temp_artifact(source_path: &Path, suffix: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("cielc_test_{}", std::process::id()));
-    fs::create_dir_all(&dir).unwrap();
-    dir.join(format!("{}.{}", artifact_stem(source_path), suffix))
+    test_temp_dir().join(format!("{}.{}", artifact_stem(source_path), suffix))
+}
+
+fn test_temp_dir() -> &'static Path {
+    static TEST_TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+    TEST_TEMP_DIR.get_or_init(|| {
+        let base = std::env::temp_dir();
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        for attempt in 0u64.. {
+            let dir = base.join(format!(
+                "cielc_test_{}_{unique}_{attempt}",
+                std::process::id()
+            ));
+            match fs::create_dir(&dir) {
+                Ok(()) => return dir,
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => panic!(
+                    "failed to create Ciel fixture temp directory `{}`: {error}",
+                    dir.display()
+                ),
+            }
+        }
+
+        unreachable!("the Ciel fixture temp directory attempt counter cannot be exhausted")
+    })
 }
 
 fn artifact_stem(path: &Path) -> String {

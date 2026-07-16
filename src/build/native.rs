@@ -154,27 +154,137 @@ fn build_reusable_cmake_executable(
         ));
     }
 
-    fs::copy(&cached_output, output.output_path).map_err(|error| {
+    install_cached_executable(&cached_output, output.output_path)?;
+
+    Ok(())
+}
+
+fn install_cached_executable(cached_output: &Path, output_path: &Path) -> Result<(), String> {
+    let (staging_dir, staged_output) = reserve_staged_output(output_path)?;
+    let install_result = (|| {
+        copy_executable_in_subprocess(cached_output, &staged_output)?;
+        set_executable_permissions(cached_output, &staged_output)?;
+        replace_output(&staged_output, output_path)
+    })();
+
+    if install_result.is_err() {
+        let _ = fs::remove_file(&staged_output);
+    }
+    let cleanup_result = fs::remove_dir(&staging_dir).map_err(|error| {
         format!(
-            "failed to copy cached executable `{}` to `{}`: {error}",
-            cached_output.display(),
-            output.output_path.display()
+            "failed to remove staged executable directory `{}`: {error}",
+            staging_dir.display()
         )
-    })?;
-    #[cfg(unix)]
-    {
-        let permissions = fs::metadata(&cached_output)
-            .map_err(|error| format!("failed to stat `{}`: {error}", cached_output.display()))?
-            .permissions();
-        fs::set_permissions(output.output_path, permissions).map_err(|error| {
+    });
+    if install_result.is_ok() {
+        cleanup_result?;
+    }
+    install_result
+}
+
+fn reserve_staged_output(output_path: &Path) -> Result<(PathBuf, PathBuf), String> {
+    let parent = output_path.parent().unwrap_or_else(|| Path::new("."));
+    let output_name = output_path
+        .file_name()
+        .unwrap_or_else(|| std::ffi::OsStr::new("ciel-output"));
+
+    for attempt in 0u64.. {
+        let staging_dir = parent.join(format!(".ciel-install-{}-{attempt}", std::process::id()));
+        match fs::create_dir(&staging_dir) {
+            Ok(()) => return Ok((staging_dir.clone(), staging_dir.join(output_name))),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create staged executable directory `{}`: {error}",
+                    staging_dir.display()
+                ));
+            }
+        }
+    }
+
+    unreachable!("the staged executable attempt counter cannot be exhausted")
+}
+
+fn copy_executable_in_subprocess(cached_output: &Path, staged_output: &Path) -> Result<(), String> {
+    // Do not replace this with `fs::copy`. The compiler is used from a
+    // multithreaded test runner, so another thread can fork while the parent
+    // has the staged executable open for writing. The forked child inherits
+    // that descriptor until exec closes it, and an immediate exec of the
+    // published inode can then fail with ETXTBSY. A copy helper owns the only
+    // writable descriptor, and waiting for it guarantees the descriptor is
+    // gone before the executable is published.
+    let result = Command::new("cmake")
+        .arg("-E")
+        .arg("copy")
+        .arg(cached_output)
+        .arg(staged_output)
+        .output()
+        .map_err(|error| {
             format!(
-                "failed to set permissions on `{}`: {error}",
-                output.output_path.display()
+                "failed to launch CMake while copying cached executable `{}` to `{}`: {error}",
+                cached_output.display(),
+                staged_output.display()
+            )
+        })?;
+    if !result.status.success() {
+        return Err(format_command_error(
+            &format!(
+                "CMake executable copy from `{}` to `{}`",
+                cached_output.display(),
+                staged_output.display()
+            ),
+            &result,
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_executable_permissions(cached_output: &Path, staged_output: &Path) -> Result<(), String> {
+    let permissions = fs::metadata(cached_output)
+        .map_err(|error| format!("failed to stat `{}`: {error}", cached_output.display()))?
+        .permissions();
+    fs::set_permissions(staged_output, permissions).map_err(|error| {
+        format!(
+            "failed to set permissions on `{}`: {error}",
+            staged_output.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn set_executable_permissions(_cached_output: &Path, _staged_output: &Path) -> Result<(), String> {
+    Ok(())
+}
+
+#[cfg(unix)]
+fn replace_output(staged_output: &Path, output_path: &Path) -> Result<(), String> {
+    fs::rename(staged_output, output_path).map_err(|error| {
+        format!(
+            "failed to publish staged executable `{}` as `{}`: {error}",
+            staged_output.display(),
+            output_path.display()
+        )
+    })
+}
+
+#[cfg(not(unix))]
+fn replace_output(staged_output: &Path, output_path: &Path) -> Result<(), String> {
+    if output_path.exists() {
+        fs::remove_file(output_path).map_err(|error| {
+            format!(
+                "failed to remove previous executable `{}`: {error}",
+                output_path.display()
             )
         })?;
     }
-
-    Ok(())
+    fs::rename(staged_output, output_path).map_err(|error| {
+        format!(
+            "failed to publish staged executable `{}` as `{}`: {error}",
+            staged_output.display(),
+            output_path.display()
+        )
+    })
 }
 
 fn reusable_cmake_output_lock(key: u64) -> Result<Arc<Mutex<()>>, String> {
@@ -613,6 +723,35 @@ fn is_linux_target(target_os: &str) -> bool {
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cached_executable_is_published_atomically_while_previous_output_runs() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "ciel-native-install-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let output = dir.join("program");
+
+        fs::copy("/bin/sleep", &output).unwrap();
+        let mut previous = Command::new(&output).arg("5").spawn().unwrap();
+        assert!(
+            previous.try_wait().unwrap().is_none(),
+            "the previous executable must still be running"
+        );
+
+        install_cached_executable(Path::new("/bin/true"), &output).unwrap();
+        assert!(Command::new(&output).status().unwrap().success());
+
+        previous.kill().unwrap();
+        previous.wait().unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn cmake_include_flags_use_package_include_dirs_once() {

@@ -45,16 +45,14 @@ async Result<void, Report> drive() {
     bool @registration_probe_failed = false;
     usize @registration_attempts = 0;
     usize max_registration_attempts = 256;
-    while (
-        !registration_closed &&
-        registration_attempts < max_registration_attempts
-    ) {
+    while (!registration_closed &&
+        registration_attempts < max_registration_attempts) {
         switch (async::supervisor_spawn<void, Report>(
             registrar,
             finish_immediately()
         )) {
             case Ok:
-                switch (await async_time::sleep_ms(0)) {
+                switch (await async_time::sleep_ms(1)) {
                     case Ok:
                         {}
                     case Err(_):
@@ -68,8 +66,9 @@ async Result<void, Report> drive() {
     }
     bool registration_did_not_close = !registration_closed;
 
-    Result<void, async::AsyncError> cancel_result =
-        async::cancel<void, Report>(&worker);
+    Result<void, async::AsyncError> cancel_result = async::cancel<void, Report>(
+        &worker
+    );
     Result<bool, async::AsyncError> worker_running_status =
         async::is_finished<void, Report>(&worker);
     Result<bool, async::AsyncError> shutdown_running_status =
